@@ -1,0 +1,45 @@
+{
+  "name": "marvin",
+  "urdf": "Marvin_M6_S_CCS_696_V4.0/robot_with_ee.urdf",
+  "arms": {
+    "left": {
+      "base": "left_arm_base",
+      "ee": "left_ee",
+      "seed": [0.51478342, -0.48319332, -0.47513737, -1.72500699, -2.74124467, 0.75606588, -0.68688189]
+    },
+    "right": {
+      "base": "right_arm_base",
+      "ee": "right_ee",
+      "seed": [-0.51478342, -0.48319332, 0.47513737, -1.72500699, 2.74124467, 0.75606588, 0.68688189]
+    }
+  },
+  "collision": {
+    "disabled_self_link_pairs": [
+      ["wrist_pitch_l_j5_link", "wrist_roll_l_j7_link"],
+      ["wrist_pitch_r_j5_link", "wrist_roll_r_j7_link"]
+    ]
+  },
+  "retargeting": {
+    "frames": {
+      "left_hand": "left_ee",
+      "right_hand": "right_ee",
+      "head": "upper_body_base"
+    },
+    "joint_groups": {
+      "left_arm": [
+        "SHOULDER_PITCH_L_J1", "SHOULDER_ROLL_L_J2", "ELBOW_PITCH_L_J3",
+        "ELBOW_YAW_L_J4", "WRIST_PITCH_L_J5", "WRIST_YAW_L_J6",
+        "WRIST_ROLL_L_J7"
+      ],
+      "right_arm": [
+        "SHOULDER_PITCH_R_J1", "SHOULDER_ROLL_R_J2", "ELBOW_PITCH_R_J3",
+        "ELBOW_YAW_R_J4", "WRIST_PITCH_R_J5", "WRIST_YAW_R_J6",
+        "WRIST_ROLL_R_J7"
+      ]
+    },
+    "trajectory_limits": {
+      "max_velocity": [1.0, 1.0, 1.0, 1.2, 1.2, 1.5, 1.5],
+      "max_acceleration": [2.0, 2.0, 2.0, 2.4, 2.4, 3.0, 3.0]
+    }
+  }
+}

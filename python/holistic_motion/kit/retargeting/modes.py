@@ -1,0 +1,106 @@
+"""Mode definitions for pose retargeting."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Union
+
+
+class RetargetingMode(str, Enum):
+    """Built-in sets of controlled bodies and movable joint groups."""
+
+    LEFT_ARM = "left_arm"
+    RIGHT_ARM = "right_arm"
+    DUAL_ARM = "dual_arm"
+    WHOLE_BODY = "whole_body"
+
+
+@dataclass(frozen=True)
+class RetargetingModeSpec:
+    """Declarative description of a retargeting mode."""
+
+    targets: tuple[str, ...]
+    active_joint_groups: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.targets:
+            raise ValueError("a retargeting mode must contain at least one target")
+        if not self.active_joint_groups:
+            raise ValueError(
+                "a retargeting mode must activate at least one joint group"
+            )
+
+
+DEFAULT_MODE_SPECS = {
+    RetargetingMode.LEFT_ARM: RetargetingModeSpec(("left_hand",), ("left_arm",)),
+    RetargetingMode.RIGHT_ARM: RetargetingModeSpec(("right_hand",), ("right_arm",)),
+    RetargetingMode.DUAL_ARM: RetargetingModeSpec(
+        ("left_hand", "right_hand"), ("left_arm", "right_arm")
+    ),
+    RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
+        ("left_hand", "right_hand", "head"), ("whole_body",)
+    ),
+}
+
+
+class RetargetingModeManager:
+    """Validate, select, and describe retargeting modes."""
+
+    def __init__(
+        self,
+        modes: Optional[
+            Mapping[Union[RetargetingMode, str], RetargetingModeSpec]
+        ] = None,
+        initial_mode: Union[RetargetingMode, str] = RetargetingMode.DUAL_ARM,
+    ) -> None:
+        source = DEFAULT_MODE_SPECS if modes is None else modes
+        self._modes = {RetargetingMode(key): value for key, value in source.items()}
+        if not self._modes:
+            raise ValueError("at least one retargeting mode is required")
+        self._mode = self._coerce(initial_mode)
+
+    @property
+    def mode(self) -> RetargetingMode:
+        return self._mode
+
+    @property
+    def spec(self) -> RetargetingModeSpec:
+        return self._modes[self._mode]
+
+    @property
+    def available_modes(self) -> tuple[RetargetingMode, ...]:
+        return tuple(self._modes)
+
+    @property
+    def mode_specs(self) -> Mapping[RetargetingMode, RetargetingModeSpec]:
+        return self._modes.copy()
+
+    def set_mode(self, mode: Union[RetargetingMode, str]) -> RetargetingModeSpec:
+        self._mode = self._coerce(mode)
+        return self.spec
+
+    def cycle(self) -> RetargetingModeSpec:
+        modes = self.available_modes
+        self._mode = modes[(modes.index(self._mode) + 1) % len(modes)]
+        return self.spec
+
+    def validate_targets(self, names: Iterable[str]) -> None:
+        missing = set(self.spec.targets).difference(names)
+        if missing:
+            raise ValueError(
+                f"mode '{self.mode.value}' requires targets: {sorted(missing)}"
+            )
+
+    def _coerce(self, mode: Union[RetargetingMode, str]) -> RetargetingMode:
+        try:
+            value = RetargetingMode(mode)
+        except ValueError as error:
+            choices = ", ".join(item.value for item in self._modes)
+            raise ValueError(
+                f"unknown retargeting mode {mode!r}; choose {choices}"
+            ) from error
+        if value not in self._modes:
+            raise ValueError(f"retargeting mode {value.value!r} is not configured")
+        return value
