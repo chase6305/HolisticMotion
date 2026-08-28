@@ -17,6 +17,10 @@ trajectory = ToppraTrajectory(
 times, position, velocity, acceleration = trajectory.sample_uniform(200)
 ```
 
+Waypoint, limit, and timing-result arrays are immutable owned snapshots.
+`sample()` and `sample_uniform()` return new arrays that applications may
+modify freely without changing the trajectory object.
+
 The implementation uses squared path velocity as its state, propagates
 controllable sets backward, then performs a time-optimal forward pass. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
@@ -42,17 +46,18 @@ and all visual meshes:
 
 ```bash
 ./scripts/run.sh python3 \
-  examples/python/visualization/toppra_robot_viser.py --autoplay --loop
+  examples/python/visualization/toppra_robot_viser.py \
+  --urdf /path/to/robot.urdf --autoplay --loop
 ```
 
 Trajectory charts are separated into left- and right-arm tabs. Their compact
 `J1`–`J7` legends use consistent colors and include a mapping table to the full
 URDF joint names. Click a legend entry to isolate one curve.
 
-Override the default asset profile with `--profile`, `--asset-root`, or an
-explicit `--urdf` path. The compatibility spellings `--urdf-path` and
-`--urdf_path` are also accepted. When launched directly from a built source
-checkout, the example automatically enters `scripts/run.sh`.
+Pass either `--asset-root` with a `--profile`, or an explicit `--urdf` path.
+The compatibility spellings `--urdf-path` and `--urdf_path` are also accepted.
+When launched directly from a built source checkout, the example automatically
+enters `scripts/run.sh`.
 
 The path interpolator is a joint-space natural cubic spline. Constraints are
 enforced on its analytic derivatives at the reachability grid points; use a

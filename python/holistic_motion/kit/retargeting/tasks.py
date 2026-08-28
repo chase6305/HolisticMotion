@@ -20,6 +20,8 @@ def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
         raise ValueError(f"{name} must be a finite scalar or vector of size {size}")
     if np.any(result < 0.0):
         raise ValueError(f"{name} must be non-negative")
+    result = result.copy()
+    result.setflags(write=False)
     return result
 
 

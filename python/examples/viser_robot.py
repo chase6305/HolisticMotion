@@ -21,12 +21,6 @@ from _viser_utils import (
 hm = import_holistic_motion()
 
 
-DEFAULT_ASSET_DIR = Path(
-    "/home/ubuntu/workspace/chase/HumanoidAssets/"
-    "Marvin_M6_S_CCS_696_V4.0"
-)
-
-
 def _motion(joint, value: float) -> np.ndarray:
     transform = np.eye(4)
     axis = np.asarray(joint.axis, dtype=float)
@@ -227,9 +221,7 @@ def load_robot(urdf_path: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--urdf", type=Path, default=DEFAULT_ASSET_DIR / "left_arm.urdf"
-    )
+    parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--autoplay", action="store_true")

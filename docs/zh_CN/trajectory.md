@@ -16,6 +16,9 @@ trajectory = ToppraTrajectory(
 times, position, velocity, acceleration = trajectory.sample_uniform(200)
 ```
 
+路点、约束和时间参数化结果数组都是自包含的不可变快照。`sample()` 与
+`sample_uniform()` 返回新的数组，应用可以自由修改而不会影响轨迹对象。
+
 算法以路径速度平方为状态，先反向传播可控集，再执行时间最优正向通过。
 运行时不依赖上游 TOPPRA 包，也不需要额外 LP/QP 求解器。
 
@@ -37,15 +40,16 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 
 ```bash
 ./scripts/run.sh python3 \
-  examples/python/visualization/toppra_robot_viser.py --autoplay --loop
+  examples/python/visualization/toppra_robot_viser.py \
+  --urdf /path/to/robot.urdf --autoplay --loop
 ```
 
 轨迹图表按左臂、右臂标签页分组，图例使用统一颜色的 `J1`–`J7` 短名称，并提供
 完整 URDF 关节名映射表。点击图例条目可以单独查看一条曲线。
 
-可通过 `--profile`、`--asset-root` 或明确的 `--urdf` 路径覆盖默认资产配置；
-同时兼容 `--urdf-path` 和 `--urdf_path`。在已经编译的源码仓库中直接执行时，
-Demo 会自动进入 `scripts/run.sh` 环境。
+应传入 `--asset-root` 与 `--profile`，或者明确的 `--urdf` 路径；同时兼容
+`--urdf-path` 和 `--urdf_path`。在已经编译的源码仓库中直接执行时，Demo 会
+自动进入 `scripts/run.sh` 环境。
 
 路径插值器使用关节空间自然三次样条。约束作用于可达性网格点上的解析导数；
 对于曲率较大的路径，应增加 `grid_size`，并在下发硬件前检查采样结果。

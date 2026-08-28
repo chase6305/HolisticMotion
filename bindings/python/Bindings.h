@@ -5,5 +5,6 @@
 namespace holistic_motion::python {
 
 void BindCollision(pybind11::module_& module);
+void BindSamplingPlanning(pybind11::module_& module);
 
 }  // namespace holistic_motion::python

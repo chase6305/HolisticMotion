@@ -17,6 +17,36 @@
     "disabled_self_link_pairs": [
       ["wrist_pitch_l_j5_link", "wrist_roll_l_j7_link"],
       ["wrist_pitch_r_j5_link", "wrist_roll_r_j7_link"]
+    ],
+    "disabled_body_link_pairs": [
+      ["base_link", "shoulder_pitch_l_j1_link"],
+      ["base_link", "shoulder_pitch_r_j1_link"]
+    ]
+  },
+  "planning": {
+    "right_arm_mirror_signs": [-1, 1, -1, 1, -1, 1, -1],
+    "environment_obstacles": [
+      {
+        "name": "left_workspace_obstacle",
+        "type": "box",
+        "size": [0.03, 0.04, 0.18],
+        "position": [0.497, 0.28, 1.12],
+        "color": [70, 110, 165]
+      },
+      {
+        "name": "right_workspace_obstacle",
+        "type": "box",
+        "size": [0.03, 0.04, 0.18],
+        "position": [0.497, -0.28, 1.12],
+        "color": [105, 80, 165]
+      }
+    ],
+    "dual_arm_demo_goal": [
+      0.32292932085667647, -0.790518192379513, -0.44950216104741986,
+      -1.0393045308097184, -2.869617620318977, 0.3978604502877006,
+      -0.6007268386741166, -0.32292932085667647, -0.790518192379513,
+      0.44950216104741986, -1.0393045308097184, 2.869617620318977,
+      0.3978604502877006, 0.6007268386741166
     ]
   },
   "retargeting": {

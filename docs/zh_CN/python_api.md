@@ -2,6 +2,15 @@
 
 <div class="language-switcher"><a href="../en/python_api.html">English</a> · 简体中文</div>
 
+## 连续运动学
+
+```{eval-rst}
+.. automodule:: holistic_motion.kinematics
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## Retargeting
 
 ```{eval-rst}

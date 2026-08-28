@@ -2,6 +2,8 @@
 
 <div class="language-switcher"><a href="../en/index.html">English</a> · 简体中文</div>
 
+![HolisticMotion 模块化能力，包括机器人模型、运动学、重定向、轨迹、规划和碰撞检测](../assets/holistic-motion-overview.png)
+
 HolisticMotion 提供可复用的 C++17 机器人基础能力和 Python 绑定，涵盖模型加载、
 运动学、轨迹、碰撞查询和姿态重定向。机器人资源由调用方提供，项目不会隐式下载。
 
@@ -12,6 +14,7 @@ HolisticMotion 提供可复用的 C++17 机器人基础能力和 Python 绑定�
 installation
 concepts
 collision
+planning
 trajectory
 retargeting
 ```

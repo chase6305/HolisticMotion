@@ -1,0 +1,61 @@
+name: Build and test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject whitespace errors
+        run: git diff --check HEAD
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: python -m pip install 'conan>=2.28' pytest
+      - name: Detect Conan profile
+        run: conan profile detect
+      - name: Build CPU, collision, and Python components
+        env:
+          JOBS: "2"
+        run: ./scripts/build.sh --tests --no-cuda
+      - name: Validate exported core package and consumer
+        run: >-
+          conan create . --no-remote
+          -o '&:with_python=False'
+          -o '&:with_tests=False'
+          -o '&:with_cuda=False'
+          -o '&:with_collision=False'
+
+  python-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: python -m pip install 'conan>=2.28' pytest
+      - name: Detect Conan profile
+        run: conan profile detect
+      - name: Build Python without CUDA or collision
+        env:
+          BUILD_DIR: build-core
+          JOBS: "2"
+        run: ./scripts/build.sh --tests --no-cuda --no-collision

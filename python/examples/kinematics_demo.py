@@ -13,16 +13,10 @@ from _bootstrap import import_holistic_motion
 
 hm = import_holistic_motion()
 
-DEFAULT_ASSET_DIR = Path(
-    "/home/ubuntu/workspace/chase/HumanoidAssets/"
-    "Marvin_M6_S_CCS_696_V4.0"
-)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", choices=("left", "right"), default="left")
-    parser.add_argument("--urdf", type=Path)
+    parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument("--null-space-steps", type=int, default=5)
     parser.add_argument(
         "--solve-method",
@@ -31,7 +25,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    urdf = args.urdf or DEFAULT_ASSET_DIR / f"{args.arm}_arm.urdf"
+    urdf = args.urdf
     robot = hm.Robot(str(urdf.resolve()))
     if not isinstance(robot.kinematics, hm.SRSKinematics):
         raise RuntimeError("example requires a serial seven-revolute chain")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Optional, Union
 
 
@@ -25,15 +26,27 @@ class RetargetingModeSpec:
     active_joint_groups: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not self.targets:
+        targets = tuple(self.targets)
+        groups = tuple(self.active_joint_groups)
+        if not targets:
             raise ValueError("a retargeting mode must contain at least one target")
-        if not self.active_joint_groups:
+        if not groups:
             raise ValueError(
                 "a retargeting mode must activate at least one joint group"
             )
+        if any(not isinstance(name, str) or not name for name in targets):
+            raise ValueError("retargeting target names must be non-empty strings")
+        if any(not isinstance(name, str) or not name for name in groups):
+            raise ValueError("joint group names must be non-empty strings")
+        if len(set(targets)) != len(targets):
+            raise ValueError("retargeting target names must be unique")
+        if len(set(groups)) != len(groups):
+            raise ValueError("active joint group names must be unique")
+        object.__setattr__(self, "targets", targets)
+        object.__setattr__(self, "active_joint_groups", groups)
 
 
-DEFAULT_MODE_SPECS = {
+DEFAULT_MODE_SPECS = MappingProxyType({
     RetargetingMode.LEFT_ARM: RetargetingModeSpec(("left_hand",), ("left_arm",)),
     RetargetingMode.RIGHT_ARM: RetargetingModeSpec(("right_hand",), ("right_arm",)),
     RetargetingMode.DUAL_ARM: RetargetingModeSpec(
@@ -42,7 +55,7 @@ DEFAULT_MODE_SPECS = {
     RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
         ("left_hand", "right_hand", "head"), ("whole_body",)
     ),
-}
+})
 
 
 class RetargetingModeManager:

@@ -54,6 +54,11 @@ if result.success:
     send_joint_command(result.configuration)
 ```
 
+Targets, task costs, mode specifications, and result payloads own immutable
+snapshots of caller-provided arrays and sequences. Copy
+`result.configuration` before adapting it in application code. This prevents
+UI or controller code from modifying solver history through a returned result.
+
 The previous result is reused as a warm start. Pass `seed=` to override it or
 call `solver.reset()` to return to Pinocchio's neutral configuration.
 
@@ -82,7 +87,8 @@ HolisticMotion extension:
 For interactive URDF retargeting with left-hand, right-hand, and head gizmos:
 
 ```bash
-python3 examples/python/visualization/pink_robot_viser.py
+python3 examples/python/visualization/pink_robot_viser.py \
+  --urdf /path/to/robot.urdf
 ```
 
 The Viser panel exposes left-arm, right-arm, dual-arm, and whole-body modes,

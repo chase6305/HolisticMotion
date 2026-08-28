@@ -25,12 +25,9 @@ def main() -> None:
     parser.add_argument(
         "--profile", type=Path, default=repository / "examples/configs/marvin.json"
     )
-    parser.add_argument(
-        "--asset-root",
-        type=Path,
-        default=Path("/home/ubuntu/workspace/chase/HumanoidAssets"),
-    )
-    parser.add_argument("--urdf")
+    assets = parser.add_mutually_exclusive_group(required=True)
+    assets.add_argument("--asset-root", type=Path)
+    assets.add_argument("--urdf", type=Path)
     parser.add_argument("--left-frame")
     parser.add_argument("--right-frame")
     parser.add_argument("--head-frame")
@@ -55,7 +52,7 @@ def main() -> None:
         groups["left_arm"] = _names(args.left_joints)
     if args.right_joints:
         groups["right_arm"] = _names(args.right_joints)
-    urdf = Path(args.urdf) if args.urdf else args.asset_root / profile["urdf"]
+    urdf = args.urdf if args.urdf else args.asset_root / profile["urdf"]
 
     solver = PinkRetargetingSolver(
         urdf,

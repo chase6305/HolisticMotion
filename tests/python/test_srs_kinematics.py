@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 
 def _write_seven_revolute_urdf(path):
@@ -46,6 +47,34 @@ def _write_ideal_srs_urdf(path):
     )
 
 
+def _write_offset_srs_urdf(path):
+    origins = [
+        ("0 0 0", "-1.5707963268 0 -1.5707963268"),
+        ("0 0 0", "1.5707963268 0 0"),
+        ("0 0.287 0", "-1.5707963268 0 0"),
+        ("0.018 0 0", "-1.5707963268 0 3.1415926536"),
+        ("0.018 -0.314 0", "-1.5707963268 0 3.1415926536"),
+        ("0 0 0", "1.5707963268 -1.5707963268 0"),
+        ("0 0 0", "1.5707963268 -1.5707963268 0"),
+    ]
+    links = "".join(f'<link name="link{i}"/>' for i in range(9))
+    joints = []
+    for i, (xyz, rpy) in enumerate(origins):
+        joints.append(f'''<joint name="joint{i}" type="revolute">
+          <parent link="link{i}"/><child link="link{i + 1}"/>
+          <origin xyz="{xyz}" rpy="{rpy}"/><axis xyz="0 0 1"/>
+          <limit lower="-3.1" upper="3.1" velocity="2" effort="10"/>
+        </joint>''')
+    joints.append('''<joint name="tool" type="fixed">
+      <parent link="link7"/><child link="link8"/>
+      <origin xyz="0 -0.095 0" rpy="1.5707963268 -1.5707963268 0"/>
+    </joint>''')
+    path.write_text(
+        f'<robot name="offset_srs">{links}{"".join(joints)}</robot>',
+        encoding="utf-8",
+    )
+
+
 def test_srs_null_space_projection_and_path(tmp_path):
     import holistic_motion as hm
 
@@ -65,6 +94,14 @@ def test_srs_null_space_projection_and_path(tmp_path):
     jacobian = robot.kinematics.jacobian(joints)
     assert velocity.shape == (7,)
     assert np.linalg.norm(jacobian @ velocity) < 1e-10
+    with pytest.raises(ValueError):
+        robot.kinematics.null_space_velocity(
+            np.full(7, np.nan), direction
+        )
+    with pytest.raises(ValueError):
+        robot.kinematics.null_space_velocity(
+            joints, np.full(7, np.inf)
+        )
 
     target = robot.kinematics.forward(joints)
     planner = hm.NullSpacePlanner(robot.kinematics)
@@ -128,3 +165,26 @@ def test_srs_closed_form_solution_from_urdf_parameters(tmp_path):
             np.cos(candidate_redundancy - configuration.redundancy),
         )
         assert abs(redundancy_delta) < 1e-6
+
+
+def test_srs_closed_form_candidate_refines_offset_chain(tmp_path):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "offset_srs.urdf"
+    _write_offset_srs_urdf(urdf)
+    solver = hm.Robot(str(urdf)).kinematics
+    assert solver.analyze_geometry().closed_form_compatible
+    joints = np.array(
+        [0.51478342, -0.48319332, -0.47513737, -1.72500699,
+         -2.74124467, 0.75606588, -0.68688189]
+    )
+    target = solver.forward(joints)
+    configuration = solver.configuration(joints)
+    solution = solver.analytic_solution(target, configuration, joints)
+    np.testing.assert_allclose(solver.forward(solution), target, atol=1e-8)
+    solved = solver.configuration(solution)
+    assert (solved.shoulder, solved.elbow, solved.wrist) == (
+        configuration.shoulder,
+        configuration.elbow,
+        configuration.wrist,
+    )

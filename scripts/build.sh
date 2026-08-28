@@ -10,21 +10,21 @@ PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-python3}"
 RUN_TESTS=false
 CONAN_WITH_TESTS=False
 CONAN_SHARED=False
-CONAN_WITH_CUDA=True
+CONAN_WITH_CUDA=False
 CONAN_WITH_COLLISION=True
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
 
-Builds and installs HolisticMotion with Python, CUDA, and collision support.
+Builds and installs HolisticMotion with Python and collision support.
 
 Options:
   --tests          Build and run the C++ and Python tests
   --shared         Build the core library as a shared library
-  --no-cuda        Disable the CUDA batch backends
+  --no-cuda        Disable the CUDA batch backends (default)
   --no-collision   Disable the Pinocchio/Coal collision component
-  --cuda           Enable CUDA (kept for backward compatibility; default)
+  --cuda           Enable the optional CUDA batch backends
   --collision      Enable collision (kept for backward compatibility; default)
   -h, --help       Show this help
 
@@ -132,7 +132,7 @@ fi
 
 PYTHONPATH="${BUILD_DIR}/install${PYTHONPATH:+:${PYTHONPATH}}" \
     "${PYTHON_EXECUTABLE}" -c \
-    "import holistic_motion as hm; print('Python import smoke test: OK'); print(f'FEP CUDA compiled/runtime: {hm.FEPKinematics.cuda_compiled}/{hm.FEPKinematics.cuda_available}'); assert not ${CONAN_WITH_CUDA} or hm.FEPKinematics.cuda_compiled"
+    "import holistic_motion as hm; print('Python import smoke test: OK'); print(f'FEP CUDA compiled/runtime: {hm.FEPKinematics.cuda_compiled}/{hm.FEPKinematics.cuda_available}'); assert hm.FEPKinematics.cuda_compiled is ${CONAN_WITH_CUDA}; assert hasattr(hm, 'CollisionModel') is ${CONAN_WITH_COLLISION}"
 
 if [[ "${RUN_TESTS}" == true ]]; then
     ctest --test-dir "${BUILD_DIR}/cmake" --output-on-failure
@@ -153,7 +153,7 @@ echo "  ./scripts/run.sh python3 examples/python/trajectory/toppra_retiming.py"
 echo "Run a pure-Python/Pink toolkit without native Pinocchio ABI mixing with:"
 echo "  ./scripts/run-python-toolkit.sh python3 examples/python/retargeting/pink_dual_arm.py --help"
 echo "Run the viewer with:"
-echo "  ./scripts/run.sh python3 python/examples/viser_dual_arm_line.py --autoplay"
+echo "  ./scripts/run.sh python3 examples/python/visualization/rrt_robot_viser.py --urdf /path/to/robot.urdf"
 echo "Generate trajectory diagnostics with:"
 echo "  ./scripts/run.sh python3 python/examples/trajectory/plot_joint_trajectory.py --output build/trajectory_profiles.png"
 if [[ "${CONAN_WITH_CUDA}" == True ]]; then

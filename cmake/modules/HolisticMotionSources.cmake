@@ -14,6 +14,7 @@ set(HOLISTICMOTION_CORE_SOURCES
     src/kinematics/fep/FEPKinematics.cpp
     src/kinematics/fep/FEPSelection.cpp
     src/planning/NullSpacePlanner.cpp
+    src/planning/SamplingPlanner.cpp
     src/trajectory/PathBase.cpp
     src/trajectory/PathBezierCurve.cpp
     src/trajectory/PathSegment.cpp
@@ -27,8 +28,10 @@ set(HOLISTICMOTION_CUDA_SOURCES
     src/kinematics/fep/cuda/FEPBatch.cu)
 
 set(HOLISTICMOTION_COLLISION_SOURCES
-    src/collision/CollisionModel.cpp)
+    src/collision/CollisionModel.cpp
+    src/collision/SphereCollisionModel.cpp)
 
 set(HOLISTICMOTION_PYTHON_BINDING_SOURCES
     bindings/python/module.cpp
+    bindings/python/PlanningBindings.cpp
     bindings/python/CollisionBindings.cpp)

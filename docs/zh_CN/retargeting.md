@@ -54,6 +54,10 @@ if result.success:
     send_joint_command(result.configuration)
 ```
 
+目标、任务权重、模式描述和求解结果都会保存调用方数组与序列的不可变快照。
+应用需要调整结果时，应先复制 `result.configuration`，从而避免 UI 或控制器代码
+通过返回值意外修改求解器历史状态。
+
 求解器会把上一次结果作为热启动。传入 `seed=` 可以覆盖热启动，调用
 `solver.reset()` 会恢复到 Pinocchio 中性构型。
 
@@ -78,7 +82,8 @@ Pink 风格实现由 HolisticMotion 自身维护，运行时不导入上游 `pin
 通过左右手和头部 gizmo 交互执行 URDF retargeting：
 
 ```bash
-python3 examples/python/visualization/pink_robot_viser.py
+python3 examples/python/visualization/pink_robot_viser.py \
+  --urdf /path/to/robot.urdf
 ```
 
 Viser 面板支持左臂、右臂、双臂和全身模式，以及连续求解、目标复位、残差、

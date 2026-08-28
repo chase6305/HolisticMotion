@@ -28,9 +28,53 @@ def test_toppra_validates_inputs_and_boundary_velocity():
         ToppraTrajectory([[0.0], [1.0]], [0.0], [1.0])
     with pytest.raises(ValueError, match="boundary"):
         ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], start_path_velocity=2.0)
+    with pytest.raises(ValueError, match="finite"):
+        ToppraTrajectory(
+            [[0.0], [1.0]], [1.0], [1.0], start_path_velocity=float("nan")
+        )
+    with pytest.raises(TypeError, match="grid_size"):
+        ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], grid_size=20.5)
 
 
 def test_toppra_clamps_sample_times():
     trajectory = ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0])
     position, _, _ = trajectory.sample([-1.0, trajectory.duration + 1.0])
     np.testing.assert_allclose(position[:, 0], [0.0, 1.0])
+
+
+def test_toppra_result_is_an_immutable_snapshot():
+    trajectory = ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0])
+    expected, _, _ = trajectory.sample_uniform(10)[1:]
+
+    with pytest.raises(ValueError, match="read-only"):
+        trajectory.result.path_speeds[0] = 10.0
+    with pytest.raises(ValueError, match="read-only"):
+        trajectory.waypoints[0, 0] = 10.0
+    with pytest.raises(ValueError, match="read-only"):
+        trajectory.max_velocity[0] = 10.0
+
+    actual, _, _ = trajectory.sample_uniform(10)[1:]
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_toppra_sampling_uses_constant_acceleration_interval_dynamics():
+    trajectory = ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0], grid_size=20)
+    interval = 0
+    start_time = trajectory.result.times[interval]
+    end_time = trajectory.result.times[interval + 1]
+    elapsed = 0.5 * (end_time - start_time)
+    expected_s = (
+        trajectory.result.gridpoints[interval]
+        + trajectory.result.path_speeds[interval] * elapsed
+        + 0.5 * trajectory.result.path_accelerations[interval] * elapsed**2
+    )
+
+    position, velocity, _ = trajectory.sample([start_time + elapsed])
+
+    np.testing.assert_allclose(position[0, 0], expected_s, atol=1e-12)
+    np.testing.assert_allclose(
+        velocity[0, 0],
+        trajectory.result.path_speeds[interval]
+        + trajectory.result.path_accelerations[interval] * elapsed,
+        atol=1e-12,
+    )

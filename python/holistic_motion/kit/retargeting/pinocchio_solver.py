@@ -11,11 +11,22 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from types import MappingProxyType
 from typing import Optional, Union
 
 import numpy as np
 
 from .modes import RetargetingMode, RetargetingModeManager
+
+
+def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
+    result = np.array(value, dtype=float, copy=True)
+    if shape is not None and result.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if not np.isfinite(result).all():
+        raise ValueError(f"{name} must be finite")
+    result.setflags(write=False)
+    return result
 
 
 def _load_pinocchio():
@@ -42,7 +53,7 @@ class RetargetingTarget:
             raise ValueError("target pose must be a finite 4x4 matrix")
         if not np.isfinite(self.weight) or self.weight <= 0.0:
             raise ValueError("target weight must be finite and positive")
-        object.__setattr__(self, "pose", pose.copy())
+        object.__setattr__(self, "pose", _readonly_array(pose))
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,19 @@ class RetargetingResult:
     termination_reason: str = "legacy"
     accepted_steps: int = 0
     limit_hits: int = 0
+
+    def __post_init__(self) -> None:
+        configuration = _readonly_array(
+            self.configuration, name="result configuration"
+        ).reshape(-1)
+        residuals = {
+            str(name): (float(value[0]), float(value[1]))
+            for name, value in self.target_residuals.items()
+        }
+        object.__setattr__(self, "configuration", configuration)
+        object.__setattr__(
+            self, "target_residuals", MappingProxyType(residuals)
+        )
 
 
 class PinocchioRetargetingSolver:
@@ -80,8 +104,11 @@ class PinocchioRetargetingSolver:
         self.urdf_path = Path(urdf_path).expanduser().resolve()
         if not self.urdf_path.is_file():
             raise FileNotFoundError(f"URDF does not exist: {self.urdf_path}")
-        if damping <= 0.0 or step_size <= 0.0 or tolerance <= 0.0:
-            raise ValueError("damping, step_size, and tolerance must be positive")
+        numeric_options = (damping, step_size, tolerance)
+        if not all(np.isfinite(value) and value > 0.0 for value in numeric_options):
+            raise ValueError(
+                "damping, step_size, and tolerance must be finite and positive"
+            )
         if max_iterations < 1:
             raise ValueError("max_iterations must be positive")
 
@@ -196,7 +223,9 @@ class PinocchioRetargetingSolver:
             "residual": result.residual,
             "mode": result.mode.value,
         }
-        return result.configuration, result.success, False, [], info
+        # The modern result is immutable, while the legacy adapter historically
+        # returned an owned mutable vector. Preserve that compatibility boundary.
+        return result.configuration.copy(), result.success, False, [], info
 
     def reset_wrist_history(self) -> None:
         """Compatibility alias; generic targets do not keep wrist history."""

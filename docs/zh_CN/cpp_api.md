@@ -10,9 +10,19 @@
 :members:
 ```
 
+```{doxygenclass} holistic_motion::robotics::collision::SphereCollisionModel
+:members:
+```
+
 ## 机器人模型
 
 ```{doxygenclass} holistic_motion::robotics::Robot
+:members:
+```
+
+## 采样规划器
+
+```{doxygenclass} holistic_motion::robotics::planning::SamplingPlanner
 :members:
 ```
 

@@ -22,11 +22,6 @@ from viser_robot import _link_transforms, _tree_topology  # noqa: E402
 
 hm = import_holistic_motion()
 
-DEFAULT_URDF = Path(
-    "/home/ubuntu/workspace/chase/AssetsModel/RobotModel/"
-    "ABB/IRB1200_5_90/IRB1200_5_90.urdf"
-)
-
 UR_GEOMETRY = {
     "UR3": (0.1519, -0.24365, -0.21325, 0.11235, 0.08535, 0.0819),
     "UR3e": (0.152, -0.244, -0.213, 0.131, 0.085, 0.092),
@@ -131,7 +126,7 @@ def validate_solver(robot, solver, lower, upper, samples: int) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--urdf", type=Path, default=DEFAULT_URDF)
+    parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8081)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--validation-samples", type=int, default=64,

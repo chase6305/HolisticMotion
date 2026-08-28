@@ -2,7 +2,9 @@ PROJECT_NAME           = "HolisticMotion"
 PROJECT_NUMBER         = "0.1.0"
 OUTPUT_DIRECTORY       = docs/_build/doxygen
 INPUT                  = include/holistic_motion/robot/Robot.h \
-                         include/holistic_motion/collision/CollisionModel.h
+                         include/holistic_motion/collision/CollisionModel.h \
+                         include/holistic_motion/collision/SphereCollisionModel.h \
+                         include/holistic_motion/planning/SamplingPlanner.h
 FILE_PATTERNS           = *.h *.hpp
 RECURSIVE               = YES
 EXTRACT_ALL             = YES

@@ -3,6 +3,10 @@
 默认构建提供基于 Conan 管理的 Pinocchio 和 Coal 的 `CollisionModel`。它从调用方
 传入的 URDF 加载碰撞几何，并检测指定构型下的自碰撞。
 
+可以使用 `add_box_obstacle` 动态加入世界坐标系中的 box，并通过
+`remove_obstacle` 删除。把障碍物名称加入碰撞组即可选择需要与其检测的机器人
+link。
+
 ```bash
 ./scripts/build.sh
 python3 examples/python/collision/basic_query.py \
@@ -58,16 +62,98 @@ for pair in model.collision_pairs:
 恢复全部碰撞对，默认仍排除相邻连杆。也可以继续使用
 `remove_collision_pair(first_geometry, second_geometry)` 删除单个几何碰撞对。
 
+## 碰撞球后端
+
+`SphereCollisionModel` 面向高频构型和轨迹查询。调用方显式提供 link 局部坐标系
+下的正半径球；Pinocchio 在 FK 时更新世界球心，随后只计算活动球对。接口支持
+语义分组、安全距离、有符号最小距离、世界坐标球输出和 `[batch, nq]` 批量查询。
+
+```python
+spheres = [
+    hm.CollisionSphere("left_upper_0", "left_upper_arm", [0, 0, 0.12], 0.09),
+    hm.CollisionSphere("right_upper_0", "right_upper_arm", [0, 0, 0.12], 0.09),
+]
+sphere_model = hm.SphereCollisionModel(urdf_path, spheres)
+sphere_model.set_collision_groups(
+    {"left_arm": left_links, "right_arm": right_links},
+    [("left_arm", "right_arm")],
+)
+distance = sphere_model.minimum_distance(q).distance
+trajectory_distances = sphere_model.batch_minimum_distances(q_path)
+
+planner = hm.SamplingPlanner.from_sphere_collision_model(
+    lower_limits, upper_limits, sphere_model, security_margin=0.01
+)
+```
+
+球模型属于近似几何，并且库不会隐式生成球。快速拒绝查询应使用保守膨胀且经过
+检查的球模型；除非已经单独证明球集合的覆盖性，否则最终轨迹仍应交给 Coal 做
+精确验证。每个实例持有可变的 Pinocchio 查询缓冲区，并发查询时需要调用方同步。
+
+该设计吸收了 cuRobo 碰撞球表示和批量查询架构的思想，但围绕 Pinocchio 与
+Eigen 独立实现；HolisticMotion 不导入 Torch、Warp 或 cuRobo。
+
+### 离线球化
+
+NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候选球；网格适配层使用
+可选 `trimesh` 进行体素化。`inscribed` 模式保留采样意义下的内接半径；可选的
+`sampled_coverage` 模式会扩张选中的球，使所有输入样本被覆盖。后者仍是离散近似，
+不能当作连续三角网格覆盖的数学证明。
+
+```bash
+python -m pip install '.[examples]'
+./scripts/run.sh python3 \
+  examples/python/visualization/sphere_fit_viser.py \
+  --mesh /absolute/path/to/link.stl \
+  --link left_forearm \
+  --max-spheres 24 \
+  --sampled-coverage \
+  --padding 0.003 \
+  --output left_forearm.spheres.json
+```
+
+无 Viewer 的构建机器可加入 `--fit-only`。输出 JSON 带格式版本并保存 link 局部
+坐标球；使用 `load_sphere_model()` 加载，再通过 `make_collision_spheres()` 转换后
+构造 `SphereCollisionModel`。用于规划前，应同时检查 sampled coverage、平均 gap、
+最大 gap 和 Viser 叠加效果。
+
+整机批处理工具会读取全部 URDF `<collision>` 元素，并应用 mesh scale 与 collision
+origin。支持 mesh、box、cylinder 和 sphere；`package://` 资源可重复传入
+`--package-dir`，只拟合部分 link 时可重复传入 `--link`：
+
+```bash
+./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \
+  --urdf /absolute/path/to/robot.urdf \
+  --package-dir /path/to/ros/src \
+  --sampled-coverage --padding 0.003 \
+  --output robot.spheres.json
+```
+
+轻量编辑器在浏览器中提供 link 选择、球数、体素 pitch、最小半径、padding、覆盖
+模式、重新拟合、指标显示和保存：
+
+```bash
+./scripts/run.sh python3 \
+  examples/python/visualization/sphere_model_editor.py \
+  --urdf /absolute/path/to/robot.urdf \
+  --output robot.spheres.json
+```
+
+如果输出 JSON 已存在，编辑器会加载并显示已有球。重新拟合单个 link 时会保留所有
+未改动 link；需要明确执行整机重新生成时可使用 **Fit all links**。保存使用原子
+替换，校验或写入失败不会留下半写入的模型文件。
+
 ## HumanoidAssets Gizmo Demo
 
-双臂 Viser demo 默认使用本机 `HumanoidAssets` 中的 Marvin 模型。拖动任一末端
-Gizmo 后，程序会求解 IK，并实时执行左右臂检测。完整机械臂组包含运动链以及
+双臂 Viser demo 要求显式传入 Marvin URDF 或资产根目录。拖动任一末端 Gizmo 后，
+程序会求解 IK，并实时执行左右臂检测。完整机械臂组包含运动链以及
 EE 的所有带碰撞几何后代，因此 hand base、手指、tool 和夹具 link 都会参与：
 
 ```bash
 python -m pip install '.[examples]'
 ./scripts/build.sh
-python3 examples/python/visualization/dual_arm_collision_gizmo.py
+python3 examples/python/visualization/dual_arm_collision_gizmo.py \
+  --urdf /path/to/robot_with_ee.urdf
 ```
 
 Collision 面板显示安全/碰撞状态和最小距离；红色标记与连线显示 Coal 返回的两个

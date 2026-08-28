@@ -12,5 +12,5 @@ if(HOLISTICMOTION_CONSUMER_TEST_COLLISION)
     add_executable(collision_consumer src/collision_consumer.cpp)
     target_compile_features(collision_consumer PRIVATE cxx_std_17)
     target_link_libraries(collision_consumer PRIVATE
-        HolisticMotion::holistic_motion)
+        HolisticMotion::collision)
 endif()

@@ -7,6 +7,7 @@ Examples are grouped first by language and then by robotics domain.
 - `python/kinematics/`: forward/inverse kinematics and CUDA benchmarks.
 - `python/trajectory/`: trajectory generation and visualization.
 - `python/retargeting/`: Pinocchio and Pink-style task-space IK examples.
+- `python/planning/`: dependency-free RRT algorithm examples.
 - `configs/`: robot-specific example profiles; library code never depends on them.
 
 Legacy launchers under `python/examples/` remain available during the migration.
@@ -30,3 +31,14 @@ Pink-style interactive retargeting is available with:
 ```bash
 python3 examples/python/visualization/pink_robot_viser.py
 ```
+
+Compare the native RRT variants and launch the collision-checked robot demo:
+
+```bash
+python3 examples/python/planning/rrt_variants.py
+./scripts/run.sh python3 examples/python/visualization/rrt_robot_viser.py \
+  --urdf /absolute/path/to/robot_with_ee.urdf
+```
+
+The robot demo uses balanced mirrored-arm planning by default. Pass
+`--planning-space coupled` for a full independent 14-DoF search.

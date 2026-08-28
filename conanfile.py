@@ -22,13 +22,14 @@ class HolisticMotionConan(ConanFile):
         "fPIC": True,
         "with_python": True,
         "with_tests": False,
-        "with_cuda": True,
+        "with_cuda": False,
         "with_collision": True,
         "pinocchio/*:with_collision_support": True,
         "coal/*:with_octomap": False,
     }
     exports_sources = (
         "CMakeLists.txt",
+        "THIRD_PARTY_NOTICES.md",
         "cmake/*",
         "include/*",
         "src/*",
@@ -83,29 +84,32 @@ class HolisticMotionConan(ConanFile):
             # pybind11 is only needed to compile the extension; consumers load
             # the packaged module and do not need pybind11 on their link graph.
             self.cpp_info.ignored_requires.append("pybind11")
-        self.cpp_info.libs = ["holistic_motion"]
-        self.cpp_info.requires = [
+        core = self.cpp_info.components["core"]
+        core.libs = ["holistic_motion"]
+        core.requires = [
             "eigen::eigen",
             "fmt::fmt",
             "spdlog::spdlog",
             "urdfdom::urdfdom",
         ]
         self.cpp_info.set_property("cmake_file_name", "HolisticMotion")
-        self.cpp_info.set_property(
+        core.set_property(
             "cmake_target_name", "HolisticMotion::holistic_motion"
         )
         if self.options.with_collision:
-            # holistic_motion_collision is a shared companion library even
-            # when the core library is static. Propagate its Conan dependency
-            # graph to consumers and keep the dependent library first for
-            # static-linker ordering if it becomes configurable in the future.
-            self.cpp_info.libs.insert(0, "holistic_motion_collision")
-            self.cpp_info.requires.extend(
-                [
-                    "pinocchio::pinocchio_parsers",
-                    "pinocchio::pinocchio_collision",
-                    "coal::coal",
-                ]
+            collision = self.cpp_info.components["collision"]
+            collision.libs = ["holistic_motion_collision"]
+            collision.requires = [
+                "eigen::eigen",
+                "pinocchio::pinocchio_parsers",
+                "pinocchio::pinocchio_collision",
+                "coal::coal",
+            ]
+            collision.set_property(
+                "cmake_target_name", "HolisticMotion::collision"
             )
         if self.options.with_cuda:
-            self.cpp_info.system_libs.append("cudart")
+            core.set_property(
+                "cmake_build_modules",
+                ["lib/cmake/HolisticMotion/HolisticMotionConanDeps.cmake"],
+            )

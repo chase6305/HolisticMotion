@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from holistic_motion.kit.retargeting import (
     PinocchioRetargetingSolver,
     RetargetingMode,
@@ -42,16 +41,56 @@ def test_custom_mode_cycle_and_validation():
     assert manager.cycle().targets == ("tool",)
 
 
+def test_mode_spec_normalizes_and_owns_sequences():
+    targets = ["left_hand"]
+    groups = ["left_arm"]
+    spec = RetargetingModeSpec(targets, groups)
+    targets.append("right_hand")
+    groups.append("right_arm")
+
+    assert spec.targets == ("left_hand",)
+    assert spec.active_joint_groups == ("left_arm",)
+    with pytest.raises(ValueError, match="unique"):
+        RetargetingModeSpec(("hand", "hand"), ("arm",))
+
+
 def test_target_owns_validated_pose():
     pose = np.eye(4)
     target = RetargetingTarget(pose, weight=2.0)
     pose[0, 0] = 4.0
     assert target.pose[0, 0] == 1.0
+    with pytest.raises(ValueError, match="read-only"):
+        target.pose[0, 0] = 2.0
 
     with pytest.raises(ValueError, match="4x4"):
         RetargetingTarget(np.eye(3))
     with pytest.raises(ValueError, match="positive"):
         RetargetingTarget(np.eye(4), weight=0.0)
+
+
+def test_retargeting_result_owns_immutable_outputs():
+    from holistic_motion.kit.retargeting import RetargetingResult
+
+    configuration = np.zeros(2)
+    residuals = {"left_hand": (0.1, 0.2)}
+    result = RetargetingResult(
+        configuration=configuration,
+        success=True,
+        iterations=1,
+        residual=0.2,
+        solve_ms=1.0,
+        mode=RetargetingMode.LEFT_ARM,
+        target_residuals=residuals,
+    )
+    configuration[0] = 1.0
+    residuals["left_hand"] = (9.0, 9.0)
+
+    assert result.configuration[0] == 0.0
+    assert result.target_residuals["left_hand"] == (0.1, 0.2)
+    with pytest.raises(ValueError, match="read-only"):
+        result.configuration[0] = 2.0
+    with pytest.raises(TypeError):
+        result.target_residuals["head"] = (0.0, 0.0)
 
 
 def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path):

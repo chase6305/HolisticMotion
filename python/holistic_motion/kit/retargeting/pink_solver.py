@@ -53,12 +53,28 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         if not np.isfinite(integration_dt) or integration_dt <= 0.0:
             raise ValueError("integration_dt must be finite and positive")
         self.integration_dt = float(integration_dt)
-        self.position_tolerance = float(position_tolerance or self.tolerance)
-        self.orientation_tolerance = float(orientation_tolerance or self.tolerance)
-        if self.position_tolerance <= 0.0 or self.orientation_tolerance <= 0.0:
-            raise ValueError("task tolerances must be positive")
-        if stagnation_tolerance < 0.0 or stagnation_iterations < 1:
-            raise ValueError("stagnation settings must be non-negative and positive")
+        self.position_tolerance = float(
+            self.tolerance if position_tolerance is None else position_tolerance
+        )
+        self.orientation_tolerance = float(
+            self.tolerance if orientation_tolerance is None else orientation_tolerance
+        )
+        if not (
+            np.isfinite(self.position_tolerance)
+            and self.position_tolerance > 0.0
+            and np.isfinite(self.orientation_tolerance)
+            and self.orientation_tolerance > 0.0
+        ):
+            raise ValueError("task tolerances must be finite and positive")
+        if (
+            not np.isfinite(stagnation_tolerance)
+            or stagnation_tolerance < 0.0
+            or stagnation_iterations < 1
+        ):
+            raise ValueError(
+                "stagnation tolerance must be finite and non-negative, and "
+                "stagnation iterations must be positive"
+            )
         if max_backtracks < 0:
             raise ValueError("max_backtracks must be non-negative")
         self.stagnation_tolerance = float(stagnation_tolerance)

@@ -469,6 +469,7 @@ PYBIND11_MODULE(_holistic_motion, module) {
     module.doc() = "Robot models, kinematics, manifolds, and trajectories";
 
     holistic_motion::python::BindCollision(module);
+    holistic_motion::python::BindSamplingPlanning(module);
 
     py::class_<SE3d>(module, "SE3")
             .def(py::init<>())

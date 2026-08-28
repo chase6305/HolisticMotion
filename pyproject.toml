@@ -22,3 +22,6 @@ docs = [
 [tool.scikit-build]
 wheel.packages = ["python/holistic_motion"]
 cmake.build-type = "Release"
+
+[tool.ruff]
+target-version = "py39"

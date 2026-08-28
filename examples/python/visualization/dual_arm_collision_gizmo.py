@@ -40,7 +40,6 @@ METHODS = {
 
 REPOSITORY_DIR = Path(__file__).resolve().parents[3]
 DEFAULT_PROFILE = REPOSITORY_DIR / "examples/configs/marvin.json"
-DEFAULT_ASSET_ROOT = Path("/home/ubuntu/workspace/chase/HumanoidAssets")
 
 
 def _csv_links(value: str) -> list[str]:
@@ -116,8 +115,9 @@ def _rotation_error(actual: np.ndarray, target: np.ndarray) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", type=Path, default=DEFAULT_PROFILE)
-    parser.add_argument("--asset-root", type=Path, default=DEFAULT_ASSET_ROOT)
-    parser.add_argument("--urdf", type=Path)
+    assets = parser.add_mutually_exclusive_group(required=True)
+    assets.add_argument("--asset-root", type=Path)
+    assets.add_argument("--urdf", type=Path)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--left-base")
     parser.add_argument("--right-base")

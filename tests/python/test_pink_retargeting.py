@@ -14,12 +14,35 @@ def test_frame_task_supports_scalar_and_anisotropic_costs():
         FrameTask(position_cost=-1.0)
     with pytest.raises(ValueError, match="gain"):
         FrameTask(gain=1.1)
+    with pytest.raises(ValueError, match="read-only"):
+        task.position_cost[0] = 4.0
 
 
 def test_posture_task_validation():
     assert PostureTask().cost > 0.0
     with pytest.raises(ValueError, match="non-negative"):
         PostureTask(cost=-0.1)
+
+
+def test_solver_rejects_non_finite_numeric_options(tmp_path):
+    pytest.importorskip("pinocchio", exc_type=ImportError)
+    urdf = tmp_path / "empty.urdf"
+    urdf.write_text('<robot name="empty"><link name="base"/></robot>')
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        PinkRetargetingSolver(
+            urdf,
+            {"left_hand": "base", "right_hand": "base", "head": "base"},
+            {"left_arm": [], "right_arm": []},
+            damping=float("nan"),
+        )
+    with pytest.raises(ValueError, match="task tolerances"):
+        PinkRetargetingSolver(
+            urdf,
+            {"left_hand": "base", "right_hand": "base", "head": "base"},
+            {"left_arm": [], "right_arm": []},
+            position_tolerance=0.0,
+        )
 
 
 def test_box_qp_respects_bounds():

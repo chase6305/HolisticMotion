@@ -3,7 +3,7 @@ project(HolisticMotion VERSION 0.1.0 LANGUAGES CXX)
 
 option(HOLISTICMOTION_BUILD_PYTHON "Build the Python extension" ON)
 option(HOLISTICMOTION_BUILD_TESTS "Build C++ tests" OFF)
-option(HOLISTICMOTION_ENABLE_CUDA "Build optional CUDA batch backends" ON)
+option(HOLISTICMOTION_ENABLE_CUDA "Build optional CUDA batch backends" OFF)
 option(HOLISTICMOTION_ENABLE_COLLISION
        "Build the optional Pinocchio/Coal collision component" ON)
 set(HOLISTICMOTION_CUDA_ARCHITECTURES "75;80;86;89;120" CACHE STRING
@@ -50,6 +50,8 @@ if(HOLISTICMOTION_ENABLE_COLLISION)
     add_library(holistic_motion_collision SHARED
         ${HOLISTICMOTION_COLLISION_SOURCES})
     add_library(HolisticMotion::collision ALIAS holistic_motion_collision)
+    set_target_properties(holistic_motion_collision PROPERTIES
+        EXPORT_NAME collision)
     target_include_directories(holistic_motion_collision PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
@@ -67,28 +69,8 @@ if(HOLISTICMOTION_ENABLE_COLLISION)
 endif()
 
 if(HOLISTICMOTION_BUILD_TESTS)
-    enable_testing()
-    add_executable(trajectory_smoke_test
-        tests/cpp/trajectory/trajectory_smoke.cpp)
-    target_link_libraries(trajectory_smoke_test PRIVATE holistic_motion)
-    target_compile_options(trajectory_smoke_test PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
-    add_test(NAME trajectory_smoke COMMAND trajectory_smoke_test)
-    add_executable(analytic_kinematics_smoke_test
-        tests/cpp/kinematics/analytic_kinematics_smoke.cpp)
-    target_link_libraries(analytic_kinematics_smoke_test PRIVATE holistic_motion)
-    target_compile_options(analytic_kinematics_smoke_test PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
-    add_test(NAME analytic_kinematics_smoke COMMAND analytic_kinematics_smoke_test)
-    if(HOLISTICMOTION_ENABLE_COLLISION)
-        add_executable(collision_smoke_test
-            tests/cpp/collision/collision_smoke.cpp)
-        target_link_libraries(collision_smoke_test PRIVATE
-            holistic_motion_collision)
-        target_compile_options(collision_smoke_test PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
-        add_test(NAME collision_smoke COMMAND collision_smoke_test)
-    endif()
+    include(cmake/modules/HolisticMotionTests.cmake)
+    holistic_motion_register_tests()
 endif()
 
 if(HOLISTICMOTION_BUILD_PYTHON)
@@ -139,3 +121,7 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
+install(FILES cmake/HolisticMotionConanDeps.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
+install(FILES THIRD_PARTY_NOTICES.md
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/HolisticMotion)

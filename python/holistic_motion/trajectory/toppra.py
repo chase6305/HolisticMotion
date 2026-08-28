@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from typing import Optional
 
 import numpy as np
@@ -82,6 +83,30 @@ class ToppraResult:
     times: np.ndarray
     duration: float
 
+    def __post_init__(self) -> None:
+        arrays = (
+            "gridpoints",
+            "path_speeds",
+            "path_accelerations",
+            "times",
+        )
+        for name in arrays:
+            value = np.array(getattr(self, name), dtype=float, copy=True)
+            if value.ndim != 1 or not np.isfinite(value).all():
+                raise ValueError(f"{name} must be a finite one-dimensional array")
+            value.setflags(write=False)
+            object.__setattr__(self, name, value)
+        count = self.gridpoints.size
+        if (
+            count < 2
+            or self.path_speeds.size != count
+            or self.times.size != count
+            or self.path_accelerations.size != count - 1
+        ):
+            raise ValueError("TOPPRA result arrays have inconsistent lengths")
+        if not np.isfinite(self.duration) or self.duration < 0.0:
+            raise ValueError("TOPPRA result duration must be finite and non-negative")
+
 
 class ToppraTrajectory:
     """Time-optimal timing of a joint-space waypoint path.
@@ -107,13 +132,23 @@ class ToppraTrajectory:
         if not np.isfinite(points).all():
             raise ValueError("waypoints must be finite")
         self.waypoints = points.copy()
+        self.waypoints.setflags(write=False)
         self.dof = points.shape[1]
         self.max_velocity = _positive_vector(max_velocity, self.dof, "max_velocity")
         self.max_acceleration = _positive_vector(
             max_acceleration, self.dof, "max_acceleration"
         )
-        if start_path_velocity < 0.0 or end_path_velocity < 0.0:
-            raise ValueError("boundary path velocities must be non-negative")
+        self.max_velocity.setflags(write=False)
+        self.max_acceleration.setflags(write=False)
+        if not (
+            np.isfinite(start_path_velocity)
+            and start_path_velocity >= 0.0
+            and np.isfinite(end_path_velocity)
+            and end_path_velocity >= 0.0
+        ):
+            raise ValueError(
+                "boundary path velocities must be finite and non-negative"
+            )
 
         lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
         if np.any(lengths <= 1e-12):
@@ -124,6 +159,8 @@ class ToppraTrajectory:
         self._path_model = _NaturalCubicPath(waypoint_s, points)
 
         if gridpoints is None:
+            if not isinstance(grid_size, Integral) or isinstance(grid_size, bool):
+                raise TypeError("grid_size must be an integer")
             count = max(int(grid_size), points.shape[0])
             if count < 2:
                 raise ValueError("grid_size must be at least two")
@@ -257,18 +294,25 @@ class ToppraTrajectory:
     def sample(
         self, times: Sequence[float]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        query = np.asarray(times, dtype=float)
+        query = np.asarray(times, dtype=float).reshape(-1)
         if not np.isfinite(query).all():
             raise ValueError("sample times must be finite")
         clipped = np.clip(query, 0.0, self.duration)
-        s = np.interp(clipped, self.result.times, self._grid)
-        speed = np.interp(clipped, self.result.times, self.result.path_speeds)
         segment = np.minimum(
             np.searchsorted(self.result.times, clipped, side="right") - 1,
             len(self.result.path_accelerations) - 1,
         )
         segment = np.maximum(segment, 0)
         accel = self.result.path_accelerations[segment]
+        elapsed = clipped - self.result.times[segment]
+        initial_speed = self.result.path_speeds[segment]
+        s = (
+            self._grid[segment]
+            + initial_speed * elapsed
+            + 0.5 * accel * elapsed**2
+        )
+        s = np.clip(s, self._grid[segment], self._grid[segment + 1])
+        speed = np.maximum(0.0, initial_speed + accel * elapsed)
         q = self._path_model.evaluate(s)
         q_s = self._path_model.evaluate(s, order=1)
         q_ss = self._path_model.evaluate(s, order=2)
@@ -281,6 +325,8 @@ class ToppraTrajectory:
     def sample_uniform(
         self, count: int = 200
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if not isinstance(count, Integral) or isinstance(count, bool):
+            raise TypeError("count must be an integer")
         if count < 2:
             raise ValueError("count must be at least two")
         times = np.linspace(0.0, self.duration, count)

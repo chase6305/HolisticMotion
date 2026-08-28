@@ -23,10 +23,6 @@ from _viser_utils import (
 
 hm = import_holistic_motion()
 
-DEFAULT_URDF = Path(
-    "/home/ubuntu/workspace/chase/HumanoidAssets/"
-    "Marvin_M6_S_CCS_696_V4.0/robot_with_ee.urdf"
-)
 RIGHT_ARM_SEED = np.array(
     [-0.51478342, -0.48319332, 0.47513737, -1.72500699,
      2.74124467, 0.75606588, 0.68688189]
@@ -297,7 +293,7 @@ def _measure_line_deviation(profiles, trajectories, arm_context, samples=501):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--urdf", type=Path, default=DEFAULT_URDF)
+    parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument("--axis", choices="xyz", default="z")
     parser.add_argument("--distance", type=float, default=0.35)
     parser.add_argument("--samples", type=int, default=121)

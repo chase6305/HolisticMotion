@@ -11,9 +11,19 @@ Breathe.
 :members:
 ```
 
+```{doxygenclass} holistic_motion::robotics::collision::SphereCollisionModel
+:members:
+```
+
 ## Robot model
 
 ```{doxygenclass} holistic_motion::robotics::Robot
+:members:
+```
+
+## Sampling planner
+
+```{doxygenclass} holistic_motion::robotics::planning::SamplingPlanner
 :members:
 ```
 
