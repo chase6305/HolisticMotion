@@ -59,9 +59,12 @@ runtime dependency on Pink or qpsolvers.
 - License: Apache License 2.0
 - Copyright: NVIDIA Corporation
 
-cuRobo informed the collision-sphere representation and batched-query design.
-HolisticMotion's sphere fitting, sphere collision model, and query APIs are
-maintained locally and do not depend on cuRobo, PyTorch, or Warp.
+cuRobo informed the collision-sphere representation, batched-query design,
+deterministic multi-seed retargeting, and the separation between seed
+generation, feasibility-aware optimization, and best-solution tracking.
+HolisticMotion's sphere fitting, collision model, path optimizer, retargeting,
+and query APIs are maintained locally and do not depend on cuRobo, PyTorch, or
+Warp.
 
 ## Scope
 

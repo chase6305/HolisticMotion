@@ -1,8 +1,10 @@
 #include <cmath>
 #include <iostream>
 
+#include "holistic_motion/planning/PathOptimizer.h"
 #include "holistic_motion/planning/SamplingPlanner.h"
 
+using holistic_motion::robotics::planning::PathOptimizer;
 using holistic_motion::robotics::planning::PlanningOptions;
 using holistic_motion::robotics::planning::SamplingAlgorithm;
 using holistic_motion::robotics::planning::SamplingPlanner;
@@ -15,13 +17,28 @@ bool OutsideObstacle(const Eigen::VectorXd &q) {
 } // namespace
 
 int main() {
+  PathOptimizer path_optimizer(Eigen::Vector2d(-1.0, -1.0),
+                               Eigen::Vector2d(1.0, 1.0));
+  const std::vector<Eigen::VectorXd> rough_path{
+      Eigen::Vector2d(-0.8, 0.0), Eigen::Vector2d(-0.4, 0.5),
+      Eigen::Vector2d(0.0, -0.5), Eigen::Vector2d(0.4, 0.5),
+      Eigen::Vector2d(0.8, 0.0)};
+  const auto optimized = path_optimizer.Optimize(rough_path);
+  if (!optimized.Success() ||
+      optimized.statistics.final_objective >=
+          optimized.statistics.initial_objective ||
+      (optimized.path.front() - rough_path.front()).norm() > 1e-12 ||
+      (optimized.path.back() - rough_path.back()).norm() > 1e-12) {
+    return 5;
+  }
+
   std::size_t direct_checks = 0;
-  SamplingPlanner direct_planner(
-      Eigen::Vector2d(-1.0, -1.0), Eigen::Vector2d(1.0, 1.0),
-      [&direct_checks](const Eigen::VectorXd &) {
-        ++direct_checks;
-        return true;
-      });
+  SamplingPlanner direct_planner(Eigen::Vector2d(-1.0, -1.0),
+                                 Eigen::Vector2d(1.0, 1.0),
+                                 [&direct_checks](const Eigen::VectorXd &) {
+                                   ++direct_checks;
+                                   return true;
+                                 });
   const auto direct = direct_planner.Plan(Eigen::Vector2d(-0.5, -0.25),
                                           Eigen::Vector2d(0.5, 0.25));
   if (!direct.Success() || direct.path.size() != 2 ||

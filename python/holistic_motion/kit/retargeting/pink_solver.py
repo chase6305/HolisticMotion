@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from time import perf_counter
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from .pinocchio_solver import (
     RetargetingResult,
     RetargetingTarget,
 )
-from .tasks import FrameTask, PostureTask
+from .tasks import CenterOfMassTask, FrameTask, PostureTask, SupportPolygonTask, ZmpTask
 
 
 class PinkRetargetingSolver(PinocchioRetargetingSolver):
@@ -38,6 +38,20 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         acceleration_limits: Optional[
             Union[Sequence[float], Mapping[str, float]]
         ] = None,
+        collision_cost: Optional[Callable[[np.ndarray], float]] = None,
+        collision_gradient: Optional[Callable[[np.ndarray], Sequence[float]]] = None,
+        collision_cost_gradient: Optional[
+            Callable[[np.ndarray], tuple[float, Sequence[float]]]
+        ] = None,
+        collision_cost_weight: float = 1.0,
+        collision_tolerance: float = 0.0,
+        collision_finite_difference_step: float = 1e-4,
+        center_of_mass_task: Optional[CenterOfMassTask] = None,
+        center_of_mass_tolerance: Optional[float] = None,
+        support_polygon_task: Optional[SupportPolygonTask] = None,
+        support_polygon_tolerance: float = 1e-6,
+        zmp_task: Optional[ZmpTask] = None,
+        zmp_tolerance: Optional[float] = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -80,18 +94,98 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         self.stagnation_tolerance = float(stagnation_tolerance)
         self.stagnation_iterations = int(stagnation_iterations)
         self.max_backtracks = int(max_backtracks)
-        self._posture_q = np.asarray(self.pin.neutral(self.model), dtype=float)
+        if collision_gradient is not None and collision_cost is None:
+            raise ValueError("collision_gradient requires collision_cost")
+        if collision_cost_gradient is not None and collision_cost is None:
+            raise ValueError("collision_cost_gradient requires collision_cost")
+        if collision_cost_gradient is not None and collision_gradient is not None:
+            raise ValueError(
+                "provide collision_gradient or collision_cost_gradient, not both"
+            )
+        collision_options = (
+            collision_cost_weight,
+            collision_tolerance,
+            collision_finite_difference_step,
+        )
+        if not all(np.isfinite(value) for value in collision_options):
+            raise ValueError("collision options must be finite")
+        if collision_cost_weight < 0.0 or collision_tolerance < 0.0:
+            raise ValueError("collision weight and tolerance must be non-negative")
+        if collision_finite_difference_step <= 0.0:
+            raise ValueError("collision finite-difference step must be positive")
+        self.collision_cost = collision_cost
+        self.collision_gradient = collision_gradient
+        self.collision_cost_gradient = collision_cost_gradient
+        self.collision_cost_weight = float(collision_cost_weight)
+        self.collision_tolerance = float(collision_tolerance)
+        self.collision_finite_difference_step = float(collision_finite_difference_step)
+        self.center_of_mass_task = center_of_mass_task
+        self.center_of_mass_tolerance = float(
+            self.tolerance
+            if center_of_mass_tolerance is None
+            else center_of_mass_tolerance
+        )
+        if (
+            not np.isfinite(self.center_of_mass_tolerance)
+            or self.center_of_mass_tolerance <= 0.0
+        ):
+            raise ValueError("center-of-mass tolerance must be finite and positive")
+        self._center_of_mass_target = None
+        if (
+            not np.isfinite(support_polygon_tolerance)
+            or support_polygon_tolerance < 0.0
+        ):
+            raise ValueError(
+                "support polygon tolerance must be finite and non-negative"
+            )
+        self.support_polygon_task = support_polygon_task
+        self.support_polygon_tolerance = float(support_polygon_tolerance)
+        self.zmp_task = zmp_task
+        self.zmp_tolerance = float(
+            self.tolerance if zmp_tolerance is None else zmp_tolerance
+        )
+        if not np.isfinite(self.zmp_tolerance) or self.zmp_tolerance <= 0.0:
+            raise ValueError("ZMP tolerance must be finite and positive")
+        self._zmp_target = None
+        self._center_of_mass_acceleration = np.zeros(3)
+        if (
+            self.support_polygon_task is not None
+            and self.support_polygon_task.reference == "zmp"
+            and self.zmp_task is None
+        ):
+            raise ValueError("ZMP support polygon reference requires zmp_task")
+        self._posture_q = self._neutral_q.copy()
         self._acceleration_limits = self._resolve_acceleration_limits(
             acceleration_limits
         )
         self._last_velocity = np.zeros(self.model.nv)
-        self._active_cache = {
-            mode: self._indices_for_groups(spec.active_joint_groups)
-            for mode, spec in self.mode_manager.mode_specs.items()
-        }
+        self._active_cache = {}
+        model_velocity_limits = np.asarray(self.model.velocityLimit, dtype=float)
+        self._model_velocity_limits = model_velocity_limits
+        self._velocity_limit_cache = {}
 
     def set_posture_target(self, configuration: Sequence[float]) -> None:
         self._posture_q = self._configuration(configuration)
+
+    def set_center_of_mass_target(self, target: Sequence[float]) -> None:
+        value = np.asarray(target, dtype=float).reshape(-1)
+        if value.shape != (3,) or not np.isfinite(value).all():
+            raise ValueError("center-of-mass target must contain three finite values")
+        self._center_of_mass_target = value.copy()
+
+    def set_zmp_target(self, target: Sequence[float]) -> None:
+        value = np.asarray(target, dtype=float).reshape(-1)
+        if value.shape != (2,) or not np.isfinite(value).all():
+            raise ValueError("ZMP target must contain two finite XY values")
+        self._zmp_target = value.copy()
+
+    def set_center_of_mass_acceleration(self, acceleration: Sequence[float]) -> None:
+        value = np.asarray(acceleration, dtype=float).reshape(-1)
+        if value.shape != (3,) or not np.isfinite(value).all():
+            raise ValueError(
+                "center-of-mass acceleration must contain three finite values"
+            )
+        self._center_of_mass_acceleration = value.copy()
 
     def reset(self, configuration: Optional[Sequence[float]] = None) -> None:
         super().reset(configuration)
@@ -119,27 +213,87 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         max_iterations: Optional[int] = None,
         enforce_acceleration: bool = False,
     ) -> RetargetingResult:
-        normalized = {
-            name: value
-            if isinstance(value, RetargetingTarget)
-            else RetargetingTarget(value)
-            for name, value in targets.items()
-        }
-        self.mode_manager.validate_targets(normalized)
-        q = self._configuration(seed) if seed is not None else self._last_q.copy()
-        active = self._active_cache[self.mode]
-        velocity_limits = np.asarray(self.model.velocityLimit, dtype=float)[active]
-        velocity_limits = np.where(
-            np.isfinite(velocity_limits) & (velocity_limits > 0.0),
-            velocity_limits,
-            np.inf,
-        )
         started = perf_counter()
+        desired_poses, frame_weights = self._prepare_targets(targets)
+        initial_q = self._last_q.copy()
+        initial_velocity = self._last_velocity.copy()
+        try:
+            return self._solve_seed(
+                desired_poses,
+                frame_weights,
+                seed,
+                max_iterations=max_iterations,
+                enforce_acceleration=enforce_acceleration,
+                started=started,
+            )
+        except Exception:
+            self._last_q = initial_q
+            self._last_velocity = initial_velocity
+            raise
+
+    def _prepare_targets(
+        self,
+        targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
+    ) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+        self.mode_manager.validate_targets(targets)
+        normalized = {
+            name: targets[name]
+            if isinstance(targets[name], RetargetingTarget)
+            else RetargetingTarget(targets[name])
+            for name in self.mode_manager.spec.targets
+        }
+        self._validate_mode_configuration()
+        if (
+            self.support_polygon_task is not None
+            and self.support_polygon_task.reference == "zmp"
+            and self.zmp_task is None
+        ):
+            raise ValueError("ZMP support polygon reference requires zmp_task")
+        if self.center_of_mass_task is not None and self._center_of_mass_target is None:
+            raise ValueError("center_of_mass_task requires a center-of-mass target")
+        if (
+            self.zmp_task is not None
+            and np.max(self.zmp_task.cost) > 0.0
+            and self._zmp_target is None
+        ):
+            raise ValueError("zmp_task requires a ZMP target")
+        desired_poses = {
+            name: self.pin.SE3(target.pose[:3, :3], target.pose[:3, 3])
+            for name, target in normalized.items()
+        }
+        frame_weights = {
+            name: self.frame_tasks[name].cost * np.sqrt(target.weight)
+            for name, target in normalized.items()
+        }
+        return desired_poses, frame_weights
+
+    def _solve_seed(
+        self,
+        desired_poses: Mapping[str, object],
+        frame_weights: Mapping[str, np.ndarray],
+        seed: Optional[Sequence[float]],
+        *,
+        max_iterations: Optional[int],
+        enforce_acceleration: bool,
+        started: Optional[float] = None,
+        collision_cost_cache: Optional[dict[bytes, float]] = None,
+        collision_gradient_cache: Optional[dict[bytes, np.ndarray]] = None,
+    ) -> RetargetingResult:
+        q = self._configuration(seed) if seed is not None else self._last_q.copy()
+        active, velocity_limits = self._mode_limits()
+        started = perf_counter() if started is None else started
         regularization = self.damping
         accepted_steps = 0
         limit_hits = 0
         stagnant = 0
         termination_reason = "maximum_iterations"
+        collision_evaluations = [0, 0]
+        collision_cost_cache = (
+            {} if collision_cost_cache is None else collision_cost_cache
+        )
+        collision_gradient_cache = (
+            {} if collision_gradient_cache is None else collision_gradient_cache
+        )
 
         iteration_limit = (
             self.max_iterations if max_iterations is None else int(max_iterations)
@@ -147,16 +301,34 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         if iteration_limit < 1:
             raise ValueError("max_iterations must be positive")
         for iteration in range(1, iteration_limit + 1):
-            state = self._task_state(q, normalized, active, regularization, True)
+            state = self._task_state(
+                q,
+                frame_weights,
+                desired_poses,
+                active,
+                regularization,
+                True,
+                True,
+                collision_evaluations,
+                collision_cost_cache,
+                collision_gradient_cache,
+            )
             if self._converged(state):
                 termination_reason = "converged"
+                break
+            if not active.size:
+                termination_reason = "no_active_dofs"
                 break
             lower, upper = self._displacement_bounds(
                 q, active, velocity_limits, enforce_acceleration
             )
             unconstrained = self._linear_solve(state["hessian"], state["gradient"])
             displacement = self._solve_box_qp(
-                state["hessian"], state["gradient"], lower, upper
+                state["hessian"],
+                state["gradient"],
+                lower,
+                upper,
+                unconstrained=unconstrained,
             )
             limit_hits += int(
                 np.count_nonzero(np.abs(displacement - unconstrained) > 1e-10)
@@ -165,18 +337,27 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             accepted = False
             candidate_state = state
             backtrack_count = 0 if enforce_acceleration else self.max_backtracks
+            full_displacement = np.zeros(self.model.nv)
             for backtrack in range(backtrack_count + 1):
                 scale = (
                     1.0 if enforce_acceleration else self.step_size * (0.5**backtrack)
                 )
-                full_displacement = np.zeros(self.model.nv)
                 full_displacement[active] = scale * displacement
                 candidate = np.asarray(
                     self.pin.integrate(self.model, q, full_displacement)
                 )
                 candidate = self._project_limits(candidate)
                 candidate_state = self._task_state(
-                    candidate, normalized, active, regularization, False
+                    candidate,
+                    frame_weights,
+                    desired_poses,
+                    active,
+                    regularization,
+                    False,
+                    False,
+                    collision_evaluations,
+                    collision_cost_cache,
+                    collision_gradient_cache,
                 )
                 if enforce_acceleration or (
                     candidate_state["objective"] < state["objective"]
@@ -188,13 +369,18 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 stagnant += 1
             else:
                 improvement = state["objective"] - candidate_state["objective"]
+                previous_q = q
                 q = candidate
                 accepted_steps += 1
                 if enforce_acceleration:
-                    self._last_velocity.fill(0.0)
-                    self._last_velocity[active] = (
-                        scale * displacement / self.integration_dt
+                    actual_velocity = (
+                        np.asarray(
+                            self.pin.difference(self.model, previous_q, q), dtype=float
+                        )
+                        / self.integration_dt
                     )
+                    self._last_velocity.fill(0.0)
+                    self._last_velocity[active] = actual_velocity[active]
                 regularization = max(self.damping, regularization * 0.5)
                 stagnant = (
                     stagnant + 1 if improvement <= self.stagnation_tolerance else 0
@@ -203,7 +389,18 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 termination_reason = "stagnated"
                 break
 
-        state = self._task_state(q, normalized, active, regularization, False)
+        state = self._task_state(
+            q,
+            frame_weights,
+            desired_poses,
+            active,
+            regularization,
+            False,
+            True,
+            collision_evaluations,
+            collision_cost_cache,
+            collision_gradient_cache,
+        )
         success = self._converged(state)
         if success:
             termination_reason = "converged"
@@ -215,12 +412,19 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             residual=state["residual"],
             solve_ms=(perf_counter() - started) * 1000.0,
             mode=self.mode,
+            objective=state["objective"],
             position_residual=state["position_residual"],
             orientation_residual=state["orientation_residual"],
             target_residuals=state["target_residuals"],
             termination_reason=termination_reason,
             accepted_steps=accepted_steps,
             limit_hits=limit_hits,
+            collision_cost=state["collision_cost"],
+            collision_evaluations=collision_evaluations[0],
+            collision_gradient_evaluations=collision_evaluations[1],
+            center_of_mass_residual=state["center_of_mass_residual"],
+            support_polygon_violation=state["support_polygon_violation"],
+            zmp_residual=state["zmp_residual"],
         )
 
     def _indices_for_groups(self, groups) -> np.ndarray:
@@ -231,56 +435,132 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             np.concatenate([self._group_velocity_indices[group] for group in groups])
         )
 
+    def _mode_limits(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.mode not in self._active_cache:
+            active = self._indices_for_groups(
+                self.mode_manager.spec.active_joint_groups
+            )
+            self._active_cache[self.mode] = active
+            values = self._model_velocity_limits[active]
+            self._velocity_limit_cache[self.mode] = np.where(
+                np.isfinite(values) & (values > 0.0), values, np.inf
+            )
+        return self._active_cache[self.mode], self._velocity_limit_cache[self.mode]
+
     def _converged(self, state: dict) -> bool:
         return bool(
-            state["position_residual"] <= self.position_tolerance
-            and state["orientation_residual"] <= self.orientation_tolerance
+            state["position_convergence_residual"] <= self.position_tolerance
+            and state["orientation_convergence_residual"] <= self.orientation_tolerance
+            and state["collision_cost"] <= self.collision_tolerance
+            and (
+                self.center_of_mass_task is None
+                or state["center_of_mass_convergence_residual"]
+                <= self.center_of_mass_tolerance
+            )
+            and (
+                self.support_polygon_task is None
+                or self.support_polygon_task.cost == 0.0
+                or state["support_polygon_violation"] <= self.support_polygon_tolerance
+            )
+            and (
+                self.zmp_task is None
+                or np.max(self.zmp_task.cost) == 0.0
+                or state["zmp_convergence_residual"] <= self.zmp_tolerance
+            )
         )
 
     def _task_state(
         self,
         q: np.ndarray,
-        targets: Mapping[str, RetargetingTarget],
+        frame_weights: Mapping[str, np.ndarray],
+        desired_poses: Mapping[str, object],
         active: np.ndarray,
         regularization: float,
         build_system: bool,
+        compute_metrics: bool,
+        collision_evaluations: list[int],
+        collision_cost_cache: dict[bytes, float],
+        collision_gradient_cache: dict[bytes, np.ndarray],
     ) -> dict:
-        self.pin.forwardKinematics(self.model, self.data, q)
+        frame_jacobians_required = (
+            build_system
+            and active.size
+            and any(np.max(weights) > 0.0 for weights in frame_weights.values())
+        )
+        center_jacobian_required = (
+            build_system
+            and active.size
+            and (
+                (
+                    self.center_of_mass_task is not None
+                    and np.max(self.center_of_mass_task.cost) > 0.0
+                )
+                or (
+                    self.support_polygon_task is not None
+                    and self.support_polygon_task.cost > 0.0
+                )
+                or (self.zmp_task is not None and np.max(self.zmp_task.cost) > 0.0)
+            )
+        )
+        if build_system and (frame_jacobians_required or center_jacobian_required):
+            # Build the model-wide joint Jacobians once, then extract every
+            # active frame below. This matters for dual-arm and full-body
+            # modes, where computeFrameJacobian would repeat the traversal for
+            # each target.
+            self.pin.computeJointJacobians(self.model, self.data, q)
+        else:
+            self.pin.forwardKinematics(self.model, self.data, q)
         self.pin.updateFramePlacements(self.model, self.data)
-        hessian = regularization * np.eye(active.size) if build_system else None
+        hessian = (
+            np.zeros((active.size, active.size), dtype=float) if build_system else None
+        )
+        if build_system:
+            hessian.flat[:: active.size + 1] = regularization
         gradient = np.zeros(active.size) if build_system else None
         weighted_errors = []
-        target_residuals = {}
+        target_residuals = {} if compute_metrics else None
+        position_convergence_residuals = []
+        orientation_convergence_residuals = []
         for name in self.mode_manager.spec.targets:
-            target = targets[name]
             task = self.frame_tasks[name]
-            desired = self.pin.SE3(target.pose[:3, :3], target.pose[:3, 3])
+            desired = desired_poses[name]
             current = self.data.oMf[self._frame_ids[name]]
             error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
-            target_residuals[name] = (
-                float(np.linalg.norm(error[:3])),
-                float(np.linalg.norm(error[3:])),
-            )
-            weights = task.cost * np.sqrt(target.weight)
+            if compute_metrics:
+                position_error = float(np.linalg.norm(error[:3]))
+                orientation_error = float(np.linalg.norm(error[3:]))
+                target_residuals[name] = (position_error, orientation_error)
+                position_convergence_residuals.append(
+                    position_error
+                    if np.min(task.position_cost) > 0.0
+                    else float(np.linalg.norm(error[:3][task.position_cost > 0.0]))
+                )
+                orientation_convergence_residuals.append(
+                    orientation_error
+                    if np.min(task.orientation_cost) > 0.0
+                    else float(np.linalg.norm(error[3:][task.orientation_cost > 0.0]))
+                )
+            weights = frame_weights[name]
             weighted_error = weights * task.gain * error
             weighted_errors.append(weighted_error)
             if build_system:
-                jacobian = np.asarray(
-                    self.pin.computeFrameJacobian(
-                        self.model,
-                        self.data,
-                        q,
-                        self._frame_ids[name],
-                        self.pin.ReferenceFrame.LOCAL,
-                    )
-                )[:, active]
-                weighted_jacobian = weights[:, None] * jacobian
-                hessian += weighted_jacobian.T @ weighted_jacobian
+                if active.size and np.max(weights) > 0.0:
+                    jacobian = np.asarray(
+                        self.pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            self._frame_ids[name],
+                            self.pin.ReferenceFrame.LOCAL,
+                        ),
+                        dtype=float,
+                    ).reshape(6, self.model.nv)[:, active]
+                    weighted_jacobian = weights[:, None] * jacobian
+                    hessian += weighted_jacobian.T @ weighted_jacobian
+                    gradient += weighted_jacobian.T @ weighted_error
                 if task.lm_damping:
-                    hessian += (
-                        task.lm_damping * float(error @ error) * np.eye(active.size)
+                    hessian.flat[:: active.size + 1] += task.lm_damping * float(
+                        error @ error
                     )
-                gradient += weighted_jacobian.T @ weighted_error
 
         posture_objective = 0.0
         if self.posture_task.cost > 0.0:
@@ -288,32 +568,320 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 self.pin.difference(self.model, q, self._posture_q), dtype=float
             )[active]
             weight = self.posture_task.cost
+            weighted_posture_error = weight * posture_error
             posture_objective = 0.5 * float(
-                (weight * posture_error) @ (weight * posture_error)
+                weighted_posture_error @ weighted_posture_error
             )
             if build_system:
-                hessian += weight * weight * np.eye(active.size)
+                hessian.flat[:: active.size + 1] += weight * weight
                 gradient += weight * weight * self.posture_task.gain * posture_error
 
-        joined = np.concatenate(weighted_errors)
+        current_center = None
+        center_jacobian = None
+        if (
+            self.center_of_mass_task is not None
+            or self.support_polygon_task is not None
+            or self.zmp_task is not None
+        ):
+            if build_system and center_jacobian_required:
+                center_jacobian = np.asarray(
+                    self.pin.jacobianCenterOfMass(self.model, self.data, False),
+                    dtype=float,
+                ).reshape(3, self.model.nv)[:, active]
+                # Joint placements and Jacobians are already current. The
+                # no-q overload avoids repeating kinematics, while updating
+                # data.com for the residual below.
+                current_center = np.asarray(self.data.com[0], dtype=float).reshape(3)
+            else:
+                current_center = np.asarray(
+                    self.pin.centerOfMass(self.model, self.data, False), dtype=float
+                ).reshape(3)
+                if build_system:
+                    center_jacobian = np.zeros((3, 0))
+
+        center_of_mass_residual = float("nan")
+        center_of_mass_convergence_residual = float("nan")
+        if self.center_of_mass_task is not None:
+            center_error = self._center_of_mass_target - current_center
+            if compute_metrics:
+                center_of_mass_residual = float(np.linalg.norm(center_error))
+                center_of_mass_convergence_residual = (
+                    center_of_mass_residual
+                    if np.min(self.center_of_mass_task.cost) > 0.0
+                    else float(
+                        np.linalg.norm(
+                            center_error[self.center_of_mass_task.cost > 0.0]
+                        )
+                    )
+                )
+            center_weights = self.center_of_mass_task.cost
+            weighted_center_error = (
+                center_weights * self.center_of_mass_task.gain * center_error
+            )
+            weighted_errors.append(weighted_center_error)
+            if build_system:
+                if np.max(center_weights) > 0.0:
+                    weighted_center_jacobian = center_weights[:, None] * center_jacobian
+                    hessian += weighted_center_jacobian.T @ weighted_center_jacobian
+                    gradient += weighted_center_jacobian.T @ weighted_center_error
+                if self.center_of_mass_task.lm_damping:
+                    hessian.flat[:: active.size + 1] += (
+                        self.center_of_mass_task.lm_damping
+                        * float(center_error @ center_error)
+                    )
+
+        zmp_residual = float("nan")
+        zmp_convergence_residual = float("nan")
+        current_zmp = None
+        zmp_jacobian = None
+        if self.zmp_task is not None:
+            task = self.zmp_task
+            acceleration_scale = self._center_of_mass_acceleration[:2] / task.gravity
+            current_zmp = (
+                current_center[:2]
+                - (current_center[2] - task.plane_height) * acceleration_scale
+            )
+            if build_system:
+                zmp_jacobian = center_jacobian[:2] - np.outer(
+                    acceleration_scale, center_jacobian[2]
+                )
+            if self._zmp_target is not None:
+                zmp_error = self._zmp_target - current_zmp
+                if compute_metrics:
+                    zmp_residual = float(np.linalg.norm(zmp_error))
+                    zmp_convergence_residual = (
+                        zmp_residual
+                        if np.min(task.cost) > 0.0
+                        else float(np.linalg.norm(zmp_error[task.cost > 0.0]))
+                    )
+                weighted_zmp_error = task.cost * task.gain * zmp_error
+                weighted_errors.append(weighted_zmp_error)
+                if build_system:
+                    if np.max(task.cost) > 0.0:
+                        weighted_zmp_jacobian = task.cost[:, None] * zmp_jacobian
+                        hessian += weighted_zmp_jacobian.T @ weighted_zmp_jacobian
+                        gradient += weighted_zmp_jacobian.T @ weighted_zmp_error
+                    if task.lm_damping:
+                        hessian.flat[:: active.size + 1] += task.lm_damping * float(
+                            zmp_error @ zmp_error
+                        )
+
+        support_polygon_violation = 0.0
+        if self.support_polygon_task is not None:
+            task = self.support_polygon_task
+            support_point = (
+                current_zmp if task.reference == "zmp" else current_center[:2]
+            )
+            support_point_jacobian = None
+            if build_system:
+                support_point_jacobian = (
+                    zmp_jacobian if task.reference == "zmp" else center_jacobian[:2]
+                )
+            signed_distances = task.normals @ support_point - task.offsets
+            violations = np.maximum(0.0, task.margin - signed_distances)
+            if compute_metrics:
+                support_polygon_violation = float(np.max(violations))
+            weighted_violations = task.cost * task.gain * violations
+            weighted_errors.append(weighted_violations)
+            if build_system and task.cost > 0.0 and np.any(violations > 0.0):
+                active_edges = violations > 0.0
+                support_jacobian = (
+                    task.cost * task.normals[active_edges] @ support_point_jacobian
+                )
+                hessian += support_jacobian.T @ support_jacobian
+                gradient += support_jacobian.T @ weighted_violations[active_edges]
+
+        if (
+            build_system
+            and self.collision_cost_weight > 0.0
+            and self.collision_cost_gradient is not None
+        ):
+            self._collision_cost_gradient_value(
+                q,
+                active,
+                collision_evaluations,
+                collision_cost_cache,
+                collision_gradient_cache,
+            )
+        collision_cost = self._collision_cost_value(
+            q, collision_evaluations, collision_cost_cache
+        )
+        collision_objective = self.collision_cost_weight * collision_cost
+        if not np.isfinite(collision_objective):
+            raise ValueError("weighted collision cost must be finite")
+        if build_system and collision_objective > 0.0:
+            with np.errstate(over="ignore", invalid="ignore"):
+                collision_update = (
+                    self.collision_cost_weight
+                    * self._collision_gradient_value(
+                        q,
+                        collision_cost,
+                        active,
+                        collision_evaluations,
+                        collision_cost_cache,
+                        collision_gradient_cache,
+                    )
+                )
+            if not np.isfinite(collision_update).all():
+                raise ValueError("weighted collision gradient must be finite")
+            gradient -= collision_update
+
+        weighted_error_squared = sum(
+            float(weighted_error @ weighted_error) for weighted_error in weighted_errors
+        )
+        objective = (
+            0.5 * weighted_error_squared + posture_objective + collision_objective
+        )
+        if not np.isfinite(objective):
+            raise ValueError("retargeting objective must be finite")
+        if not compute_metrics:
+            return {"objective": objective}
         position_residual = max(value[0] for value in target_residuals.values())
         orientation_residual = max(value[1] for value in target_residuals.values())
+        if build_system and (
+            not np.isfinite(hessian).all() or not np.isfinite(gradient).all()
+        ):
+            raise ValueError("retargeting linear system must be finite")
         return {
             "hessian": hessian,
             "gradient": gradient,
-            "objective": 0.5 * float(joined @ joined) + posture_objective,
-            "residual": float(np.linalg.norm(joined)),
+            "objective": objective,
+            "residual": float(np.sqrt(weighted_error_squared)),
             "position_residual": position_residual,
             "orientation_residual": orientation_residual,
+            "position_convergence_residual": max(position_convergence_residuals),
+            "orientation_convergence_residual": max(orientation_convergence_residuals),
             "target_residuals": target_residuals,
+            "collision_cost": collision_cost,
+            "center_of_mass_residual": center_of_mass_residual,
+            "center_of_mass_convergence_residual": center_of_mass_convergence_residual,
+            "support_polygon_violation": support_polygon_violation,
+            "zmp_residual": zmp_residual,
+            "zmp_convergence_residual": zmp_convergence_residual,
         }
 
-    @staticmethod
-    def _linear_solve(matrix: np.ndarray, vector: np.ndarray) -> np.ndarray:
-        try:
-            return np.linalg.solve(matrix, vector)
-        except np.linalg.LinAlgError:
-            return np.linalg.lstsq(matrix, vector, rcond=None)[0]
+    def _collision_cost_value(
+        self,
+        q: np.ndarray,
+        evaluations: list[int],
+        cache: Optional[dict[bytes, float]] = None,
+    ) -> float:
+        if self.collision_cost is None or self.collision_cost_weight == 0.0:
+            return 0.0
+        key = np.asarray(q, dtype=float).tobytes()
+        if cache is not None and key in cache:
+            return cache[key]
+        evaluations[0] += 1
+        value = float(self.collision_cost(q.copy()))
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError("collision_cost must return a finite non-negative value")
+        if cache is not None:
+            cache[key] = value
+        return value
+
+    def _collision_gradient_value(
+        self,
+        q: np.ndarray,
+        current_cost: float,
+        active: np.ndarray,
+        evaluations: list[int],
+        cache: Optional[dict[bytes, float]] = None,
+        gradient_cache: Optional[dict[bytes, np.ndarray]] = None,
+    ) -> np.ndarray:
+        key = np.asarray(q, dtype=float).tobytes()
+        if gradient_cache is not None and key in gradient_cache:
+            return gradient_cache[key]
+        if self.collision_cost_gradient is not None:
+            return self._collision_cost_gradient_value(
+                q, active, evaluations, cache, gradient_cache
+            )[1]
+        evaluations[1] += 1
+        if self.collision_gradient is not None:
+            value = np.asarray(self.collision_gradient(q.copy()), dtype=float).reshape(
+                -1
+            )
+            if value.shape != (self.model.nv,) or not np.isfinite(value).all():
+                raise ValueError(
+                    f"collision_gradient must return {self.model.nv} finite values"
+                )
+            result = value[active].copy()
+            if gradient_cache is not None:
+                gradient_cache[key] = result
+            return result
+
+        gradient = np.zeros(active.size)
+        step = self.collision_finite_difference_step
+        tangent = np.zeros(self.model.nv)
+        for output_index, velocity_index in enumerate(active):
+            tangent[velocity_index] = step
+            positive = self._project_limits(
+                np.asarray(self.pin.integrate(self.model, q, tangent), dtype=float)
+            )
+            tangent[velocity_index] = -step
+            negative = self._project_limits(
+                np.asarray(self.pin.integrate(self.model, q, tangent), dtype=float)
+            )
+            tangent[velocity_index] = 0.0
+            positive_delta = np.asarray(
+                self.pin.difference(self.model, q, positive), dtype=float
+            )[velocity_index]
+            negative_delta = np.asarray(
+                self.pin.difference(self.model, negative, q), dtype=float
+            )[velocity_index]
+            span = positive_delta + negative_delta
+            if span <= 1e-15:
+                continue
+            positive_cost = (
+                current_cost
+                if positive_delta <= 1e-15
+                else self._collision_cost_value(positive, evaluations, cache)
+            )
+            negative_cost = (
+                current_cost
+                if negative_delta <= 1e-15
+                else self._collision_cost_value(negative, evaluations, cache)
+            )
+            gradient[output_index] = (positive_cost - negative_cost) / span
+        if gradient_cache is not None:
+            gradient_cache[key] = gradient
+        return gradient
+
+    def _collision_cost_gradient_value(
+        self,
+        q: np.ndarray,
+        active: np.ndarray,
+        evaluations: list[int],
+        cost_cache: Optional[dict[bytes, float]],
+        gradient_cache: Optional[dict[bytes, np.ndarray]],
+    ) -> tuple[float, np.ndarray]:
+        key = np.asarray(q, dtype=float).tobytes()
+        if (
+            cost_cache is not None
+            and gradient_cache is not None
+            and key in cost_cache
+            and key in gradient_cache
+        ):
+            return cost_cache[key], gradient_cache[key]
+        evaluations[0] += 1
+        evaluations[1] += 1
+        cost, gradient = self.collision_cost_gradient(q.copy())
+        cost = float(cost)
+        gradient = np.asarray(gradient, dtype=float).reshape(-1)
+        if not np.isfinite(cost) or cost < 0.0:
+            raise ValueError(
+                "collision_cost_gradient must return a finite non-negative cost"
+            )
+        if gradient.shape != (self.model.nv,) or not np.isfinite(gradient).all():
+            raise ValueError(
+                "collision_cost_gradient must return a gradient with "
+                f"{self.model.nv} finite values"
+            )
+        active_gradient = gradient[active].copy()
+        if cost_cache is not None:
+            cost_cache[key] = cost
+        if gradient_cache is not None:
+            gradient_cache[key] = active_gradient
+        return cost, active_gradient
 
     @classmethod
     def _solve_box_qp(
@@ -322,24 +890,54 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         gradient: np.ndarray,
         lower: np.ndarray,
         upper: np.ndarray,
+        *,
+        unconstrained: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Solve a positive-definite QP with projected-gradient refinement."""
 
-        unconstrained = cls._linear_solve(hessian, gradient)
+        if unconstrained is None:
+            unconstrained = cls._linear_solve(hessian, gradient)
         if np.all(unconstrained >= lower) and np.all(unconstrained <= upper):
             return unconstrained
         solution = np.clip(unconstrained, lower, upper)
-        lipschitz = max(float(np.linalg.eigvalsh(hessian)[-1]), 1e-12)
-        for _ in range(40):
-            candidate = np.clip(
-                solution - (hessian @ solution - gradient) / lipschitz,
-                lower,
-                upper,
-            )
-            if np.max(np.abs(candidate - solution)) <= 1e-9:
-                solution = candidate
+        # status: -1 at lower bound, +1 at upper bound, 0 free. Solving the
+        # reduced positive-definite system gives the exact minimizer for one
+        # active set; violated bounds are activated and KKT-violating bounds
+        # are released until the global box optimum is reached.
+        status = np.zeros(solution.size, dtype=np.int8)
+        status[unconstrained < lower] = -1
+        status[unconstrained > upper] = 1
+        scale = max(1.0, float(np.max(np.abs(gradient))))
+        kkt_tolerance = 1e-10 * scale
+        for _ in range(10 * solution.size + 10):
+            free = status == 0
+            active = ~free
+            if np.any(free):
+                rhs = gradient[free]
+                if np.any(active):
+                    rhs = rhs - hessian[np.ix_(free, active)] @ solution[active]
+                free_solution = cls._linear_solve(hessian[np.ix_(free, free)], rhs)
+                free_indices = np.flatnonzero(free)
+                below = free_solution < lower[free_indices]
+                above = free_solution > upper[free_indices]
+                if np.any(below | above):
+                    solution[free_indices] = np.clip(
+                        free_solution, lower[free_indices], upper[free_indices]
+                    )
+                    status[free_indices[below]] = -1
+                    status[free_indices[above]] = 1
+                    continue
+                solution[free_indices] = free_solution
+
+            derivative = hessian @ solution - gradient
+            lower_violation = (status == -1) & (derivative < -kkt_tolerance)
+            upper_violation = (status == 1) & (derivative > kkt_tolerance)
+            if not np.any(lower_violation | upper_violation):
                 break
-            solution = candidate
+            violations = np.zeros(solution.size)
+            violations[lower_violation] = -derivative[lower_violation]
+            violations[upper_violation] = derivative[upper_violation]
+            status[int(np.argmax(violations))] = 0
         return solution
 
     def _displacement_bounds(

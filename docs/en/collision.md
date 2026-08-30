@@ -86,12 +86,28 @@ sphere_model.set_collision_groups(
     [("left_arm", "right_arm")],
 )
 distance = sphere_model.minimum_distance(q).distance
+distance_and_gradient = sphere_model.minimum_distance_with_gradient(q)
 trajectory_distances = sphere_model.batch_minimum_distances(q_path)
 
 planner = hm.SamplingPlanner.from_sphere_collision_model(
     lower_limits, upper_limits, sphere_model, security_margin=0.01
 )
 ```
+
+The combined query returns the minimum signed distance and its analytic
+`nv`-dimensional tangent-space gradient from one kinematics and Jacobian update,
+including for manifold configurations where `nq != nv`. Link-local sphere
+offsets include both frame translation and angular point-velocity terms.
+`PathOptimizer.from_sphere_collision_model` automatically uses this gradient
+for vector-space configurations when a positive soft `clearance` is requested;
+its manifold configuration updates still fall back to finite differences.
+`pair_revision` increases whenever collision groups are reset, replaced, or
+cleared, allowing short-lived distance caches to detect reconfiguration.
+If an existing path optimizer observes an empty pair set, both its hard check
+and soft clearance term become inactive until pairs are restored.
+Without soft clearance the adapter uses early-exit collision checks; minimum-
+distance scans and their one-shot cache are enabled only when clearance costs
+need them.
 
 Sphere geometry is an approximation and is never generated implicitly. Use a
 conservatively padded sphere set for rejection queries, and retain Coal as the

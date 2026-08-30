@@ -40,6 +40,7 @@ def test_pure_python_toolkit_import_does_not_load_native_extension():
         "assert not hasattr(hm, 'Robot'); "
         "assert not hasattr(hm, 'os'); "
         "assert retargeting.RetargetingMode.DUAL_ARM.value == 'dual_arm'; "
+        "assert retargeting.CuroboRetargetingSolver is not None; "
         "assert ToppraTrajectory is not None"
     )
 

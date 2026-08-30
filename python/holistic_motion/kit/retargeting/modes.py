@@ -15,7 +15,11 @@ class RetargetingMode(str, Enum):
     LEFT_ARM = "left_arm"
     RIGHT_ARM = "right_arm"
     DUAL_ARM = "dual_arm"
+    LEFT_LEG = "left_leg"
+    RIGHT_LEG = "right_leg"
+    DUAL_LEG = "dual_leg"
     WHOLE_BODY = "whole_body"
+    FULL_BODY = "full_body"
 
 
 @dataclass(frozen=True)
@@ -46,16 +50,34 @@ class RetargetingModeSpec:
         object.__setattr__(self, "active_joint_groups", groups)
 
 
-DEFAULT_MODE_SPECS = MappingProxyType({
-    RetargetingMode.LEFT_ARM: RetargetingModeSpec(("left_hand",), ("left_arm",)),
-    RetargetingMode.RIGHT_ARM: RetargetingModeSpec(("right_hand",), ("right_arm",)),
-    RetargetingMode.DUAL_ARM: RetargetingModeSpec(
-        ("left_hand", "right_hand"), ("left_arm", "right_arm")
-    ),
-    RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
-        ("left_hand", "right_hand", "head"), ("whole_body",)
-    ),
-})
+DEFAULT_MODE_SPECS = MappingProxyType(
+    {
+        RetargetingMode.LEFT_ARM: RetargetingModeSpec(("left_hand",), ("left_arm",)),
+        RetargetingMode.RIGHT_ARM: RetargetingModeSpec(("right_hand",), ("right_arm",)),
+        RetargetingMode.DUAL_ARM: RetargetingModeSpec(
+            ("left_hand", "right_hand"), ("left_arm", "right_arm")
+        ),
+        RetargetingMode.LEFT_LEG: RetargetingModeSpec(("left_foot",), ("left_leg",)),
+        RetargetingMode.RIGHT_LEG: RetargetingModeSpec(("right_foot",), ("right_leg",)),
+        RetargetingMode.DUAL_LEG: RetargetingModeSpec(
+            ("left_foot", "right_foot"), ("left_leg", "right_leg")
+        ),
+        RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
+            ("left_hand", "right_hand", "head"), ("whole_body",)
+        ),
+        RetargetingMode.FULL_BODY: RetargetingModeSpec(
+            (
+                "left_hand",
+                "right_hand",
+                "left_foot",
+                "right_foot",
+                "head",
+                "pelvis",
+            ),
+            ("whole_body",),
+        ),
+    }
+)
 
 
 class RetargetingModeManager:

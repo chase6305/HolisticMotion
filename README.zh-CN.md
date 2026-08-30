@@ -16,10 +16,11 @@ Pinocchio/Coal 碰撞查询以及姿态重定向。
 - C++17 核心库和 pybind11 Python 绑定。
 - URDF 解析以及数值、OPW、UR、SRS、FEP 运动学。
 - 满足约束的 Double-S、梯形速度轨迹和 TOPPRA 路径时间参数化。
-- 不依赖 OMPL 的 RRT-Connect、RRT* 和 Informed RRT* 关节空间规划。
+- 不依赖 OMPL 的 RRT-Connect、RRT*、Informed RRT* 关节空间规划与可行路径优化。
 - 可通过 `--cuda` 显式启用的 CUDA 批处理后端。
 - 默认启用、由 Conan 管理 Pinocchio 和 Coal 的碰撞查询。
-- 基于 Pinocchio、支持单臂、双臂和全身模式的任务空间 retargeting 工具箱。
+- 基于 Pinocchio 的手臂、腿部和全身 retargeting，支持 CoM、支撑多边形、
+  运动学 ZMP 与可微碰撞目标。
 - 英文和简体中文文档。
 
 ## 模块组成
@@ -30,9 +31,9 @@ Pinocchio/Coal 碰撞查询以及姿态重定向。
 | --- | --- | --- |
 | 机器人模型与运动学 | `holistic_motion::Robot`、`holistic_motion.Robot` | URDF、FK/IK、OPW、UR、SRS、FEP |
 | 轨迹生成 | `holistic_motion.trajectory` | Double-S、梯形速度以及本仓库维护的 TOPPRA 实现 |
-| 重定向工具箱 | `holistic_motion.kit.retargeting` | 基于 Pinocchio 的单臂、双臂和全身模式 |
+| 重定向工具箱 | `holistic_motion.kit.retargeting` | 基于 Pinocchio、带平衡任务的手臂、腿部和全身模式 |
 | 碰撞检测 | `CollisionModel`、`SphereCollisionModel` | Pinocchio/Coal 精确网格查询与轻量球体查询 |
-| 采样规划 | `holistic_motion.planning` | 本仓库实现的 RRT-Connect、RRT*、Informed RRT* |
+| 采样规划 | `holistic_motion.planning` | RRT 系列算法与保持可行性的路径优化 |
 
 ## 快速开始
 
@@ -96,22 +97,23 @@ times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 Retargeting API 位于 `holistic_motion.kit.retargeting`：
 
 ```python
-from holistic_motion.kit.retargeting import PinkRetargetingSolver
+from holistic_motion.kit.retargeting import CuroboRetargetingSolver
 
-solver = PinkRetargetingSolver(
+solver = CuroboRetargetingSolver(
     "/absolute/path/to/robot.urdf",
     frames={"left_hand": "left_ee", "right_hand": "right_ee", "head": "head_ee"},
     joint_groups={
         "left_arm": ["left_j1", "left_j2"],
         "right_arm": ["right_j1", "right_j2"],
     },
+    num_seeds=8,
 )
 solver.set_mode("dual_arm")
 result = solver.solve({"left_hand": left_pose, "right_hand": right_pose})
 ```
 
 使用 `python -m pip install '.[retargeting]'` 安装 Pinocchio Python 运行时；
-该命令不会安装上游 Pink。
+该命令不会安装上游 Pink 或 cuRobo。
 
 运行原生双臂采样规划和 Viser 动画：
 
@@ -142,7 +144,7 @@ python -m pip install '.[docs]'
 | [Pinocchio](https://github.com/stack-of-tasks/pinocchio) | 开启碰撞功能时由 Conan 管理的 C++ 碰撞/运动学依赖 | BSD 2-Clause |
 | [Coal](https://github.com/humanoid-path-planner/coal) | 开启碰撞功能时由 Conan 管理的窄相碰撞检测依赖 | BSD |
 | [Pink](https://github.com/stephane-caron/pink) | 本仓库任务式重定向求解器的算法与 API 设计参考；不导入、不内置 Pink | Apache-2.0 |
-| [cuRobo](https://github.com/NVlabs/curobo) | 碰撞球和批量查询的设计参考；不导入、不内置 cuRobo，也不依赖 Torch/Warp | Apache-2.0 |
+| [cuRobo](https://github.com/NVlabs/curobo) | 碰撞球、批量查询、可行路径优化和确定性多 seed 重定向的设计参考；不导入、不内置 cuRobo | Apache-2.0 |
 | [TOPPRA](https://github.com/hungpham2511/toppra) | 本仓库路径时间参数化实现的算法参考；不是运行时依赖 | MIT |
 
 Pinocchio 和 Coal 由 Conan 按 [`conanfile.py`](conanfile.py) 声明的版本解析；

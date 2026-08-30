@@ -79,12 +79,24 @@ sphere_model.set_collision_groups(
     [("left_arm", "right_arm")],
 )
 distance = sphere_model.minimum_distance(q).distance
+distance_and_gradient = sphere_model.minimum_distance_with_gradient(q)
 trajectory_distances = sphere_model.batch_minimum_distances(q_path)
 
 planner = hm.SamplingPlanner.from_sphere_collision_model(
     lower_limits, upper_limits, sphere_model, security_margin=0.01
 )
 ```
+
+组合查询通过一次运动学和 Jacobian 更新，同时返回最小有符号距离及其 `nv` 维
+切空间解析梯度，也支持 `nq != nv` 的流形构型。link-local 球偏置同时计入 frame
+平移和角速度引起的点速度。`PathOptimizer.from_sphere_collision_model` 对向量空间
+构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
+碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此
+识别模型重配置。
+已有路径优化器观察到空 pair 集时，硬约束和软 clearance 项都会暂时关闭，直到
+碰撞对恢复。
+未启用软 clearance 时，适配器使用可早停的碰撞检查；只有 clearance 代价需要时
+才执行最小距离扫描及其一次性缓存。
 
 球模型属于近似几何，并且库不会隐式生成球。快速拒绝查询应使用保守膨胀且经过
 检查的球模型；除非已经单独证明球集合的覆盖性，否则最终轨迹仍应交给 Coal 做

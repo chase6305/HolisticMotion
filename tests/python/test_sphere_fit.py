@@ -85,6 +85,8 @@ def test_sphere_model_json_round_trip_and_native_conversion(tmp_path):
     assert loaded == links
     assert metadata == {"urdf": "robot.urdf"}
 
+    if not hasattr(hm, "CollisionSphere"):
+        pytest.skip("native collision support is disabled")
     native = make_collision_spheres(loaded)
     assert len(native) == 2
     assert native[0].name == "left_sphere_0"

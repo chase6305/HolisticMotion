@@ -36,9 +36,18 @@ int main() {
          CollisionSphere{"slider", "slider", Eigen::Vector3d::Zero(), 0.2}});
     if (!sphere_model.InCollision(Eigen::VectorXd::Zero(1)) ||
         sphere_model.InCollision(Eigen::VectorXd::Ones(1)) ||
-        std::abs(sphere_model.MinimumDistance(Eigen::VectorXd::Ones(1)).distance -
-                 0.6) > 1e-12) {
+        std::abs(
+            sphere_model.MinimumDistance(Eigen::VectorXd::Ones(1)).distance -
+            0.6) > 1e-12) {
       std::cerr << "sphere collision backend failed\n";
+      return 1;
+    }
+    const auto distance_gradient =
+        sphere_model.MinimumDistanceWithGradient(Eigen::VectorXd::Ones(1));
+    if (std::abs(distance_gradient.distance_result.distance - 0.6) > 1e-12 ||
+        distance_gradient.gradient.size() != 1 ||
+        std::abs(distance_gradient.gradient[0] - 1.0) > 1e-12) {
+      std::cerr << "sphere collision distance gradient failed\n";
       return 1;
     }
     Eigen::MatrixXd batch(2, 1);
@@ -49,6 +58,14 @@ int main() {
       std::cerr << "sphere collision batch query failed\n";
       return 1;
     }
+    const auto pair_revision = sphere_model.GetCollisionPairRevision();
+    sphere_model.ClearCollisionPairs();
+    if (sphere_model.GetCollisionPairRevision() <= pair_revision ||
+        sphere_model.GetCollisionPairCount() != 0) {
+      std::cerr << "sphere collision pair revision failed\n";
+      return 1;
+    }
+    sphere_model.ResetCollisionPairs();
 
     CollisionModel model(path.string(), {}, false);
     if (model.GetConfigurationSize() != 1 || model.GetGeometryCount() != 2 ||
@@ -120,9 +137,9 @@ int main() {
     obstacle_pose(0, 3) = 0.5;
     model.AddBoxObstacle("test_wall", Eigen::Vector3d(0.2, 0.5, 0.5),
                          obstacle_pose);
-    if (model.SetCollisionGroups({{"robot", {"slider"}},
-                                  {"environment", {"test_wall"}}},
-                                 {{"robot", "environment"}}) != 1) {
+    if (model.SetCollisionGroups(
+            {{"robot", {"slider"}}, {"environment", {"test_wall"}}},
+            {{"robot", "environment"}}) != 1) {
       std::cerr << "environment collision pair setup failed\n";
       return 1;
     }

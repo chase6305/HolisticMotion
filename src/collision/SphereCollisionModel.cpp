@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/parsers/urdf.hpp>
@@ -18,6 +19,13 @@ using Pair = std::pair<std::size_t, std::size_t>;
 
 Pair OrderedPair(std::size_t first, std::size_t second) {
   return first < second ? Pair{first, second} : Pair{second, first};
+}
+
+Eigen::Matrix3d Skew(const Eigen::Vector3d &value) {
+  Eigen::Matrix3d result;
+  result << 0.0, -value.z(), value.y(), value.z(), 0.0, -value.x(), -value.y(),
+      value.x(), 0.0;
+  return result;
 }
 
 } // namespace
@@ -78,6 +86,34 @@ public:
     }
   }
 
+  void UpdateWithJacobians(const Eigen::VectorXd &q) {
+    ValidateConfiguration(q);
+    pinocchio::computeJointJacobians(model, *data, q);
+    pinocchio::updateFramePlacements(model, *data);
+    world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
+    for (std::size_t i = 0; i < spheres.size(); ++i) {
+      const auto &placement = data->oMf[frame_ids[i]];
+      world_spheres.row(static_cast<Eigen::Index>(i)).head<3>() =
+          (placement.rotation() * spheres[i].center + placement.translation())
+              .transpose();
+      world_spheres(static_cast<Eigen::Index>(i), 3) = spheres[i].radius;
+    }
+  }
+
+  Eigen::Matrix<double, 3, Eigen::Dynamic>
+  PointJacobian(std::size_t sphere_index) const {
+    Eigen::Matrix<double, 6, Eigen::Dynamic> frame_jacobian(6, model.nv);
+    frame_jacobian.setZero();
+    pinocchio::getFrameJacobian(model, *data, frame_ids[sphere_index],
+                                pinocchio::LOCAL_WORLD_ALIGNED, frame_jacobian);
+    const Eigen::Vector3d center =
+        world_spheres.row(static_cast<Eigen::Index>(sphere_index)).head<3>();
+    const Eigen::Vector3d offset =
+        center - data->oMf[frame_ids[sphere_index]].translation();
+    return frame_jacobian.topRows<3>() -
+           Skew(offset) * frame_jacobian.bottomRows<3>();
+  }
+
   void ResetPairs(bool exclude_same_link) {
     pairs.clear();
     for (std::size_t first = 0; first < spheres.size(); ++first) {
@@ -87,6 +123,7 @@ public:
           pairs.emplace_back(first, second);
       }
     }
+    ++pair_revision;
   }
 
   SphereDistanceResult Distance(std::size_t pair_index) const {
@@ -110,16 +147,32 @@ public:
     return result;
   }
 
+  double DistanceValue(std::size_t pair_index) const {
+    const auto [first, second] = pairs[pair_index];
+    const Eigen::Vector3d delta =
+        world_spheres.row(static_cast<Eigen::Index>(second)).head<3>() -
+        world_spheres.row(static_cast<Eigen::Index>(first)).head<3>();
+    return delta.norm() - spheres[first].radius - spheres[second].radius;
+  }
+
   double MinimumDistanceValue() const {
     double best = std::numeric_limits<double>::infinity();
-    for (const auto &[first, second] : pairs) {
-      const Eigen::Vector3d delta =
-          world_spheres.row(static_cast<Eigen::Index>(second)).head<3>() -
-          world_spheres.row(static_cast<Eigen::Index>(first)).head<3>();
-      best = std::min(best, delta.norm() - spheres[first].radius -
-                                spheres[second].radius);
-    }
+    for (std::size_t i = 0; i < pairs.size(); ++i)
+      best = std::min(best, DistanceValue(i));
     return best;
+  }
+
+  std::size_t MinimumDistanceIndex() const {
+    std::size_t best_index = 0;
+    double best_distance = DistanceValue(0);
+    for (std::size_t i = 1; i < pairs.size(); ++i) {
+      const double distance = DistanceValue(i);
+      if (distance < best_distance) {
+        best_distance = distance;
+        best_index = i;
+      }
+    }
+    return best_index;
   }
 
   pinocchio::Model model;
@@ -127,6 +180,7 @@ public:
   std::vector<CollisionSphere> spheres;
   std::vector<pinocchio::FrameIndex> frame_ids;
   std::vector<Pair> pairs;
+  std::size_t pair_revision{0};
   Eigen::Matrix<double, Eigen::Dynamic, 4> world_spheres;
 };
 
@@ -150,6 +204,9 @@ std::size_t SphereCollisionModel::GetSphereCount() const {
 }
 std::size_t SphereCollisionModel::GetCollisionPairCount() const {
   return impl_->pairs.size();
+}
+std::size_t SphereCollisionModel::GetCollisionPairRevision() const {
+  return impl_->pair_revision;
 }
 const std::vector<CollisionSphere> &SphereCollisionModel::GetSpheres() const {
   return impl_->spheres;
@@ -206,6 +263,7 @@ std::size_t SphereCollisionModel::SetCollisionGroups(
     }
   }
   impl_->pairs.assign(selected.begin(), selected.end());
+  ++impl_->pair_revision;
   return impl_->pairs.size();
 }
 
@@ -213,7 +271,10 @@ std::size_t SphereCollisionModel::ResetCollisionPairs(bool exclude_same_link) {
   impl_->ResetPairs(exclude_same_link);
   return impl_->pairs.size();
 }
-void SphereCollisionModel::ClearCollisionPairs() { impl_->pairs.clear(); }
+void SphereCollisionModel::ClearCollisionPairs() {
+  impl_->pairs.clear();
+  ++impl_->pair_revision;
+}
 
 Eigen::Matrix<double, Eigen::Dynamic, 4>
 SphereCollisionModel::ComputeWorldSpheres(
@@ -251,13 +312,35 @@ SphereCollisionModel::MinimumDistance(const Eigen::VectorXd &configuration) {
     throw std::runtime_error(
         "sphere collision model has no active collision pairs");
   impl_->Update(configuration);
-  SphereDistanceResult best = impl_->Distance(0);
-  for (std::size_t i = 1; i < impl_->pairs.size(); ++i) {
-    auto candidate = impl_->Distance(i);
-    if (candidate.distance < best.distance)
-      best = std::move(candidate);
+  return impl_->Distance(impl_->MinimumDistanceIndex());
+}
+
+Eigen::VectorXd SphereCollisionModel::MinimumDistanceGradient(
+    const Eigen::VectorXd &configuration) {
+  return MinimumDistanceWithGradient(configuration).gradient;
+}
+
+SphereDistanceGradientResult SphereCollisionModel::MinimumDistanceWithGradient(
+    const Eigen::VectorXd &configuration) {
+  if (impl_->pairs.empty())
+    throw std::runtime_error(
+        "sphere collision model has no active collision pairs");
+  impl_->UpdateWithJacobians(configuration);
+  const std::size_t best_index = impl_->MinimumDistanceIndex();
+  SphereDistanceResult best = impl_->Distance(best_index);
+  const auto [first, second] = impl_->pairs[best_index];
+  const double center_distance = best.distance + impl_->spheres[first].radius +
+                                 impl_->spheres[second].radius;
+  SphereDistanceGradientResult result;
+  result.distance_result = best;
+  if (center_distance <= 1e-12) {
+    result.gradient = Eigen::VectorXd::Zero(impl_->model.nv);
+  } else {
+    result.gradient = (best.normal.transpose() * (impl_->PointJacobian(second) -
+                                                  impl_->PointJacobian(first)))
+                          .transpose();
   }
-  return best;
+  return result;
 }
 
 std::vector<SphereDistanceResult>

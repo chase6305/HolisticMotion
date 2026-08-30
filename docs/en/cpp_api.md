@@ -27,5 +27,9 @@ Breathe.
 :members:
 ```
 
+```{doxygenclass} holistic_motion::robotics::planning::PathOptimizer
+:members:
+```
+
 Additional public classes are added to this generated reference as their header
 comments pass the documentation warning policy.

@@ -1,12 +1,15 @@
 #include "Bindings.h"
 
+#include <algorithm>
 #include <cmath>
+#include <memory>
 #include <set>
 
 #include <pybind11/eigen.h>
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
 
+#include "holistic_motion/planning/PathOptimizer.h"
 #include "holistic_motion/planning/SamplingPlanner.h"
 #ifdef HOLISTICMOTION_HAS_COLLISION
 #include "holistic_motion/collision/CollisionModel.h"
@@ -15,14 +18,255 @@
 
 namespace holistic_motion::python {
 
+#ifdef HOLISTICMOTION_HAS_COLLISION
+namespace {
+
+class SphereDistanceCache {
+public:
+  explicit SphereDistanceCache(
+      robotics::collision::SphereCollisionModel &collision_model)
+      : collision_model_(collision_model) {}
+
+  const robotics::collision::SphereDistanceResult &
+  CostDistance(const Eigen::VectorXd &state) {
+    state_ = state;
+    distance_ = collision_model_.MinimumDistance(state);
+    pair_revision_ = collision_model_.GetCollisionPairRevision();
+    reusable_ = true;
+    return distance_;
+  }
+
+  double ValidationDistance(const Eigen::VectorXd &state) {
+    if (reusable_ && Matches(state)) {
+      reusable_ = false;
+      return distance_.distance;
+    }
+    reusable_ = false;
+    return collision_model_.MinimumDistance(state).distance;
+  }
+
+private:
+  bool Matches(const Eigen::VectorXd &state) const {
+    return state_.size() == state.size() &&
+           pair_revision_ == collision_model_.GetCollisionPairRevision() &&
+           (state_.array() == state.array()).all();
+  }
+
+  robotics::collision::SphereCollisionModel &collision_model_;
+  Eigen::VectorXd state_;
+  robotics::collision::SphereDistanceResult distance_;
+  std::size_t pair_revision_{0};
+  bool reusable_{false};
+};
+
+} // namespace
+#endif
+
 void BindSamplingPlanning(pybind11::module_ &module) {
   namespace py = pybind11;
+  using robotics::planning::PathOptimizationOptions;
+  using robotics::planning::PathOptimizationResult;
+  using robotics::planning::PathOptimizationStatistics;
+  using robotics::planning::PathOptimizationStatus;
+  using robotics::planning::PathOptimizer;
   using robotics::planning::PlanningOptions;
   using robotics::planning::PlanningResult;
   using robotics::planning::PlanningStatistics;
   using robotics::planning::PlanningStatus;
   using robotics::planning::SamplingAlgorithm;
   using robotics::planning::SamplingPlanner;
+
+  py::enum_<PathOptimizationStatus>(module, "PathOptimizationStatus")
+      .value("OPTIMIZED", PathOptimizationStatus::OPTIMIZED)
+      .value("UNCHANGED", PathOptimizationStatus::UNCHANGED)
+      .value("TIMEOUT", PathOptimizationStatus::TIMEOUT)
+      .value("INVALID_PATH", PathOptimizationStatus::INVALID_PATH);
+  py::class_<PathOptimizationOptions>(module, "PathOptimizationOptions")
+      .def(py::init<>())
+      .def_readwrite("max_iterations", &PathOptimizationOptions::max_iterations)
+      .def_readwrite("timeout_seconds",
+                     &PathOptimizationOptions::timeout_seconds)
+      .def_readwrite("step_size", &PathOptimizationOptions::step_size)
+      .def_readwrite("line_search_steps",
+                     &PathOptimizationOptions::line_search_steps)
+      .def_readwrite("line_search_decay",
+                     &PathOptimizationOptions::line_search_decay)
+      .def_readwrite("edge_resolution",
+                     &PathOptimizationOptions::edge_resolution)
+      .def_readwrite("length_weight", &PathOptimizationOptions::length_weight)
+      .def_readwrite("smoothness_weight",
+                     &PathOptimizationOptions::smoothness_weight)
+      .def_readwrite("state_cost_weight",
+                     &PathOptimizationOptions::state_cost_weight)
+      .def_readwrite("finite_difference_step",
+                     &PathOptimizationOptions::finite_difference_step)
+      .def_readwrite("state_cost_step_size",
+                     &PathOptimizationOptions::state_cost_step_size)
+      .def_readwrite("minimum_improvement",
+                     &PathOptimizationOptions::minimum_improvement);
+  py::class_<PathOptimizationStatistics>(module, "PathOptimizationStatistics")
+      .def_readonly("iterations", &PathOptimizationStatistics::iterations)
+      .def_readonly("attempted_updates",
+                    &PathOptimizationStatistics::attempted_updates)
+      .def_readonly("line_search_evaluations",
+                    &PathOptimizationStatistics::line_search_evaluations)
+      .def_readonly("accepted_updates",
+                    &PathOptimizationStatistics::accepted_updates)
+      .def_readonly("collision_checks",
+                    &PathOptimizationStatistics::collision_checks)
+      .def_readonly("state_cost_evaluations",
+                    &PathOptimizationStatistics::state_cost_evaluations)
+      .def_readonly(
+          "state_cost_gradient_evaluations",
+          &PathOptimizationStatistics::state_cost_gradient_evaluations)
+      .def_readonly("optimization_time_ms",
+                    &PathOptimizationStatistics::optimization_time_ms)
+      .def_readonly("initial_objective",
+                    &PathOptimizationStatistics::initial_objective)
+      .def_readonly("final_objective",
+                    &PathOptimizationStatistics::final_objective)
+      .def_readonly("initial_path_length",
+                    &PathOptimizationStatistics::initial_path_length)
+      .def_readonly("final_path_length",
+                    &PathOptimizationStatistics::final_path_length);
+  py::class_<PathOptimizationResult>(module, "PathOptimizationResult")
+      .def_property_readonly("success", &PathOptimizationResult::Success)
+      .def_readonly("status", &PathOptimizationResult::status)
+      .def_readonly("path", &PathOptimizationResult::path)
+      .def_readonly("statistics", &PathOptimizationResult::statistics)
+      .def_readonly("feasible", &PathOptimizationResult::feasible)
+      .def_readonly("message", &PathOptimizationResult::message);
+  auto optimizer =
+      py::class_<PathOptimizer>(module, "PathOptimizer")
+          .def(py::init<Eigen::VectorXd, Eigen::VectorXd,
+                        PathOptimizer::StateValidator>(),
+               py::arg("lower_limits"), py::arg("upper_limits"),
+               py::arg("state_validator") = PathOptimizer::StateValidator{})
+          .def("set_state_validator", &PathOptimizer::SetStateValidator,
+               py::arg("validator"))
+          .def("set_state_cost", &PathOptimizer::SetStateCost,
+               py::arg("state_cost"))
+          .def("set_state_cost_gradient", &PathOptimizer::SetStateCostGradient,
+               py::arg("state_cost_gradient"))
+          .def("set_joint_weights", &PathOptimizer::SetJointWeights,
+               py::arg("weights"))
+          .def("set_continuous_joints", &PathOptimizer::SetContinuousJoints,
+               py::arg("indices"))
+          .def("optimize", &PathOptimizer::Optimize, py::arg("path"),
+               py::arg("options") = PathOptimizationOptions{});
+#ifdef HOLISTICMOTION_HAS_COLLISION
+  optimizer.def_static(
+      "from_sphere_collision_model",
+      [](Eigen::VectorXd lower, Eigen::VectorXd upper,
+         robotics::collision::SphereCollisionModel &collision_model,
+         double security_margin, double clearance) {
+        if (!std::isfinite(security_margin) || security_margin < 0.0 ||
+            !std::isfinite(clearance) || clearance < 0.0 ||
+            (clearance > 0.0 && clearance < security_margin))
+          throw std::invalid_argument(
+              "clearance must be finite and at least security_margin");
+        if (lower.size() != collision_model.GetConfigurationSize())
+          throw std::invalid_argument(
+              "full-space limits must match sphere collision model nq");
+        if (clearance > 0.0 && collision_model.GetCollisionPairCount() == 0)
+          throw std::invalid_argument(
+              "positive clearance requires active sphere collision pairs");
+        auto cache =
+            clearance > 0.0
+                ? std::make_shared<SphereDistanceCache>(collision_model)
+                : std::shared_ptr<SphereDistanceCache>{};
+        PathOptimizer result(
+            std::move(lower), std::move(upper),
+            [&collision_model, cache, security_margin,
+             clearance](const Eigen::VectorXd &state) {
+              if (collision_model.GetCollisionPairCount() == 0)
+                return true;
+              if (clearance > 0.0)
+                return cache->ValidationDistance(state) > security_margin;
+              return !collision_model.InCollision(state, security_margin, true);
+            });
+        if (clearance > 0.0) {
+          result.SetStateCost([&collision_model, cache,
+                               clearance](const Eigen::VectorXd &state) {
+            if (collision_model.GetCollisionPairCount() == 0)
+              return 0.0;
+            const double deficit =
+                std::max(0.0, clearance - cache->CostDistance(state).distance);
+            return deficit * deficit;
+          });
+          if (collision_model.GetConfigurationSize() ==
+              collision_model.GetVelocitySize()) {
+            result.SetStateCostGradient(
+                [&collision_model,
+                 clearance](const Eigen::VectorXd &state) -> Eigen::VectorXd {
+                  if (collision_model.GetCollisionPairCount() == 0)
+                    return Eigen::VectorXd::Zero(state.size());
+                  const auto query =
+                      collision_model.MinimumDistanceWithGradient(state);
+                  const double deficit =
+                      std::max(0.0, clearance - query.distance_result.distance);
+                  if (deficit == 0.0)
+                    return Eigen::VectorXd::Zero(state.size());
+                  return (-2.0 * deficit * query.gradient).eval();
+                });
+          }
+        }
+        return result;
+      },
+      py::arg("lower_limits"), py::arg("upper_limits"),
+      py::arg("collision_model"), py::arg("security_margin") = 0.0,
+      py::arg("clearance") = 0.0, py::keep_alive<0, 3>());
+  optimizer.def_static(
+      "from_collision_joints",
+      [](robotics::collision::CollisionModel &collision_model,
+         std::vector<std::string> joint_names,
+         Eigen::VectorXd context_configuration, double security_margin,
+         double clearance) {
+        if (!std::isfinite(security_margin) || security_margin < 0.0 ||
+            !std::isfinite(clearance) || clearance < 0.0 ||
+            (clearance > 0.0 && clearance < security_margin))
+          throw std::invalid_argument(
+              "clearance must be finite and at least security_margin");
+        if (context_configuration.size() !=
+                collision_model.GetConfigurationSize() ||
+            !context_configuration.allFinite())
+          throw std::invalid_argument("context_configuration must be finite "
+                                      "and match collision model nq");
+        Eigen::VectorXd lower =
+            collision_model.GetJointLowerLimits(joint_names);
+        Eigen::VectorXd upper =
+            collision_model.GetJointUpperLimits(joint_names);
+        PathOptimizer result(
+            std::move(lower), std::move(upper),
+            [&collision_model, joint_names, context = context_configuration,
+             security_margin](const Eigen::VectorXd &active) {
+              const Eigen::VectorXd full =
+                  collision_model.ConfigurationWithJointPositions(
+                      context, joint_names, active);
+              return security_margin > 0.0
+                         ? !collision_model.IsWithinDistance(
+                               full, security_margin, true)
+                         : !collision_model.InCollision(full, true);
+            });
+        if (clearance > 0.0) {
+          result.SetStateCost([&collision_model, joint_names,
+                               context = context_configuration,
+                               clearance](const Eigen::VectorXd &active) {
+            const Eigen::VectorXd full =
+                collision_model.ConfigurationWithJointPositions(
+                    context, joint_names, active);
+            const double deficit = std::max(
+                0.0,
+                clearance - collision_model.MinimumDistance(full).distance);
+            return deficit * deficit;
+          });
+        }
+        return result;
+      },
+      py::arg("collision_model"), py::arg("joint_names"),
+      py::arg("context_configuration"), py::arg("security_margin") = 0.0,
+      py::arg("clearance") = 0.0, py::keep_alive<0, 1>());
+#endif
 
   py::enum_<SamplingAlgorithm>(module, "SamplingAlgorithm")
       .value("RRT_CONNECT", SamplingAlgorithm::RRT_CONNECT)

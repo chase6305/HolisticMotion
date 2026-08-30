@@ -26,4 +26,8 @@
 :members:
 ```
 
+```{doxygenclass} holistic_motion::robotics::planning::PathOptimizer
+:members:
+```
+
 其他公共类会在头文件注释通过文档告警规则后加入自动生成的参考页面。

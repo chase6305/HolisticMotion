@@ -66,11 +66,113 @@ are closer than the requested distance, not only configurations that already
 penetrate. The Marvin viewer defaults to the complete inter-arm, per-arm self,
 and arm-to-body policy and verifies every displayed path sample.
 
+## Feasibility-preserving path optimization
+
+`PathOptimizer` provides a lightweight post-processing stage for a feasible
+geometric path. It keeps both endpoints fixed and iteratively reduces a joint-
+weighted combination of path length and second-difference smoothness. Each
+candidate waypoint is accepted only when the objective decreases and both
+adjacent edges pass the configured collision validator.
+
+```python
+optimizer = hm.PathOptimizer.from_collision_joints(
+    collision,
+    joint_names,
+    context,
+    security_margin=0.005,
+    clearance=0.02,
+)
+optimization = hm.PathOptimizationOptions()
+optimization.timeout_seconds = 0.5
+optimization.smoothness_weight = 0.5
+optimization.state_cost_weight = 2.0
+optimized = optimizer.optimize(result.path, optimization)
+if not optimized.success:
+    raise RuntimeError(optimized.message)
+path = optimized.path
+```
+
+`security_margin` is a hard feasibility boundary. `clearance` is a soft target:
+the native adapter adds a squared hinge cost when the minimum collision
+distance falls below it. The optimizer estimates the state-cost gradient with
+central finite differences (`finite_difference_step`) and combines it with the
+analytic geometric gradient. `state_cost_step_size` scales the clearance
+gradient before the combined direction is normalized. Leaving `clearance=0` and
+`state_cost_weight=0` disables this stage completely.
+Forward and reverse waypoint sweeps alternate between iterations to reduce
+the directional bias of in-place updates.
+
+The generic API accepts the same mechanism through
+`optimizer.set_state_cost(callable)`. Costs must be finite, non-negative, and
+cheap enough for repeated evaluation. Statistics expose
+`state_cost_evaluations` separately from collision validity checks, while
+`line_search_evaluations` records the number of candidate step sizes tested.
+`iterations` counts every optimization sweep that was entered, including the
+final converged or timed-out sweep.
+
+Applications that already have analytic, automatic-differentiation, or
+kinematic Jacobian gradients can additionally call
+`optimizer.set_state_cost_gradient(callable)`. The callback returns one finite
+gradient value per active joint. This replaces the default central finite
+difference and reduces gradient work from `2 * DoF` cost calls to one gradient
+call per attempted waypoint update. `state_cost_gradient_evaluations` records
+this path independently; omitting the callback preserves the finite-difference
+fallback.
+At a bounded joint limit, a finite-difference side that clamps to the current
+state reuses the waypoint's cached cost.
+
+A timeout still returns the best feasible path found so far. Invalid input
+paths are rejected rather than repaired, so sampling remains responsible for
+finding the initial feasible homotopy. This follows cuRobo's useful separation
+of seed generation, feasibility-aware optimization, and best-solution
+tracking, without importing its Torch, Warp, or CUDA optimizer stack. TOPPRA
+still performs the subsequent velocity and acceleration retiming.
+If the deadline expires before all initial state costs are available, the
+validated input path is returned and both objective statistics are `NaN`
+because a complete objective was never evaluated.
+
+Waypoint updates use an incremental objective: moving one interior waypoint
+recomputes only its two adjacent length terms and the at most three affected
+second-difference terms. A full objective pass is performed once per outer
+iteration to bound floating-point drift; that pass accumulates length and
+smoothness together while reusing adjacent differences. Consequently,
+geometric objective bookkeeping scales linearly rather than quadratically with
+waypoint count per iteration; collision and state-cost callbacks remain the
+dominant work.
+
+Each waypoint update uses bounded backtracking. `line_search_steps` controls
+how many step sizes are attempted, while `line_search_decay` scales each
+retry. This recovers a smaller update when the initial step collides or
+overshoots, without accepting an infeasible intermediate path.
+Because state costs are non-negative, a candidate is discarded before its
+callbacks when its zero-cost lower bound still cannot satisfy
+`minimum_improvement`.
+Zero gradients and updates that clamp back to the current joint state terminate
+their waypoint search without evaluating redundant callbacks.
+A validated two-point path returns immediately because it has no interior
+waypoints or state costs to optimize.
+
+The update direction is the analytic gradient of the enabled length and
+second-difference terms, combined with the optional state-cost gradient.
+Inverse joint weights precondition that gradient before its largest component
+is normalized, so objective weights affect both the search direction and the
+acceptance test.
+Default inverse-range-squared weights must be finite and positive; numerically
+unrepresentable joint ranges are rejected during construction.
+
 ## Resolution and safety
 
 The planner validates each edge at intervals no larger than
 `edge_resolution` in any active joint. Smaller values improve collision
 coverage but increase Coal queries. Endpoints and every shortcut are checked.
+The wrapped joint difference is computed once per edge and reused by all
+samples, preserving the shortest arc for continuous joints.
+Extremely small positive resolutions use saturating segment counts, so the
+deadline remains authoritative without floating-point-to-integer overflow.
+When no state validator is configured, edge sampling is skipped completely;
+joint-limit feasibility follows from valid endpoints and convex interpolation.
+In that mode `collision_checks` remains zero; otherwise it equals the number
+of actual validator callback invocations.
 The final path is geometric and must still be validated by the application if
 the environment changes after planning.
 
@@ -118,5 +220,6 @@ the displayed 180-sample path is independently revalidated.
 - Nearest-neighbor lookup is currently linear and optimized for typical
   manipulator search-tree sizes.
 - Collision validation is single-threaded.
+- The path optimizer is a local CPU smoother, not a global trajectory optimizer.
 - Dynamic obstacles, kinodynamic planning, floating-base planning, and
   controller execution are not included.

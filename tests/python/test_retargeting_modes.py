@@ -23,13 +23,25 @@ def test_builtin_arm_and_whole_body_modes():
     with pytest.raises(ValueError, match="head"):
         manager.validate_targets({"left_hand", "right_hand"})
 
+    spec = manager.set_mode("dual_leg")
+    assert spec.targets == ("left_foot", "right_foot")
+    assert spec.active_joint_groups == ("left_leg", "right_leg")
+
+    spec = manager.set_mode("full_body")
+    assert {
+        "left_hand",
+        "right_hand",
+        "left_foot",
+        "right_foot",
+        "head",
+        "pelvis",
+    } == set(spec.targets)
+
 
 def test_custom_mode_cycle_and_validation():
     manager = RetargetingModeManager(
         {
-            RetargetingMode.LEFT_ARM: RetargetingModeSpec(
-                ("tool",), ("manipulator",)
-            ),
+            RetargetingMode.LEFT_ARM: RetargetingModeSpec(("tool",), ("manipulator",)),
             RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
                 ("tool", "base"), ("whole_body",)
             ),
@@ -64,6 +76,18 @@ def test_target_owns_validated_pose():
 
     with pytest.raises(ValueError, match="4x4"):
         RetargetingTarget(np.eye(3))
+    invalid_row = np.eye(4)
+    invalid_row[3, 0] = 0.1
+    with pytest.raises(ValueError, match="homogeneous"):
+        RetargetingTarget(invalid_row)
+    reflection = np.eye(4)
+    reflection[0, 0] = -1.0
+    with pytest.raises(ValueError, match="proper orthonormal"):
+        RetargetingTarget(reflection)
+    scaled = np.eye(4)
+    scaled[0, 0] = 1.1
+    with pytest.raises(ValueError, match="proper orthonormal"):
+        RetargetingTarget(scaled)
     with pytest.raises(ValueError, match="positive"):
         RetargetingTarget(np.eye(4), weight=0.0)
 
@@ -93,7 +117,19 @@ def test_retargeting_result_owns_immutable_outputs():
         result.target_residuals["head"] = (0.0, 0.0)
 
 
-def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path):
+def test_pinocchio_linear_solve_falls_back_to_least_squares(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise np.linalg.LinAlgError("singular")
+
+    monkeypatch.setattr(np.linalg, "solve", fail)
+    result = PinocchioRetargetingSolver._linear_solve(
+        np.array([[1.0, 0.0], [0.0, 0.0]]), np.array([2.0, 0.0])
+    )
+
+    np.testing.assert_allclose(result, [2.0, 0.0])
+
+
+def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path, monkeypatch):
     pytest.importorskip("pinocchio", exc_type=ImportError)
     urdf = tmp_path / "retargeting.urdf"
     urdf.write_text(
@@ -139,9 +175,11 @@ def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path):
     angle = 0.1
     moved_left = poses["left_hand"].copy()
     moved_left[:3, :3] = np.array(
-        [[np.cos(angle), -np.sin(angle), 0.0],
-         [np.sin(angle), np.cos(angle), 0.0],
-         [0.0, 0.0, 1.0]]
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
     )
     result = solver.solve({"left_hand": moved_left})
     assert result.success
@@ -152,3 +190,42 @@ def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path):
     result = solver.solve(poses)
     assert result.success
     assert result.mode is RetargetingMode.WHOLE_BODY
+
+    moved_all = {name: pose.copy() for name, pose in poses.items()}
+    for pose, target_angle in zip(moved_all.values(), (0.05, -0.06, 0.04)):
+        pose[:3, :3] = np.array(
+            [
+                [np.cos(target_angle), -np.sin(target_angle), 0.0],
+                [np.sin(target_angle), np.cos(target_angle), 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+    solve_shapes = []
+    original_solve = np.linalg.solve
+
+    def counted_solve(matrix, vector):
+        solve_shapes.append(matrix.shape)
+        return original_solve(matrix, vector)
+
+    monkeypatch.setattr(np.linalg, "solve", counted_solve)
+    result = solver.solve(moved_all, seed=np.zeros(solver.nq))
+
+    assert result.success
+    assert solve_shapes
+    assert set(solve_shapes) == {(solver.model.nv, solver.model.nv)}
+
+
+def test_pinocchio_solver_reports_unreachable_fixed_model_without_crashing(tmp_path):
+    pytest.importorskip("pinocchio", exc_type=ImportError)
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    solver = PinocchioRetargetingSolver(urdf, {"left_hand": "base"}, {"left_arm": []})
+    solver.set_mode("left_arm")
+    target = np.eye(4)
+    target[0, 3] = 1.0
+
+    result = solver.solve({"left_hand": target})
+
+    assert not result.success
+    assert result.iterations == 1
+    assert result.residual == pytest.approx(1.0)

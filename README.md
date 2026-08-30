@@ -17,10 +17,12 @@ URDF path; the project never downloads models implicitly.
 - C++17 library with pybind11 bindings.
 - URDF parsing and numerical, OPW, UR, SRS, and FEP kinematics.
 - Constraint-aware Double-S, trapezoidal, and TOPPRA path timing.
-- Dependency-free RRT-Connect, RRT*, and Informed RRT* joint-space planning.
+- Dependency-free RRT-Connect, RRT*, and Informed RRT* planning with feasible
+  path optimization.
 - Optional CUDA batch backends, enabled explicitly with `--cuda`.
 - Collision queries backed by Conan-managed Pinocchio and Coal, enabled by default.
-- Pinocchio-backed task-space retargeting with single-arm, dual-arm, and whole-body modes.
+- Pinocchio-backed arm, leg, and full-body retargeting with CoM, support-polygon,
+  kinematic ZMP, and differentiable collision objectives.
 - English and Simplified Chinese documentation.
 
 ## Components
@@ -31,9 +33,9 @@ URDF path; the project never downloads models implicitly.
 | --- | --- | --- |
 | Robot model and kinematics | `holistic_motion::Robot`, `holistic_motion.Robot` | URDF, FK/IK, OPW, UR, SRS, and FEP |
 | Trajectory generation | `holistic_motion.trajectory` | Double-S, trapezoidal, and locally maintained TOPPRA implementation |
-| Retargeting toolkit | `holistic_motion.kit.retargeting` | Pinocchio-backed single-arm, dual-arm, and whole-body modes |
+| Retargeting toolkit | `holistic_motion.kit.retargeting` | Pinocchio-backed arm, leg, and full-body modes with balance tasks |
 | Collision | `CollisionModel`, `SphereCollisionModel` | Exact mesh queries through Pinocchio/Coal and lightweight sphere queries |
-| Sampling planning | `holistic_motion.planning` | Locally implemented RRT-Connect, RRT*, and Informed RRT* |
+| Sampling planning | `holistic_motion.planning` | RRT variants and feasibility-preserving path optimization |
 
 ## Quick start
 
@@ -99,22 +101,24 @@ times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 Retargeting is available under `holistic_motion.kit.retargeting`:
 
 ```python
-from holistic_motion.kit.retargeting import PinkRetargetingSolver
+from holistic_motion.kit.retargeting import CuroboRetargetingSolver
 
-solver = PinkRetargetingSolver(
+solver = CuroboRetargetingSolver(
     "/absolute/path/to/robot.urdf",
     frames={"left_hand": "left_ee", "right_hand": "right_ee", "head": "head_ee"},
     joint_groups={
         "left_arm": ["left_j1", "left_j2"],
         "right_arm": ["right_j1", "right_j2"],
     },
+    num_seeds=8,
 )
 solver.set_mode("dual_arm")
 result = solver.solve({"left_hand": left_pose, "right_hand": right_pose})
 ```
 
 Install its Pinocchio Python runtime with
-`python -m pip install '.[retargeting]'`; upstream Pink is not installed.
+`python -m pip install '.[retargeting]'`; upstream Pink and cuRobo are not
+installed.
 
 Run the native dual-arm sampling planner and Viser animation:
 
@@ -146,7 +150,7 @@ tutorials, API references, architecture, and contribution guidance.
 | [Pinocchio](https://github.com/stack-of-tasks/pinocchio) | Conan-managed C++ collision/kinematics dependency when collision support is enabled | BSD 2-Clause |
 | [Coal](https://github.com/humanoid-path-planner/coal) | Conan-managed narrow-phase collision dependency when collision support is enabled | BSD |
 | [Pink](https://github.com/stephane-caron/pink) | Algorithm and API-design reference for the locally maintained task-based retargeting solver; not imported or vendored | Apache-2.0 |
-| [cuRobo](https://github.com/NVlabs/curobo) | Design reference for collision spheres and batched queries; not imported or vendored, with no Torch/Warp dependency | Apache-2.0 |
+| [cuRobo](https://github.com/NVlabs/curobo) | Design reference for collision spheres, batched queries, feasible path optimization, and deterministic multi-seed retargeting; not imported or vendored | Apache-2.0 |
 | [TOPPRA](https://github.com/hungpham2511/toppra) | Algorithm reference for the locally maintained path parameterization implementation; not a runtime dependency | MIT |
 
 Pinocchio and Coal are resolved by Conan at the versions declared in

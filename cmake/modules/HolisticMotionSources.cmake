@@ -14,6 +14,7 @@ set(HOLISTICMOTION_CORE_SOURCES
     src/kinematics/fep/FEPKinematics.cpp
     src/kinematics/fep/FEPSelection.cpp
     src/planning/NullSpacePlanner.cpp
+    src/planning/PathOptimizer.cpp
     src/planning/SamplingPlanner.cpp
     src/trajectory/PathBase.cpp
     src/trajectory/PathBezierCurve.cpp

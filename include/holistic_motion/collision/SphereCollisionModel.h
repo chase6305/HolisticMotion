@@ -38,6 +38,11 @@ struct SphereDistanceResult {
   Eigen::Vector3d normal{Eigen::Vector3d::UnitX()};
 };
 
+struct SphereDistanceGradientResult {
+  SphereDistanceResult distance_result;
+  Eigen::VectorXd gradient;
+};
+
 /// Pinocchio-backed collision-sphere model for inexpensive repeated queries.
 ///
 /// Spheres are caller-provided and remain independent of the URDF collision
@@ -58,6 +63,7 @@ public:
   int GetVelocitySize() const;
   std::size_t GetSphereCount() const;
   std::size_t GetCollisionPairCount() const;
+  std::size_t GetCollisionPairRevision() const;
   const std::vector<CollisionSphere> &GetSpheres() const;
   std::vector<SpherePairInfo> GetCollisionPairs() const;
   Eigen::VectorXd NeutralConfiguration() const;
@@ -73,16 +79,18 @@ public:
   Eigen::Matrix<double, Eigen::Dynamic, 4>
   ComputeWorldSpheres(const Eigen::VectorXd &configuration);
   bool InCollision(const Eigen::VectorXd &configuration,
-                   double security_margin = 0.0,
-                   bool stop_at_first = true);
-  SphereDistanceResult
-  MinimumDistance(const Eigen::VectorXd &configuration);
+                   double security_margin = 0.0, bool stop_at_first = true);
+  SphereDistanceResult MinimumDistance(const Eigen::VectorXd &configuration);
+  /// Tangent-space gradient of minimum signed sphere distance (size model.nv).
+  Eigen::VectorXd MinimumDistanceGradient(const Eigen::VectorXd &configuration);
+  SphereDistanceGradientResult
+  MinimumDistanceWithGradient(const Eigen::VectorXd &configuration);
   std::vector<SphereDistanceResult>
   ComputeDistances(const Eigen::VectorXd &configuration,
                    double maximum_distance);
-  /// Each row is a complete Pinocchio configuration; output has one value per row.
-  Eigen::VectorXd
-  BatchMinimumDistances(const Eigen::MatrixXd &configurations);
+  /// Each row is a complete Pinocchio configuration; output has one value per
+  /// row.
+  Eigen::VectorXd BatchMinimumDistances(const Eigen::MatrixXd &configurations);
 
 private:
   class Impl;
