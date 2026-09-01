@@ -114,5 +114,27 @@ int main() {
         std::cerr << "invalid FK input was accepted\n";
         return 1;
     }
+
+    Eigen::VectorXd original_upper, original_lower;
+    opw_solver.GetJointLimits(original_upper, original_lower);
+    Eigen::VectorXd invalid_upper = original_upper;
+    invalid_upper[2] = std::numeric_limits<double>::quiet_NaN();
+    if (opw_solver.SetJointLimits(invalid_upper, original_lower)) {
+        std::cerr << "non-finite joint limits were accepted\n";
+        return 1;
+    }
+    Eigen::VectorXd actual_upper, actual_lower;
+    opw_solver.GetJointLimits(actual_upper, actual_lower);
+    if (!(actual_upper.array() == original_upper.array()).all() ||
+        !(actual_lower.array() == original_lower.array()).all()) {
+        std::cerr << "rejected joint limits changed solver state\n";
+        return 1;
+    }
+    Eigen::VectorXd invalid_weight = Eigen::VectorXd::Ones(6);
+    invalid_weight[0] = -1.0;
+    if (opw_solver.SetIkNearstWeight(invalid_weight)) {
+        std::cerr << "negative IK weight was accepted\n";
+        return 1;
+    }
     return 0;
 }

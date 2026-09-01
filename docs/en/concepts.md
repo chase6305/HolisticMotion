@@ -23,6 +23,22 @@ kinematics users do not acquire Pinocchio and Coal unnecessarily.
 - Applications should perform any controller-specific joint reordering at
   their integration boundary.
 
+## Initialization and runtime phases
+
+Keep model construction and configuration outside real-time loops. `Robot`,
+native collision models, continuous IK trackers, and TOPPRA trajectories
+resolve topology and allocate persistent state in their constructors. For
+retargeting, call `prepare(mode)` after construction or during a non-real-time
+mode transition; `solve()` and `step()` then reuse mode indices and numerical
+workspaces. Sampling planners and path optimizers retain joint topology in the
+planner object, while each `plan()` or `optimize()` call owns only request-local
+search state. Geometry sphere fitting is an offline initialization operation;
+the generated sphere model is the runtime artifact.
+
+Stateful solvers and collision models reuse mutable workspaces and are not
+safe for concurrent calls on the same instance. Use one prepared instance per
+runtime worker when parallel queries are required.
+
 ## Seven-axis kinematics
 
 `SRSKinematics` is selected for compatible seven-revolute spherical
@@ -48,6 +64,16 @@ The tracker expands periodic angles near the predicted state, applies branch
 hysteresis, filters candidates by pose and dynamic limits, and reports
 singularity, branch-change, velocity, acceleration, and residual diagnostics.
 The native `SRSKinematics` remains stateless and can still be used directly.
+Use `solve_detailed(target, seed, method)` when the caller needs a non-throwing
+status plus each solution's configuration, minimum Jacobian singular value,
+per-joint limit margins, near-singularity flag, and limit-hit flag. The existing
+`solve()` API remains the compact exception-based interface.
+TCP and user-frame changes are explicit runtime configuration. `forward()` and
+`solve()` keep using the robot base frame; `forward_user()`, `inverse_user()`,
+`solve_user()`, and `solve_detailed_user()` apply the configured user transform
+using the SDK-compatible `user_T_base * base_T_tcp` convention. Use the
+`tcp`/`user_frame` properties and `clear_tcp()`/`clear_user_frame()` to inspect
+or reset that state.
 
 `FEPKinematics` supports offset seven-axis chains and batched FK. CPU is used
 for small batches; `AUTO` selects CUDA only when a runtime device is available

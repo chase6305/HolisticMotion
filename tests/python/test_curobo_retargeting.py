@@ -691,8 +691,15 @@ def test_curobo_style_solver_tracks_kinematic_zmp(tmp_path):
         ({"seed_spread": -1.0}, ValueError),
         ({"sampler_seed": False}, TypeError),
         ({"sampler_seed": -1}, ValueError),
+        ({"stop_on_success": "yes"}, TypeError),
     ],
 )
 def test_curobo_style_solver_validates_seed_options(tmp_path, kwargs, exception):
     with pytest.raises(exception):
         _solver(tmp_path, **kwargs)
+
+
+def test_curobo_style_solver_rejects_fractional_iteration_budget(tmp_path):
+    solver = _solver(tmp_path, num_seeds=1)
+    with pytest.raises(TypeError, match="max_iterations"):
+        solver.solve(_target(solver, 0.0), max_iterations=1.5)

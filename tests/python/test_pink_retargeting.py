@@ -7,6 +7,9 @@ from holistic_motion.kit.retargeting import (
     FrameTask,
     PinkRetargetingSolver,
     PostureTask,
+    RetargetingMode,
+    RetargetingModeManager,
+    RetargetingModeSpec,
     SupportPolygonTask,
     ZmpTask,
 )
@@ -19,6 +22,8 @@ def test_frame_task_supports_scalar_and_anisotropic_costs():
         FrameTask(position_cost=-1.0)
     with pytest.raises(ValueError, match="gain"):
         FrameTask(gain=1.1)
+    with pytest.raises(TypeError, match="gain must be numeric"):
+        FrameTask(gain=object())
     with pytest.raises(ValueError, match="read-only"):
         task.position_cost[0] = 4.0
     with pytest.raises(ValueError, match="read-only"):
@@ -30,6 +35,8 @@ def test_posture_task_validation():
     assert PostureTask().cost > 0.0
     with pytest.raises(ValueError, match="non-negative"):
         PostureTask(cost=-0.1)
+    with pytest.raises(TypeError, match="posture cost must be numeric"):
+        PostureTask(cost="invalid")
 
 
 def test_center_of_mass_task_supports_anisotropic_costs():
@@ -59,6 +66,8 @@ def test_support_polygon_task_normalizes_clockwise_vertices():
         SupportPolygonTask(pentagon[[0, 2, 4, 1, 3]])
     with pytest.raises(ValueError, match="reference"):
         SupportPolygonTask(task.vertices, reference="foot")
+    with pytest.raises(TypeError, match="margin must be numeric"):
+        SupportPolygonTask(task.vertices, margin=object())
 
 
 def test_zmp_task_supports_anisotropic_costs():
@@ -93,6 +102,25 @@ def test_solver_rejects_non_finite_numeric_options(tmp_path):
             {"left_arm": [], "right_arm": []},
             position_tolerance=0.0,
         )
+    common = (
+        urdf,
+        {"left_hand": "base", "right_hand": "base", "head": "base"},
+        {"left_arm": [], "right_arm": []},
+    )
+    with pytest.raises(TypeError, match="frame_tasks"):
+        PinkRetargetingSolver(*common, frame_tasks={"left_hand": object()})
+    with pytest.raises(TypeError, match="mapping"):
+        PinkRetargetingSolver(*common, frame_tasks=[])
+    with pytest.raises(TypeError, match="posture_task"):
+        PinkRetargetingSolver(*common, posture_task=object())
+    with pytest.raises(TypeError, match="stagnation_iterations"):
+        PinkRetargetingSolver(*common, stagnation_iterations=1.5)
+    with pytest.raises(TypeError, match="max_backtracks"):
+        PinkRetargetingSolver(*common, max_backtracks=True)
+    with pytest.raises(TypeError, match="collision_cost"):
+        PinkRetargetingSolver(*common, collision_cost=1.0)
+    with pytest.raises(TypeError, match="center_of_mass_task"):
+        PinkRetargetingSolver(*common, center_of_mass_task=object())
 
 
 def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
@@ -106,12 +134,16 @@ def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
         frame_tasks={"left_hand": FrameTask(position_cost=0.0, orientation_cost=0.0)},
         posture_task=PostureTask(cost=0.0),
     )
-    solver.set_mode("left_arm")
+    solver.prepare("left_arm")
+    assert solver.mode in solver._system_workspace
+    assert solver.mode in solver._solve_workspaces
+    solve_workspace = solver._solve_workspaces[solver.mode]
     target = np.eye(4)
     target[0, 3] = 1.0
 
     result = solver.solve({"left_hand": target})
 
+    assert solver._solve_workspaces[solver.mode] is solve_workspace
     assert result.success
     assert result.iterations == 1
     assert result.position_residual == pytest.approx(1.0)
@@ -121,6 +153,64 @@ def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
     assert not result.success
     assert result.iterations == 1
     assert result.termination_reason == "no_active_dofs"
+
+
+def test_zero_cost_frame_error_does_not_change_lm_damping(tmp_path):
+    pytest.importorskip("pinocchio", exc_type=ImportError)
+    urdf = tmp_path / "single_joint.urdf"
+    urdf.write_text(
+        """<robot name="single_joint">
+        <link name="base"/><link name="tool"/>
+        <joint name="joint" type="revolute">
+          <parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+          <limit lower="-1" upper="1" velocity="2" effort="1"/>
+        </joint></robot>"""
+    )
+    manager = RetargetingModeManager(
+        {
+            RetargetingMode.LEFT_ARM: RetargetingModeSpec(
+                ("tracked", "disabled"), ("arm",)
+            )
+        },
+        initial_mode=RetargetingMode.LEFT_ARM,
+    )
+    solver = PinkRetargetingSolver(
+        urdf,
+        {"tracked": "tool", "disabled": "tool"},
+        {"arm": ["joint"]},
+        mode_manager=manager,
+        frame_tasks={
+            "tracked": FrameTask(position_cost=0.0, lm_damping=0.1),
+            "disabled": FrameTask(
+                position_cost=0.0, orientation_cost=0.0, lm_damping=1.0
+            ),
+        },
+        posture_task=PostureTask(cost=0.0),
+        damping=1e-9,
+        step_size=1.0,
+        max_iterations=1,
+    )
+    tracked = np.eye(4)
+    angle = 0.4
+    tracked[:3, :3] = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    nearby_disabled = np.eye(4)
+    distant_disabled = np.eye(4)
+    distant_disabled[0, 3] = 100.0
+
+    nearby = solver.solve(
+        {"tracked": tracked, "disabled": nearby_disabled}, seed=np.zeros(solver.nq)
+    )
+    distant = solver.solve(
+        {"tracked": tracked, "disabled": distant_disabled}, seed=np.zeros(solver.nq)
+    )
+
+    np.testing.assert_allclose(distant.configuration, nearby.configuration, atol=1e-12)
 
 
 def test_box_qp_respects_bounds():

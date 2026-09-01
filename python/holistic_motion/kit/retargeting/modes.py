@@ -30,6 +30,10 @@ class RetargetingModeSpec:
     active_joint_groups: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if isinstance(self.targets, str) or isinstance(self.active_joint_groups, str):
+            raise TypeError(
+                "targets and active_joint_groups must be sequences of names"
+            )
         targets = tuple(self.targets)
         groups = tuple(self.active_joint_groups)
         if not targets:
@@ -91,9 +95,21 @@ class RetargetingModeManager:
         initial_mode: Union[RetargetingMode, str] = RetargetingMode.DUAL_ARM,
     ) -> None:
         source = DEFAULT_MODE_SPECS if modes is None else modes
-        self._modes = {RetargetingMode(key): value for key, value in source.items()}
+        if not isinstance(source, Mapping):
+            raise TypeError("modes must be a mapping")
+        normalized = {}
+        for key, value in source.items():
+            mode = RetargetingMode(key)
+            if mode in normalized:
+                raise ValueError(f"duplicate retargeting mode {mode.value!r}")
+            normalized[mode] = value
+        self._modes = normalized
         if not self._modes:
             raise ValueError("at least one retargeting mode is required")
+        if any(
+            not isinstance(spec, RetargetingModeSpec) for spec in self._modes.values()
+        ):
+            raise TypeError("each retargeting mode must map to RetargetingModeSpec")
         self._mode = self._coerce(initial_mode)
 
     @property
@@ -110,7 +126,7 @@ class RetargetingModeManager:
 
     @property
     def mode_specs(self) -> Mapping[RetargetingMode, RetargetingModeSpec]:
-        return self._modes.copy()
+        return MappingProxyType(self._modes.copy())
 
     def set_mode(self, mode: Union[RetargetingMode, str]) -> RetargetingModeSpec:
         self._mode = self._coerce(mode)
@@ -122,7 +138,15 @@ class RetargetingModeManager:
         return self.spec
 
     def validate_targets(self, names: Iterable[str]) -> None:
-        missing = set(self.spec.targets).difference(names)
+        if isinstance(names, str):
+            raise TypeError("target names must be an iterable of names, not a string")
+        try:
+            provided = set(names)
+        except TypeError as error:
+            raise TypeError("target names must be an iterable of names") from error
+        if any(not isinstance(name, str) or not name for name in provided):
+            raise ValueError("target names must be non-empty strings")
+        missing = set(self.spec.targets).difference(provided)
         if missing:
             raise ValueError(
                 f"mode '{self.mode.value}' requires targets: {sorted(missing)}"

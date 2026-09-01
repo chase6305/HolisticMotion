@@ -539,3 +539,24 @@ def test_path_optimizer_requires_state_cost_callback_when_weighted():
     result = optimizer.optimize([[-0.5], [0.0], [0.5]], options)
     assert not result.success
     assert result.status == hm.PathOptimizationStatus.INVALID_PATH
+
+
+def test_path_optimizer_continuous_joint_update_is_transactional():
+    optimizer = hm.PathOptimizer(
+        [-np.pi], [np.pi], lambda state: abs(state[0]) >= 1.0
+    )
+    with pytest.raises(IndexError, match="continuous joint index"):
+        optimizer.set_continuous_joints([0, 1])
+
+    result = optimizer.optimize([[-3.0], [3.0]])
+
+    assert result.status == hm.PathOptimizationStatus.INVALID_PATH
+
+
+def test_path_optimizer_saturates_extreme_finite_timeout():
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    options = _options(timeout_seconds=np.finfo(float).max)
+
+    result = optimizer.optimize([[-0.5], [0.0], [0.5]], options)
+
+    assert result.success

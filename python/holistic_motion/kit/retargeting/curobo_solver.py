@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from numbers import Integral
 from time import perf_counter
 from typing import Optional, Union
 
@@ -36,19 +37,21 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        if isinstance(num_seeds, bool) or not isinstance(num_seeds, int):
+        if isinstance(num_seeds, bool) or not isinstance(num_seeds, Integral):
             raise TypeError("num_seeds must be an integer")
         if num_seeds < 1:
             raise ValueError("num_seeds must be positive")
         if not np.isfinite(seed_spread) or seed_spread < 0.0:
             raise ValueError("seed_spread must be finite and non-negative")
-        if isinstance(sampler_seed, bool) or not isinstance(sampler_seed, int):
+        if isinstance(sampler_seed, bool) or not isinstance(sampler_seed, Integral):
             raise TypeError("sampler_seed must be an integer")
         if sampler_seed < 0:
             raise ValueError("sampler_seed must be non-negative")
-        self.num_seeds = num_seeds
+        if not isinstance(stop_on_success, (bool, np.bool_)):
+            raise TypeError("stop_on_success must be boolean")
+        self.num_seeds = int(num_seeds)
         self.seed_spread = float(seed_spread)
-        self.sampler_seed = sampler_seed
+        self.sampler_seed = int(sampler_seed)
         self.stop_on_success = bool(stop_on_success)
         if self.num_seeds > 1 and self.seed_spread > 0.0 and self.model.nv:
             generator = np.random.default_rng(self.sampler_seed)

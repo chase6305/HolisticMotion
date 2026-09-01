@@ -11,6 +11,16 @@ import numpy as np
 Cost = Union[float, Sequence[float]]
 
 
+def _finite_scalar(value, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be numeric") from error
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
 def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
     result = np.asarray(value, dtype=float)
     if result.ndim == 0:
@@ -44,12 +54,16 @@ class FrameTask:
             "orientation_cost",
             _cost_vector(self.orientation_cost, 3, "orientation_cost"),
         )
-        if not 0.0 < self.gain <= 1.0:
+        gain = _finite_scalar(self.gain, "gain")
+        damping = _finite_scalar(self.lm_damping, "lm_damping")
+        if not 0.0 < gain <= 1.0:
             raise ValueError("gain must be in (0, 1]")
-        if not np.isfinite(self.lm_damping) or self.lm_damping < 0.0:
+        if damping < 0.0:
             raise ValueError("lm_damping must be finite and non-negative")
         cost = np.concatenate((self.position_cost, self.orientation_cost))
         cost.setflags(write=False)
+        object.__setattr__(self, "gain", gain)
+        object.__setattr__(self, "lm_damping", damping)
         object.__setattr__(self, "_cost", cost)
 
     @property
@@ -65,10 +79,14 @@ class PostureTask:
     gain: float = 1.0
 
     def __post_init__(self) -> None:
-        if not np.isfinite(self.cost) or self.cost < 0.0:
+        cost = _finite_scalar(self.cost, "posture cost")
+        gain = _finite_scalar(self.gain, "gain")
+        if cost < 0.0:
             raise ValueError("posture cost must be finite and non-negative")
-        if not 0.0 < self.gain <= 1.0:
+        if not 0.0 < gain <= 1.0:
             raise ValueError("gain must be in (0, 1]")
+        object.__setattr__(self, "cost", cost)
+        object.__setattr__(self, "gain", gain)
 
 
 @dataclass(frozen=True)
@@ -81,10 +99,14 @@ class CenterOfMassTask:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cost", _cost_vector(self.cost, 3, "cost"))
-        if not 0.0 < self.gain <= 1.0:
+        gain = _finite_scalar(self.gain, "gain")
+        damping = _finite_scalar(self.lm_damping, "lm_damping")
+        if not 0.0 < gain <= 1.0:
             raise ValueError("gain must be in (0, 1]")
-        if not np.isfinite(self.lm_damping) or self.lm_damping < 0.0:
+        if damping < 0.0:
             raise ValueError("lm_damping must be finite and non-negative")
+        object.__setattr__(self, "gain", gain)
+        object.__setattr__(self, "lm_damping", damping)
 
 
 @dataclass(frozen=True)
@@ -120,11 +142,14 @@ class SupportPolygonTask:
             vertices = vertices[::-1].copy()
             edges = np.roll(vertices, -1, axis=0) - vertices
             lengths = np.linalg.norm(edges, axis=1)
-        if not np.isfinite(self.cost) or self.cost < 0.0:
+        cost = _finite_scalar(self.cost, "support polygon cost")
+        margin = _finite_scalar(self.margin, "support polygon margin")
+        gain = _finite_scalar(self.gain, "gain")
+        if cost < 0.0:
             raise ValueError("support polygon cost must be finite and non-negative")
-        if not np.isfinite(self.margin) or self.margin < 0.0:
+        if margin < 0.0:
             raise ValueError("support polygon margin must be finite and non-negative")
-        if not 0.0 < self.gain <= 1.0:
+        if not 0.0 < gain <= 1.0:
             raise ValueError("gain must be in (0, 1]")
         if self.reference not in ("center_of_mass", "zmp"):
             raise ValueError(
@@ -142,6 +167,9 @@ class SupportPolygonTask:
         vertices.setflags(write=False)
         normals.setflags(write=False)
         offsets.setflags(write=False)
+        object.__setattr__(self, "cost", cost)
+        object.__setattr__(self, "margin", margin)
+        object.__setattr__(self, "gain", gain)
         object.__setattr__(self, "vertices", vertices)
         object.__setattr__(self, "normals", normals)
         object.__setattr__(self, "offsets", offsets)
@@ -159,11 +187,17 @@ class ZmpTask:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cost", _cost_vector(self.cost, 2, "cost"))
-        if not 0.0 < self.gain <= 1.0:
+        gain = _finite_scalar(self.gain, "gain")
+        gravity = _finite_scalar(self.gravity, "gravity")
+        damping = _finite_scalar(self.lm_damping, "lm_damping")
+        plane_height = _finite_scalar(self.plane_height, "plane_height")
+        if not 0.0 < gain <= 1.0:
             raise ValueError("gain must be in (0, 1]")
-        if not np.isfinite(self.gravity) or self.gravity <= 0.0:
+        if gravity <= 0.0:
             raise ValueError("gravity must be finite and positive")
-        if not np.isfinite(self.plane_height):
-            raise ValueError("plane_height must be finite")
-        if not np.isfinite(self.lm_damping) or self.lm_damping < 0.0:
+        if damping < 0.0:
             raise ValueError("lm_damping must be finite and non-negative")
+        object.__setattr__(self, "gain", gain)
+        object.__setattr__(self, "gravity", gravity)
+        object.__setattr__(self, "lm_damping", damping)
+        object.__setattr__(self, "plane_height", plane_height)

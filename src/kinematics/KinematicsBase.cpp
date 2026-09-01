@@ -1,6 +1,17 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
+#include <algorithm>
+#include <cmath>
+
 namespace holistic_motion {
 namespace robotics {
+
+namespace {
+
+bool ValidLimitInterval(double lower, double upper) {
+    return !std::isnan(lower) && !std::isnan(upper) && lower <= upper;
+}
+
+}  // namespace
 
 bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
                               std::vector<SE3d>& pose_list) const {
@@ -46,9 +57,25 @@ bool KinematicsBase::SetTCP(const SE3d& pose) {
     return true;
 }
 
+void KinematicsBase::ClearTCP() {
+    this->tcp_ = SE3d();
+}
+
 bool KinematicsBase::SetUserFrame(const SE3d& pose) {
     this->userframe_ = pose;
     return true;
+}
+
+void KinematicsBase::ClearUserFrame() {
+    this->userframe_ = SE3d();
+}
+
+SE3d KinematicsBase::ApplyUserFrame(const SE3d& base_pose) const {
+    return this->userframe_ * base_pose;
+}
+
+SE3d KinematicsBase::RemoveUserFrame(const SE3d& user_pose) const {
+    return this->userframe_.Inverse() * user_pose;
 }
 
 bool KinematicsBase::IsReachable(const SE3d& target_tcp_pose) const {
@@ -59,7 +86,8 @@ bool KinematicsBase::IsReachable(const SE3d& target_tcp_pose) const {
 }
 
 bool KinematicsBase::SetIkNearstWeight(const Eigen::VectorXd& weight) {
-    if (weight.size() != this->dof_) {
+    if (weight.size() != this->dof_ || !weight.allFinite() ||
+        (weight.array() < 0.0).any() || !(weight.array() > 0.0).any()) {
         holistic_motion::utility::LogWarning("weight size must be [{}], instead of {}",
                                   this->dof_, weight.size());
         return false;
@@ -83,6 +111,12 @@ bool KinematicsBase::SetJointLimits(const Eigen::VectorXd& upper_limits,
     if (upper_limits.size() != this->dof_ ||
         lower_limits.size() != this->dof_) {
         return false;  // Ensure the limits match the degrees of freedom
+    }
+
+    for (int i = 0; i < this->dof_; ++i) {
+        if (!ValidLimitInterval(lower_limits[i], upper_limits[i])) {
+            return false;
+        }
     }
 
     for (int i = 0; i < this->dof_; ++i) {
@@ -112,6 +146,15 @@ bool KinematicsBase::SetUserJointLimits(const Eigen::VectorXd& upper_limits,
     if (upper_limits.size() != this->dof_ ||
         lower_limits.size() != this->dof_) {
         return false;  // Ensure the limits match the degrees of freedom
+    }
+
+    for (int i = 0; i < this->dof_; ++i) {
+        if (!ValidLimitInterval(lower_limits[i], upper_limits[i]) ||
+            std::max(lower_limits[i], this->joint_nodes_[i].lower_limit) >
+                    std::min(upper_limits[i],
+                             this->joint_nodes_[i].upper_limit)) {
+            return false;
+        }
     }
 
     for (int i = 0; i < this->dof_; ++i) {

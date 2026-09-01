@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from holistic_motion.trajectory import ToppraTrajectory, retime_path
+from holistic_motion.trajectory import ToppraResult, ToppraTrajectory, retime_path
 
 
 def test_toppra_retimes_multijoint_path_with_zero_boundaries():
@@ -29,9 +29,7 @@ def test_toppra_validates_inputs_and_boundary_velocity():
     with pytest.raises(ValueError, match="boundary"):
         ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], start_path_velocity=2.0)
     with pytest.raises(ValueError, match="finite"):
-        ToppraTrajectory(
-            [[0.0], [1.0]], [1.0], [1.0], start_path_velocity=float("nan")
-        )
+        ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], start_path_velocity=float("nan"))
     with pytest.raises(TypeError, match="grid_size"):
         ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], grid_size=20.5)
 
@@ -52,9 +50,34 @@ def test_toppra_result_is_an_immutable_snapshot():
         trajectory.waypoints[0, 0] = 10.0
     with pytest.raises(ValueError, match="read-only"):
         trajectory.max_velocity[0] = 10.0
+    with pytest.raises(AttributeError):
+        trajectory.result = trajectory.result
 
     actual, _, _ = trajectory.sample_uniform(10)[1:]
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"gridpoints": [0.0, 0.0]}, "gridpoints"),
+        ({"path_speeds": [0.0, -1.0]}, "non-negative"),
+        ({"times": [0.0, -1.0], "duration": -1.0}, "duration"),
+        ({"duration": 2.0}, "final time"),
+        ({"path_accelerations": [1.0]}, "path dynamics"),
+    ],
+)
+def test_toppra_result_rejects_inconsistent_snapshots(kwargs, message):
+    values = {
+        "gridpoints": [0.0, 1.0],
+        "path_speeds": [1.0, 1.0],
+        "path_accelerations": [0.0],
+        "times": [0.0, 1.0],
+        "duration": 1.0,
+    }
+    values.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        ToppraResult(**values)
 
 
 def test_toppra_sampling_uses_constant_acceleration_interval_dynamics():

@@ -437,6 +437,7 @@ CollisionModel::ComputeCollisions(const Eigen::VectorXd &q) {
   pinocchio::computeDistances(impl_->model, *impl_->data, impl_->geometry_model,
                               *impl_->geometry_data, q);
   std::vector<CollisionResult> results;
+  results.reserve(impl_->geometry_model.collisionPairs.size());
   for (std::size_t index = 0;
        index < impl_->geometry_model.collisionPairs.size(); ++index) {
     if (impl_->geometry_data->collisionResults[index].isCollision()) {
@@ -463,6 +464,7 @@ CollisionReport CollisionModel::Evaluate(const Eigen::VectorXd &q) {
   const auto started = std::chrono::steady_clock::now();
   CollisionReport report;
   if (!impl_->geometry_model.collisionPairs.empty()) {
+    report.collisions.reserve(impl_->geometry_model.collisionPairs.size());
     report.in_collision = pinocchio::computeCollisions(
         impl_->model, *impl_->data, impl_->geometry_model,
         *impl_->geometry_data, q, false);

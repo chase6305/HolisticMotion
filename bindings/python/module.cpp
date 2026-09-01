@@ -22,6 +22,28 @@
 namespace py = pybind11;
 using namespace holistic_motion::robotics;
 
+namespace {
+
+bool IsRigidTransform(const Eigen::Matrix4d& transform) {
+    const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
+    return transform.allFinite() &&
+           transform.row(3).isApprox(
+                   Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9) &&
+           (rotation.transpose() * rotation)
+                   .isApprox(Eigen::Matrix3d::Identity(), 1e-7) &&
+           std::abs(rotation.determinant() - 1.0) <= 1e-7;
+}
+
+void RequireRigidTransform(const Eigen::Matrix4d& transform,
+                           const char* name) {
+    if (!IsRigidTransform(transform)) {
+        throw py::value_error(std::string(name) +
+                              " must be a finite rigid transform");
+    }
+}
+
+}  // namespace
+
 template <int N>
 class JointTrajectory {
 public:
@@ -745,14 +767,38 @@ PYBIND11_MODULE(_holistic_motion, module) {
                 }
                 return matrices;
             }, py::arg("joints"))
+            .def("forward_user", [](const NumericalKinematics& self,
+                                     const Eigen::VectorXd& joints) {
+                SE3d pose;
+                if (!self.GetFK(joints, pose)) {
+                    throw py::value_error(
+                            "joint vector does not match robot DOF");
+                }
+                return self.ApplyUserFrame(pose).GetTransform();
+            }, py::arg("joints"))
             .def("inverse", [](const NumericalKinematics& self,
                                const Eigen::Matrix4d& target,
                                Eigen::VectorXd seed) {
+                RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
                 if (!self.GetNearestIK(SE3d(target), solutions, seed, distance) ||
                     solutions.ik_joints.empty()) {
                     throw py::value_error("inverse kinematics did not converge");
+                }
+                return solutions.ik_joints.front();
+            }, py::arg("target"), py::arg("seed"))
+            .def("inverse_user", [](const NumericalKinematics& self,
+                                     const Eigen::Matrix4d& target,
+                                     Eigen::VectorXd seed) {
+                RequireRigidTransform(target, "target");
+                IkRtn solutions;
+                double distance = 0.0;
+                const SE3d base_target = self.RemoveUserFrame(SE3d(target));
+                if (!self.GetNearestIK(base_target, solutions, seed, distance) ||
+                    solutions.ik_joints.empty()) {
+                    throw py::value_error(
+                            "inverse kinematics did not converge");
                 }
                 return solutions.ik_joints.front();
             }, py::arg("target"), py::arg("seed"))
@@ -766,18 +812,35 @@ PYBIND11_MODULE(_holistic_motion, module) {
             }, py::arg("joints"))
             .def("set_tcp", [](NumericalKinematics& self,
                                const Eigen::Matrix4d& pose) {
+                RequireRigidTransform(pose, "TCP pose");
                 return self.SetTCP(SE3d(pose));
             }, py::arg("pose"))
             .def("set_user_frame", [](NumericalKinematics& self,
                                       const Eigen::Matrix4d& pose) {
+                RequireRigidTransform(pose, "user frame");
                 return self.SetUserFrame(SE3d(pose));
-            }, py::arg("pose"));
+            }, py::arg("pose"))
+            .def_property_readonly("tcp", [](const NumericalKinematics& self) {
+                return self.GetTCP().GetTransform();
+            })
+            .def_property_readonly(
+                    "user_frame", [](const NumericalKinematics& self) {
+                        return self.GetUserFrame().GetTransform();
+                    })
+            .def("clear_tcp", &NumericalKinematics::ClearTCP)
+            .def("clear_user_frame", &NumericalKinematics::ClearUserFrame);
 
     py::enum_<SRSSolveMethod>(module, "SRSSolveMethod")
             .value("SEEDED_NUMERICAL", SRSSolveMethod::SEEDED_NUMERICAL)
             .value("CONFIGURATION", SRSSolveMethod::CONFIGURATION)
             .value("ALL_CONFIGURATIONS", SRSSolveMethod::ALL_CONFIGURATIONS)
             .value("NEAREST_REDUNDANCY", SRSSolveMethod::NEAREST_REDUNDANCY);
+
+    py::enum_<SRSSolveStatus>(module, "SRSSolveStatus")
+            .value("SUCCESS", SRSSolveStatus::SUCCESS)
+            .value("INVALID_INPUT", SRSSolveStatus::INVALID_INPUT)
+            .value("INCOMPATIBLE_MODEL", SRSSolveStatus::INCOMPATIBLE_MODEL)
+            .value("NO_SOLUTION", SRSSolveStatus::NO_SOLUTION);
 
     py::class_<SRSConfiguration>(module, "SRSConfiguration")
             .def(py::init<>())
@@ -811,6 +874,24 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .def_readonly("elbow_angle_direction",
                           &SRSGeometryAnalysis::elbow_angle_direction);
 
+    py::class_<SRSSolveReport>(module, "SRSSolveReport")
+            .def_readonly("status", &SRSSolveReport::status)
+            .def_readonly("method", &SRSSolveReport::method)
+            .def_readonly("closed_form_compatible",
+                          &SRSSolveReport::closed_form_compatible)
+            .def_readonly("solutions", &SRSSolveReport::solutions)
+            .def_readonly("configurations", &SRSSolveReport::configurations)
+            .def_readonly("minimum_singular_values",
+                          &SRSSolveReport::minimum_singular_values)
+            .def_readonly("minimum_joint_limit_margins",
+                          &SRSSolveReport::minimum_joint_limit_margins)
+            .def_readonly("joint_limit_margins",
+                          &SRSSolveReport::joint_limit_margins)
+            .def_readonly("near_singularities",
+                          &SRSSolveReport::near_singularities)
+            .def_readonly("joint_limit_hits",
+                          &SRSSolveReport::joint_limit_hits);
+
     py::class_<SRSKinematics, NumericalKinematics,
                std::shared_ptr<SRSKinematics>>(module, "SRSKinematics")
             .def_property_readonly("compatible", &SRSKinematics::IsCompatible)
@@ -822,11 +903,53 @@ PYBIND11_MODULE(_holistic_motion, module) {
                               const Eigen::Matrix4d& target,
                               const Eigen::VectorXd& seed,
                               SRSSolveMethod method) {
+                RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 if (!self.Solve(SE3d(target), seed, method, solutions)) {
                     throw py::value_error("SRS inverse kinematics did not converge");
                 }
                 return solutions;
+            }, py::arg("target"), py::arg("seed"),
+               py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
+            .def("solve_detailed", [](const SRSKinematics& self,
+                                       const Eigen::Matrix4d& target,
+                                       const Eigen::VectorXd& seed,
+                                       SRSSolveMethod method) {
+                if (!IsRigidTransform(target)) {
+                    SRSSolveReport report;
+                    report.status = SRSSolveStatus::INVALID_INPUT;
+                    report.method = method;
+                    return report;
+                }
+                return self.SolveDetailed(SE3d(target), seed, method);
+            }, py::arg("target"), py::arg("seed"),
+               py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
+            .def("solve_user", [](const SRSKinematics& self,
+                                   const Eigen::Matrix4d& target,
+                                   const Eigen::VectorXd& seed,
+                                   SRSSolveMethod method) {
+                RequireRigidTransform(target, "target");
+                std::vector<Eigen::VectorXd> solutions;
+                const SE3d base_target = self.RemoveUserFrame(SE3d(target));
+                if (!self.Solve(base_target, seed, method, solutions)) {
+                    throw py::value_error(
+                            "SRS inverse kinematics did not converge");
+                }
+                return solutions;
+            }, py::arg("target"), py::arg("seed"),
+               py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
+            .def("solve_detailed_user", [](const SRSKinematics& self,
+                                            const Eigen::Matrix4d& target,
+                                            const Eigen::VectorXd& seed,
+                                            SRSSolveMethod method) {
+                if (!IsRigidTransform(target)) {
+                    SRSSolveReport report;
+                    report.status = SRSSolveStatus::INVALID_INPUT;
+                    report.method = method;
+                    return report;
+                }
+                return self.SolveDetailed(
+                        self.RemoveUserFrame(SE3d(target)), seed, method);
             }, py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
             .def("solve_configuration", [](const SRSKinematics& self,

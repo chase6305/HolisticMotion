@@ -7,11 +7,13 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <utility>
+
+#include "JointSpaceTopology.h"
+#include "PlanningDeadline.h"
 
 namespace holistic_motion::robotics::planning {
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
 
 struct Node {
   Eigen::VectorXd state;
@@ -26,10 +28,6 @@ struct Tree {
 };
 
 enum class ExtendStatus { TRAPPED, ADVANCED, REACHED };
-
-double WrappedDifference(double difference) {
-  return std::remainder(difference, 2.0 * kPi);
-}
 
 class PlanningContext {
 public:
@@ -51,27 +49,11 @@ public:
 
   Eigen::VectorXd Difference(const Eigen::VectorXd &from,
                              const Eigen::VectorXd &to) const {
-    Eigen::VectorXd difference = to - from;
-    for (Eigen::Index i = 0; i < difference.size(); ++i) {
-      if (continuous_[static_cast<std::size_t>(i)]) {
-        difference[i] = WrappedDifference(difference[i]);
-      }
-    }
-    return difference;
+    return detail::Difference(from, to, continuous_);
   }
 
   Eigen::VectorXd Normalize(Eigen::VectorXd state) const {
-    for (Eigen::Index i = 0; i < state.size(); ++i) {
-      if (continuous_[static_cast<std::size_t>(i)]) {
-        state[i] =
-            lower_[i] +
-            std::fmod(std::fmod(state[i] - lower_[i], 2.0 * kPi) + 2.0 * kPi,
-                      2.0 * kPi);
-      } else {
-        state[i] = std::clamp(state[i], lower_[i], upper_[i]);
-      }
-    }
-    return state;
+    return detail::Normalize(std::move(state), lower_, upper_, continuous_);
   }
 
   double Distance(const Eigen::VectorXd &first,
@@ -104,29 +86,35 @@ public:
   }
 
   bool IsStateValid(const Eigen::VectorXd &state) {
-    ++statistics_.collision_checks;
-    const bool valid = !validator_ || validator_(state);
+    bool valid = true;
+    if (validator_) {
+      ++statistics_.collision_checks;
+      valid = validator_(state);
+    }
     if (valid)
       ++statistics_.valid_states;
     return valid;
   }
 
+  std::size_t SegmentCount(const Eigen::VectorXd &difference) const {
+    return detail::SegmentCount(difference, options_.edge_resolution);
+  }
+
   bool IsMotionValid(const Eigen::VectorXd &from, const Eigen::VectorXd &to) {
     if (TimedOut())
       return false;
-    const Eigen::VectorXd delta = Difference(from, to).cwiseAbs();
-    const std::size_t segments = std::max<std::size_t>(
-        1, static_cast<std::size_t>(
-               std::ceil(delta.maxCoeff() / options_.edge_resolution)));
+    const Eigen::VectorXd delta = Difference(from, to);
+    const std::size_t segments = SegmentCount(delta);
     // Check the far endpoint first, then interior states. This quickly
     // rejects extensions whose newly sampled endpoint is invalid.
-    if (!IsStateValid(to))
+    if (!IsStateValid(to) || TimedOut())
       return false;
     for (std::size_t i = 1; i < segments; ++i) {
       if (TimedOut())
         return false;
       if (!IsStateValid(
-              Interpolate(from, to, static_cast<double>(i) / segments))) {
+              Interpolate(from, to, static_cast<double>(i) / segments)) ||
+          TimedOut()) {
         return false;
       }
     }
@@ -469,8 +457,12 @@ SamplingPlanner::SamplingPlanner(Eigen::VectorXd lower_limits,
     throw std::invalid_argument(
         "joint limits must be finite, ordered, and non-empty");
   }
-  weights_ =
-      (upper_limits_ - lower_limits_).array().square().inverse().matrix();
+  const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
+  weights_ = ranges.array().square().inverse().matrix();
+  if (!ranges.allFinite() || !weights_.allFinite() ||
+      (weights_.array() <= 0.0).any())
+    throw std::invalid_argument(
+        "joint limit ranges must produce finite positive default weights");
   continuous_.assign(static_cast<std::size_t>(lower_limits_.size()), false);
 }
 
@@ -489,18 +481,20 @@ void SamplingPlanner::SetJointWeights(const Eigen::VectorXd &weights) {
 
 void SamplingPlanner::SetContinuousJoints(
     const std::vector<std::size_t> &indices) {
-  continuous_.assign(static_cast<std::size_t>(lower_limits_.size()), false);
+  std::vector<bool> continuous(
+      static_cast<std::size_t>(lower_limits_.size()), false);
   for (std::size_t index : indices) {
-    if (index >= continuous_.size())
+    if (index >= continuous.size())
       throw std::out_of_range("continuous joint index");
     if (upper_limits_[static_cast<Eigen::Index>(index)] -
             lower_limits_[static_cast<Eigen::Index>(index)] <
-        2.0 * kPi - 1e-9) {
+        2.0 * detail::kPi - 1e-9) {
       throw std::invalid_argument(
           "continuous joints require a range of at least 2*pi");
     }
-    continuous_[index] = true;
+    continuous[index] = true;
   }
+  continuous_ = std::move(continuous);
 }
 
 PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
@@ -535,9 +529,7 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
     return finish(PlanningStatus::INVALID_PROBLEM,
                   "invalid dimensions or planning options");
   }
-  const auto deadline =
-      started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<double>(options.timeout_seconds));
+  const auto deadline = detail::DeadlineAfter(started, options.timeout_seconds);
   auto in_bounds = [&](const Eigen::VectorXd &state) {
     return (state.array() >= lower_limits_.array()).all() &&
            (state.array() <= upper_limits_.array()).all();

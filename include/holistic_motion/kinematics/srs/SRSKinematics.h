@@ -14,6 +14,13 @@ enum class SRSSolveMethod {
     NEAREST_REDUNDANCY
 };
 
+enum class SRSSolveStatus {
+    SUCCESS,
+    INVALID_INPUT,
+    INCOMPATIBLE_MODEL,
+    NO_SOLUTION
+};
+
 struct SRSConfiguration {
     int shoulder{1};
     int elbow{1};
@@ -34,6 +41,19 @@ struct SRSGeometryAnalysis {
     double wrist_orthogonality_residual{0.0};
     double elbow_angle_offset{0.0};
     double elbow_angle_direction{1.0};
+};
+
+struct SRSSolveReport {
+    SRSSolveStatus status{SRSSolveStatus::NO_SOLUTION};
+    SRSSolveMethod method{SRSSolveMethod::NEAREST_REDUNDANCY};
+    bool closed_form_compatible{false};
+    std::vector<Eigen::VectorXd> solutions;
+    std::vector<SRSConfiguration> configurations;
+    std::vector<double> minimum_singular_values;
+    std::vector<double> minimum_joint_limit_margins;
+    std::vector<Eigen::VectorXd> joint_limit_margins;
+    std::vector<bool> near_singularities;
+    std::vector<bool> joint_limit_hits;
 };
 
 // Solver utilities for redundant 7R manipulators with spherical
@@ -60,6 +80,10 @@ public:
                const Eigen::VectorXd& seed,
                SRSSolveMethod method,
                std::vector<Eigen::VectorXd>& solutions) const;
+
+    SRSSolveReport SolveDetailed(const SE3d& target,
+                                 const Eigen::VectorXd& seed,
+                                 SRSSolveMethod method) const;
 
     bool SolveConfiguration(const SE3d& target,
                             const SRSConfiguration& configuration,

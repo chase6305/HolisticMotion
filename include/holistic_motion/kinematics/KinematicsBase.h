@@ -73,6 +73,8 @@ public:
 
     SE3d GetTCP() const { return this->tcp_; };
 
+    void ClearTCP();
+
     /// \brief Set the user frame
     ///
     virtual bool SetUserFrame(const SE3d& pose);
@@ -80,6 +82,14 @@ public:
     /// \brief Get the user frame
     ///
     SE3d GetUserFrame() const { return this->userframe_; };
+
+    void ClearUserFrame();
+
+    /// Apply the configured user-frame transform to a base-frame pose.
+    SE3d ApplyUserFrame(const SE3d& base_pose) const;
+
+    /// Remove the configured user-frame transform from a user-frame pose.
+    SE3d RemoveUserFrame(const SE3d& user_pose) const;
 
     /// \brief Set the kinematic parameters of the joint
     ///

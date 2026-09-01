@@ -91,7 +91,7 @@ CoM 与支撑任务对每个状态共用一次质心和 Jacobian 计算。当前
 坐标 `z=0` 时，应设置 `plane_height`。
 
 ```python
-solver.set_mode("dual_arm")
+solver.prepare("dual_arm")
 result = solver.solve({
     "left_hand": left_pose,
     "right_hand": right_pose,
@@ -100,6 +100,11 @@ result = solver.solve({
 if result.success:
     send_joint_command(result.configuration)
 ```
+
+应在应用初始化阶段或非实时的模式切换阶段调用 `prepare(mode)`。它会预先验证
+frame 与关节组映射，并缓存 active indices、速度限制和 Pink 数值工作区。
+`set_mode(mode)` 保留原有的延迟准备语义，适合逐步组装配置，但随后的第一次
+求解可能承担模式准备开销。
 
 目标、任务权重、模式描述和求解结果都会保存调用方数组与序列的不可变快照。
 应用需要调整结果时，应先复制 `result.configuration`，从而避免 UI 或控制器代码

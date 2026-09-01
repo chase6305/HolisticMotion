@@ -112,7 +112,7 @@ solver = CuroboRetargetingSolver(
     },
     num_seeds=8,
 )
-solver.set_mode("dual_arm")
+solver.prepare("dual_arm")  # Resolve mode indices/workspaces before the hot loop.
 result = solver.solve({"left_hand": left_pose, "right_hand": right_pose})
 ```
 

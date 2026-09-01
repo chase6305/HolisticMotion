@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from numbers import Integral
 from pathlib import Path
 from time import perf_counter
 from types import MappingProxyType
@@ -16,12 +17,8 @@ from typing import Optional, Union
 
 import numpy as np
 
+from ..._validation import validated_transform
 from .modes import RetargetingMode, RetargetingModeManager
-
-_IDENTITY_ROTATION = np.eye(3)
-_IDENTITY_ROTATION.setflags(write=False)
-_HOMOGENEOUS_LAST_ROW = np.array([0.0, 0.0, 0.0, 1.0])
-_HOMOGENEOUS_LAST_ROW.setflags(write=False)
 
 
 def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
@@ -31,6 +28,16 @@ def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
     if not np.isfinite(result).all():
         raise ValueError(f"{name} must be finite")
     result.setflags(write=False)
+    return result
+
+
+def _positive_float(value, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be numeric") from error
+    if not np.isfinite(result) or result <= 0.0:
+        raise ValueError(f"{name} must be finite and positive")
     return result
 
 
@@ -53,32 +60,10 @@ class RetargetingTarget:
     weight: float = 1.0
 
     def __post_init__(self) -> None:
-        pose = np.asarray(self.pose, dtype=float)
-        if pose.shape != (4, 4) or not np.isfinite(pose).all():
-            raise ValueError("target pose must be a finite 4x4 matrix")
-        if not np.allclose(pose[3], _HOMOGENEOUS_LAST_ROW, rtol=0.0, atol=1e-8):
-            raise ValueError("target pose must have a valid homogeneous last row")
-        rotation = pose[:3, :3]
-        determinant = (
-            rotation[0, 0]
-            * (rotation[1, 1] * rotation[2, 2] - rotation[1, 2] * rotation[2, 1])
-            - rotation[0, 1]
-            * (rotation[1, 0] * rotation[2, 2] - rotation[1, 2] * rotation[2, 0])
-            + rotation[0, 2]
-            * (rotation[1, 0] * rotation[2, 1] - rotation[1, 1] * rotation[2, 0])
-        )
-        if (
-            not np.allclose(
-                rotation.T @ rotation, _IDENTITY_ROTATION, rtol=1e-5, atol=1e-6
-            )
-            or abs(determinant - 1.0) > 1.1e-5
-        ):
-            raise ValueError("target pose rotation must be a proper orthonormal matrix")
-        if not np.isfinite(self.weight) or self.weight <= 0.0:
-            raise ValueError("target weight must be finite and positive")
-        pose = pose.copy()
-        pose.setflags(write=False)
+        pose = validated_transform(self.pose, name="target pose", readonly=True)
+        weight = _positive_float(self.weight, "target weight")
         object.__setattr__(self, "pose", pose)
+        object.__setattr__(self, "weight", weight)
 
 
 @dataclass(frozen=True)
@@ -107,16 +92,98 @@ class RetargetingResult:
         configuration = _readonly_array(
             self.configuration, name="result configuration"
         ).reshape(-1)
-        residuals = {
-            str(name): (float(value[0]), float(value[1]))
-            for name, value in self.target_residuals.items()
-        }
-        if not np.isfinite(self.collision_cost) or self.collision_cost < 0.0:
-            raise ValueError("result collision_cost must be finite and non-negative")
-        if self.collision_evaluations < 0 or self.collision_gradient_evaluations < 0:
-            raise ValueError("result collision evaluation counts must be non-negative")
+        if not isinstance(self.mode, RetargetingMode):
+            raise TypeError("result mode must be RetargetingMode")
+        if not isinstance(self.success, (bool, np.bool_)):
+            raise TypeError("result success must be boolean")
+        if not isinstance(self.target_residuals, Mapping):
+            raise TypeError("target_residuals must be a mapping")
+        residuals = {}
+        for name, value in self.target_residuals.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("target residual names must be non-empty strings")
+            try:
+                pair = tuple(value)
+            except TypeError as error:
+                raise ValueError(
+                    f"target residual {name!r} must contain two values"
+                ) from error
+            if len(pair) != 2:
+                raise ValueError(f"target residual {name!r} must contain two values")
+            try:
+                pair = (float(pair[0]), float(pair[1]))
+            except (TypeError, ValueError) as error:
+                raise TypeError("target residual values must be numeric") from error
+            if not all(np.isfinite(item) and item >= 0.0 for item in pair):
+                raise ValueError("target residuals must be finite and non-negative")
+            residuals[name] = pair
+
+        integer_fields = (
+            "iterations",
+            "accepted_steps",
+            "limit_hits",
+            "collision_evaluations",
+            "collision_gradient_evaluations",
+        )
+        for name in integer_fields:
+            value = getattr(self, name)
+            if not isinstance(value, Integral) or isinstance(value, bool):
+                raise TypeError(f"result {name} must be an integer")
+            if value < 0:
+                raise ValueError(f"result {name} must be non-negative")
+            object.__setattr__(self, name, int(value))
+        required_non_negative = (
+            "residual",
+            "solve_ms",
+            "collision_cost",
+            "support_polygon_violation",
+        )
+        for name in required_non_negative:
+            try:
+                value = float(getattr(self, name))
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"result {name} must be numeric") from error
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"result {name} must be finite and non-negative")
+            object.__setattr__(self, name, value)
+        optional_non_negative = (
+            "objective",
+            "position_residual",
+            "orientation_residual",
+            "center_of_mass_residual",
+            "zmp_residual",
+        )
+        for name in optional_non_negative:
+            try:
+                value = float(getattr(self, name))
+            except (TypeError, ValueError) as error:
+                raise TypeError(f"result {name} must be numeric") from error
+            if not np.isnan(value) and (not np.isfinite(value) or value < 0.0):
+                raise ValueError(f"result {name} must be non-negative or NaN")
+            object.__setattr__(self, name, value)
+        if not isinstance(self.termination_reason, str) or not self.termination_reason:
+            raise ValueError("termination_reason must be a non-empty string")
         object.__setattr__(self, "configuration", configuration)
+        object.__setattr__(self, "success", bool(self.success))
         object.__setattr__(self, "target_residuals", MappingProxyType(residuals))
+
+
+@dataclass(frozen=True)
+class _RetargetingModePlan:
+    targets: tuple[str, ...]
+    frame_ids: tuple[int, ...]
+    active_velocity_indices: np.ndarray
+
+
+@dataclass
+class _PinocchioSolveWorkspace:
+    """Mode-sized mutable arrays reused by the single-threaded solve path."""
+
+    weighted_error: np.ndarray
+    weighted_jacobian: Optional[np.ndarray]
+    system: Optional[np.ndarray]
+    right_hand_side: Optional[np.ndarray]
+    full_velocity: np.ndarray
 
 
 class PinocchioRetargetingSolver:
@@ -138,18 +205,51 @@ class PinocchioRetargetingSolver:
         self.urdf_path = Path(urdf_path).expanduser().resolve()
         if not self.urdf_path.is_file():
             raise FileNotFoundError(f"URDF does not exist: {self.urdf_path}")
-        numeric_options = (damping, step_size, tolerance)
-        if not all(np.isfinite(value) and value > 0.0 for value in numeric_options):
-            raise ValueError(
-                "damping, step_size, and tolerance must be finite and positive"
-            )
+        damping = _positive_float(damping, "damping")
+        step_size = _positive_float(step_size, "step_size")
+        tolerance = _positive_float(tolerance, "tolerance")
+        if not isinstance(max_iterations, Integral) or isinstance(
+            max_iterations, bool
+        ):
+            raise TypeError("max_iterations must be an integer")
         if max_iterations < 1:
             raise ValueError("max_iterations must be positive")
+        if not isinstance(frames, Mapping):
+            raise TypeError("frames must be a mapping")
+        if any(
+            not isinstance(name, str)
+            or not name
+            or not isinstance(frame, str)
+            or not frame
+            for name, frame in frames.items()
+        ):
+            raise ValueError("frame mappings must contain non-empty string names")
+        if not isinstance(joint_groups, Mapping):
+            raise TypeError("joint_groups must be a mapping")
+        normalized_groups = {}
+        for group, names in joint_groups.items():
+            if not isinstance(group, str) or not group:
+                raise ValueError("joint group names must be non-empty strings")
+            if isinstance(names, str):
+                raise TypeError("joint groups must contain sequences of joint names")
+            try:
+                names = tuple(names)
+            except TypeError as error:
+                raise TypeError(
+                    "joint groups must contain sequences of joint names"
+                ) from error
+            if any(not isinstance(name, str) or not name for name in names):
+                raise ValueError(
+                    "joint groups must contain non-empty string joint names"
+                )
+            if len(set(names)) != len(names):
+                raise ValueError(f"joint group {group!r} contains duplicate joints")
+            normalized_groups[group] = names
 
         self.model = self.pin.buildModelFromUrdf(str(self.urdf_path))
         self.data = self.model.createData()
-        self.frames = dict(frames)
-        self.joint_groups = {key: tuple(value) for key, value in joint_groups.items()}
+        self.frames = MappingProxyType(dict(frames))
+        self.joint_groups = MappingProxyType(normalized_groups)
         self.mode_manager = mode_manager or RetargetingModeManager()
         self.damping = float(damping)
         self.step_size = float(step_size)
@@ -157,6 +257,22 @@ class PinocchioRetargetingSolver:
         self.max_iterations = int(max_iterations)
         self._frame_ids = self._resolve_frames()
         self._group_velocity_indices = self._resolve_joint_groups()
+        self._mode_plans: dict[RetargetingMode, _RetargetingModePlan] = {}
+        self._solve_workspaces: dict[
+            RetargetingMode, _PinocchioSolveWorkspace
+        ] = {}
+        self._lower_position_limits = np.asarray(
+            self.model.lowerPositionLimit, dtype=float
+        ).copy()
+        self._upper_position_limits = np.asarray(
+            self.model.upperPositionLimit, dtype=float
+        ).copy()
+        self._finite_lower_position_limits = np.isfinite(
+            self._lower_position_limits
+        )
+        self._finite_upper_position_limits = np.isfinite(
+            self._upper_position_limits
+        )
         self._neutral_q = self._project_limits(
             np.asarray(self.pin.neutral(self.model), dtype=float)
         )
@@ -173,6 +289,22 @@ class PinocchioRetargetingSolver:
     def set_mode(self, mode: Union[RetargetingMode, str]) -> None:
         self.mode_manager.set_mode(mode)
 
+    def prepare(
+        self, mode: Optional[Union[RetargetingMode, str]] = None
+    ) -> None:
+        """Prepare immutable indices for a mode outside the solve hot path."""
+
+        previous = self.mode
+        if mode is not None:
+            self.mode_manager.set_mode(mode)
+        try:
+            plan = self._mode_plan()
+            self._solve_workspace(plan)
+        except Exception:
+            if self.mode is not previous:
+                self.mode_manager.set_mode(previous)
+            raise
+
     def reset(self, configuration: Optional[Sequence[float]] = None) -> None:
         self._last_q = self._configuration(configuration)
 
@@ -181,22 +313,21 @@ class PinocchioRetargetingSolver:
         targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
         seed: Optional[Sequence[float]] = None,
     ) -> RetargetingResult:
-        self.mode_manager.validate_targets(targets)
-        normalized = {
-            name: targets[name]
-            if isinstance(targets[name], RetargetingTarget)
-            else RetargetingTarget(targets[name])
-            for name in self.mode_manager.spec.targets
-        }
-        self._validate_mode_configuration()
+        normalized = self._normalize_targets(targets)
+        plan = self._mode_plan()
         desired_poses = {
             name: self.pin.SE3(target.pose[:3, :3], target.pose[:3, 3])
             for name, target in normalized.items()
         }
         q = self._configuration(seed) if seed is not None else self._last_q.copy()
-        active = self._active_velocity_indices()
+        active = plan.active_velocity_indices
         started = perf_counter()
         residual = float("inf")
+        workspace = self._solve_workspace(plan)
+        weighted_error = workspace.weighted_error
+        weighted_jacobian = workspace.weighted_jacobian
+        full_velocity = workspace.full_velocity
+        full_velocity.fill(0.0)
 
         for iteration in range(1, self.max_iterations + 1):
             if active.size:
@@ -204,13 +335,16 @@ class PinocchioRetargetingSolver:
             else:
                 self.pin.forwardKinematics(self.model, self.data, q)
             self.pin.updateFramePlacements(self.model, self.data)
-            errors, jacobians = [], []
-            for name in self.mode_manager.spec.targets:
+            for target_index, (name, frame_id) in enumerate(
+                zip(plan.targets, plan.frame_ids)
+            ):
                 target = normalized[name]
-                frame_id = self._frame_ids[name]
                 desired = desired_poses[name]
                 current = self.data.oMf[frame_id]
                 error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
+                rows = slice(6 * target_index, 6 * (target_index + 1))
+                scale = np.sqrt(target.weight)
+                weighted_error[rows] = scale * error
                 if active.size:
                     jacobian = np.asarray(
                         self.pin.getFrameJacobian(
@@ -221,28 +355,45 @@ class PinocchioRetargetingSolver:
                         ),
                         dtype=float,
                     ).reshape(6, self.model.nv)
-                else:
-                    jacobian = np.zeros((6, 0))
-                scale = np.sqrt(target.weight)
-                errors.append(scale * error)
-                jacobians.append(scale * jacobian)
-            error = np.concatenate(errors)
-            residual = float(np.linalg.norm(error))
+                    weighted_jacobian[rows] = scale * jacobian[:, active]
+            residual = float(np.linalg.norm(weighted_error))
             if residual <= self.tolerance or not active.size:
                 break
-            jacobian = np.vstack(jacobians)[:, active]
+            jacobian = weighted_jacobian
             if jacobian.shape[0] <= jacobian.shape[1]:
-                system = jacobian @ jacobian.T
+                system = workspace.system
+                np.matmul(jacobian, jacobian.T, out=system)
                 system.flat[:: system.shape[0] + 1] += self.damping
-                velocity = jacobian.T @ self._linear_solve(system, error)
+                velocity = jacobian.T @ self._linear_solve(system, weighted_error)
             else:
-                system = jacobian.T @ jacobian
+                system = workspace.system
+                np.matmul(jacobian.T, jacobian, out=system)
                 system.flat[:: system.shape[0] + 1] += self.damping
-                velocity = self._linear_solve(system, jacobian.T @ error)
-            full_velocity = np.zeros(self.model.nv)
+                right_hand_side = workspace.right_hand_side
+                np.matmul(jacobian.T, weighted_error, out=right_hand_side)
+                velocity = self._linear_solve(system, right_hand_side)
             full_velocity[active] = self.step_size * velocity
             q = np.asarray(self.pin.integrate(self.model, q, full_velocity))
             q = self._project_limits(q)
+
+        # If the budget is exhausted, the final integration above advances q
+        # beyond the state whose residual was computed at the loop entrance.
+        # Re-evaluate q so every returned metric describes configuration.
+        if (
+            active.size
+            and iteration == self.max_iterations
+            and residual > self.tolerance
+        ):
+            self.pin.forwardKinematics(self.model, self.data, q)
+            self.pin.updateFramePlacements(self.model, self.data)
+            squared_residual = 0.0
+            for name, frame_id in zip(plan.targets, plan.frame_ids):
+                current = self.data.oMf[frame_id]
+                error = np.asarray(
+                    self.pin.log6(current.inverse() * desired_poses[name]).vector
+                )
+                squared_residual += normalized[name].weight * float(error @ error)
+            residual = float(np.sqrt(squared_residual))
 
         self._last_q = q.copy()
         return RetargetingResult(
@@ -303,6 +454,91 @@ class PinocchioRetargetingSolver:
             )
         return self._project_limits(q)
 
+    def _normalize_targets(
+        self,
+        targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
+    ) -> dict[str, RetargetingTarget]:
+        if not isinstance(targets, Mapping):
+            raise TypeError("targets must be a mapping")
+        self.mode_manager.validate_targets(targets)
+        plan = self._mode_plan()
+        normalized = {
+            name: targets[name]
+            if isinstance(targets[name], RetargetingTarget)
+            else RetargetingTarget(targets[name])
+            for name in plan.targets
+        }
+        return normalized
+
+    def _mode_plan(self) -> _RetargetingModePlan:
+        cached = self._mode_plans.get(self.mode)
+        if cached is not None:
+            return cached
+        spec = self.mode_manager.spec
+        missing_frames = [name for name in spec.targets if name not in self._frame_ids]
+        if missing_frames:
+            raise ValueError(
+                f"mode '{self.mode.value}' has no frame mappings for "
+                f"{sorted(missing_frames)}"
+            )
+        missing_groups = [
+            group
+            for group in spec.active_joint_groups
+            if group not in self._group_velocity_indices
+        ]
+        if missing_groups:
+            raise ValueError(
+                f"mode '{self.mode.value}' has no joint groups for "
+                f"{sorted(missing_groups)}"
+            )
+        active = np.unique(
+            np.concatenate(
+                [
+                    self._group_velocity_indices[group]
+                    for group in spec.active_joint_groups
+                ]
+            )
+        )
+        active.setflags(write=False)
+        plan = _RetargetingModePlan(
+            targets=spec.targets,
+            frame_ids=tuple(self._frame_ids[name] for name in spec.targets),
+            active_velocity_indices=active,
+        )
+        self._mode_plans[self.mode] = plan
+        return plan
+
+    def _solve_workspace(
+        self, plan: _RetargetingModePlan
+    ) -> _PinocchioSolveWorkspace:
+        cached = self._solve_workspaces.get(self.mode)
+        if cached is not None:
+            return cached
+        task_dimension = 6 * len(plan.targets)
+        active_size = plan.active_velocity_indices.size
+        system_size = min(task_dimension, active_size) if active_size else 0
+        cached = _PinocchioSolveWorkspace(
+            weighted_error=np.empty(task_dimension, dtype=float),
+            weighted_jacobian=(
+                np.empty((task_dimension, active_size), dtype=float)
+                if active_size
+                else None
+            ),
+            system=(
+                np.empty((system_size, system_size), dtype=float)
+                if system_size
+                else None
+            ),
+            right_hand_side=(
+                np.empty(active_size, dtype=float)
+                if active_size and task_dimension > active_size
+                else None
+            ),
+            full_velocity=np.zeros(self.model.nv, dtype=float),
+        )
+        self._solve_workspaces[self.mode] = cached
+        return cached
+
     def _resolve_frames(self) -> dict[str, int]:
         resolved = {}
         for logical_name, frame_name in self.frames.items():
@@ -313,29 +549,24 @@ class PinocchioRetargetingSolver:
         return resolved
 
     def _validate_mode_configuration(self) -> None:
-        missing_frames = set(self.mode_manager.spec.targets).difference(self._frame_ids)
-        if missing_frames:
-            raise ValueError(
-                f"mode '{self.mode.value}' has no frame mappings for "
-                f"{sorted(missing_frames)}"
-            )
-        missing_groups = set(self.mode_manager.spec.active_joint_groups).difference(
-            self._group_velocity_indices
-        )
-        if missing_groups:
-            raise ValueError(
-                f"mode '{self.mode.value}' has no joint groups for "
-                f"{sorted(missing_groups)}"
-            )
+        self._mode_plan()
 
     def _project_limits(self, q: np.ndarray) -> np.ndarray:
-        lower = np.asarray(self.model.lowerPositionLimit, dtype=float)
-        upper = np.asarray(self.model.upperPositionLimit, dtype=float)
         bounded = q.copy()
-        finite_lower = np.isfinite(lower)
-        finite_upper = np.isfinite(upper)
-        bounded[finite_lower] = np.maximum(bounded[finite_lower], lower[finite_lower])
-        bounded[finite_upper] = np.minimum(bounded[finite_upper], upper[finite_upper])
+        finite_lower = self._finite_lower_position_limits
+        finite_upper = self._finite_upper_position_limits
+        np.maximum(
+            bounded,
+            self._lower_position_limits,
+            out=bounded,
+            where=finite_lower,
+        )
+        np.minimum(
+            bounded,
+            self._upper_position_limits,
+            out=bounded,
+            where=finite_upper,
+        )
         return np.asarray(self.pin.normalize(self.model, bounded), dtype=float)
 
     def _resolve_joint_groups(self) -> dict[str, np.ndarray]:
@@ -355,13 +586,7 @@ class PinocchioRetargetingSolver:
         return resolved
 
     def _active_velocity_indices(self) -> np.ndarray:
-        groups = self.mode_manager.spec.active_joint_groups
-        missing = set(groups).difference(self._group_velocity_indices)
-        if missing:
-            raise ValueError(f"mode references unknown joint groups: {sorted(missing)}")
-        return np.unique(
-            np.concatenate([self._group_velocity_indices[group] for group in groups])
-        )
+        return self._mode_plan().active_velocity_indices
 
 
 # Compatibility with the class name used by dexe_teleoperate.

@@ -75,7 +75,8 @@ def main() -> None:
     }
     targets["left_hand"][2, 3] += args.offset
     targets["right_hand"][2, 3] += args.offset
-    solver.set_mode("dual_arm")
+    # Resolve mode indices, limits, and numerical workspaces before streaming.
+    solver.prepare("dual_arm")
     result = solver.solve(targets)
     print(
         f"success={result.success} iterations={result.iterations} "

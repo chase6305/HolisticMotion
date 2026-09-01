@@ -44,13 +44,7 @@ class _NaturalCubicPath:
         self.d = np.diff(second, axis=0) / (6.0 * h[:, None])
 
     def evaluate(self, value: np.ndarray, order: int = 0) -> np.ndarray:
-        query = np.asarray(value, dtype=float).reshape(-1)
-        index = np.clip(
-            np.searchsorted(self.grid, query, side="right") - 1,
-            0,
-            self.grid.size - 2,
-        )
-        delta = (query - self.grid[index])[:, None]
+        index, delta = self._segments(value)
         if order == 0:
             return self.a[index] + delta * (
                 self.b[index] + delta * (self.c[index] + delta * self.d[index])
@@ -62,6 +56,31 @@ class _NaturalCubicPath:
         if order == 2:
             return 2.0 * self.c[index] + 6.0 * delta * self.d[index]
         raise ValueError("spline derivative order must be 0, 1, or 2")
+
+    def evaluate_all(
+        self, value: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate position and both derivatives with one segment lookup."""
+
+        index, delta = self._segments(value)
+        a = self.a[index]
+        b = self.b[index]
+        c = self.c[index]
+        d = self.d[index]
+        position = a + delta * (b + delta * (c + delta * d))
+        first = b + delta * (2.0 * c + 3.0 * delta * d)
+        second = 2.0 * c + 6.0 * delta * d
+        return position, first, second
+
+    def _segments(self, value: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        query = np.asarray(value, dtype=float).reshape(-1)
+        index = np.clip(
+            np.searchsorted(self.grid, query, side="right") - 1,
+            0,
+            self.grid.size - 2,
+        )
+        delta = (query - self.grid[index])[:, None]
+        return index, delta
 
 
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:
@@ -106,6 +125,27 @@ class ToppraResult:
             raise ValueError("TOPPRA result arrays have inconsistent lengths")
         if not np.isfinite(self.duration) or self.duration < 0.0:
             raise ValueError("TOPPRA result duration must be finite and non-negative")
+        if np.any(np.diff(self.gridpoints) <= 0.0):
+            raise ValueError("TOPPRA result gridpoints must increase strictly")
+        if np.any(self.path_speeds < 0.0):
+            raise ValueError("TOPPRA result path speeds must be non-negative")
+        if abs(self.times[0]) > 1e-12 or np.any(np.diff(self.times) <= 0.0):
+            raise ValueError(
+                "TOPPRA result times must start at zero and increase strictly"
+            )
+        if not np.isclose(self.duration, self.times[-1], rtol=1e-12, atol=1e-12):
+            raise ValueError("TOPPRA result duration must match its final time")
+        expected_speed_squared = (
+            self.path_speeds[:-1] ** 2
+            + 2.0 * np.diff(self.gridpoints) * self.path_accelerations
+        )
+        if not np.allclose(
+            self.path_speeds[1:] ** 2,
+            expected_speed_squared,
+            rtol=1e-8,
+            atol=1e-10,
+        ):
+            raise ValueError("TOPPRA result violates interval path dynamics")
 
 
 class ToppraTrajectory:
@@ -146,9 +186,7 @@ class ToppraTrajectory:
             and np.isfinite(end_path_velocity)
             and end_path_velocity >= 0.0
         ):
-            raise ValueError(
-                "boundary path velocities must be finite and non-negative"
-            )
+            raise ValueError("boundary path velocities must be finite and non-negative")
 
         lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
         if np.any(lengths <= 1e-12):
@@ -180,9 +218,15 @@ class ToppraTrajectory:
         self._path = self._path_model.evaluate(grid)
         self._q_s = self._path_model.evaluate(grid, order=1)
         self._q_ss = self._path_model.evaluate(grid, order=2)
-        self.result = self._compute(
+        self._result = self._compute(
             float(start_path_velocity), float(end_path_velocity)
         )
+
+    @property
+    def result(self) -> ToppraResult:
+        """Validated immutable timing snapshot (read-only)."""
+
+        return self._result
 
     @property
     def duration(self) -> float:
@@ -306,16 +350,10 @@ class ToppraTrajectory:
         accel = self.result.path_accelerations[segment]
         elapsed = clipped - self.result.times[segment]
         initial_speed = self.result.path_speeds[segment]
-        s = (
-            self._grid[segment]
-            + initial_speed * elapsed
-            + 0.5 * accel * elapsed**2
-        )
+        s = self._grid[segment] + initial_speed * elapsed + 0.5 * accel * elapsed**2
         s = np.clip(s, self._grid[segment], self._grid[segment + 1])
         speed = np.maximum(0.0, initial_speed + accel * elapsed)
-        q = self._path_model.evaluate(s)
-        q_s = self._path_model.evaluate(s, order=1)
-        q_ss = self._path_model.evaluate(s, order=2)
+        q, q_s, q_ss = self._path_model.evaluate_all(s)
         return (
             q,
             q_s * speed[..., None],

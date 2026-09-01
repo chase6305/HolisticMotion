@@ -61,6 +61,8 @@ public:
                                     sphere.link_name);
       frame_ids.push_back(frame_id);
     }
+    world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
+    frame_jacobian.resize(6, model.nv);
     ResetPairs(exclude_same_link);
   }
 
@@ -76,7 +78,6 @@ public:
     ValidateConfiguration(q);
     pinocchio::forwardKinematics(model, *data, q);
     pinocchio::updateFramePlacements(model, *data);
-    world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
     for (std::size_t i = 0; i < spheres.size(); ++i) {
       const auto &placement = data->oMf[frame_ids[i]];
       world_spheres.row(static_cast<Eigen::Index>(i)).head<3>() =
@@ -90,7 +91,6 @@ public:
     ValidateConfiguration(q);
     pinocchio::computeJointJacobians(model, *data, q);
     pinocchio::updateFramePlacements(model, *data);
-    world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
     for (std::size_t i = 0; i < spheres.size(); ++i) {
       const auto &placement = data->oMf[frame_ids[i]];
       world_spheres.row(static_cast<Eigen::Index>(i)).head<3>() =
@@ -102,7 +102,6 @@ public:
 
   Eigen::Matrix<double, 3, Eigen::Dynamic>
   PointJacobian(std::size_t sphere_index) const {
-    Eigen::Matrix<double, 6, Eigen::Dynamic> frame_jacobian(6, model.nv);
     frame_jacobian.setZero();
     pinocchio::getFrameJacobian(model, *data, frame_ids[sphere_index],
                                 pinocchio::LOCAL_WORLD_ALIGNED, frame_jacobian);
@@ -182,6 +181,7 @@ public:
   std::vector<Pair> pairs;
   std::size_t pair_revision{0};
   Eigen::Matrix<double, Eigen::Dynamic, 4> world_spheres;
+  mutable Eigen::Matrix<double, 6, Eigen::Dynamic> frame_jacobian;
 };
 
 SphereCollisionModel::SphereCollisionModel(const std::string &urdf_path,
@@ -350,6 +350,7 @@ SphereCollisionModel::ComputeDistances(const Eigen::VectorXd &configuration,
     throw std::invalid_argument("maximum distance must be finite");
   impl_->Update(configuration);
   std::vector<SphereDistanceResult> result;
+  result.reserve(impl_->pairs.size());
   for (std::size_t i = 0; i < impl_->pairs.size(); ++i) {
     auto distance = impl_->Distance(i);
     if (distance.distance <= maximum_distance)

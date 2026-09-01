@@ -269,7 +269,8 @@ def main() -> None:
     while True:
         frame_started = time.perf_counter()
         if (solve_enabled.value and dirty["value"]) or solve_requested["value"]:
-            solver.set_mode(mode.value)
+            # Keep mode validation and workspace allocation outside solve().
+            solver.prepare(mode.value)
             targets = {
                 name: control_pose(control) for name, control in controls.items()
             }

@@ -102,6 +102,76 @@ def test_sampling_planner_timeout_includes_validation():
     assert result.statistics.planning_time_ms >= 5.0
 
 
+def test_sampling_planner_timeout_includes_single_segment_callback():
+    calls = 0
+
+    def slow_validator(_state):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            time.sleep(0.01)
+        return True
+
+    planner = hm.SamplingPlanner([-1.0], [1.0], slow_validator)
+    options = _options()
+    options.timeout_seconds = 0.005
+    options.edge_resolution = 2.0
+    result = planner.plan([0.0], [0.5], options)
+
+    assert result.status == hm.PlanningStatus.TIMEOUT
+    assert calls == 3
+
+
+def test_sampling_planner_safely_handles_unrepresentable_segment_count():
+    planner = hm.SamplingPlanner([-1.0], [1.0], lambda _state: True)
+    options = _options()
+    options.timeout_seconds = 0.005
+    options.edge_resolution = np.nextafter(0.0, 1.0)
+    result = planner.plan([-0.5], [0.5], options)
+
+    assert result.status == hm.PlanningStatus.TIMEOUT
+
+
+def test_sampling_planner_only_counts_real_validator_calls():
+    planner = hm.SamplingPlanner([-1.0], [1.0])
+    result = planner.plan([-0.5], [0.5], _options())
+
+    assert result.success
+    assert result.statistics.collision_checks == 0
+
+
+def test_sampling_planner_continuous_joint_update_is_transactional():
+    planner = hm.SamplingPlanner([-np.pi], [np.pi])
+    with pytest.raises(IndexError, match="continuous joint index"):
+        planner.set_continuous_joints([0, 1])
+
+    options = _options()
+    options.interpolate_path = True
+    options.interpolation_points = 3
+    result = planner.plan([-3.0], [3.0], options)
+
+    assert result.success
+    np.testing.assert_allclose(result.path[1], [0.0], atol=1e-12)
+
+
+def test_sampling_planner_rejects_unrepresentable_default_weights():
+    maximum = np.finfo(float).max
+    with pytest.raises(ValueError, match="default weights"):
+        hm.SamplingPlanner([-maximum], [maximum])
+    with pytest.raises(ValueError, match="default weights"):
+        hm.SamplingPlanner([0.0], [np.nextafter(0.0, 1.0)])
+
+
+def test_sampling_planner_saturates_extreme_finite_timeout():
+    planner = hm.SamplingPlanner([-1.0], [1.0])
+    options = _options()
+    options.timeout_seconds = np.finfo(float).max
+
+    result = planner.plan([-0.5], [0.5], options)
+
+    assert result.success
+
+
 @pytest.mark.parametrize(
     "algorithm",
     [

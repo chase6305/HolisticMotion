@@ -20,6 +20,18 @@ HolisticMotion 不捆绑机器人资源。请向 `Robot`、`CollisionModel` 和 
 - 通用 retargeting 结果采用 Pinocchio 模型关节顺序。
 - 控制器特定的关节重排应在应用集成边界完成。
 
+## 初始化阶段与运行阶段
+
+模型构建和配置应放在实时循环之外。`Robot`、原生碰撞模型、连续 IK 跟踪器和
+TOPPRA 轨迹会在构造阶段解析拓扑并分配持久状态。Retargeting 求解器应在构造后
+或非实时模式切换期间调用 `prepare(mode)`；之后的 `solve()` 与 `step()` 会复用
+mode indices 和数值工作区。采样规划器与路径优化器在对象中保存关节拓扑，而每次
+`plan()` 或 `optimize()` 只持有本次请求的搜索状态。球体拟合属于离线初始化操作，
+生成的球体模型才是运行时数据。
+
+有状态求解器与碰撞模型会复用可变工作区，因此同一实例不支持并发调用。需要并行
+查询时，应为每个运行 worker 创建并 prepare 独立实例。
+
 ## 七轴运动学
 
 兼容的七旋转关节球形肩腕结构使用 `SRSKinematics`。其零空间投影会拒绝非有限
@@ -40,6 +52,14 @@ q_command = result.joints
 跟踪器会在预测状态附近展开周期角，执行构型迟滞，按位姿误差和动态限制过滤候选，
 并报告奇异状态、构型切换、速度、加速度和残差。原生 `SRSKinematics` 仍保持
 无状态，可继续直接使用。
+调用方需要非异常状态以及逐候选构型、Jacobian 最小奇异值、逐关节限位余量、
+近奇异标记和限位触达标记时，可调用 `solve_detailed(target, seed, method)`；现有
+`solve()` 继续作为紧凑的异常式接口。
+TCP 与用户坐标系属于显式运行配置。`forward()` 和 `solve()` 继续使用机器人基座
+坐标；`forward_user()`、`inverse_user()`、`solve_user()` 与
+`solve_detailed_user()` 按兼容 SDK 的 `user_T_base * base_T_tcp` 约定应用用户
+变换。可通过 `tcp`、`user_frame` 属性读取，并用 `clear_tcp()`、
+`clear_user_frame()` 恢复单位变换。
 
 偏置七轴结构和批量 FK 使用 `FEPKinematics`。小批量使用 CPU；只有运行时存在
 CUDA 设备且批量足以摊薄传输成本时，`AUTO` 才选择 CUDA。FEP IK 在必要的高精度

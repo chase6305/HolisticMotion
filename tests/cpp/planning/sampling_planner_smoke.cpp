@@ -1,9 +1,13 @@
 #include <cmath>
 #include <iostream>
+#include <memory>
+#include <vector>
 
+#include "holistic_motion/planning/NullSpacePlanner.h"
 #include "holistic_motion/planning/PathOptimizer.h"
 #include "holistic_motion/planning/SamplingPlanner.h"
 
+using holistic_motion::robotics::planning::NullSpacePlanner;
 using holistic_motion::robotics::planning::PathOptimizer;
 using holistic_motion::robotics::planning::PlanningOptions;
 using holistic_motion::robotics::planning::SamplingAlgorithm;
@@ -17,6 +21,17 @@ bool OutsideObstacle(const Eigen::VectorXd &q) {
 } // namespace
 
 int main() {
+  auto incompatible =
+      std::make_shared<holistic_motion::robotics::SRSKinematics>(
+          std::vector<holistic_motion::robotics::JointNode>(1));
+  NullSpacePlanner null_space(incompatible);
+  std::vector<Eigen::VectorXd> failed_path{Eigen::VectorXd::Zero(7)};
+  if (null_space.Plan(Eigen::VectorXd::Zero(7), Eigen::VectorXd::Ones(7), 1,
+                      0.01, failed_path) ||
+      !failed_path.empty()) {
+    return 6;
+  }
+
   PathOptimizer path_optimizer(Eigen::Vector2d(-1.0, -1.0),
                                Eigen::Vector2d(1.0, 1.0));
   const std::vector<Eigen::VectorXd> rough_path{

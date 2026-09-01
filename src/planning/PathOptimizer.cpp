@@ -7,14 +7,11 @@
 #include <stdexcept>
 #include <utility>
 
+#include "JointSpaceTopology.h"
+#include "PlanningDeadline.h"
+
 namespace holistic_motion::robotics::planning {
 namespace {
-
-constexpr double kPi = 3.14159265358979323846;
-
-double WrappedDifference(double difference) {
-  return std::remainder(difference, 2.0 * kPi);
-}
 
 class OptimizationContext {
 public:
@@ -41,40 +38,18 @@ public:
 
   Eigen::VectorXd Difference(const Eigen::VectorXd &from,
                              const Eigen::VectorXd &to) const {
-    Eigen::VectorXd difference = to - from;
-    for (Eigen::Index i = 0; i < difference.size(); ++i) {
-      if (continuous_[static_cast<std::size_t>(i)])
-        difference[i] = WrappedDifference(difference[i]);
-    }
-    return difference;
+    return detail::Difference(from, to, continuous_);
   }
 
   Eigen::VectorXd Normalize(Eigen::VectorXd state) const {
-    for (Eigen::Index i = 0; i < state.size(); ++i) {
-      if (continuous_[static_cast<std::size_t>(i)]) {
-        state[i] =
-            lower_[i] +
-            std::fmod(std::fmod(state[i] - lower_[i], 2.0 * kPi) + 2.0 * kPi,
-                      2.0 * kPi);
-      } else {
-        state[i] = std::clamp(state[i], lower_[i], upper_[i]);
-      }
-    }
-    return state;
+    return detail::Normalize(std::move(state), lower_, upper_, continuous_);
   }
 
   Eigen::VectorXd NormalizeInterpolation(Eigen::VectorXd state) const {
     if (!has_continuous_)
       return state;
-    for (Eigen::Index i = 0; i < state.size(); ++i) {
-      if (continuous_[static_cast<std::size_t>(i)]) {
-        state[i] =
-            lower_[i] +
-            std::fmod(std::fmod(state[i] - lower_[i], 2.0 * kPi) + 2.0 * kPi,
-                      2.0 * kPi);
-      }
-    }
-    return state;
+    return detail::Normalize(std::move(state), lower_, upper_, continuous_,
+                             false);
   }
 
   double SquaredNorm(const Eigen::VectorXd &value) const {
@@ -194,27 +169,37 @@ public:
             "state cost gradient must be finite and match the state dimension");
       return gradient;
     }
+    Eigen::VectorXd positive = state;
+    Eigen::VectorXd negative = state;
     for (Eigen::Index i = 0; i < state.size(); ++i) {
-      Eigen::VectorXd positive = state;
-      Eigen::VectorXd negative = state;
-      positive[i] += options_.finite_difference_step;
-      negative[i] -= options_.finite_difference_step;
-      positive = Normalize(std::move(positive));
-      negative = Normalize(std::move(negative));
-      const double span = std::abs(Difference(negative, positive)[i]);
+      positive[i] =
+          NormalizeCoordinate(state[i] + options_.finite_difference_step, i);
+      negative[i] =
+          NormalizeCoordinate(state[i] - options_.finite_difference_step, i);
+      const bool continuous = continuous_[static_cast<std::size_t>(i)];
+      const auto difference = [continuous](double from, double to) {
+        const double value = to - from;
+        return continuous ? detail::WrappedDifference(value) : value;
+      };
+      const double span = std::abs(difference(negative[i], positive[i]));
       if (span > 1e-15) {
         const double positive_cost =
-            Difference(state, positive).cwiseAbs().maxCoeff() <= 1e-15
+            std::abs(difference(state[i], positive[i])) <= 1e-15
                 ? current_cost
                 : StateCostValue(positive);
-        if (TimedOut())
+        if (TimedOut()) {
+          positive[i] = state[i];
+          negative[i] = state[i];
           break;
+        }
         const double negative_cost =
-            Difference(state, negative).cwiseAbs().maxCoeff() <= 1e-15
+            std::abs(difference(state[i], negative[i])) <= 1e-15
                 ? current_cost
                 : StateCostValue(negative);
         gradient[i] = (positive_cost - negative_cost) / span;
       }
+      positive[i] = state[i];
+      negative[i] = state[i];
       if (TimedOut())
         break;
     }
@@ -229,12 +214,7 @@ public:
   }
 
   std::size_t SegmentCount(const Eigen::VectorXd &difference) const {
-    const double requested =
-        std::ceil(difference.cwiseAbs().maxCoeff() / options_.edge_resolution);
-    constexpr std::size_t maximum = std::numeric_limits<std::size_t>::max() - 1;
-    if (!std::isfinite(requested) || requested >= static_cast<double>(maximum))
-      return maximum;
-    return std::max<std::size_t>(1, static_cast<std::size_t>(requested));
+    return detail::SegmentCount(difference, options_.edge_resolution);
   }
 
   bool IsMotionValid(const Eigen::VectorXd &from, const Eigen::VectorXd &to) {
@@ -271,6 +251,11 @@ public:
   }
 
 private:
+  double NormalizeCoordinate(double value, Eigen::Index index) const {
+    return detail::NormalizeCoordinate(value, index, lower_, upper_,
+                                       continuous_);
+  }
+
   const Eigen::VectorXd &lower_;
   const Eigen::VectorXd &upper_;
   const Eigen::VectorXd &weights_;
@@ -330,17 +315,19 @@ void PathOptimizer::SetJointWeights(const Eigen::VectorXd &weights) {
 
 void PathOptimizer::SetContinuousJoints(
     const std::vector<std::size_t> &indices) {
-  continuous_.assign(static_cast<std::size_t>(lower_limits_.size()), false);
+  std::vector<bool> continuous(
+      static_cast<std::size_t>(lower_limits_.size()), false);
   for (std::size_t index : indices) {
-    if (index >= continuous_.size())
+    if (index >= continuous.size())
       throw std::out_of_range("continuous joint index");
     if (upper_limits_[static_cast<Eigen::Index>(index)] -
             lower_limits_[static_cast<Eigen::Index>(index)] <
-        2.0 * kPi - 1e-9)
+        2.0 * detail::kPi - 1e-9)
       throw std::invalid_argument(
           "continuous joints require a range of at least 2*pi");
-    continuous_[index] = true;
+    continuous[index] = true;
   }
+  continuous_ = std::move(continuous);
 }
 
 PathOptimizationResult
@@ -382,9 +369,7 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     return finish(PathOptimizationStatus::INVALID_PATH,
                   "invalid path or optimization options");
   }
-  const auto deadline =
-      started + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                    std::chrono::duration<double>(options.timeout_seconds));
+  const auto deadline = detail::DeadlineAfter(started, options.timeout_seconds);
   OptimizationContext context(
       lower_limits_, upper_limits_, weights_, continuous_, validator_,
       state_cost_, state_cost_gradient_, options, result.statistics, deadline);

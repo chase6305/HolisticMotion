@@ -4,7 +4,9 @@ import holistic_motion as hm
 import numpy as np
 import pytest
 from holistic_motion.geometry import (
+    SphereFitMetrics,
     SphereFitOptions,
+    SphereFitResult,
     SphereSpec,
     evaluate_sphere_fit,
     fit_spheres,
@@ -126,6 +128,33 @@ def test_sphere_model_load_reports_malformed_entries(tmp_path):
     with pytest.raises(ValueError, match="invalid sphere entry"):
         load_sphere_model(path)
 
+    path.write_text("[]")
+    with pytest.raises(TypeError, match="root must be an object"):
+        load_sphere_model(path)
+
+
+def test_sphere_model_public_boundaries_validate_types(tmp_path):
+    path = tmp_path / "spheres.json"
+    sphere = SphereSpec((0, 0, 0), 0.2)
+    with pytest.raises(ValueError, match="string name"):
+        save_sphere_model(path, {1: (sphere,)})
+    with pytest.raises(TypeError, match="SphereSpec"):
+        save_sphere_model(path, {"body": (object(),)})
+    with pytest.raises(TypeError, match="metadata"):
+        save_sphere_model(path, {"body": (sphere,)}, metadata=[])
+    with pytest.raises(TypeError, match="SphereSpec"):
+        make_collision_spheres({"body": (object(),)})
+
+
+def test_sphere_fit_public_boundaries_validate_types():
+    points = np.array([[0.0, 0.0, 0.0]])
+    with pytest.raises(TypeError, match="SphereFitOptions"):
+        fit_spheres(points, points, options=object())
+    with pytest.raises(TypeError, match="SphereSpec"):
+        evaluate_sphere_fit(points, [object()])
+    with pytest.raises(TypeError, match="iterable"):
+        evaluate_sphere_fit(points, None)
+
 
 def test_sphere_fit_options_validate_values():
     with pytest.raises(ValueError):
@@ -134,8 +163,35 @@ def test_sphere_fit_options_validate_values():
         SphereFitOptions(max_spheres=2.5)
     with pytest.raises(ValueError):
         SphereFitOptions(padding=float("nan"))
+    with pytest.raises(TypeError, match="sampled_coverage"):
+        SphereFitOptions(sampled_coverage=1)
+    options = SphereFitOptions(max_spheres=np.int64(2), chunk_size=np.int64(16))
+    assert type(options.max_spheres) is int
+    assert type(options.chunk_size) is int
     with pytest.raises(ValueError):
         SphereSpec((0, 0, 0), -1.0)
+    with pytest.raises(TypeError, match="radius must be numeric"):
+        SphereSpec((0, 0, 0), object())
+
+
+def test_sphere_fit_result_value_objects_validate_and_own_state():
+    sphere = SphereSpec((0, 0, 0), 1.0)
+    metrics = SphereFitMetrics(1.0, 0.0, 0.0, 1)
+    source = [sphere]
+    result = SphereFitResult(source, metrics, "inscribed")
+    source.clear()
+    assert result.spheres == (sphere,)
+
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        SphereFitMetrics(1.1, 0.0, 0.0, 1)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        SphereFitMetrics(1.0, 1.0, 0.5, 1)
+    with pytest.raises(TypeError, match="sampled_coverage must be numeric"):
+        SphereFitMetrics(object(), 0.0, 0.0, 1)
+    with pytest.raises(TypeError, match="integer"):
+        SphereFitMetrics(1.0, 0.0, 0.0, True)
+    with pytest.raises(ValueError, match="must match"):
+        SphereFitResult((sphere,), SphereFitMetrics(1.0, 0.0, 0.0, 2), "fit")
 
 
 def test_geometry_is_available_from_package_namespace():

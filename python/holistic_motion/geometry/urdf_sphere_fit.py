@@ -19,7 +19,11 @@ def _vector(text: Optional[str], size: int, default) -> np.ndarray:
         if default is None:
             raise ValueError(f"required {size}-vector attribute is missing")
         return np.asarray(default, dtype=float)
-    values = np.fromstring(text, sep=" ", dtype=float)
+    tokens = text.split()
+    try:
+        values = np.asarray([float(token) for token in tokens], dtype=float)
+    except ValueError as error:
+        raise ValueError(f"expected {size} finite values, got {text!r}") from error
     if values.shape != (size,) or not np.all(np.isfinite(values)):
         raise ValueError(f"expected {size} finite values, got {text!r}")
     return values
@@ -53,7 +57,11 @@ def _resolve_mesh_uri(uri: str, urdf_dir: Path, package_dirs: tuple[Path, ...]) 
     elif uri.startswith("package://"):
         relative = Path(uri[len("package://") :])
         parts = relative.parts
-        if len(parts) < 2:
+        if (
+            len(parts) < 2
+            or relative.is_absolute()
+            or any(part in (".", "..") for part in parts)
+        ):
             raise ValueError(f"invalid package mesh URI: {uri}")
         package, inside = parts[0], Path(*parts[1:])
         candidates = []
@@ -102,15 +110,24 @@ def load_urdf_collision_meshes(
     urdf = Path(urdf_path).resolve()
     if not urdf.is_file():
         raise FileNotFoundError(f"URDF does not exist: {urdf}")
-    roots = tuple(Path(path).resolve() for path in package_dirs)
+    if isinstance(package_dirs, (str, Path)):
+        raise TypeError("package_dirs must be an iterable of paths, not one path")
+    try:
+        roots = tuple(Path(path).resolve() for path in package_dirs)
+    except TypeError as error:
+        raise TypeError("package_dirs must be an iterable of paths") from error
     root = ET.parse(urdf).getroot()
     if root.tag != "robot":
         raise ValueError("URDF root element must be <robot>")
     result = {}
+    seen_links = set()
     for link in root.findall("link"):
         link_name = link.get("name")
         if not link_name:
             raise ValueError("URDF link is missing a name")
+        if link_name in seen_links:
+            raise ValueError(f"URDF contains duplicate link name {link_name!r}")
+        seen_links.add(link_name)
         geometries = []
         for collision in link.findall("collision"):
             geometry = collision.find("geometry")
@@ -135,7 +152,9 @@ def load_urdf_collision_meshes(
                 radius = float(shape.get("radius", "nan"))
                 length = float(shape.get("length", "nan"))
                 if not np.isfinite(radius + length) or radius <= 0 or length <= 0:
-                    raise ValueError(f"link {link_name} cylinder dimensions must be positive")
+                    raise ValueError(
+                        f"link {link_name} cylinder dimensions must be positive"
+                    )
                 mesh = trimesh.creation.cylinder(radius=radius, height=length)
             elif shape.tag == "sphere":
                 radius = float(shape.get("radius", "nan"))
@@ -166,10 +185,16 @@ def fit_urdf_collision_spheres(
     random_seed: int = 0,
 ) -> dict[str, SphereFitResult]:
     """Fit selected URDF links and return one result per link."""
+    if isinstance(links, str):
+        raise TypeError("links must be an iterable of link names, not a string")
     meshes = load_urdf_collision_meshes(urdf_path, package_dirs=package_dirs)
     selected = tuple(links) if links is not None else tuple(meshes)
     if not selected:
         raise ValueError("links must not be empty")
+    if len(set(selected)) != len(selected):
+        raise ValueError("links must contain unique names")
+    if any(not isinstance(link, str) or not link for link in selected):
+        raise ValueError("links must contain non-empty string names")
     unknown = sorted(set(selected) - set(meshes))
     if unknown:
         raise ValueError("links have no collision geometry: " + ", ".join(unknown))

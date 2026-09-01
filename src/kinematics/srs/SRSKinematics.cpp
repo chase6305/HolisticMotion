@@ -6,6 +6,8 @@
 #include <cmath>
 #include <limits>
 
+#include <Eigen/SVD>
+
 namespace holistic_motion::robotics {
 
 bool SRSKinematics::IsCompatible() const noexcept {
@@ -20,6 +22,17 @@ bool SRSKinematics::IsCompatible() const noexcept {
 namespace {
 
 int Direction(double value) { return value < 0.0 ? -1 : 1; }
+
+bool IsRigidTransform(const Eigen::Matrix4d &transform) {
+    if (!transform.allFinite() ||
+        !transform.row(3).isApprox(
+                Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9))
+        return false;
+    const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
+    return (rotation.transpose() * rotation)
+                   .isApprox(Eigen::Matrix3d::Identity(), 1e-7) &&
+           std::abs(rotation.determinant() - 1.0) <= 1e-7;
+}
 
 Eigen::Matrix3d RotationX(double angle) {
     return Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitX()).toRotationMatrix();
@@ -501,7 +514,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                           std::vector<Eigen::VectorXd> &solutions) const {
     solutions.clear();
     if (!IsCompatible() || seed.size() != 7 || !seed.allFinite() ||
-        !target.GetTransform().allFinite()) {
+        !IsRigidTransform(target.GetTransform())) {
         return false;
     }
 
@@ -574,6 +587,67 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                   return WeightedDistance(lhs, seed) < WeightedDistance(rhs, seed);
               });
     return !solutions.empty();
+}
+
+SRSSolveReport SRSKinematics::SolveDetailed(const SE3d &target,
+                                            const Eigen::VectorXd &seed,
+                                            SRSSolveMethod method) const {
+    SRSSolveReport report;
+    report.method = method;
+    if (seed.size() != 7 || !seed.allFinite() ||
+        !IsRigidTransform(target.GetTransform())) {
+        report.status = SRSSolveStatus::INVALID_INPUT;
+        return report;
+    }
+    if (!IsCompatible()) {
+        report.status = SRSSolveStatus::INCOMPATIBLE_MODEL;
+        return report;
+    }
+    report.closed_form_compatible = AnalyzeGeometry().closed_form_compatible;
+    if (!Solve(target, seed, method, report.solutions)) {
+        report.status = SRSSolveStatus::NO_SOLUTION;
+        return report;
+    }
+
+    report.configurations.reserve(report.solutions.size());
+    report.minimum_singular_values.reserve(report.solutions.size());
+    report.minimum_joint_limit_margins.reserve(report.solutions.size());
+    report.joint_limit_margins.reserve(report.solutions.size());
+    report.near_singularities.reserve(report.solutions.size());
+    report.joint_limit_hits.reserve(report.solutions.size());
+    for (const auto &solution : report.solutions) {
+        report.configurations.push_back(GetConfiguration(solution));
+        Eigen::MatrixXd jacobian;
+        double minimum_singular_value = 0.0;
+        double maximum_singular_value = 0.0;
+        if (GetJacobian(solution, jacobian)) {
+            const Eigen::JacobiSVD<Eigen::MatrixXd> svd(
+                    jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
+            if (svd.singularValues().size() > 0) {
+                minimum_singular_value = svd.singularValues().tail<1>()[0];
+                maximum_singular_value = svd.singularValues()[0];
+            }
+        }
+        report.minimum_singular_values.push_back(minimum_singular_value);
+        report.near_singularities.push_back(
+                minimum_singular_value <=
+                std::max(1e-10, maximum_singular_value * 1e-8));
+
+        double margin = std::numeric_limits<double>::infinity();
+        Eigen::VectorXd margins(solution.size());
+        for (Eigen::Index index = 0; index < solution.size(); ++index) {
+            const auto &node = joint_nodes_[static_cast<std::size_t>(index)];
+            margins[index] = std::max(
+                    0.0, std::min(solution[index] - node.lower_limit,
+                                  node.upper_limit - solution[index]));
+            margin = std::min(margin, margins[index]);
+        }
+        report.minimum_joint_limit_margins.push_back(margin);
+        report.joint_limit_margins.push_back(std::move(margins));
+        report.joint_limit_hits.push_back(margin <= 1e-9);
+    }
+    report.status = SRSSolveStatus::SUCCESS;
+    return report;
 }
 
 } // namespace holistic_motion::robotics

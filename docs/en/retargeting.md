@@ -100,7 +100,7 @@ height, not an acceleration model coupled to the configuration. Set
 `plane_height` when the support plane is not at world `z=0`.
 
 ```python
-solver.set_mode("dual_arm")
+solver.prepare("dual_arm")
 result = solver.solve({
     "left_hand": left_pose,
     "right_hand": right_pose,
@@ -109,6 +109,12 @@ result = solver.solve({
 if result.success:
     send_joint_command(result.configuration)
 ```
+
+Call `prepare(mode)` during application initialization or a non-real-time mode
+transition. It validates frame and joint-group mappings and caches active
+indices, velocity limits, and Pink numerical workspaces. `set_mode(mode)` keeps
+the legacy lazy behavior; it is useful while assembling configuration, but its
+first subsequent solve may perform mode preparation.
 
 Targets, task costs, mode specifications, and result payloads own immutable
 snapshots of caller-provided arrays and sequences. Copy
