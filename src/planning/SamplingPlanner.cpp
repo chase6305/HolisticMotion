@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <queue>
 #include <random>
 #include <stdexcept>
 #include <utility>
@@ -38,7 +39,7 @@ public:
                   const PlanningOptions &options,
                   PlanningStatistics &statistics,
                   std::chrono::steady_clock::time_point deadline)
-      : lower_(lower), upper_(upper), weights_(weights),
+      : lower_(lower), upper_(upper), metric_(weights, continuous),
         continuous_(continuous), validator_(validator), options_(options),
         statistics_(statistics), deadline_(deadline),
         generator_(options.random_seed) {}
@@ -58,8 +59,7 @@ public:
 
   double Distance(const Eigen::VectorXd &first,
                   const Eigen::VectorXd &second) const {
-    const Eigen::VectorXd delta = Difference(first, second);
-    return std::sqrt((weights_.array() * delta.array().square()).sum());
+    return std::sqrt(metric_.SquaredDistance(first, second));
   }
 
   Eigen::VectorXd Interpolate(const Eigen::VectorXd &from,
@@ -103,6 +103,10 @@ public:
   bool IsMotionValid(const Eigen::VectorXd &from, const Eigen::VectorXd &to) {
     if (TimedOut())
       return false;
+    // Bounded interpolation stays inside the joint limits; continuous joints
+    // are normalized. Without a validator, no interior state needs sampling.
+    if (!validator_)
+      return true;
     const Eigen::VectorXd delta = Difference(from, to);
     const std::size_t segments = SegmentCount(delta);
     // Check the far endpoint first, then interior states. This quickly
@@ -113,7 +117,7 @@ public:
       if (TimedOut())
         return false;
       if (!IsStateValid(
-              Interpolate(from, to, static_cast<double>(i) / segments)) ||
+              Normalize(from + (static_cast<double>(i) / segments) * delta)) ||
           TimedOut()) {
         return false;
       }
@@ -125,7 +129,7 @@ public:
     std::size_t best = 0;
     double best_distance = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
-      const double distance = Distance(tree.nodes[i].state, state);
+      const double distance = metric_.SquaredDistance(tree.nodes[i].state, state);
       if (distance < best_distance) {
         best_distance = distance;
         best = i;
@@ -137,9 +141,16 @@ public:
   std::vector<std::size_t> Near(const Tree &tree, const Eigen::VectorXd &state,
                                 double radius) const {
     std::vector<std::size_t> result;
+    const double squared_radius = radius * radius;
     for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
-      if (Distance(tree.nodes[i].state, state) <= radius)
-        result.push_back(i);
+        const double squared_distance =
+            metric_.SquaredDistance(tree.nodes[i].state, state);
+        // A large finite radius can overflow when squared. Preserve the
+        // original distance comparison's rejection of non-finite distances in
+        // that case.
+        if (squared_distance <= squared_radius &&
+            (std::isfinite(squared_distance) || std::isinf(radius)))
+            result.push_back(i);
     }
     return result;
   }
@@ -181,7 +192,7 @@ public:
 private:
   const Eigen::VectorXd &lower_;
   const Eigen::VectorXd &upper_;
-  const Eigen::VectorXd &weights_;
+  const detail::JointSpaceMetric metric_;
   const std::vector<bool> &continuous_;
   const SamplingPlanner::StateValidator &validator_;
   const PlanningOptions &options_;
@@ -241,7 +252,11 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
     const Eigen::VectorXd second = sample_at(second_distance, second_segment);
     const double direct_length = context.Distance(first, second);
     if (direct_length + 1e-9 >= second_distance - first_distance ||
-        !context.IsMotionValid(first, second))
+        !context.IsMotionValid(first, second) ||
+        // Splitting the retained edges changes their collision sample grid.
+        // Check both fragments, including the newly introduced first endpoint.
+        !context.IsMotionValid(path[first_segment], first) ||
+        !context.IsMotionValid(second, path[second_segment + 1]))
       continue;
 
     std::vector<Eigen::VectorXd> shortened;
@@ -263,49 +278,66 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
 }
 
 void InterpolatePath(std::vector<Eigen::VectorXd> &path,
-                     const PlanningContext &context, std::size_t points) {
-  if (path.size() < 2 || points <= path.size())
-    return;
-  std::vector<double> cumulative(path.size(), 0.0);
-  for (std::size_t i = 1; i < path.size(); ++i) {
-    cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
-  }
-  if (cumulative.back() <= 1e-12)
-    return;
-  std::vector<Eigen::VectorXd> output;
-  output.reserve(points);
-  std::size_t segment = 1;
-  for (std::size_t i = 0; i < points; ++i) {
-    const double distance = cumulative.back() * static_cast<double>(i) /
-                            static_cast<double>(points - 1);
-    while (segment + 1 < cumulative.size() && cumulative[segment] < distance) {
-      ++segment;
+                     PlanningContext &context, std::size_t points) {
+    if (path.size() < 2 || points <= path.size() || context.TimedOut())
+        return;
+    // Preserve every original corner. Global arc-length resampling can drop a
+    // corner and connect samples across an obstacle instead of along the path.
+    std::vector<double> lengths(path.size() - 1);
+    std::vector<std::size_t> subdivisions(lengths.size(), 1);
+    std::priority_queue<std::pair<double, std::size_t>> longest;
+    for (std::size_t index = 0; index < lengths.size(); ++index) {
+        lengths[index] = context.Distance(path[index], path[index + 1]);
+        longest.emplace(lengths[index], index);
     }
-    const double span = cumulative[segment] - cumulative[segment - 1];
-    const double ratio =
-        span <= 1e-12 ? 0.0 : (distance - cumulative[segment - 1]) / span;
-    output.push_back(
-        context.Interpolate(path[segment - 1], path[segment], ratio));
-  }
-  path = std::move(output);
+    for (std::size_t count = path.size(); count < points; ++count) {
+        if (context.TimedOut())
+            return;
+        const std::size_t index = longest.top().second;
+        longest.pop();
+        ++subdivisions[index];
+        longest.emplace(lengths[index] / subdivisions[index], index);
+    }
+    std::vector<Eigen::VectorXd> output;
+    output.reserve(points);
+    output.push_back(path.front());
+    for (std::size_t index = 0; index < lengths.size(); ++index) {
+        for (std::size_t sample = 1; sample <= subdivisions[index]; ++sample) {
+            if (context.TimedOut())
+                return;
+            Eigen::VectorXd state =
+                sample == subdivisions[index]
+                    ? path[index + 1]
+                    : context.Interpolate(path[index], path[index + 1],
+                                          static_cast<double>(sample) /
+                                              subdivisions[index]);
+            // Recheck the changed sample grid. On failure or timeout retain the
+            // already validated original path rather than partially resampling.
+            if (subdivisions[index] > 1 &&
+                !context.IsMotionValid(output.back(), state))
+                return;
+            output.push_back(std::move(state));
+        }
+    }
+    path = std::move(output);
 }
 
 std::vector<Eigen::VectorXd>
 ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
              std::size_t second_index, const PlanningContext &context) {
-  auto first_path = context.Trace(first, first_index);
-  auto second_path = context.Trace(second, second_index);
-  if (!first.rooted_at_start) {
-    std::swap(first_path, second_path);
-  }
-  // The goal-rooted trace runs goal -> connection after reversal.
-  std::reverse(second_path.begin(), second_path.end());
-  if (!first_path.empty() && !second_path.empty() &&
-      context.Distance(first_path.back(), second_path.front()) < 1e-9) {
-    second_path.erase(second_path.begin());
-  }
-  first_path.insert(first_path.end(), second_path.begin(), second_path.end());
-  return first_path;
+    auto first_path = context.Trace(first, first_index);
+    auto second_path = context.Trace(second, second_index);
+    if (!first.rooted_at_start) {
+        std::swap(first_path, second_path);
+    }
+    // The goal-rooted trace runs goal -> connection after reversal.
+    std::reverse(second_path.begin(), second_path.end());
+    if (!first_path.empty() && !second_path.empty() &&
+        context.Distance(first_path.back(), second_path.front()) < 1e-9) {
+        second_path.erase(second_path.begin());
+    }
+    first_path.insert(first_path.end(), second_path.begin(), second_path.end());
+    return first_path;
 }
 
 std::vector<Eigen::VectorXd>
@@ -428,6 +460,11 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         update_descendant_costs(index, delta);
       }
     }
+    // Rewiring can improve the incumbent through any of its ancestors. Compare
+    // new goal connections with its current cost, otherwise a stale larger
+    // bound can replace an already improved path with a worse one.
+    if (best_goal != std::numeric_limits<std::size_t>::max())
+      best_cost = tree.nodes[best_goal].cost;
     const double remaining = context.Distance(candidate, goal);
     if (remaining <= options.extension_range && cost + remaining < best_cost &&
         context.IsMotionValid(candidate, goal)) {

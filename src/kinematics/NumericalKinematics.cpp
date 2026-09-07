@@ -1,12 +1,37 @@
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 
+#include "DampedIKWorkspace.h"
+
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+
 namespace holistic_motion {
 namespace robotics {
+
+NumericalKinematics::NumericalKinematics(
+        const std::vector<JointNode>& joint_node) {
+    if (joint_node.empty() ||
+        joint_node.size() - 1 >
+                static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument(
+                "numerical joint model must contain a terminal node and "
+                "a representable number of coordinates");
+    }
+    InitializeJointModel(joint_node, static_cast<int>(joint_node.size() - 1));
+    holistic_motion::utility::LogDebug("Constructing NumericalKinematics...");
+}
+
+void NumericalKinematics::SetDOF(int dof) {
+    if (dof != this->dof_) {
+        throw std::invalid_argument("DOF is fixed by the numerical joint model");
+    }
+}
 
 bool NumericalKinematics::GetFK(const Eigen::VectorXd& target_joint,
                                 SE3d& pose) const {
     std::vector<SE3d> pose_list;
-    if (this->GetAllFK(target_joint, pose_list)) {
+    if (this->GetAllFK(target_joint, pose_list) && !pose_list.empty()) {
         pose = pose_list.back();
         return true;
     }
@@ -19,6 +44,7 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
                                 std::vector<double>& dist) const {
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get position IK.");
     ik_solutions.Clear();
+    dist.clear();
 
     if (joint_seed.size() != this->dof_) {
         joint_seed = this->home_joints_;
@@ -31,7 +57,8 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
 
     SE3d tcp_pose;
     std::vector<SE3d> pose_list;
-    if (this->GetAllFK(joint_seed, pose_list)) {
+    if (this->GetAllFK(joint_seed, pose_list) &&
+        pose_list.size() > static_cast<std::size_t>(this->dof_)) {
         tcp_pose = pose_list.back();
     } else {
         ik_solutions.success = false;
@@ -39,51 +66,67 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
     }
 
     Eigen::VectorXd iter_joint = joint_seed;
-    auto relative_pose = tcp_pose * target_pose.Inverse();
-    double angle_err = std::abs(GetRAngle(relative_pose.GetRotation()));
-    double translation_err = relative_pose.GetTranslation().norm();
+    const auto task_error = [&target_pose](const SE3d& current) {
+        // The geometric Jacobian maps to TCP linear velocity and angular
+        // velocity in the world frame. A relative SE3 translation also rotates
+        // the current position and is not the corresponding position error.
+        const Eigen::Matrix3d rotation =
+                target_pose.GetRotation() * current.GetRotation().transpose();
+        return SE3d(target_pose.GetTranslation() - current.GetTranslation(),
+                    SO3d(rotation));
+    };
+    SE3d delta_x = task_error(tcp_pose);
+    double angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
+    double translation_err = delta_x.GetTranslation().norm();
     bool converged = translation_err < this->trans_err_th_ &&
                      angle_err < this->angle_err_th_;
-    int i = 0;
-    for (; !converged && i < this->max_iter_num_; ++i) {
-        SE3d delta_x = target_pose * tcp_pose.Inverse();
-        Eigen::MatrixXd jaco;
-        this->_GetKinJacobian(jaco, pose_list);
-        Eigen::VectorXd delta_theta;
-        this->_CalDeltaTheta(delta_x, jaco, delta_theta);
-        iter_joint += this->step_size_ * delta_theta;
-        for (int joint = 0; joint < this->dof_; ++joint) {
-            const auto& node = this->joint_nodes_[joint];
-            iter_joint[joint] = clamp(iter_joint[joint], node.lower_limit,
-                                      node.upper_limit);
-        }
-        if (!this->GetAllFK(iter_joint, pose_list)) break;
-        tcp_pose = pose_list.back();
+    // Exact seeds avoid allocating iteration storage altogether.
+    if (!converged && this->dof_ > 0) {
+        Eigen::MatrixXd jacobian(6, this->dof_);
+        Eigen::VectorXd delta_theta(this->dof_);
+        detail::DampedIKWorkspace workspace(this->dof_);
+        for (int i = 0; i < this->max_iter_num_; ++i) {
+            if (!this->_GetKinJacobian(jacobian, pose_list)) break;
+            Eigen::Matrix<double, 6, 1> error;
+            error.head<3>() = delta_x.GetTranslation();
+            const Eigen::AngleAxisd rotation_error(
+                    Eigen::Quaterniond(delta_x.GetRotation()));
+            error.tail<3>() = rotation_error.angle() * rotation_error.axis();
+            if (!workspace.Solve(jacobian, error, this->damp_coeff_, this->eps_,
+                                 delta_theta)) break;
+            iter_joint += this->step_size_ * delta_theta;
+            for (int joint = 0; joint < this->dof_; ++joint) {
+                const auto& node = this->joint_nodes_[joint];
+                iter_joint[joint] = clamp(iter_joint[joint], node.lower_limit,
+                                         node.upper_limit);
+            }
+            if (!this->GetAllFK(iter_joint, pose_list) ||
+                pose_list.size() <= static_cast<std::size_t>(this->dof_)) break;
+            tcp_pose = pose_list.back();
 
-        relative_pose = tcp_pose * target_pose.Inverse();
-        angle_err = std::abs(GetRAngle(relative_pose.GetRotation()));
-        translation_err = relative_pose.GetTranslation().norm();
+            delta_x = task_error(tcp_pose);
+            angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
+            translation_err = delta_x.GetTranslation().norm();
 
-        if (translation_err < this->trans_err_th_ &&
-            angle_err < this->angle_err_th_) {
-            converged = true;
-            break;
+            if (translation_err < this->trans_err_th_ &&
+                angle_err < this->angle_err_th_) {
+                converged = true;
+                break;
+            }
         }
     }
 
     if (!converged) {
         ik_solutions.success = false;
     } else {
-        ik_solutions.success = true;
-        ik_solutions.PushBack(iter_joint);
+        ik_solutions.success = ik_solutions.PushBack(iter_joint);
     }
 
     // Remove repeated IK, if there are.
     ik_solutions.RemoveRepeatedIK();
     // Finds IK that is within joint limits, removes IK that is out of range.
-    ik_solutions.GetLimitsIK(this->GetJointNode());
+    ik_solutions.GetLimitsIK(this->joint_nodes_);
 
-    dist.clear();
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {
@@ -159,7 +202,7 @@ bool NumericalKinematics::GetMaxIterNum(int& max_iter_num) const {
 }
 
 bool NumericalKinematics::SetTransErrTh(const double& trans_err_th) {
-    if (trans_err_th <= 0) {
+    if (!std::isfinite(trans_err_th) || trans_err_th <= 0) {
         return false;
     }
     this->trans_err_th_ = trans_err_th;
@@ -172,7 +215,7 @@ bool NumericalKinematics::GetTransErrTh(double& trans_err_th) const {
 }
 
 bool NumericalKinematics::SetAngleErrTh(const double& angle_err_th) {
-    if (angle_err_th <= 0) {
+    if (!std::isfinite(angle_err_th) || angle_err_th <= 0) {
         return false;
     }
     this->angle_err_th_ = angle_err_th;
@@ -185,7 +228,7 @@ bool NumericalKinematics::GetAngleErrTh(double& angle_err_th) const {
 }
 
 bool NumericalKinematics::SetStepSize(const double& step_size) {
-    if (step_size <= 0) {
+    if (!std::isfinite(step_size) || step_size <= 0) {
         return false;
     }
     this->step_size_ = step_size;
@@ -198,7 +241,7 @@ bool NumericalKinematics::GetStepSize(double& step_size) const {
 }
 
 bool NumericalKinematics::SetDamp(const double& damp) {
-    if (damp <= 0) {
+    if (!std::isfinite(damp) || damp <= 0) {
         return false;
     }
     this->damp_coeff_ = damp;
@@ -227,9 +270,7 @@ bool NumericalKinematics::GetJacobian(const Eigen::VectorXd& joint_pos,
 
 bool NumericalKinematics::_GetKinJacobian(
         Eigen::MatrixXd& jacobian, const std::vector<SE3d>& pose_list) const {
-    Eigen::MatrixXd axis_list;
-    this->_GetCurrentJointAxisInWorld(axis_list, pose_list);
-
+    if (pose_list.size() <= static_cast<std::size_t>(this->dof_)) return false;
     jacobian.resize(6, this->dof_);
     const Eigen::Vector3d ee_position = pose_list.back().GetTranslation();
 
@@ -239,9 +280,11 @@ bool NumericalKinematics::_GetKinJacobian(
         auto joint_type = this->joint_nodes_[i].joint_type;
 
         Eigen::Vector3d joint_start_position = pose_list[i].GetTranslation();
-        Eigen::Vector3d joint_axis = axis_list.block(0, i, 3, 1);
+        const Eigen::Vector3d joint_axis =
+                pose_list[i].GetRotation() * this->joint_nodes_[i].axis;
 
-        if (JointType::REVOLUTE == joint_type) {
+        if (JointType::REVOLUTE == joint_type ||
+            JointType::CONTINUOUS == joint_type) {
             twist.head<3>() =
                     joint_axis.cross(ee_position - joint_start_position);
             twist.tail<3>() = joint_axis;
@@ -250,113 +293,6 @@ bool NumericalKinematics::_GetKinJacobian(
         }
         jacobian.col(i) = twist;
     }
-
-    return true;
-}
-
-bool NumericalKinematics::_GetCurrentJointAxisInWorld(
-        Eigen::MatrixXd& axis_list, const std::vector<SE3d>& pose_list) const {
-    axis_list.resize(3, this->dof_);
-    for (int i = 0; i < this->dof_; ++i) {
-        Eigen::Vector3d axis = this->joint_nodes_[i].axis;
-        Eigen::Matrix3d joint_rotation = pose_list[i].GetRotation();
-        axis_list.col(i) = joint_rotation * axis;
-    }
-    return true;
-}
-
-bool NumericalKinematics::_CalDeltaTheta(SE3d& delta_x,
-                                         Eigen::MatrixXd& jacobian,
-                                         Eigen::VectorXd& delta_theta,
-                                         const IkMethod& method) const {
-    if (IkMethod::SVD == method) {
-        if (this->_GetDeltaThetaSVD(delta_x, jacobian, delta_theta)) {
-            return true;
-        }
-    }
-    if (IkMethod::DAMP_SVD == method) {
-        if (this->_GetDeltaThetaDampedSVD(delta_x, jacobian, delta_theta,
-                                          this->damp_coeff_)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool NumericalKinematics::_GetDeltaThetaSVD(
-        SE3d& delta_x,
-        const Eigen::MatrixXd& jacobian,
-        Eigen::VectorXd& delta_theta) const {
-    // compute SVD
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(
-            jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    Eigen::VectorXd sigma = svd.singularValues();
-    Eigen::MatrixXd u = svd.matrixU();
-    Eigen::MatrixXd v = svd.matrixV();
-
-    // Compute the inverse singular value matrix
-    Eigen::MatrixXd inv_sigma =
-            Eigen::MatrixXd::Zero(jacobian.cols(), jacobian.rows());
-    for (int i = 0; i < sigma.size(); ++i) {
-        if (std::abs(sigma(i)) < this->eps_) {
-            inv_sigma(i, i) = 0.0;
-        } else {
-            inv_sigma(i, i) = 1.0 / sigma(i);
-        }
-    }
-
-    // Compute the inverse Jacobian matrix
-    Eigen::MatrixXd inv_jacobian = v * inv_sigma * u.transpose();
-
-    Eigen::Matrix<double, 6, 1> delta;
-    delta.head<3>() = delta_x.GetTranslation();
-    // Assuming delta_x.rotation() returns a quaternion, we convert it to a
-    // rotation vector
-    Eigen::Quaterniond quat(delta_x.GetRotation());
-    Eigen::AngleAxisd angleAxis(quat);
-    delta.tail<3>() = angleAxis.angle() * angleAxis.axis();
-
-    // compute delta_theta
-    delta_theta = inv_jacobian * delta;
-
-    return true;
-}
-
-bool NumericalKinematics::_GetDeltaThetaDampedSVD(
-        SE3d& delta_x,
-        const Eigen::MatrixXd& jacobian,
-        Eigen::VectorXd& delta_theta,
-        const double& damp_coeffs) const {
-    // compute SVD
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(
-            jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    Eigen::VectorXd sigma = svd.singularValues();
-    Eigen::MatrixXd u = svd.matrixU();
-    Eigen::MatrixXd v = svd.matrixV();
-
-    // Compute the inverse singular value matrix of the damping
-    Eigen::MatrixXd inv_sigma =
-            Eigen::MatrixXd::Zero(jacobian.cols(), jacobian.rows());
-    for (int i = 0; i < sigma.size(); ++i) {
-        if (std::abs(sigma(i)) > this->eps_) {
-            inv_sigma(i, i) = sigma(i) /
-                              (sigma(i) * sigma(i) + damp_coeffs * damp_coeffs);
-        }
-    }
-
-    // Compute the damped inverse Jacobian matrix
-    Eigen::MatrixXd damped_inv_jacobian = v * inv_sigma * u.transpose();
-
-    Eigen::Matrix<double, 6, 1> delta;
-    delta.head<3>() = delta_x.GetTranslation();
-    // Assuming delta_x.rotation() returns a quaternion, we convert it to a
-    // rotation vector
-    Eigen::Quaterniond quat(delta_x.GetRotation());
-    Eigen::AngleAxisd angleAxis(quat);
-    delta.tail<3>() = angleAxis.angle() * angleAxis.axis();
-
-    // compute delta_theta
-    delta_theta = damped_inv_jacobian * delta;
 
     return true;
 }

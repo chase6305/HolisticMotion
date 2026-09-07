@@ -101,6 +101,8 @@ public:
                              Eigen::VectorXd& solution) const;
 
 private:
+    void OnKinematicModelChanged() override;
+
     mutable std::optional<std::pair<double, SRSGeometryAnalysis>>
             geometry_analysis_cache_;
 };

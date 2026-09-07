@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install build tools
-        run: python -m pip install 'conan>=2.28' pytest
+        run: python -m pip install 'conan>=2.28' 'pytest>=7' 'hypothesis>=6.112,<7'
       - name: Detect Conan profile
         run: conan profile detect
       - name: Build CPU, collision, and Python components
@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install build tools
-        run: python -m pip install 'conan>=2.28' pytest
+        run: python -m pip install 'conan>=2.28' 'pytest>=7' 'hypothesis>=6.112,<7'
       - name: Detect Conan profile
         run: conan profile detect
       - name: Build Python without CUDA or collision
@@ -59,3 +59,17 @@ jobs:
           BUILD_DIR: build-core
           JOBS: "2"
         run: ./scripts/build.sh --tests --no-cuda --no-collision
+      - name: Configure C++ sanitizers and Eigen assertions
+        run: >-
+          cmake -S . -B build-sanitizers
+          -DCMAKE_TOOLCHAIN_FILE="$PWD/build-core/build/Release/generators/conan_toolchain.cmake"
+          -DCMAKE_BUILD_TYPE=Release
+          -DHOLISTICMOTION_BUILD_PYTHON=OFF
+          -DHOLISTICMOTION_BUILD_TESTS=ON
+          -DHOLISTICMOTION_ENABLE_CUDA=OFF
+          -DHOLISTICMOTION_ENABLE_COLLISION=OFF
+          -DHOLISTICMOTION_ENABLE_SANITIZERS=ON
+      - name: Build and test with ASan and UBSan
+        run: |
+          cmake --build build-sanitizers --parallel 2
+          ctest --test-dir build-sanitizers --output-on-failure --no-tests=error

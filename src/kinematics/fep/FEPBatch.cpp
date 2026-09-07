@@ -80,11 +80,25 @@ bool FEPKinematics::ForwardBatch(
 #else
     if (backend == FEPBackend::CUDA) return false;
 #endif
+    // Prepare the fixed model data once per call. This also observes model/TCP
+    // updates without a persistent cache and avoids per-row joint/pose vectors.
+    std::array<Eigen::Vector3d, 7> axes;
+    std::array<double, 7> axis_norms;
+    for (int joint = 0; joint < 7; ++joint) {
+        axis_norms[joint] = joint_nodes_[joint].axis.norm();
+        axes[joint] = joint_nodes_[joint].axis;
+        if (axis_norms[joint] > 0.0) axes[joint] /= axis_norms[joint];
+    }
+    const SE3d terminal = joint_nodes_.back().origin_pose * GetTCP();
     poses.reserve(static_cast<std::size_t>(joints.rows()));
     for (Eigen::Index row = 0; row < joints.rows(); ++row) {
         SE3d pose;
-        if (!GetFK(joints.row(row).transpose(), pose)) return false;
-        poses.push_back(pose.GetTransform());
+        for (int joint = 0; joint < 7; ++joint) {
+            const SO3d rotation(Eigen::AngleAxisd(
+                    joints(row, joint) * axis_norms[joint], axes[joint]));
+            pose = pose * joint_nodes_[joint].origin_pose * SE3d(rotation);
+        }
+        poses.push_back((pose * terminal).GetTransform());
     }
     return true;
 }

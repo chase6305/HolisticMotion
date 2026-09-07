@@ -13,10 +13,17 @@ namespace holistic_motion::robotics {
 bool SRSKinematics::IsCompatible() const noexcept {
     if (GetDOF() != 7 || joint_nodes_.size() != 8)
         return false;
+    if (joint_nodes_.back().joint_type != JointType::FIXED &&
+        joint_nodes_.back().joint_type != JointType::UNKNOWN)
+        return false;
     return std::all_of(joint_nodes_.begin(), joint_nodes_.begin() + 7,
                        [](const JointNode &node) {
                            return node.joint_type == JointType::REVOLUTE;
                        });
+}
+
+void SRSKinematics::OnKinematicModelChanged() {
+    geometry_analysis_cache_.reset();
 }
 
 namespace {
@@ -325,6 +332,12 @@ bool SRSKinematics::SolveConfiguration(const SE3d &target,
         solution = analytic_candidate;
         return true;
     }
+    CanonicalSRSModel model;
+    if (BuildCanonicalModel(*this, model)) {
+        // A rejected analytic branch must not be replaced by unconstrained IK:
+        // matching S/E/W signs alone does not preserve the requested arm angle.
+        return false;
+    }
     Eigen::VectorXd branch_seed;
     const bool has_full_candidate =
             analytic_candidate.size() == 7 && analytic_candidate.allFinite();
@@ -490,7 +503,7 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
     }
 
     solution.resize(7);
-    const auto nodes = GetJointNode();
+    const auto& nodes = GetJointNodesView();
     for (int i = 0; i < 7; ++i) {
         const double user_value =
                 (model_solution[i] - model.offsets[i]) / model.directions[i];
@@ -548,7 +561,14 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         }
     } else if (method == SRSSolveMethod::ALL_CONFIGURATIONS) {
         // Preserve the exact seed branch first, then enumerate S/E/W signs.
-        solve_seed(seed);
+        CanonicalSRSModel model;
+        if (BuildCanonicalModel(*this, model)) {
+            Eigen::VectorXd solution;
+            if (SolveConfiguration(target, seed_configuration, seed, solution))
+                add(solution);
+        } else {
+            solve_seed(seed);
+        }
         for (int shoulder : {-1, 1}) {
             for (int elbow : {-1, 1}) {
                 for (int wrist : {-1, 1}) {

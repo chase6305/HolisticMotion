@@ -24,6 +24,11 @@ the optimizing variants consume their time budget only when an obstacle blocks
 that direct solution. HolisticMotion currently reports exact solutions only:
 timeout and failure results do not contain an ambiguous partial path.
 
+When no state validator is configured, edge sampling is skipped: bounded joint
+interpolation remains inside its limits and continuous joints wrap normally.
+`edge_resolution` then has no validation work to control, and `collision_checks`
+remains zero. Configure a validator to check obstacles or additional constraints.
+
 ## Python example
 
 ```python
@@ -73,6 +78,12 @@ geometric path. It keeps both endpoints fixed and iteratively reduces a joint-
 weighted combination of path length and second-difference smoothness. Each
 candidate waypoint is accepted only when the objective decreases and both
 adjacent edges pass the configured collision validator.
+
+Input validation checks the original waypoint values, including each edge's
+exact endpoint. Reconstructing an endpoint by interpolation can round it across
+a validity boundary, so only interior samples are interpolated. This preserves
+the existing callback order and avoids rechecking already validated endpoints
+during candidate updates.
 
 ```python
 optimizer = hm.PathOptimizer.from_collision_joints(
@@ -127,18 +138,29 @@ finding the initial feasible homotopy. This follows cuRobo's useful separation
 of seed generation, feasibility-aware optimization, and best-solution
 tracking, without importing its Torch, Warp, or CUDA optimizer stack. TOPPRA
 still performs the subsequent velocity and acceleration retiming.
+The deadline is checked after every validation callback, including the last
+sample of an edge. A timeout during input validation returns an empty path with
+`success=False`; a candidate whose validation overruns the deadline is discarded
+and the previously validated path is retained. Callbacks run synchronously and
+cannot be interrupted, so a slow callback can exceed the requested wall time.
 If the deadline expires before all initial state costs are available, the
 validated input path is returned and both objective statistics are `NaN`
 because a complete objective was never evaluated.
 
 Waypoint updates use an incremental objective: moving one interior waypoint
 recomputes only its two adjacent length terms and the at most three affected
-second-difference terms. A full objective pass is performed once per outer
-iteration to bound floating-point drift; that pass accumulates length and
-smoothness together while reusing adjacent differences. Consequently,
-geometric objective bookkeeping scales linearly rather than quadratically with
-waypoint count per iteration; collision and state-cost callbacks remain the
-dominant work.
+second-difference terms. Full passes compute the initial and final reported
+objectives; accepted updates maintain the running objective by local deltas.
+Geometric bookkeeping therefore scales linearly with waypoint count per sweep
+for a fixed line-search budget. Collision and state-cost callbacks add their own
+costs.
+
+A workspace local to each `optimize()` call reuses edge, acceleration, gradient,
+direction, and candidate buffers. The two outer neighboring edges remain cached
+during one waypoint's backtracking search and refresh before the next waypoint,
+including reverse sweeps. Local geometry and gradient evaluation allocate no
+Eigen heap storage after workspace/output initialization. The complete optimizer
+still allocates its path, validation samples, and optional state-cost buffers.
 
 Each waypoint update uses bounded backtracking. `line_search_steps` controls
 how many step sizes are attempted, while `line_search_decay` scales each
@@ -162,9 +184,23 @@ unrepresentable joint ranges are rejected during construction.
 
 ## Resolution and safety
 
+RRT* and Informed RRT* refresh the best goal cost after rewiring, including
+improvements propagated through ancestor nodes. With a fixed random seed and
+completed iteration budgets, further search preserves or improves the incumbent
+path before optional shortcutting. A wall-clock deadline can change how much of
+the search and postprocessing completes.
+
 The planner validates each edge at intervals no larger than
 `edge_resolution` in any active joint. Smaller values improve collision
 coverage but increase Coal queries. Endpoints and every shortcut are checked.
+Shortcuts also revalidate the retained edge fragments because splitting an edge
+changes its collision sample grid. Optional path interpolation preserves every
+original corner and subdivides the longest segments to approach even spacing.
+`interpolation_points` is the target count when adding points; existing points
+are never removed. New subsegments are checked before accepting the interpolated
+path. If that check fails or the deadline expires, the original path is retained,
+so the returned count can differ from the target. Discrete validation cannot
+exclude collisions between samples; choose the resolution for the application.
 The wrapped joint difference is computed once per edge and reused by all
 samples, preserving the shortest arc for continuous joints.
 Extremely small positive resolutions use saturating segment counts, so the

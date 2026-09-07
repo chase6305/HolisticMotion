@@ -21,10 +21,17 @@ Waypoint, limit, and timing-result arrays are immutable owned snapshots.
 `sample()` and `sample_uniform()` return new arrays that applications may
 modify freely without changing the trajectory object.
 
-The implementation uses squared path velocity as its state, propagates
-controllable sets backward, then performs a time-optimal forward pass. It has
+The implementation uses squared path velocity as its state, propagates both
+bounds of controllable intervals backward, then selects the largest reachable
+speed at each forward step. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
+
+`start_path_velocity` and `end_path_velocity` specify endpoint speeds of the
+normalized chord-length parameter, both zero by default. Feasible results
+preserve these values. Requests that are infeasible under the current grid's
+constraints raise `ValueError`; no subsequent global time scaling changes the
+requested endpoint speeds.
 
 Run the example:
 
@@ -59,7 +66,17 @@ The compatibility spellings `--urdf-path` and `--urdf_path` are also accepted.
 When launched directly from a built source checkout, the example automatically
 enters `scripts/run.sh`.
 
-The path interpolator is a joint-space natural cubic spline. Constraints are
-enforced on its analytic derivatives at the reachability grid points; use a
-denser `grid_size` for paths with high curvature and validate sampled output
-before commanding hardware.
+The path interpolator is a joint-space natural cubic spline. Each interval uses
+analytic extrema of the path derivative to bound velocity, and Bernstein
+coefficients of the quadratic acceleration polynomial to bound acceleration.
+These bounds cover the whole interval and both sides of each knot. They are
+conservative and do not guarantee the globally shortest continuous trajectory;
+increasing `grid_size` can reduce that conservatism. `ToppraResult` also checks
+that its speed, acceleration, and time arrays describe consistent motion.
+
+
+The C++ `PathSegBezierCurve5th` segment uses the full tangent metric consistently
+for its curve-length coefficients, including rotation for SE3 paths. The
+Cartesian flag does not truncate tangent vectors to three entries. One- and
+two-dimensional Rn segments therefore remain valid with that flag, and a straight
+pure-rotation segment has the same path-length convention as a linear segment.

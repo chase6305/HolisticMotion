@@ -295,11 +295,11 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
     // Remove repeated IK, if there are.
     ik_solutions.RemoveRepeatedIK();
     // Finds IK that is within joint limits, removes IK that is out of range.
-    ik_solutions.WrapToLimitsNear(this->GetJointNode(), joint_seed);
+    ik_solutions.WrapToLimitsNear(this->joint_nodes_, joint_seed);
     // Filter some IK results with joint filter config(each joint)
     ik_solutions.FilterJointSolutions(this->joint_filter_config_);
     // Filter some IK results with robot config(base\elbow\wrist)
-    ik_solutions.LimitRobotConfig(this->GetJointNode(), this->robot_config_);
+    ik_solutions.LimitRobotConfig(this->joint_nodes_, this->robot_config_);
 
     dist.clear();
     for (int i = 0; i < ik_solutions.ik_number; ++i) {

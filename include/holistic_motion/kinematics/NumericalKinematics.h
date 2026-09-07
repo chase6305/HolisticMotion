@@ -8,21 +8,17 @@ enum class IkMethod { SVD, DAMP_SVD, JACOBIAN_TRANSPOSE, CCD };
 
 class NumericalKinematics : public KinematicsBase {
 public:
-    explicit NumericalKinematics(const std::vector<JointNode>& joint_node) {
-        this->joint_nodes_ = joint_node;
-
-        this->dof_ = joint_node.size() - 1;
-        this->initalize_ = true;
-        this->home_joints_ = Eigen::VectorXd::Zero(this->dof_);
-        this->ik_nearst_weight_ = Eigen::VectorXd::Ones(this->dof_);
-        this->joint_filter_config_.Resize(this->dof_);
-        holistic_motion::utility::LogDebug("Constructing NumericalKinematics...");
-    };
+    /// The last node is a fixed tool transform (UNKNOWN is also accepted).
+    /// Empty or invalid models throw std::invalid_argument. A single fixed node
+    /// represents a zero-coordinate model.
+    explicit NumericalKinematics(const std::vector<JointNode>& joint_node);
     virtual ~NumericalKinematics() {
         holistic_motion::utility::LogDebug("Destructing NumericalKinematics...");
     };
 
-    void SetDOF(const int dof) { this->dof_ = dof; };
+    /// Compatibility setter: only the model-derived DOF is accepted. Other
+    /// values throw std::invalid_argument without changing model-sized state.
+    void SetDOF(int dof);
 
     /// \brief get the forward kinematics
     ///
@@ -88,69 +84,6 @@ private:
     /// @return Returns true if the Jacobian matrix was successfully calculated.
     bool _GetKinJacobian(Eigen::MatrixXd& jacobian,
                          const std::vector<SE3d>& pose_list) const;
-
-    /// \brief Calculates the current axes of the robotic manipulator's joints
-    /// in the world coordinate frame.
-    ///
-    /// @param axis_list An output parameter that will be filled with the axes
-    /// of the joints in the world coordinate frame.
-    /// @param pose_list A list of poses representing the configuration of the
-    /// robotic manipulator's segments.
-    /// @return Returns true if the joint axes were successfully calculated.
-    bool _GetCurrentJointAxisInWorld(Eigen::MatrixXd& axis_list,
-                                     const std::vector<SE3d>& pose_list) const;
-
-    /// \brief Calculates the change in joint angles (delta theta) based on a
-    /// desired change in end-effector position/orientation (delta x), using a
-    /// specified inverse kinematics method.
-    ///
-    /// @param delta_x A transformation representing the desired change in
-    /// end-effector position and orientation.
-    /// @param jacobian The Jacobian matrix of the robotic manipulator.
-    /// @param delta_theta Output parameter that will be filled with the
-    /// calculated change in joint angles.
-    /// @param method The inverse kinematics method to be used for calculating
-    /// delta theta. Defaults to Damped SVD.
-    /// @return Returns true if the calculation was successful.
-    bool _CalDeltaTheta(SE3d& delta_x,
-                        Eigen::MatrixXd& jacobian,
-                        Eigen::VectorXd& delta_theta,
-                        const IkMethod& method = IkMethod::DAMP_SVD) const;
-
-    /// \brief Calculates the change in joint angles (delta theta) using the
-    /// Singular Value Decomposition (SVD) method, based on a desired change in
-    /// end-effector position/orientation (delta x) and the manipulator's
-    /// Jacobian matrix.
-    ///
-    /// @param delta_x A transformation representing the desired change in
-    /// end-effector position and orientation.
-    /// @param jacobian The Jacobian matrix of the robotic manipulator.
-    /// @param delta_theta Output parameter that will be filled with the
-    /// calculated change in joint angles.
-    /// @return Returns true if the calculation was successful.
-    bool _GetDeltaThetaSVD(SE3d& delta_x,
-                           const Eigen::MatrixXd& jacobian,
-                           Eigen::VectorXd& delta_theta) const;
-
-    /// \brief Calculates the change in joint angles (delta theta) using the
-    /// Damped Singular Value Decomposition (SVD) method, based on a desired
-    /// change in end-effector position/orientation (delta x), the manipulator's
-    /// Jacobian matrix, and a damping coefficient to improve numerical
-    /// stability.
-    ///
-    /// @param delta_x A transformation representing the desired change in
-    /// end-effector position and orientation.
-    /// @param jacobian The Jacobian matrix of the robotic manipulator.
-    /// @param delta_theta Output parameter that will be filled with the
-    /// calculated change in joint angles.
-    /// @param damp_coeffs The damping coefficient used to improve the stability
-    /// of the inverse calculation. Defaults to 0.0.
-    /// @return Returns true if the calculation was successful.
-    ///
-    bool _GetDeltaThetaDampedSVD(SE3d& delta_x,
-                                 const Eigen::MatrixXd& jacobian,
-                                 Eigen::VectorXd& delta_theta,
-                                 const double& damp_coeffs = 0.0) const;
 
     /// \brief Retrieves the bounds for controllable joints of the robotic
     /// manipulator.

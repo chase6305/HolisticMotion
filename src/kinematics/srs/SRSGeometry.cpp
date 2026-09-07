@@ -36,7 +36,7 @@ bool ChainCentres(const SRSKinematics& solver,
                   Eigen::Vector3d& elbow_axis) {
     std::vector<SE3d> poses;
     if (!solver.GetAllFK(joints, poses) || poses.size() < 8) return false;
-    const auto nodes = solver.GetJointNode();
+    const auto& nodes = solver.GetJointNodesView();
     elbow_axis = poses[3].GetRotation() * nodes[3].axis;
     if (elbow_axis.norm() < 1e-12) return false;
     elbow_axis.normalize();

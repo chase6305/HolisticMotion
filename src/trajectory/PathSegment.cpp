@@ -15,7 +15,9 @@ PathSegLinear<LieGroup>::PathSegLinear(const std::array<LieGroup, 2>& waypoints,
     this->waypoints_.insert(this->waypoints_.end(), waypoints.cbegin(),
                             waypoints.cend());
     this->tangent_ = this->waypoints_[1] - this->waypoints_[0];
-    auto weights = GetWeights(waypoints.front().size(), is_cartesian_space);
+    // Path distances act on tangents (SE3 has 6 tangent coordinates but stores
+    // 7 pose coefficients). Pose storage size is not the metric dimension.
+    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
     this->length_ = WeightedNorm(this->tangent_, weights);
 
     holistic_motion::utility::LogDebug("[PathSegLinear], sp:{}, length:{}", this->sp_,
@@ -47,7 +49,7 @@ PathSegBezierCurve2nd<LieGroup>::PathSegBezierCurve2nd(
     this->waypoints_.insert(this->waypoints_.end(), waypoints.cbegin(),
                             waypoints.cend());
     this->control_points_ = this->waypoints_;
-    auto weights = GetWeights((*waypoints.begin()).size(), is_cartesian_space);
+    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
     // Calculate the relative distance before and after three points
     this->length_ =
             WeightedNorm(this->control_points_[1] - this->control_points_[0],
@@ -112,7 +114,7 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
     this->tangent_ = waypoints[1] - waypoints[0];
 
     // compute weights...
-    auto weights = GetWeights((*waypoints.begin()).size(), is_cartesian_space);
+    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
 
     // compute trangent between waypoints0, waypoints1 and waypoints3
     auto tstart = waypoints[1] - waypoints[0];
@@ -154,15 +156,11 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
 
     // add notes
     double a = 256.0 - 49.0 * std::pow(WeightedNorm(tend + tstart, weights), 2);
-    double b = 420.0 * ((pend - pstart).Coeffs().dot((tstart + tend).Coeffs()));
-
-    if (is_cartesian_space) {
-        b = 420.0 *
-            ((pend - pstart)
-                     .Coeffs()
-                     .template block<3, 1>(0, 0)
-                     .dot((tstart + tend).Coeffs().template block<3, 1>(0, 0)));
-    }
+    // Use the same tangent metric as a and c, including rotation. A fixed
+    // three-coordinate block also reads beyond R1/R2 tangent storage.
+    const double b = 420.0 *
+            ((pend - pstart).Coeffs().array() * weights.array() *
+             (tstart + tend).Coeffs().array()).sum();
     double c = -900.0 * WeightedNorm(pend - pstart, weights) *
                WeightedNorm(pend - pstart, weights);
     double delta = b * b - 4 * a * c;

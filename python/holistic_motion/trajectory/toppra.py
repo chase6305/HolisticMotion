@@ -2,8 +2,8 @@
 
 The implementation uses the standard path dynamics ``x = s_dot**2`` and
 ``x[i+1] = x[i] + 2 * ds[i] * u[i]``.  A backward controllable-set pass is
-followed by a greedy forward pass.  Joint velocity and acceleration bounds are
-enforced at every path grid point.
+followed by a greedy forward pass.  Conservative polynomial bounds enforce
+joint velocity and acceleration limits throughout each path interval.
 """
 
 from __future__ import annotations
@@ -23,23 +23,25 @@ class _NaturalCubicPath:
         self.grid = grid
         count = grid.size
         h = np.diff(grid)
-        matrix = np.zeros((count, count))
-        rhs = np.zeros_like(values)
-        matrix[0, 0] = matrix[-1, -1] = 1.0
-        for index in range(1, count - 1):
-            matrix[index, index - 1] = h[index - 1]
-            matrix[index, index] = 2.0 * (h[index - 1] + h[index])
-            matrix[index, index + 1] = h[index]
-            rhs[index] = 6.0 * (
-                (values[index + 1] - values[index]) / h[index]
-                - (values[index] - values[index - 1]) / h[index - 1]
-            )
-        second = np.linalg.solve(matrix, rhs)
+        slopes = np.diff(values, axis=0) / h[:, None]
+        second = np.zeros_like(values)
+        if count > 2:
+            # Natural boundaries set the endpoint second derivatives to zero.
+            # The interior system is strictly diagonally dominant and
+            # tridiagonal, so elimination needs O(count * DOF) work and storage.
+            diagonal = 2.0 * (h[:-1] + h[1:])
+            rhs = 6.0 * np.diff(slopes, axis=0)
+            for index in range(1, count - 2):
+                factor = h[index] / diagonal[index - 1]
+                diagonal[index] -= factor * h[index]
+                rhs[index] -= factor * rhs[index - 1]
+            second[-2] = rhs[-1] / diagonal[-1]
+            for index in range(count - 4, -1, -1):
+                second[index + 1] = (
+                    rhs[index] - h[index + 1] * second[index + 2]
+                ) / diagonal[index]
         self.a = values[:-1].copy()
-        self.b = (
-            np.diff(values, axis=0) / h[:, None]
-            - h[:, None] * (2.0 * second[:-1] + second[1:]) / 6.0
-        )
+        self.b = slopes - h[:, None] * (2.0 * second[:-1] + second[1:]) / 6.0
         self.c = second[:-1] / 2.0
         self.d = np.diff(second, axis=0) / (6.0 * h[:, None])
 
@@ -84,12 +86,68 @@ class _NaturalCubicPath:
 
 
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:
-    result = np.asarray(value, dtype=float).reshape(-1)
+    result = np.array(value, dtype=float, copy=True).reshape(-1)
     if result.shape != (dof,) or not np.isfinite(result).all():
         raise ValueError(f"{name} must be a finite vector of size {dof}")
     if np.any(result <= 0.0):
         raise ValueError(f"{name} must be strictly positive")
     return result
+
+
+def _intersect_bounds(
+    coefficients: np.ndarray, rhs: np.ndarray, lower: float, upper: float
+) -> tuple[float, float]:
+    """Intersect a scalar interval with ``coefficients * value <= rhs``."""
+
+    positive = coefficients > 0.0
+    negative = coefficients < 0.0
+    if np.any((coefficients == 0.0) & (rhs < -1e-12)):
+        return 1.0, 0.0
+    lower = max(
+        lower, float(np.max(rhs[negative] / coefficients[negative], initial=-np.inf))
+    )
+    upper = min(
+        upper, float(np.min(rhs[positive] / coefficients[positive], initial=np.inf))
+    )
+    return lower, upper
+
+
+class _IntervalConstraints:
+    """Half-planes ``a * x + b * y <= 1`` for adjacent squared speeds."""
+
+    def __init__(self, a: np.ndarray, b: np.ndarray) -> None:
+        if not np.isfinite(a).all() or not np.isfinite(b).all():
+            raise ValueError("path speed constraints must be finite")
+        self.a, self.b = a, b
+        self.positive = b > 0.0
+        self.negative = b < 0.0
+        # Eliminate y by comparing each lower bound on y with each upper
+        # bound. These pairs do not depend on the next controllable interval,
+        # so compute their cap on x once, without iterative feasibility probes.
+        coefficients = (
+            a[self.negative, None] * b[self.positive]
+            - b[self.negative, None] * a[self.positive]
+        )
+        rhs = b[self.positive] - b[self.negative, None]
+        _, self.cap = _intersect_bounds(coefficients, rhs, 0.0, np.inf)
+
+    def project(self, lower: float, upper: float) -> tuple[float, float]:
+        """All x >= 0 that can reach some y in [lower, upper]."""
+
+        rhs = np.ones_like(self.a)
+        rhs[self.positive] -= self.b[self.positive] * lower
+        rhs[self.negative] -= self.b[self.negative] * upper
+        return _intersect_bounds(self.a, rhs, 0.0, self.cap)
+
+    def reachable(self, x: float, lower: float, upper: float) -> tuple[float, float]:
+        product = self.a * x
+        # At a projected boundary, 1 - a*x can lose its significant digits.
+        # Dividing that residual by a near-zero b otherwise amplifies a few
+        # rounding bits into a spurious empty interval. Apply the tolerance to
+        # the dimensionless half-plane residual before dividing, not to the
+        # resulting speed bounds; keep small nonzero coefficients intact.
+        rounding = 8.0 * np.finfo(float).eps * np.maximum(1.0, np.abs(product))
+        return _intersect_bounds(self.b, 1.0 - product + rounding, lower, upper)
 
 
 @dataclass(frozen=True)
@@ -146,13 +204,21 @@ class ToppraResult:
             atol=1e-10,
         ):
             raise ValueError("TOPPRA result violates interval path dynamics")
+        distances = (
+            0.5 * (self.path_speeds[:-1] + self.path_speeds[1:]) * np.diff(self.times)
+        )
+        if not np.allclose(np.diff(self.gridpoints), distances, rtol=1e-8, atol=1e-12):
+            raise ValueError("TOPPRA result timing is inconsistent with path speeds")
 
 
 class ToppraTrajectory:
-    """Time-optimal timing of a joint-space waypoint path.
+    """Reachability-based timing of a joint-space waypoint path.
 
     Waypoints are interpolated along normalized chord length.  ``gridpoints``
     can be supplied to densify the constraints independently from waypoints.
+    Interval polynomial bounds are conservative; a finer grid can reduce this
+    conservatism. Requested endpoint path speeds are preserved or rejected as
+    infeasible, never changed by a subsequent time scaling.
     """
 
     def __init__(
@@ -215,9 +281,7 @@ class ToppraTrajectory:
                 raise ValueError("gridpoints must increase strictly from 0 to 1")
             grid = np.unique(np.concatenate((grid, waypoint_s)))
         self._grid = grid
-        self._path = self._path_model.evaluate(grid)
-        self._q_s = self._path_model.evaluate(grid, order=1)
-        self._q_ss = self._path_model.evaluate(grid, order=2)
+        self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
         self._result = self._compute(
             float(start_path_velocity), float(end_path_velocity)
         )
@@ -239,63 +303,86 @@ class ToppraTrajectory:
         ratios[moving] = limits[moving] / np.abs(self._q_s[moving])
         return np.min(ratios, axis=1) ** 2
 
-    def _next_interval(self, index: int, x: float, upper: float) -> tuple[float, float]:
-        ds = self._grid[index + 1] - self._grid[index]
-        low, high = 0.0, upper
-        for q_s, q_ss, limit in zip(
-            self._q_s[index], self._q_ss[index], self.max_acceleration
-        ):
-            coefficient = q_s / (2.0 * ds)
-            constant = (q_ss - coefficient) * x
-            if abs(coefficient) <= 1e-14:
-                if abs(constant) > limit + 1e-10:
-                    return 1.0, 0.0
-                continue
-            a = (-limit - constant) / coefficient
-            b = (limit - constant) / coefficient
-            low, high = max(low, min(a, b)), min(high, max(a, b))
-        return max(0.0, low), high
+    def _interval_constraints(self) -> list[_IntervalConstraints]:
+        ds = np.diff(self._grid)[:, None]
+        first, last = self._q_s[:-1], self._q_s[1:]
+        second_first, second_last = self._q_ss[:-1], self._q_ss[1:]
+        # All spline knots are in the grid. On each interval q_s is quadratic
+        # with these Bernstein coefficients, and q_ss is linear.
+        derivative = np.stack((first, first + 0.5 * ds * second_first, last), axis=1)
+        zero = np.zeros_like(first)
+        acceleration_x = (
+            np.stack((second_first, 0.5 * second_last, zero), axis=1)
+            - derivative / (2.0 * ds[:, None, :])
+        ) / self.max_acceleration
+        acceleration_y = (
+            np.stack((zero, 0.5 * second_first, second_last), axis=1)
+            + derivative / (2.0 * ds[:, None, :])
+        ) / self.max_acceleration
 
-    def _can_reach(self, index: int, x: float, next_cap: float) -> bool:
-        low, high = self._next_interval(index, x, next_cap)
-        return low <= high + 1e-11 and high >= -1e-11
+        # Bound |q_s| at both endpoints and its quadratic extremum. Applying
+        # the resulting velocity cap independently to x and y also bounds
+        # their linear interpolation. Independent caps avoid artificial stops
+        # caused by maximizing x against a coupled velocity constraint on y.
+        p0, p1, p2 = np.moveaxis(derivative / self.max_velocity, 1, 0)
+        quadratic = p0 - 2.0 * p1 + p2
+        ratio = np.clip(
+            np.divide(
+                p0 - p1, quadratic, out=np.zeros_like(p0), where=quadratic != 0.0
+            ),
+            0.0,
+            1.0,
+        )
+        extremum = (
+            (1.0 - ratio) ** 2 * p0 + 2.0 * ratio * (1.0 - ratio) * p1 + ratio**2 * p2
+        )
+        maximum = np.maximum(np.maximum(np.abs(p0), np.abs(p2)), np.abs(extremum))
+        inverse_cap = np.max(maximum**2, axis=1)[:, None]
+        count = ds.size
+        a = np.concatenate(
+            (
+                acceleration_x.reshape(count, -1),
+                -acceleration_x.reshape(count, -1),
+                inverse_cap,
+                np.zeros_like(inverse_cap),
+            ),
+            axis=1,
+        )
+        b = np.concatenate(
+            (
+                acceleration_y.reshape(count, -1),
+                -acceleration_y.reshape(count, -1),
+                np.zeros_like(inverse_cap),
+                inverse_cap,
+            ),
+            axis=1,
+        )
+        return [_IntervalConstraints(left, right) for left, right in zip(a, b)]
 
     def _compute(self, start_velocity: float, end_velocity: float) -> ToppraResult:
         caps = self._velocity_caps()
         start_x, end_x = start_velocity**2, end_velocity**2
         if start_x > caps[0] + 1e-10 or end_x > caps[-1] + 1e-10:
             raise ValueError("boundary path velocity violates joint velocity limits")
-        controllable = caps.copy()
-        controllable[-1] = end_x
-        for index in range(len(self._grid) - 2, -1, -1):
-            upper = caps[index]
-            if not np.isfinite(upper):
-                upper = max(controllable[index + 1], 1.0)
-                while self._can_reach(index, upper, controllable[index + 1]):
-                    upper *= 2.0
-                    if upper > 1e12:
-                        break
-            lo, hi = 0.0, upper
-            if not self._can_reach(index, lo, controllable[index + 1]):
+        constraints = self._interval_constraints()
+        controllable = np.empty((self._grid.size, 2))
+        controllable[-1] = (end_x, end_x)
+        for index in range(len(constraints) - 1, -1, -1):
+            lo, hi = constraints[index].project(*controllable[index + 1])
+            if not np.isfinite([lo, hi]).all() or lo > hi + 1e-12:
                 raise ValueError(f"path is infeasible near gridpoint {index}")
-            for _ in range(60):
-                mid = 0.5 * (lo + hi)
-                if self._can_reach(index, mid, controllable[index + 1]):
-                    lo = mid
-                else:
-                    hi = mid
-            controllable[index] = lo
-        if start_x > controllable[0] + 1e-8:
+            controllable[index] = (lo, max(lo, hi))
+        if start_x < controllable[0, 0] - 1e-12 or start_x > controllable[0, 1] + 1e-12:
             raise ValueError("start velocity cannot reach the requested end velocity")
 
         x = np.empty_like(self._grid)
         x[0] = start_x
-        for index in range(len(self._grid) - 1):
-            low, high = self._next_interval(index, x[index], controllable[index + 1])
-            if low > high + 1e-9:
+        for index, interval in enumerate(constraints):
+            lower, upper = controllable[index + 1]
+            low, high = interval.reachable(x[index], lower, upper)
+            if low > high + 1e-12:
                 raise RuntimeError(f"TOPPRA forward pass failed at gridpoint {index}")
-            x[index + 1] = max(0.0, high)
-        x[-1] = end_x
+            x[index + 1] = np.clip(high, lower, upper)
         ds = np.diff(self._grid)
         u = np.diff(x) / (2.0 * ds)
         speeds = np.sqrt(np.maximum(x, 0.0))
@@ -305,34 +392,6 @@ class ToppraTrajectory:
         dt = 2.0 * ds / denominators
         times = np.concatenate(([0.0], np.cumsum(dt)))
 
-        # Grid constraints are exact at their nodes. Apply a small global time
-        # scaling based on a dense continuous check so spline extrema between
-        # nodes cannot exceed the requested limits.
-        check_s = np.linspace(0.0, 1.0, max(1000, 5 * self._grid.size))
-        check_x = np.interp(check_s, self._grid, x)
-        check_segment = np.clip(
-            np.searchsorted(self._grid, check_s, side="right") - 1,
-            0,
-            u.size - 1,
-        )
-        check_q_s = self._path_model.evaluate(check_s, order=1)
-        check_q_ss = self._path_model.evaluate(check_s, order=2)
-        joint_velocity = check_q_s * np.sqrt(check_x)[:, None]
-        joint_acceleration = (
-            check_q_ss * check_x[:, None] + check_q_s * u[check_segment, None]
-        )
-        velocity_ratio = float(
-            np.max(np.abs(joint_velocity) / self.max_velocity[None, :])
-        )
-        acceleration_ratio = float(
-            np.max(np.abs(joint_acceleration) / self.max_acceleration[None, :])
-        )
-        scale = max(1.0, velocity_ratio, np.sqrt(acceleration_ratio))
-        if scale > 1.0:
-            scale *= 1.0 + 1e-9
-            speeds /= scale
-            u /= scale * scale
-            times *= scale
         return ToppraResult(self._grid.copy(), speeds, u, times, float(times[-1]))
 
     def sample(

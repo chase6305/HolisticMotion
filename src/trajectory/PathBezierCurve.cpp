@@ -58,8 +58,7 @@ PathBezierCurve<LieGroup>::PathBezierCurve(
         holistic_motion::utility::LogWarning("Input: at least 2 waypoints.");
         return;
     }
-    this->weights_ = GetWeights(int(this->waypoints_.front().size()),
-                                is_cartesian_space);
+    this->weights_ = GetWeights(LieGroup::DoF, is_cartesian_space);
     // move linear from first point to end point
     if (this->waypoints_.size() == 2) {
         // construct a linear path

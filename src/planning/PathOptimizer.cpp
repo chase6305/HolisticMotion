@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "JointSpaceTopology.h"
+#include "PathGeometryWorkspace.h"
 #include "PlanningDeadline.h"
 
 namespace holistic_motion::robotics::planning {
@@ -41,8 +42,9 @@ public:
     return detail::Difference(from, to, continuous_);
   }
 
-  Eigen::VectorXd Normalize(Eigen::VectorXd state) const {
-    return detail::Normalize(std::move(state), lower_, upper_, continuous_);
+  void Normalize(Eigen::VectorXd &state) const {
+    for (Eigen::Index i = 0; i < state.size(); ++i)
+      state[i] = NormalizeCoordinate(state[i], i);
   }
 
   Eigen::VectorXd NormalizeInterpolation(Eigen::VectorXd state) const {
@@ -82,67 +84,12 @@ public:
            options_.smoothness_weight * smoothness;
   }
 
-  double LocalGeometryObjective(const std::vector<Eigen::VectorXd> &path,
-                                std::size_t index) const {
-    const Eigen::VectorXd left = Difference(path[index - 1], path[index]);
-    const Eigen::VectorXd right = Difference(path[index], path[index + 1]);
-    const double length =
-        std::sqrt(SquaredNorm(left)) + std::sqrt(SquaredNorm(right));
-    double smoothness = SquaredNorm(right - left);
-    if (index > 1) {
-      const Eigen::VectorXd previous =
-          Difference(path[index - 2], path[index - 1]);
-      smoothness += SquaredNorm(left - previous);
-    }
-    if (index + 2 < path.size()) {
-      const Eigen::VectorXd next = Difference(path[index + 1], path[index + 2]);
-      smoothness += SquaredNorm(next - right);
-    }
-    return options_.length_weight * length +
-           options_.smoothness_weight * smoothness;
-  }
-
-  Eigen::VectorXd GeometryGradient(const std::vector<Eigen::VectorXd> &path,
-                                   std::size_t index) const {
-    Eigen::VectorXd gradient = Eigen::VectorXd::Zero(weights_.size());
-    const Eigen::VectorXd incoming = Difference(path[index - 1], path[index]);
-    const Eigen::VectorXd outgoing = Difference(path[index], path[index + 1]);
-    const double incoming_length = std::sqrt(SquaredNorm(incoming));
-    const double outgoing_length = std::sqrt(SquaredNorm(outgoing));
-    if (incoming_length > 1e-15) {
-      gradient.array() += options_.length_weight * weights_.array() *
-                          incoming.array() / incoming_length;
-    }
-    if (outgoing_length > 1e-15) {
-      gradient.array() -= options_.length_weight * weights_.array() *
-                          outgoing.array() / outgoing_length;
-    }
-
-    const Eigen::VectorXd center_acceleration = outgoing - incoming;
-    if (index > 1) {
-      const Eigen::VectorXd previous_acceleration =
-          incoming - Difference(path[index - 2], path[index - 1]);
-      gradient.array() += 2.0 * options_.smoothness_weight * weights_.array() *
-                          previous_acceleration.array();
-    }
-    gradient.array() -= 4.0 * options_.smoothness_weight * weights_.array() *
-                        center_acceleration.array();
-    if (index + 2 < path.size()) {
-      const Eigen::VectorXd next_acceleration =
-          Difference(path[index + 1], path[index + 2]) - outgoing;
-      gradient.array() += 2.0 * options_.smoothness_weight * weights_.array() *
-                          next_acceleration.array();
-    }
-    return gradient;
-  }
-
-  Eigen::VectorXd PreconditionedDescent(const Eigen::VectorXd &gradient) const {
-    Eigen::VectorXd direction =
-        (-gradient.array() * inverse_weights_.array()).matrix();
+  void PreconditionedDescent(const Eigen::VectorXd &gradient,
+                             Eigen::VectorXd &direction) const {
+    direction = (-gradient.array() * inverse_weights_.array()).matrix();
     const double maximum = direction.cwiseAbs().maxCoeff();
     if (maximum > 1e-15)
       direction /= maximum;
-    return direction;
   }
 
   double StateCostValue(const Eigen::VectorXd &state) {
@@ -224,13 +171,16 @@ public:
       return true;
     const Eigen::VectorXd difference = Difference(from, to);
     const std::size_t segments = SegmentCount(difference);
-    for (std::size_t i = 1; i <= segments; ++i) {
+    for (std::size_t i = 1; i < segments; ++i) {
       if (TimedOut() ||
           !IsStateValid(NormalizeInterpolation(
-              from + static_cast<double>(i) / segments * difference)))
+              from + static_cast<double>(i) / segments * difference)) ||
+          TimedOut())
         return false;
     }
-    return true;
+    // Reconstructing the endpoint can round it across a validity boundary.
+    // Validate the exact waypoint that will be returned to the caller.
+    return !TimedOut() && IsStateValid(to) && !TimedOut();
   }
 
   bool IsMotionInteriorValid(const Eigen::VectorXd &from,
@@ -244,7 +194,8 @@ public:
     for (std::size_t i = 1; i < segments; ++i) {
       if (TimedOut() ||
           !IsStateValid(NormalizeInterpolation(
-              from + static_cast<double>(i) / segments * difference)))
+              from + static_cast<double>(i) / segments * difference)) ||
+          TimedOut())
         return false;
     }
     return true;
@@ -383,7 +334,13 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                     "path contains an invalid state");
     }
   }
-  if (!context.IsStateValid(result.path.front())) {
+  const bool start_valid = context.IsStateValid(result.path.front());
+  if (context.TimedOut()) {
+    result.path.clear();
+    return finish(PathOptimizationStatus::TIMEOUT,
+                  "time limit reached while validating the input path");
+  }
+  if (!start_valid) {
     result.path.clear();
     return finish(PathOptimizationStatus::INVALID_PATH,
                   "path start state is invalid");
@@ -458,6 +415,13 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                   "path objective is not finite");
   }
   double objective = result.statistics.initial_objective;
+  detail::PathGeometryWorkspace geometry(weights_, continuous_,
+                                         options.length_weight,
+                                         options.smoothness_weight);
+  Eigen::VectorXd gradient(lower_limits_.size());
+  Eigen::VectorXd direction(lower_limits_.size());
+  Eigen::VectorXd previous(lower_limits_.size());
+  Eigen::VectorXd candidate(lower_limits_.size());
   bool any_update = false;
   for (std::size_t sweep = 0; sweep < options.max_iterations; ++sweep) {
     ++result.statistics.iterations;
@@ -472,7 +436,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
       ++result.statistics.attempted_updates;
       const double current_state_cost =
           options.state_cost_weight > 0.0 ? state_costs[i] : 0.0;
-      Eigen::VectorXd gradient = context.GeometryGradient(result.path, i);
+      geometry.SetWaypoint(result.path, i);
+      geometry.Gradient(gradient);
       if (options.state_cost_weight > 0.0) {
         gradient +=
             options.state_cost_weight * options.state_cost_step_size *
@@ -480,26 +445,26 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
       }
       if (context.TimedOut())
         break;
-      const Eigen::VectorXd direction = context.PreconditionedDescent(gradient);
+      context.PreconditionedDescent(gradient, direction);
       if (direction.cwiseAbs().maxCoeff() <= 1e-15)
         continue;
-      const Eigen::VectorXd previous = result.path[i];
-      const double previous_local_objective =
-          context.LocalGeometryObjective(result.path, i);
+      previous = result.path[i];
+      const double previous_local_objective = geometry.LocalObjective();
       double step = options.step_size;
       bool accepted = false;
       for (std::size_t search = 0; search < options.line_search_steps;
            ++search, step *= options.line_search_decay) {
         ++result.statistics.line_search_evaluations;
-        const Eigen::VectorXd candidate =
-            context.Normalize(previous + step * direction);
+        candidate = previous + step * direction;
+        context.Normalize(candidate);
         if (context.Difference(previous, candidate).cwiseAbs().maxCoeff() <=
             1e-15)
           break;
         result.path[i] = candidate;
         const double candidate_objective_without_state_change =
             objective - previous_local_objective +
-            context.LocalGeometryObjective(result.path, i);
+            geometry.CandidateObjective(result.path[i - 1], candidate,
+                                        result.path[i + 1]);
         if (!std::isfinite(candidate_objective_without_state_change)) {
           result.path[i] = previous;
           continue;

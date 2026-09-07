@@ -13,6 +13,27 @@
 
 using namespace holistic_motion::robotics;
 
+template <int DoF>
+bool LowDimensionalCartesianBlendIsValid() {
+    using Group = Rn<double, DoF>;
+    std::array<Group, 3> controls;
+    for (int i = 0; i < 3; ++i) {
+        controls[i].Coeffs().setZero();
+        controls[i].Coeffs()[0] = 0.1 * i;
+    }
+    const PathSegBezierCurve5th<Group> segment(
+            controls, 0.0, 1.0, 0.0, 1.0, 0.0, true);
+    if (!segment.IsValid() || std::abs(segment.GetLength() - 0.2) > 1e-12)
+        return false;
+    for (int i = 0; i <= 10; ++i) {
+        const double s = segment.GetLength() * i / 10.0;
+        const auto position = segment.GetConfig(s).Coeffs().eval();
+        if (!position.allFinite() || std::abs(position[0] - s) > 1e-12)
+            return false;
+    }
+    return true;
+}
+
 template <typename Trajectory>
 bool DerivativesAreFiniteAndBounded(Trajectory& trajectory,
                                     double limit) {
@@ -34,6 +55,10 @@ bool DerivativesAreFiniteAndBounded(Trajectory& trajectory,
 }
 
 int main() {
+    if (!LowDimensionalCartesianBlendIsValid<1>() ||
+        !LowDimensionalCartesianBlendIsValid<2>() ||
+        !LowDimensionalCartesianBlendIsValid<3>())
+        return 11;
     const TrajectoryConstraints null_joint_constraints(
             std::vector<std::shared_ptr<Joint>>(1));
     if (null_joint_constraints.IsValid()) return 1;
@@ -143,6 +168,37 @@ int main() {
     end_pose(0, 3) = 0.2;
     poses[1] = SE3d(end_pose);
     const Eigen::VectorXd cartesian_limits = Eigen::VectorXd::Ones(6);
+    Eigen::Matrix4d middle_pose = Eigen::Matrix4d::Identity();
+    middle_pose(0, 3) = 0.1;
+    const std::array<SE3d, 3> cartesian_controls{
+            poses.front(), SE3d(middle_pose), poses.back()};
+    const PathSegLinear<SE3d> cartesian_line(
+            {poses.front(), poses.back()}, 0.0, true);
+    const PathSegBezierCurve2nd<SE3d> cartesian_quadratic(
+            cartesian_controls, 0.0, true);
+    const PathSegBezierCurve5th<SE3d> cartesian_quintic(
+            cartesian_controls, 0.0, 1.0, 0.0, 1.0, 0.0, true);
+    // Exercise each segment's SE3 tangent metric under Eigen assertions.
+    for (const double length : {cartesian_line.GetLength(),
+                                cartesian_quadratic.GetLength(),
+                                cartesian_quintic.GetLength()}) {
+        if (!std::isfinite(length) || std::abs(length - 0.2) > 1e-12)
+            return 10;
+    }
+    const std::array<SE3d, 3> rotation_controls{
+            SE3d(), SE3d(Eigen::Vector3d::Zero(), SO3d(0.0, 0.0, 0.1)),
+            SE3d(Eigen::Vector3d::Zero(), SO3d(0.0, 0.0, 0.2))};
+    const PathSegBezierCurve5th<SE3d> rotation_quintic(
+            rotation_controls, 0.0, 1.0, 0.0, 1.0, 0.0, true);
+    if (!rotation_quintic.IsValid() ||
+        std::abs(rotation_quintic.GetLength() - 0.2) > 1e-12)
+        return 12;
+    for (int i = 0; i <= 10; ++i) {
+        const double s = rotation_quintic.GetLength() * i / 10.0;
+        const SE3d expected(Eigen::Vector3d::Zero(), SO3d(0.0, 0.0, s));
+        if (!rotation_quintic.GetConfig(s).IsApprox(expected, 1e-10))
+            return 12;
+    }
     auto cartesian_path = std::make_shared<PathBezierCurve<SE3d>>(
             poses, 5, true, 0.0);
     auto cartesian_constraints = std::make_shared<TrajectoryConstraints>(

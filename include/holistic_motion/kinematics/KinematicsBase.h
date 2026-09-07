@@ -16,6 +16,7 @@ public:
     ///
     /// \param target_joint
     /// \param pose_list: the forward kinematics for each joint
+    /// Cleared on invalid input, inconsistent model dimensions, or FK overflow.
     /// \return bool
     virtual bool GetAllFK(const Eigen::VectorXd& target_joint,
                           std::vector<SE3d>& pose_list) const;
@@ -67,8 +68,7 @@ public:
         return GetNearstIK(target_pose, ik_solutions, joint_seed, min_dist);
     }
 
-    // TODO: TCP needs to consider where the only subsequent maintenance should
-    // be placed
+    /// Set a finite rigid tool transform; invalid input leaves the TCP intact.
     virtual bool SetTCP(const SE3d& pose);
 
     SE3d GetTCP() const { return this->tcp_; };
@@ -76,6 +76,7 @@ public:
     void ClearTCP();
 
     /// \brief Set the user frame
+    /// Invalid or nonfinite rigid transforms leave the current frame intact.
     ///
     virtual bool SetUserFrame(const SE3d& pose);
 
@@ -94,16 +95,20 @@ public:
     /// \brief Set the kinematic parameters of the joint
     ///
     /// \param joint_node: the kinematic parameters of the joint
+    /// Invalid fields, unsupported joint types, or active nodes beyond the
+    /// coordinate slots are rejected without changing the current model.
     /// \return bool
-    bool SetJointNode(const std::vector<JointNode>& joint_node) {
-        this->joint_nodes_ = joint_node;
-        return true;
-    };
+    bool SetJointNode(const std::vector<JointNode>& joint_node);
 
     /// \brief Get the kinematic parameters of the joint
     ///
     /// \return std::vector<JointNode>
     std::vector<JointNode> GetJointNode() const { return this->joint_nodes_; };
+
+    /// Read-only joint model view. Invalidated by a successful SetJointNode().
+    const std::vector<JointNode>& GetJointNodesView() const noexcept {
+        return this->joint_nodes_;
+    }
 
     /// \brief Set the home joints to solve IK
     ///
@@ -286,8 +291,15 @@ public:
 protected:
     KinematicsBase() = default;
 
+    /// Shared constructor helper for validated nodes and model-sized state.
+    /// Throws std::invalid_argument for an invalid model or dimension.
+    void InitializeJointModel(const std::vector<JointNode>& joint_nodes,
+                              int dof);
+
+    virtual void OnKinematicModelChanged() {}
+
     bool initalize_ = false;  ///< Whether it has been initialized successfully
-    int dof_;  ///< The number of controllable joints of the robot
+    int dof_{0};  ///< The number of controllable joints of the robot
     SE3d tcp_ = SE3d(
             0.0,
             0.0,

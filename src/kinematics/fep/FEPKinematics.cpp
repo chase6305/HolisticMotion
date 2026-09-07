@@ -45,6 +45,9 @@ bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
 bool FEPKinematics::IsCompatible() const noexcept {
     if (joint_nodes_.size() != 8 || GetDOF() != 7)
         return false;
+    if (joint_nodes_.back().joint_type != JointType::FIXED &&
+        joint_nodes_.back().joint_type != JointType::UNKNOWN)
+        return false;
     return std::all_of(joint_nodes_.begin(), joint_nodes_.begin() + 7,
                        [](const JointNode &node) {
                            return node.joint_type == JointType::REVOLUTE ||
@@ -99,6 +102,7 @@ bool FEPKinematics::SolveSeed(const SE3d &target, Eigen::VectorXd seed,
     // second local solve uses stricter tolerances only when required.
     if (!PoseWithinTolerance(*this, target, solution, 1e-5, 1e-5)) {
         NumericalKinematics refinement(joint_nodes_);
+        refinement.SetTCP(GetTCP());
         refinement.SetMaxIterNum(200);
         refinement.SetTransErrTh(1e-7);
         refinement.SetAngleErrTh(1e-7);

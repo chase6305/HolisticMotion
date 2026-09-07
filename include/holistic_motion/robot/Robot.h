@@ -47,6 +47,8 @@ public:
     std::shared_ptr<NumericalKinematics> GetKinematics() const noexcept {
         return kinematics_;
     }
+    /// Build from the current model names and parent relations. Return nullptr
+    /// for a missing, unsupported, or cyclic path, or one with no active joints.
     std::shared_ptr<NumericalKinematics> CreateKinematics(
             const std::string& base_link,
             const std::string& tip_link) const;

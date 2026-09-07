@@ -35,6 +35,7 @@ class HolisticMotionConan(ConanFile):
         "src/*",
         "tests/*",
         "bindings/*",
+        "benchmarks/*",
         "python/*",
         "!**/__pycache__/*",
         "!**/*.pyc",
@@ -63,6 +64,12 @@ class HolisticMotionConan(ConanFile):
         deps = CMakeDeps(self)
         deps.generate()
         toolchain = CMakeToolchain(self)
+        toolchain.variables["HOLISTICMOTION_CONAN_COMPILER"] = str(
+            self.settings.compiler
+        )
+        toolchain.variables["HOLISTICMOTION_CONAN_COMPILER_VERSION"] = str(
+            self.settings.compiler.version
+        )
         toolchain.variables["HOLISTICMOTION_BUILD_PYTHON"] = self.options.with_python
         toolchain.variables["HOLISTICMOTION_BUILD_TESTS"] = self.options.with_tests
         toolchain.variables["HOLISTICMOTION_ENABLE_CUDA"] = self.options.with_cuda
@@ -93,9 +100,7 @@ class HolisticMotionConan(ConanFile):
             "urdfdom::urdfdom",
         ]
         self.cpp_info.set_property("cmake_file_name", "HolisticMotion")
-        core.set_property(
-            "cmake_target_name", "HolisticMotion::holistic_motion"
-        )
+        core.set_property("cmake_target_name", "HolisticMotion::holistic_motion")
         if self.options.with_collision:
             collision = self.cpp_info.components["collision"]
             collision.libs = ["holistic_motion_collision"]
@@ -105,9 +110,7 @@ class HolisticMotionConan(ConanFile):
                 "pinocchio::pinocchio_collision",
                 "coal::coal",
             ]
-            collision.set_property(
-                "cmake_target_name", "HolisticMotion::collision"
-            )
+            collision.set_property("cmake_target_name", "HolisticMotion::collision")
         if self.options.with_cuda:
             core.set_property(
                 "cmake_build_modules",

@@ -136,9 +136,7 @@ def test_srs_distinct_solve_methods(tmp_path):
     configured = solver.solve_configuration(target, config, joints)
     np.testing.assert_allclose(solver.forward(configured), target, atol=1e-3)
 
-    report = solver.solve_detailed(
-        target, joints, hm.SRSSolveMethod.ALL_CONFIGURATIONS
-    )
+    report = solver.solve_detailed(target, joints, hm.SRSSolveMethod.ALL_CONFIGURATIONS)
     assert report.status == hm.SRSSolveStatus.SUCCESS
     assert report.method == hm.SRSSolveMethod.ALL_CONFIGURATIONS
     assert len(report.solutions) == len(report.configurations)
@@ -149,9 +147,7 @@ def test_srs_distinct_solve_methods(tmp_path):
     assert len(report.solutions) == len(report.joint_limit_hits)
     assert all(value >= 0.0 for value in report.minimum_singular_values)
     assert all(value >= 0.0 for value in report.minimum_joint_limit_margins)
-    assert all(
-        np.asarray(value).shape == (7,) for value in report.joint_limit_margins
-    )
+    assert all(np.asarray(value).shape == (7,) for value in report.joint_limit_margins)
 
     invalid = solver.solve_detailed(target, np.zeros(6))
     assert invalid.status == hm.SRSSolveStatus.INVALID_INPUT
@@ -201,7 +197,8 @@ def test_srs_explicit_tool_and_user_frame_boundaries(tmp_path):
         solver.set_user_frame(malformed)
 
 
-def test_srs_closed_form_solution_from_urdf_parameters(tmp_path):
+@pytest.mark.parametrize("seed_shift", [0.0, 0.05])
+def test_srs_closed_form_solution_from_urdf_parameters(tmp_path, seed_shift):
     import holistic_motion as hm
 
     urdf = tmp_path / "ideal_srs.urdf"
@@ -215,15 +212,18 @@ def test_srs_closed_form_solution_from_urdf_parameters(tmp_path):
     np.testing.assert_allclose(solution, joints, atol=1e-9)
     np.testing.assert_allclose(solver.forward(solution), target, atol=1e-10)
 
+    search_seed = joints.copy()
+    search_seed[2] += seed_shift
+    search_configuration = solver.configuration(search_seed)
     all_configurations = solver.solve(
-        target, joints, hm.SRSSolveMethod.ALL_CONFIGURATIONS
+        target, search_seed, hm.SRSSolveMethod.ALL_CONFIGURATIONS
     )
     assert all_configurations
     for candidate in all_configurations:
         candidate_redundancy = solver.configuration(candidate).redundancy
         redundancy_delta = np.arctan2(
-            np.sin(candidate_redundancy - configuration.redundancy),
-            np.cos(candidate_redundancy - configuration.redundancy),
+            np.sin(candidate_redundancy - search_configuration.redundancy),
+            np.cos(candidate_redundancy - search_configuration.redundancy),
         )
         assert abs(redundancy_delta) < 1e-6
 

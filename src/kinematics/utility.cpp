@@ -1,12 +1,14 @@
 
 #include "holistic_motion/kinematics/utility.h"
 
+#include <limits>
+
 namespace holistic_motion {
 namespace robotics {
 
 // add joints vector to ik_joints
 bool IkRtn::PushBack(const Eigen::VectorXd& joints) {
-    if (joints.size() == 0 || !joints.allFinite()) return false;
+    if (!joints.allFinite()) return false;
     if (!ik_joints.empty() && joints.size() != this->dof) {
         holistic_motion::utility::LogWarning(
                 "Ignoring IK with inconsistent DOF: expected {}, got {}",
@@ -56,128 +58,190 @@ bool IkRtn::RemoveRepeatedIK(const double& eps) {
     return true;
 }
 
-void _GenerateAllIk(const std::vector<std::vector<double>>& joints,
-                    std::vector<double>& ik,
-                    std::vector<std::vector<double>>& new_ik) {
-    size_t i = ik.size();
+namespace {
+constexpr double kTwoPi = 2.0 * M_PI;
+constexpr std::size_t kDefaultSolutionLimit = 65536;
 
-    if (i == joints.size()) {
-        new_ik.push_back(ik);
-        return;
-    }
-    for (auto& j : joints[i]) {
-        ik.push_back(j);
-        _GenerateAllIk(joints, ik, new_ik);
-        ik.pop_back();
-    }
+bool SameRotation(double first, double second) {
+    // A large turn offset can lose its phase when rounded back to double.
+    return std::abs(std::sin(first) - std::sin(second)) <= 1e-10 &&
+           std::abs(std::cos(first) - std::cos(second)) <= 1e-10;
 }
 
-std::vector<double> _Lim(const double& upper_limit,
-                         const double& lower_limit,
-                         double joint) {
-    std::vector<double> results;
-    if (!std::isfinite(upper_limit) || !std::isfinite(lower_limit) ||
-        !std::isfinite(joint) || lower_limit > upper_limit) {
-        return results;
+// Returns false if enumeration cannot fit the budget or turn indices cannot
+// be represented exactly. An empty result is an ordinary infeasible interval.
+bool PeriodicValues(double lower, double upper, double joint,
+                    std::size_t budget, std::vector<double>& values) {
+    values.clear();
+    if (!std::isfinite(lower) || !std::isfinite(upper) ||
+        !std::isfinite(joint) || lower > upper)
+        return true;
+    const bool inside = joint >= lower && joint <= upper;
+    if (inside && joint - lower < kTwoPi && upper - joint < kTwoPi) {
+        values.push_back(joint);
+        return true;
     }
-    const double two_pi = 2 * M_PI;
+    double anchor = joint;
+    if (!inside) {
+        anchor = std::remainder(joint, kTwoPi);
+        // Remainder preserves exact double-period endpoints for ordinary
+        // angles. For extreme inputs, use the phase of the actual rotation.
+        if (!SameRotation(anchor, joint))
+            anchor = std::atan2(std::sin(joint), std::cos(joint));
+    }
+    const long double first =
+        std::ceil((static_cast<long double>(lower) - anchor) / kTwoPi);
+    const long double last =
+        std::floor((static_cast<long double>(upper) - anchor) / kTwoPi);
+    if (first > last) return true;
+    constexpr long double kMaxExactTurn = 4503599627370495.0L;
+    const long double count = last - first + 1.0L;
+    if (!std::isfinite(first) || !std::isfinite(last) ||
+        first < -kMaxExactTurn || last > kMaxExactTurn ||
+        count > static_cast<long double>(budget))
+        return false;
 
-    // Judging the joint angle out-of-bounds problem,
-    // retract the out-of-bounds solution plus or minus 2 PI to the joint angle
-    // range Z
-    if (joint > upper_limit) {
-        while (joint > upper_limit) {
-            joint -= two_pi;
-        }
-
-        while (joint > lower_limit) {
-            results.push_back(joint);
-            joint -= two_pi;
-        }
-    } else if (joint < lower_limit) {
-        while (joint < lower_limit) {
-            joint += two_pi;
-        }
-
-        while (joint < upper_limit) {
-            results.push_back(joint);
-            joint += two_pi;
-        }
+    values.reserve(static_cast<std::size_t>(count));
+    const auto append = [&](long long turn) {
+        const double candidate =
+            turn == 0 ? anchor
+                      : std::fma(static_cast<double>(turn), kTwoPi, anchor);
+        if (candidate >= lower && candidate <= upper &&
+            (candidate == joint || SameRotation(candidate, joint)) &&
+            (values.empty() || candidate != values.back()))
+            values.push_back(candidate);
+    };
+    const auto minimum = static_cast<long long>(first);
+    const auto maximum = static_cast<long long>(last);
+    if (inside) {
+        append(0);
+        for (long long turn = -1; turn >= minimum; --turn) append(turn);
+        for (long long turn = 1; turn <= maximum; ++turn) append(turn);
+    } else if (joint > upper) {
+        for (long long turn = maximum; turn >= minimum; --turn) append(turn);
     } else {
-        results.push_back(joint);
-
-        double joint_tmp = joint - two_pi;
-        while (joint_tmp > lower_limit) {
-            results.push_back(joint_tmp);
-            joint_tmp -= two_pi;
-        }
-        joint_tmp = joint + two_pi;
-        while (joint_tmp < upper_limit) {
-            results.push_back(joint_tmp);
-            joint_tmp += two_pi;
-        }
+        for (long long turn = minimum; turn <= maximum; ++turn) append(turn);
     }
-    return results;
+    return true;
 }
+}  // namespace
 
 bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes) {
-    if (0 == ik_number || joint_nodes.size() < static_cast<size_t>(dof)) {
+    return GetLimitsIK(joint_nodes, kDefaultSolutionLimit);
+}
+
+bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
+                        std::size_t max_solutions) {
+    const auto fail = [this]() {
+        ik_joints.clear();
+        ik_number = 0;
         success = false;
         return false;
+    };
+    if (ik_joints.empty() || dof < 0 ||
+        joint_nodes.size() < static_cast<std::size_t>(dof) ||
+        max_solutions == 0 ||
+        max_solutions >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        return fail();
+
+    std::vector<std::pair<double, double>> limits(dof);
+    for (int joint = 0; joint < dof; ++joint) {
+        const auto& node = joint_nodes[joint];
+        if (std::isnan(node.lower_limit) || std::isnan(node.upper_limit) ||
+            std::isnan(node.lower_limit_set) ||
+            std::isnan(node.upper_limit_set))
+            return fail();
+        limits[joint] = {std::max(node.lower_limit, node.lower_limit_set),
+                         std::min(node.upper_limit, node.upper_limit_set)};
+        if (limits[joint].first > limits[joint].second) return fail();
     }
-    const size_t initial_ik_count = ik_joints.size();
 
-    std::vector<std::vector<double>> new_ik;
-    std::vector<Eigen::VectorXd> new_ik_joints;
-
-    // Pre-calculate joint limits for all DOFs
-    std::vector<std::pair<double, double>> joint_limits(this->dof);
-    for (int j = 0; j < this->dof; ++j) {
-        const auto& node = joint_nodes[j];
-        joint_limits[j] = {std::min(node.upper_limit, node.upper_limit_set),
-                           std::max(node.lower_limit, node.lower_limit_set)};
-    }
-
-    new_ik.reserve(initial_ik_count * 2);
-
-    // Process each IK solution
-    for (const auto& ik : ik_joints) {  // Use range-based for loop
-        if (ik.size() != this->dof || !ik.allFinite()) continue;
-        std::vector<std::vector<double>> joints(this->dof);
-
-        // Generate valid joint configurations
-        for (int j = 0; j < this->dof; ++j) {
-            const auto& [upper, lower] = joint_limits[j];
-            joints[j] = _Lim(upper, lower, ik[j]);
+    std::vector<Eigen::VectorXd> filtered;
+    std::vector<std::vector<double>> choices;
+    std::vector<std::size_t> indices;
+    Eigen::VectorXd candidate;
+    for (const auto& solution : ik_joints) {
+        if (solution.size() != dof || !solution.allFinite()) continue;
+        bool single_representation = true;
+        for (int joint = 0; joint < dof; ++joint) {
+            const auto [lower, upper] = limits[joint];
+            const auto type = joint_nodes[joint].joint_type;
+            const double value = solution[joint];
+            if (value < lower || value > upper ||
+                ((type == JointType::REVOLUTE || type == JointType::CONTINUOUS)
+                     ? (!std::isfinite(lower) || !std::isfinite(upper) ||
+                        value - lower >= kTwoPi || upper - value >= kTwoPi)
+                     : (type != JointType::PRISMATIC &&
+                        type != JointType::FIXED &&
+                        type != JointType::UNKNOWN))) {
+                single_representation = false;
+                break;
+            }
         }
-
-        // Generate valid IK combinations
-        std::vector<double> ik_mid;
-        _GenerateAllIk(joints, ik_mid, new_ik);
+        if (single_representation) {
+            if (filtered.size() == max_solutions) return fail();
+            filtered.push_back(solution);
+            continue;
+        }
+        if (choices.empty()) {
+            choices.resize(dof);
+            indices.resize(dof);
+            candidate.resize(dof);
+        }
+        bool feasible = true;
+        for (int joint = 0; joint < dof; ++joint) {
+            const auto [lower, upper] = limits[joint];
+            auto& values = choices[joint];
+            values.clear();
+            if (joint_nodes[joint].joint_type == JointType::PRISMATIC ||
+                joint_nodes[joint].joint_type == JointType::FIXED ||
+                joint_nodes[joint].joint_type == JointType::UNKNOWN) {
+                if (solution[joint] >= lower && solution[joint] <= upper)
+                    values.push_back(solution[joint]);
+            } else if (joint_nodes[joint].joint_type == JointType::REVOLUTE ||
+                       joint_nodes[joint].joint_type == JointType::CONTINUOUS) {
+                if (!PeriodicValues(lower, upper, solution[joint],
+                                    max_solutions, values)) {
+                    holistic_motion::utility::LogWarning(
+                        "IK limit expansion exceeds its budget or turn "
+                        "precision");
+                    return fail();
+                }
+            }
+            if (values.empty()) {
+                feasible = false;
+                break;
+            }
+        }
+        if (!feasible) continue;
+        std::size_t combinations = 1;
+        const std::size_t remaining = max_solutions - filtered.size();
+        for (const auto& values : choices) {
+            if (combinations > remaining / values.size()) {
+                holistic_motion::utility::LogWarning(
+                    "IK limit expansion exceeds {} solutions", max_solutions);
+                return fail();
+            }
+            combinations *= values.size();
+        }
+        if (combinations > remaining) return fail();  // Also covers zero DOF.
+        filtered.reserve(filtered.size() + combinations);
+        std::fill(indices.begin(), indices.end(), 0);
+        for (std::size_t row = 0; row < combinations; ++row) {
+            for (int joint = 0; joint < dof; ++joint)
+                candidate[joint] = choices[joint][indices[joint]];
+            filtered.push_back(candidate);
+            // Mixed-radix counting avoids recursion and intermediate products.
+            for (int joint = dof; joint-- > 0;) {
+                if (++indices[joint] < choices[joint].size()) break;
+                indices[joint] = 0;
+            }
+        }
     }
-
-    // Direct map conversion without element-wise copy
-    new_ik_joints.reserve(new_ik.size());
-    for (const auto& sol : new_ik) {
-        if (sol.size() != static_cast<size_t>(this->dof)) continue;
-        new_ik_joints.emplace_back(
-                Eigen::Map<const Eigen::VectorXd>(sol.data(), this->dof));
-    }
-
-    // Update results
-    ik_number = new_ik_joints.size();
-    ik_joints = std::move(new_ik_joints);  // Move assignment for O(1) transfer
-
-    holistic_motion::utility::LogDebug(
-            "IK limit filtering: Input {} solutions, Output {} solutions",
-            initial_ik_count, ik_number);
-
-    if (ik_number == 0) {
-        success = false;
-        return false;
-    }
-
-    success = !ik_joints.empty();
+    ik_joints = std::move(filtered);
+    ik_number = static_cast<int>(ik_joints.size());
+    success = ik_number > 0;
     return success;
 }
 
@@ -205,6 +269,13 @@ bool IkRtn::WrapToLimitsNear(const std::vector<JointNode>& joint_nodes,
                 lower > upper) {
                 valid = false;
                 break;
+            }
+            if (node.joint_type == JointType::PRISMATIC) {
+                if (solution[joint] < lower || solution[joint] > upper) {
+                    valid = false;
+                    break;
+                }
+                continue;
             }
             const double minimum_turn = std::ceil(
                     (lower - solution[joint]) / kTwoPi);

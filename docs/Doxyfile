@@ -4,7 +4,8 @@ OUTPUT_DIRECTORY       = docs/_build/doxygen
 INPUT                  = include/holistic_motion/robot/Robot.h \
                          include/holistic_motion/collision/CollisionModel.h \
                          include/holistic_motion/collision/SphereCollisionModel.h \
-                         include/holistic_motion/planning/SamplingPlanner.h
+                         include/holistic_motion/planning/SamplingPlanner.h \
+                         include/holistic_motion/planning/PathOptimizer.h
 FILE_PATTERNS           = *.h *.hpp
 RECURSIVE               = YES
 EXTRACT_ALL             = YES

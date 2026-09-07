@@ -60,6 +60,8 @@ struct PathOptimizationResult {
 ///
 /// Endpoints remain fixed. Every accepted waypoint update decreases the
 /// weighted length/smoothness objective and validates both adjacent edges.
+/// Input validation checks each original waypoint exactly, as well as the
+/// configured interior edge samples, to preserve validity at roundoff boundaries.
 class PathOptimizer {
 public:
   using StateValidator = std::function<bool(const Eigen::VectorXd &)>;

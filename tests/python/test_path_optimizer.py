@@ -343,6 +343,26 @@ def test_path_optimizer_rejects_invalid_input_edge():
     assert len(result.path) == 0
 
 
+@pytest.mark.parametrize("path", [[[1.0], [0.3]], [[1.0], [0.3], [0.5]]])
+@pytest.mark.parametrize("resolution", [2.0, 0.2])
+def test_path_optimizer_validates_exact_input_waypoints(path, resolution):
+    samples = []
+
+    def validator(q):
+        samples.append(float(q[0]))
+        return q[0] > 0.3
+
+    optimizer = hm.PathOptimizer([0.0], [2.0], validator)
+    result = optimizer.optimize(path, _options(edge_resolution=resolution))
+
+    # 1 + (0.3 - 1) rounds to 0.30000000000000004, which is valid;
+    # the actual waypoint lies on the invalid boundary and must be checked.
+    assert result.status == hm.PathOptimizationStatus.INVALID_PATH
+    assert not result.success
+    assert len(result.path) == 0
+    assert samples[-1] == 0.3
+
+
 def test_path_optimizer_timeout_returns_best_feasible_path():
     calls = 0
 
@@ -363,6 +383,54 @@ def test_path_optimizer_timeout_returns_best_feasible_path():
     assert result.status == hm.PathOptimizationStatus.TIMEOUT
     np.testing.assert_allclose(result.path[0], [-0.8])
     np.testing.assert_allclose(result.path[-1], [0.8])
+
+
+@pytest.mark.parametrize("slow_call", [1, 2])
+@pytest.mark.parametrize("valid", [False, True])
+def test_path_optimizer_input_callback_timeout_has_no_feasible_path(slow_call, valid):
+    calls = 0
+
+    def validator(_state):
+        nonlocal calls
+        calls += 1
+        if calls == slow_call:
+            time.sleep(0.04)
+            return valid
+        return True
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0], validator)
+    result = optimizer.optimize(
+        [[-0.8], [0.8]], _options(timeout_seconds=0.02, edge_resolution=2.0)
+    )
+
+    assert result.status == hm.PathOptimizationStatus.TIMEOUT
+    assert not result.success
+    assert len(result.path) == 0
+    assert calls == slow_call
+
+
+def test_path_optimizer_discards_candidate_if_last_interior_callback_times_out():
+    calls = 0
+
+    def validator(_state):
+        nonlocal calls
+        calls += 1
+        # Five input samples, then the candidate and its two interior samples.
+        if calls == 8:
+            time.sleep(0.04)
+        return True
+
+    path = [[-0.8], [0.2], [0.8]]
+    optimizer = hm.PathOptimizer([-1.0], [1.0], validator)
+    result = optimizer.optimize(
+        path, _options(timeout_seconds=0.02, edge_resolution=0.5, step_size=0.1)
+    )
+
+    assert result.success
+    assert result.status == hm.PathOptimizationStatus.TIMEOUT
+    assert result.statistics.accepted_updates == 0
+    np.testing.assert_array_equal(result.path, path)
+    assert calls == 8
 
 
 def test_path_optimizer_stops_after_gradient_exhausts_timeout():
@@ -542,9 +610,7 @@ def test_path_optimizer_requires_state_cost_callback_when_weighted():
 
 
 def test_path_optimizer_continuous_joint_update_is_transactional():
-    optimizer = hm.PathOptimizer(
-        [-np.pi], [np.pi], lambda state: abs(state[0]) >= 1.0
-    )
+    optimizer = hm.PathOptimizer([-np.pi], [np.pi], lambda state: abs(state[0]) >= 1.0)
     with pytest.raises(IndexError, match="continuous joint index"):
         optimizer.set_continuous_joints([0, 1])
 

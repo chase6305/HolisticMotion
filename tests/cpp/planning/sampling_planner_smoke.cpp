@@ -47,6 +47,22 @@ int main() {
     return 5;
   }
 
+  {
+    PathOptimizer boundary_optimizer(
+        Eigen::VectorXd::Zero(1), Eigen::VectorXd::Constant(1, 2.0),
+        [](const Eigen::VectorXd &q) { return q[0] > 0.3; });
+    holistic_motion::robotics::planning::PathOptimizationOptions boundary_options;
+    boundary_options.edge_resolution = 2.0;
+    const auto boundary = boundary_optimizer.Optimize(
+        {Eigen::VectorXd::Constant(1, 1.0), Eigen::VectorXd::Constant(1, 0.3)},
+        boundary_options);
+    if (boundary.Success() || !boundary.path.empty() ||
+        boundary.status != holistic_motion::robotics::planning::PathOptimizationStatus::INVALID_PATH) {
+      std::cerr << "invalid exact endpoint escaped path validation\n";
+      return 7;
+    }
+  }
+
   std::size_t direct_checks = 0;
   SamplingPlanner direct_planner(Eigen::Vector2d(-1.0, -1.0),
                                  Eigen::Vector2d(1.0, 1.0),

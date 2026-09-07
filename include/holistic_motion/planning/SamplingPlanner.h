@@ -31,6 +31,8 @@ struct PlanningOptions {
   bool simplify_path{true};
   std::size_t shortcut_attempts{100};
   bool interpolate_path{false};
+  // Target count when densifying; preserve original corners. If the new
+  // validation grid fails or times out, return the validated original path.
   std::size_t interpolation_points{100};
   std::uint64_t random_seed{0};
 };

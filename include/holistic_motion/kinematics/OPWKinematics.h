@@ -9,16 +9,12 @@ namespace robotics {
 /// Basis and a Spherical Wrist
 class OPWKinematics : public KinematicsBase {
 public:
+    /// Require at least six valid coordinate nodes; any remaining nodes must
+    /// be FIXED or UNKNOWN. Invalid joint models throw std::invalid_argument.
     explicit OPWKinematics(OPWParameters opwp,
                            const std::vector<JointNode> &joint_node)
         : params_(opwp) {
-        this->joint_nodes_ = joint_node;
-
-        this->dof_ = 6;
-        this->initalize_ = true;
-        this->home_joints_ = Eigen::VectorXd::Zero(this->dof_);
-        this->ik_nearst_weight_ = Eigen::VectorXd::Ones(this->dof_);
-        this->joint_filter_config_.Resize(this->dof_);
+        InitializeJointModel(joint_node, 6);
         holistic_motion::utility::LogDebug("Constructing OPWKinematics...");
     };
     virtual ~OPWKinematics() {

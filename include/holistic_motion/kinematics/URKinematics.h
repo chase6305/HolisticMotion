@@ -8,16 +8,12 @@ namespace robotics {
 /// https://github.com/pyni/ur_inverse_solutions
 class URKinematics : public KinematicsBase {
 public:
+    /// Require at least six valid coordinate nodes; any remaining nodes must
+    /// be FIXED or UNKNOWN. Invalid joint models throw std::invalid_argument.
     explicit URKinematics(URParameters urp,
                           const std::vector<JointNode> &joint_node)
         : params_(urp) {
-        this->joint_nodes_ = joint_node;
-
-        this->dof_ = 6;
-        this->initalize_ = true;
-        this->home_joints_ = Eigen::VectorXd::Zero(this->dof_);
-        this->ik_nearst_weight_ = Eigen::VectorXd::Ones(this->dof_);
-        this->joint_filter_config_.Resize(this->dof_);
+        InitializeJointModel(joint_node, 6);
         holistic_motion::utility::LogDebug("Constructing URKinematics...");
     };
     virtual ~URKinematics() {

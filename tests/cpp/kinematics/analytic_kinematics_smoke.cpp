@@ -136,5 +136,12 @@ int main() {
         std::cerr << "negative IK weight was accepted\n";
         return 1;
     }
+    auto invalid_nodes = opw_solver.GetJointNode();
+    invalid_nodes[0].axis.setZero();
+    if (opw_solver.SetJointNode(invalid_nodes) ||
+        opw_solver.GetJointNode()[0].axis.norm() < 1e-12) {
+        std::cerr << "invalid joint model changed solver state\n";
+        return 1;
+    }
     return 0;
 }

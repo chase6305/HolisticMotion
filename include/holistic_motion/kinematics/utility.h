@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <numeric>
 #include <set>
 
@@ -263,6 +264,8 @@ struct IkRtn {
     /// \brief Add new joint solution vector to ik_joints
     ///
     /// \param joints Joint angle vector to be added
+    /// An empty vector represents the single configuration of a zero-DOF model.
+    /// Subsequent solutions must have the same dimension as the first.
     /// \return true if successfully added, false otherwise
     bool PushBack(const Eigen::VectorXd& joints);
 
@@ -272,11 +275,20 @@ struct IkRtn {
     /// \return true if operation successful, false otherwise
     bool RemoveRepeatedIK(const double& eps = 1e-4);
 
-    /// \brief Filter solutions to keep only those within joint limits
+    /// \brief Expand periodic solutions inside inclusive joint limits.
+    /// At most 65536 results are generated. Excessive expansion or a turn
+    /// offset that cannot be represented fails and clears solution outputs.
+    /// Nonperiodic coordinates are checked without angle wrapping.
     ///
     /// \param joint_nodes Vector containing joint limit information
     /// \return true if valid solutions found, false otherwise
     bool GetLimitsIK(const std::vector<JointNode>& joint_nodes);
+
+    /// Explicit expansion budget, from 1 through INT_MAX. No partial result is
+    /// returned on failure. The budget counts generated configurations before
+    /// any later deduplication.
+    bool GetLimitsIK(const std::vector<JointNode>& joint_nodes,
+                     std::size_t max_solutions);
 
     /// Map each periodic IK branch into limits using the representation nearest
     /// to a reference state, without generating equivalent multi-turn copies.

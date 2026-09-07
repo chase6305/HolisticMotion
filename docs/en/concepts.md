@@ -7,6 +7,15 @@
 HolisticMotion does not bundle robot assets. Pass an absolute or application-
 resolved URDF path to `Robot`, `CollisionModel`, and retargeting solvers.
 
+The default robot chain is the supported root-to-leaf path with the most actuated
+joints. Ties retain the first visited leaf, and trailing fixed transforms remain
+part of the tool pose. Paths containing mimic or unsupported joints are excluded.
+Explicit base-to-tip construction uses incremental name indexes within each call
+for long paths in larger models, while short paths retain direct lookup. C++ edits
+to public model names and parent relations are observed on the next call; duplicate
+names retain first-match resolution. A cyclic parent traversal terminates with
+`nullptr` (`None` in Python) rather than hanging.
+
 ## Core and optional components
 
 The core `holistic_motion` library contains robot models, kinematics,
@@ -80,11 +89,62 @@ for small batches; `AUTO` selects CUDA only when a runtime device is available
 and the batch is large enough to amortize transfers. Returned FEP IK solutions
 are independently checked to 10 µm and 10 µrad after optional high-precision
 refinement. Explicit `CUDA` requests fail instead of silently falling back.
+The high-precision pass inherits the current TCP, so its target and final check
+use the same tool frame as the initial solve.
+CPU batch FK prepares joint axes and the fixed terminal/TCP transform once per
+call, then accumulates each pose without allocating per-row joint or pose lists.
+Model and TCP changes take effect on the next call. Scalar FK uses axis-angle
+rotations for oblique revolute axes, and C++ continuous joint nodes contribute
+to both FK and the geometric Jacobian. Empty batches return shape `(0, 4, 4)`.
 Streaming offset-arm targets can use `FEPContinuousTracker` with the same
 options and diagnostics as the SRS tracker. Both trackers solve the current
 branch on every frame, refresh all branches periodically, and immediately
 enumerate all candidates if the current branch fails or approaches a
 singularity. `candidate_refresh_interval` controls that tradeoff.
+
+Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
+An already converged seed skips these buffers. The workspace is local to the
+call and introduces no shared mutable solver cache. C++ tolerance, step-size,
+and damping setters require finite positive values; invalid values leave the
+previous setting intact. `GetIK()` clears solution and distance outputs before
+validation, so a failed call does not retain distances from a previous solve.
+
+C++ solver construction validates joint fields and coordinate layout before
+allocating model-sized state. Numerical models reserve their last node for a
+fixed tool transform (`UNKNOWN` is also accepted for compatibility); OPW and UR
+require at least six coordinate slots, with only fixed/unknown nodes after them.
+Invalid models throw `std::invalid_argument`. `NumericalKinematics::SetDOF()`
+accepts only the existing model-derived dimension; changing it requires a new
+solver. A numerical model with one fixed node has zero DOF: its Jacobian is
+`6 x 0`, and IK returns one empty joint vector only when the target already
+matches its pose within tolerance.
+
+`SetJointNode()` rejects size changes, unsupported joint types, invalid fields,
+or actuated nodes beyond the coordinate slots. Both hardware and user limit
+updates must preserve a nonempty intersection. Rejected updates leave the
+previous model or limits intact. C++ TCP and user frames require finite
+coefficients and a unit quaternion. FK also checks arithmetic overflow from
+finite joint inputs: failure clears the pose list and propagates as `ValueError`
+through Python `forward()`, `forward_all()`, and `jacobian()`. Full model
+validation happens at construction/update time; FK retains lightweight runtime
+dimension and arithmetic checks.
+
+`IkRtn::GetLimitsIK()` expands revolute/continuous coordinates inside inclusive
+hardware/user limits. It computes the feasible turn interval directly, so work
+no longer grows with the number of turns in an out-of-limit seed. Extreme seeds
+use their sine/cosine phase when ordinary remainder reduction loses accuracy;
+returned wraps must preserve that phase to `1e-10`. Nonperiodic coordinates are
+only checked against their interval. An already in-limit configuration with no
+other periodic representation skips turn enumeration and its workspace.
+
+Expansion is limited to 65536 configurations by default, counted before any
+later deduplication. The C++ overload `GetLimitsIK(nodes, max_solutions)` accepts
+an explicit budget from 1 through `INT_MAX`. Exceeding the budget or an
+unrepresentable turn range returns `false` with an empty result. No partial
+solution set is reported. Numerical `solve_all()` inherits the default budget;
+large multi-turn ranges can therefore fail even if individual joints have valid
+representations. Analytic nearest-branch filtering uses its existing separate
+`WrapToLimitsNear()` path.
 
 ## Scope
 

@@ -7,6 +7,8 @@ BUILD_DIR="${BUILD_DIR:-${REPOSITORY_DIR}/build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 JOBS="${JOBS:-$(nproc)}"
 PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-python3}"
+CONAN_PROFILE_HOST="${CONAN_PROFILE_HOST:-default}"
+CONAN_PROFILE_BUILD="${CONAN_PROFILE_BUILD:-default}"
 RUN_TESTS=false
 CONAN_WITH_TESTS=False
 CONAN_SHARED=False
@@ -30,6 +32,7 @@ Options:
 
 Environment:
   BUILD_DIR, BUILD_TYPE, JOBS, PYTHON_EXECUTABLE
+  CONAN_PROFILE_HOST, CONAN_PROFILE_BUILD (names or paths; default: default)
 EOF
 }
 
@@ -84,16 +87,23 @@ fi
 
 cd "${REPOSITORY_DIR}"
 
-if ! conan profile show -pr default >/dev/null 2>&1; then
-    echo "[1/4] Detecting the Conan default profile"
-    conan profile detect
+if ! conan profile show -pr:h "${CONAN_PROFILE_HOST}" \
+        -pr:b "${CONAN_PROFILE_BUILD}" >/dev/null 2>&1; then
+    if [[ "${CONAN_PROFILE_HOST}" == default && "${CONAN_PROFILE_BUILD}" == default ]]; then
+        echo "[1/4] Detecting the Conan default profile"
+        conan profile detect
+    else
+        echo "error: cannot load Conan profiles: host=${CONAN_PROFILE_HOST}, build=${CONAN_PROFILE_BUILD}" >&2
+        exit 1
+    fi
 else
-    echo "[1/4] Using the existing Conan default profile"
+    echo "[1/4] Using Conan profiles: host=${CONAN_PROFILE_HOST}, build=${CONAN_PROFILE_BUILD}"
 fi
 
 echo "[2/4] Installing dependencies"
 echo "      CUDA=${CONAN_WITH_CUDA}, collision=${CONAN_WITH_COLLISION}, tests=${CONAN_WITH_TESTS}"
 conan install . \
+    -pr:h "${CONAN_PROFILE_HOST}" -pr:b "${CONAN_PROFILE_BUILD}" \
     --output-folder="${BUILD_DIR}" \
     --build=missing \
     -s build_type="${BUILD_TYPE}" \
@@ -113,6 +123,7 @@ echo "[3/4] Configuring and building"
 cmake -S . -B "${BUILD_DIR}/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+    -DPython3_EXECUTABLE="$(command -v "${PYTHON_EXECUTABLE}")" \
     -DHOLISTICMOTION_BUILD_PYTHON=ON \
     -DHOLISTICMOTION_BUILD_TESTS="${RUN_TESTS}" \
     -DHOLISTICMOTION_ENABLE_CUDA="${CONAN_WITH_CUDA}" \
@@ -135,7 +146,7 @@ PYTHONPATH="${BUILD_DIR}/install${PYTHONPATH:+:${PYTHONPATH}}" \
     "import holistic_motion as hm; print('Python import smoke test: OK'); print(f'FEP CUDA compiled/runtime: {hm.FEPKinematics.cuda_compiled}/{hm.FEPKinematics.cuda_available}'); assert hm.FEPKinematics.cuda_compiled is ${CONAN_WITH_CUDA}; assert hasattr(hm, 'CollisionModel') is ${CONAN_WITH_COLLISION}"
 
 if [[ "${RUN_TESTS}" == true ]]; then
-    ctest --test-dir "${BUILD_DIR}/cmake" --output-on-failure
+    ctest --test-dir "${BUILD_DIR}/cmake" --output-on-failure --no-tests=error
     echo "Running Python tests against the installed package"
     if ! "${PYTHON_EXECUTABLE}" -c "import pytest" >/dev/null 2>&1; then
         echo "error: --tests requires pytest" >&2
