@@ -89,6 +89,20 @@ CSV 包含单次微秒中位数、结果数量和校验和；计时包含输入/
 及限位校验在计时外。`ik_limit_smoke` 的 CTest 超时为十秒，覆盖极大种子、
 闭区间端点、独立圈数枚举、组合输出顺序、预算和失败后的空结果。
 
+`<build-directory>/path_construction_benchmark` 测量原生五次 Bezier 路径构造，
+使用 2/7 维、32/512/4096 个合成路点，过渡容差为零，日志级别为 Warning。
+CSV 输出一次预热后 30 次调用的中位数和路径长度校验和。计时包含路径构造
+及关闭 Debug 后的日志开销，不包含时间参数化、Python 绑定或机器人资产。
+应在相同构建和机器条件下比较版本；耗时不作为 CI 阈值。
+
+`benchmarks/trajectory_audit.py` 按显式种子生成原生轨迹，在均匀时间点和
+全部分段边界检查有限性、端点和导数限位。例如执行
+`PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`。
+JSON 将构建拒绝与结果不变量失败分别计数，并记录前十个失败；用相同的
+`--seed` 和 `--case-index` 重放。存在任意失败时返回状态码 1，不把仅构建
+成功视为通过。这是诊断工具，不证明采样点之间无碰撞或始终满足导数约束，
+其中的总耗时也不是独立性能基准。
+
 ## 生成式数值回归测试
 
 可选的 `test` extra 包含 pytest 和 Hypothesis。验证已有 Conan 安装时，可以只在

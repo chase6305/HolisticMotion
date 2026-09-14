@@ -2,6 +2,9 @@
 
 #include <algorithm>
 
+#include "TrajectoryIntegration.h"
+#include "TrajectorySampling.h"
+
 namespace holistic_motion {
 namespace robotics {
 
@@ -9,19 +12,18 @@ HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(TrajectoryTrapezium)
 
 template <typename LieGroup>
 TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
-        const std::shared_ptr<PathBase<LieGroup>> &path,
-        const std::shared_ptr<TrajectoryConstraints> &constraints,
-        const double &vel_init,
-        const double &vel_end) {
+    const std::shared_ptr<PathBase<LieGroup>> &path,
+    const std::shared_ptr<TrajectoryConstraints> &constraints, const double &vel_init,
+    const double &vel_end) {
     holistic_motion::utility::LogDebug("Constructing...");
     if (!path) {
         holistic_motion::utility::LogWarning("The input path is null!");
         return;
     }
-    if (!std::isfinite(vel_init) || !std::isfinite(vel_end) ||
-        vel_init < 0.0 || vel_end < 0.0) {
+    if (!std::isfinite(vel_init) || !std::isfinite(vel_end) || vel_init < 0.0 ||
+        vel_end < 0.0) {
         holistic_motion::utility::LogWarning(
-                "Initial and final path velocities must be finite and non-negative");
+            "Initial and final path velocities must be finite and non-negative");
         return;
     }
     this->path_ = path;
@@ -35,35 +37,33 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
     auto path_length = path->GetLength();
     if (0 == path_length) {
         holistic_motion::utility::LogDebug(
-                "The input path length: {}, skip trajectory build!",
-                path_length);
+            "The input path length: {}, skip trajectory build!", path_length);
         return;
     } else if (path_length < 0) {
         holistic_motion::utility::LogWarning(
-                "The input path is not valid, path length: {}!", path_length);
+            "The input path is not valid, path length: {}!", path_length);
         return;
     }
 
     TrajectorySeg pre_seg;
-    double bezier_velocity{0.0};  ///< the velocity of bezier segment
-    double bezier_length{0.0};    ///< the length of bezier segment
+    double bezier_velocity{0.0}; ///< the velocity of bezier segment
+    double bezier_length{0.0};   ///< the length of bezier segment
 
-    double &pre_time = pre_seg.timestamp;  ///< start time
-    double &pre_pos = pre_seg.pos;         ///< start position
-    double &pre_vel = pre_seg.vel;         ///< start velocity
+    double &pre_time = pre_seg.timestamp; ///< start time
+    double &pre_pos = pre_seg.pos;        ///< start position
+    double &pre_vel = pre_seg.vel;        ///< start velocity
 
     // double end_time{0.0}; ///< end time
-    double end_pos{0.0};  ///< end position
-    double end_vel{0.0};  ///< end velocity
+    double end_pos{0.0}; ///< end position
+    double end_vel{0.0}; ///< end velocity
 
-    double max_vel{0.0};  ///< max velocity
-    double max_acc{0.0};  ///< max acceleration
+    double max_vel{0.0}; ///< max velocity
+    double max_acc{0.0}; ///< max acceleration
     // double max_jerk{0.0}; ///< max jerk (unuse)
 
     Eigen::VectorXd velocity_limits, acceleration_limits, jerk_limits;
-    if (!this->GetLimitFromConstraintProfile(
-                constraints, velocity_limits, acceleration_limits,
-                jerk_limits)) {
+    if (!this->GetLimitFromConstraintProfile(constraints, velocity_limits,
+                                             acceleration_limits, jerk_limits)) {
         return;
     }
 
@@ -81,10 +81,10 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
 
     int i = 0;
     int num_of_segments = this->path_->GetNumOfPathSegments();
-    while (i < num_of_segments)  // compute each path segment
+    while (i < num_of_segments) // compute each path segment
     {
         holistic_motion::utility::LogDebug("[{:4.2f}%] computing.....",
-                                (double)i / num_of_segments * 100);
+                                           (double)i / num_of_segments * 100);
         bool is_next_bezier_segment = false;
         bool is_cur_linear_segment = false;
 
@@ -94,8 +94,8 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
 
         int number_of_bezier_segs = 0;
 
-        if ((is_cur_linear_segment = (linear_seg->GetPathSegType() ==
-                                      PathSegType::LinearSeg))) {
+        if ((is_cur_linear_segment =
+                 (linear_seg->GetPathSegType() == PathSegType::LinearSeg))) {
             auto sp = linear_seg->GetStartParameter();
             auto tangent = linear_seg->GetTangent(sp);
             max_vel = (std::numeric_limits<double>::max)();
@@ -103,10 +103,9 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
             // Calculate the velocity and acceleration that can be achieved in
             // this linear segment
             for (size_t i = 0; i < this->dof_; ++i) {
-                max_vel = std::min(max_vel,
-                                   velocity_limits[i] / std::abs(tangent[i]));
-                max_acc = std::min(
-                        max_acc, acceleration_limits[i] / std::abs(tangent[i]));
+                max_vel = std::min(max_vel, velocity_limits[i] / std::abs(tangent[i]));
+                max_acc =
+                    std::min(max_acc, acceleration_limits[i] / std::abs(tangent[i]));
             }
 
             end_pos = pre_pos + linear_seg->GetLength();
@@ -120,15 +119,14 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
         // to find the bezier curve segment after the linear segment
         while (i < num_of_segments &&
                this->path_->GetPathSegmentByIndex(i)->GetPathSegType() !=
-                       PathSegType::LinearSeg) {
+                   PathSegType::LinearSeg) {
             blend_seg = this->path_->GetPathSegmentByIndex(i);
             bezier_length += blend_seg->GetLength();
             // Calculate the velocity and acceleration that can be achieved in
             // this segment
             bezier_velocity = std::min(
-                    bezier_velocity,
-                    _ComputeSegmentMaxSVel(blend_seg, max_vel_list,
-                                           max_acc_list, max_jerk_list));
+                bezier_velocity, _ComputeSegmentMaxSVel(blend_seg, max_vel_list,
+                                                        max_acc_list, max_jerk_list));
             end_vel = bezier_velocity;
             number_of_bezier_segs++;
             is_next_bezier_segment = true;
@@ -137,51 +135,47 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
 
         if (is_cur_linear_segment) {
             holistic_motion::utility::LogDebug(
-                    "Compute trapezium profile: pre_pos:{}, end_pos:{}, "
-                    "pre_vel:{}, end_vel:{}, max_vel:{} max_acc:{}, "
-                    "pre_time:{}",
-                    pre_pos, end_pos, pre_vel, end_vel, max_vel, max_acc,
-                    pre_time);
+                "Compute trapezium profile: pre_pos:{}, end_pos:{}, "
+                "pre_vel:{}, end_vel:{}, max_vel:{} max_acc:{}, "
+                "pre_time:{}",
+                pre_pos, end_pos, pre_vel, end_vel, max_vel, max_acc, pre_time);
 
             int seg_no = i - 1 - number_of_bezier_segs;
-            bool res = _ComputeTrapeziumProfile(pre_pos, end_pos, pre_vel,
-                                                end_vel, max_vel, max_acc,
-                                                pre_time, linear_segs, seg_no);
+            bool res =
+                _ComputeTrapeziumProfile(pre_pos, end_pos, pre_vel, end_vel, max_vel,
+                                         max_acc, pre_time, linear_segs, seg_no);
             traj_segs.pop_back();
 
             if (!res) {
-                holistic_motion::utility::LogWarning(
-                        "Construct trapezium profile "
-                        "failed!");
+                holistic_motion::utility::LogWarning("Construct trapezium profile "
+                                                     "failed!");
                 return;
             }
             if (linear_segs.empty()) {
                 holistic_motion::utility::LogWarning(
-                        "Trapezium profile produced no trajectory segments");
+                    "Trapezium profile produced no trajectory segments");
                 return;
             }
             if (linear_segs.back().seg_no == 0 &&
                 std::abs(pre_vel - vel_init) > Epsilon) {
-                holistic_motion::utility::LogWarning(
-                        " Construct trapezium profile "
-                        "failed!");
+                holistic_motion::utility::LogWarning(" Construct trapezium profile "
+                                                     "failed!");
                 return;
             }
 
             traj_segs.splice(traj_segs.end(), linear_segs);
-
         }
 
         if (is_next_bezier_segment) {
             if (!std::isfinite(end_vel) || end_vel <= 0.0) {
                 holistic_motion::utility::LogWarning(
-                        "Bezier segment has no finite positive path velocity");
+                    "Bezier segment has no finite positive path velocity");
                 return;
             }
             pre_seg = traj_segs.back();
-            traj_segs.push_back(
-                    TrajectorySeg(i - 1, pre_time + bezier_length / end_vel,
-                                  pre_pos + bezier_length, end_vel, 0.0, 0.0));
+            traj_segs.push_back(TrajectorySeg(i - 1, pre_time + bezier_length / end_vel,
+                                              pre_pos + bezier_length, end_vel, 0.0,
+                                              0.0));
         }
     }
     this->trajectory_segments_ = traj_segs;
@@ -189,14 +183,15 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
     if (this->trajectory_pspline_->GetKnots().size() < 2 ||
         this->trajectory_pspline_->GetLastTimeStamp() <= 0.0) {
         holistic_motion::utility::LogWarning(
-                "Trajectory interpolation produced no positive-duration segments");
+            "Trajectory interpolation produced no positive-duration segments");
         return;
     }
+    if (!this->InitializePhasePathSegments())
+        return;
     this->valid_ = true;
-    if (!this->EnforceJointLimits(
-                velocity_limits, acceleration_limits, jerk_limits)) {
+    if (!this->EnforceJointLimits(velocity_limits, acceleration_limits, jerk_limits)) {
         holistic_motion::utility::LogWarning(
-                "Trajectory contains non-finite derivatives");
+            "Trajectory contains non-finite derivatives");
         return;
     }
     holistic_motion::utility::LogDebug("Constructing succeed!\n");
@@ -204,44 +199,53 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
 
 template <typename LieGroup>
 double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
-        const std::shared_ptr<PathSegmentBase<LieGroup>> &segment,
-        const Eigen::VectorXd &velocity_limits,
-        const Eigen::VectorXd &acceleration_limits,
-        const Eigen::VectorXd &jerk_limits) {
+    const std::shared_ptr<PathSegmentBase<LieGroup>> &segment,
+    const Eigen::VectorXd &velocity_limits, const Eigen::VectorXd &acceleration_limits,
+    const Eigen::VectorXd &jerk_limits) {
     // for a general segment segment, especially Bezier5th (whose max
     // tangent/curvature is hard to calculated analytically) use s(t) = kt, k is
     // selected to comply with dq, ddq limits
+    if (!segment)
+        return 0.0;
     double m = std::numeric_limits<double>::max();
     double s = segment->GetStartParameter();
-    double ep = segment->GetLength() + s;
-    double step = 0.01;
-    if (segment->GetLength() <= step) {
-        step = segment->GetLength();
+    const double length = segment->GetLength();
+    const double ep = s + length;
+    if (!std::isfinite(s) || !std::isfinite(length) || !std::isfinite(ep) ||
+        length < 0.0 || (length > 0.0 && ep <= s)) {
+        return 0.0;
     }
+    const double step = std::min(0.01, length);
 
-    bool quit_loop = false;
-    while (!quit_loop) {
-        if (s >= ep) {
-            s = ep;
-            quit_loop = true;
-        }
+    while (true) {
         auto tangent = segment->GetTangent(s);
         auto curvature = segment->GetCurvature(s);
         auto torsion = segment->GetTorsion(s);
         for (size_t i = 0; i < this->dof_; i++) {
-            if (std::abs(tangent[i]) > Epsilon) {
+            if (!std::isfinite(tangent[i]) || !std::isfinite(curvature[i]) ||
+                !std::isfinite(torsion[i])) {
+                return 0.0;
+            }
+            if (tangent[i] != 0.0) {
                 m = std::min(m, velocity_limits[i] / std::abs(tangent[i]));
             }
-            if (std::abs(curvature[i]) > Epsilon) {
-                m = std::min(m, std::sqrt(acceleration_limits[i] /
-                                          std::abs(curvature[i])));
+            if (curvature[i] != 0.0) {
+                m = std::min(m, detail::SquareRootRatio(acceleration_limits[i],
+                                                        std::abs(curvature[i])));
             }
-            if (std::abs(torsion[i]) > Epsilon) {
-                m = std::min(m, std::pow(jerk_limits[i] / std::abs(torsion[i]),
-                                         1.0 / 3.0));
+            if (torsion[i] != 0.0) {
+                m = std::min(
+                    m, detail::CubeRootRatio(jerk_limits[i], std::abs(torsion[i])));
             }
         }
-        s += step;
+        if (s == ep)
+            break;
+        const double next = std::min(ep, s + step);
+        // A fixed step may round back to the same large path parameter.
+        // Reject the unsampleable interval instead of looping indefinitely.
+        if (next <= s)
+            return 0.0;
+        s = next;
     }
 
     return m;
@@ -249,19 +253,13 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
 
 template <typename LieGroup>
 bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
-        const double &q0,
-        const double &q1,
-        double v0,
-        double &v1,
-        const double &max_velocity,
-        double max_acceleration,
-        const double &t0,
-        std::list<TrajectorySeg> &traj_segs,
-        const int &seg_no) {
+    const double &q0, const double &q1, double v0, double &v1,
+    const double &max_velocity, double max_acceleration, const double &t0,
+    std::list<TrajectorySeg> &traj_segs, const int &seg_no) {
     holistic_motion::utility::LogDebug(
-            "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
-            "max_acceleration:{}, seg_no:{}",
-            q0, q1, v0, v1, max_velocity, max_acceleration, seg_no);
+        "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
+        "max_acceleration:{}, seg_no:{}",
+        q0, q1, v0, v1, max_velocity, max_acceleration, seg_no);
 
     traj_segs.clear();
     if (!std::isfinite(q0) || !std::isfinite(q1) || !std::isfinite(v0) ||
@@ -270,124 +268,231 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
         v0 < -Epsilon || v1 < -Epsilon || max_velocity <= 0.0 ||
         max_acceleration <= 0.0) {
         holistic_motion::utility::LogWarning(
-                "Invalid trapezium inputs: q0={}, q1={}, v0={}, v1={}, "
-                "vmax={}, amax={}, t0={}",
-                q0, q1, v0, v1, max_velocity, max_acceleration, t0);
+            "Invalid trapezium inputs: q0={}, q1={}, v0={}, v1={}, "
+            "vmax={}, amax={}, t0={}",
+            q0, q1, v0, v1, max_velocity, max_acceleration, t0);
         return false;
     }
     v0 = std::max(0.0, v0);
     v1 = std::max(0.0, v1);
-    double h = q1 - q0;
-    double delta_h = std::abs((v1 * v1 - v0 * v0) / (2.0 * max_acceleration));
+    const double h = q1 - q0;
+    if (!std::isfinite(h))
+        return false;
+    // Factor the squared-speed difference to avoid cancellation and overflow
+    // in the individual squares of nonzero endpoint speeds.
+    const double average_velocity = 0.5 * v0 + 0.5 * v1;
+    const double delta_h = (std::abs(v1 - v0) / max_acceleration) * average_velocity;
 
     if (h < delta_h) {
-        // Given parameters cannot be satisfied. q1 - q0 is too small.
+        if (h <= 0.0)
+            return false;
+        double end_velocity = v1;
+        double acceleration = max_acceleration;
         if (v1 > v0) {
-            // update v1
-            v1 = std::sqrt(v0 * v0 + 2.0 * h * max_acceleration);
-            traj_segs.push_back(
-                    TrajectorySeg(seg_no, t0, q0, v0, max_acceleration, 0.0));
-            traj_segs.push_back(
-                    TrajectorySeg(seg_no, (t0 + (v1 - v0) / max_acceleration),
-                                  q1, v1, 0.0, 0.0));
-            return true;
-        } else {
-            // The segment is too short to decelerate at the nominal scalar
-            // acceleration. Build the distance-consistent profile with the
-            // required acceleration; EnforceJointLimits subsequently applies
-            // one global time scale, preserving velocity continuity across
-            // neighboring linear and blend segments while restoring every
-            // joint-space derivative limit.
-            if (h <= Epsilon) return false;
-            const double required_acceleration =
-                    (v0 * v0 - v1 * v1) / (2.0 * h);
-            if (!std::isfinite(required_acceleration) ||
-                required_acceleration <= 0.0) {
-                return false;
-            }
-            const double duration =
-                    (v0 - v1) / required_acceleration;
-            traj_segs.push_back(
-                    TrajectorySeg(seg_no, t0, q0, v0,
-                                  -required_acceleration, 0.0));
-            traj_segs.push_back(
-                    TrajectorySeg(seg_no, t0 + duration,
-                                  q1, v1, 0.0, 0.0));
-            return true;
+            // Lower an unreachable end speed. hypot avoids squaring v0;
+            // the factored square root also avoids overflowing h * a.
+            end_velocity =
+                std::min(v1, std::hypot(v0, std::sqrt(h) * std::sqrt(max_acceleration) *
+                                                std::sqrt(2.0)));
         }
+        // Distance / average speed remains accurate when the velocity change
+        // rounds away. The former (v1-v0)/a could become zero on a short path.
+        const double duration = h / (0.5 * v0 + 0.5 * end_velocity);
+        const double end_time = t0 + duration;
+        if (!std::isfinite(duration) || duration <= 0.0 || !std::isfinite(end_time) ||
+            end_time <= t0)
+            return false;
+        if (v0 > v1) {
+            // Preserve the requested deceleration endpoint, even on a short
+            // positive path. Global limit enforcement subsequently slows the
+            // complete trajectory to accommodate this required acceleration.
+            acceleration = (v1 - v0) / duration;
+            if (!std::isfinite(acceleration))
+                return false;
+        }
+        v1 = end_velocity;
+        traj_segs.emplace_back(seg_no, t0, q0, v0, acceleration, 0.0);
+        traj_segs.emplace_back(seg_no, end_time, q1, v1, 0.0, 0.0);
+        return true;
     } else {
         // Find the maximum velocity that the trajectory can achieve...
-        double v_max_upbound =
-                std::sqrt(h * max_acceleration + 0.5 * (v0 * v0 + v1 * v1));
-        double v_lim =
-                v_max_upbound >= max_velocity ? max_velocity : v_max_upbound;
+        const double squared_peak = h * max_acceleration + 0.5 * (v0 * v0 + v1 * v1);
+        const double inverse_sqrt_two = 1.0 / std::sqrt(2.0);
+        // Keep ordinary rounding; use a scaled norm if squared intermediates
+        // overflow or enter the subnormal range.
+        const double v_max_upbound =
+            std::isfinite(squared_peak) &&
+                    squared_peak >= std::numeric_limits<double>::min()
+                ? std::sqrt(squared_peak)
+                : std::hypot(std::sqrt(h) * std::sqrt(max_acceleration),
+                             std::hypot(v0 * inverse_sqrt_two, v1 * inverse_sqrt_two));
+        double v_lim = v_max_upbound >= max_velocity ? max_velocity : v_max_upbound;
         const double minimum_endpoint_velocity = std::min(v0, v1);
         const double velocity_tolerance =
-                64.0 * std::numeric_limits<double>::epsilon() *
-                std::max({1.0, std::abs(v_lim), std::abs(v0), std::abs(v1)});
+            64.0 * std::numeric_limits<double>::epsilon() *
+            std::max({1.0, std::abs(v_lim), std::abs(v0), std::abs(v1)});
         if (v_lim + velocity_tolerance < minimum_endpoint_velocity) {
-            holistic_motion::utility::LogWarning(
-                    "The target speed[{}, {}] "
-                    "exceeds the limit speed[{}]"
-                    " that the trajectory can achieve!",
-                    v0, v1, v_lim);
+            holistic_motion::utility::LogWarning("The target speed[{}, {}] "
+                                                 "exceeds the limit speed[{}]"
+                                                 " that the trajectory can achieve!",
+                                                 v0, v1, v_lim);
             return false;
         }
         v_lim = std::max(v_lim, minimum_endpoint_velocity);
-        double ta = std::abs(v_lim - v0) /
-                    max_acceleration;  ///< acceleration period
-        double td = std::abs(v1 - v_lim) /
-                    max_acceleration;  ///< deceleration period
-        double seg_duration = ta + td;
-        double tc = 0.0;  ///< constant speed period
+        double ta = std::abs(v_lim - v0) / max_acceleration; ///< acceleration period
+        double td = std::abs(v1 - v_lim) / max_acceleration; ///< deceleration period
+        double tc = 0.0;                                     ///< constant speed period
+        const bool reaches_speed_cap = v_max_upbound >= max_velocity;
+
+        if (!reaches_speed_cap) {
+            // Rationalize (v_peak-v_endpoint)/a. Positive elapsed time must
+            // survive even when v_peak rounds to a nonzero endpoint speed.
+            const double signed_transition_distance = std::copysign(delta_h, v1 - v0);
+            ta = (h + signed_transition_distance) / (v_lim + v0);
+            td = (h - signed_transition_distance) / (v_lim + v1);
+        }
 
         // Determine whether the maximum speed of the trajectory exceeds the
         // limit speed
-        if (v_max_upbound > max_velocity) {
-            seg_duration = h / v_lim + v_lim / (2 * max_acceleration) *
-                                               (std::pow((1 - v0 / v_lim), 2) +
-                                                std::pow((1 - v1 / v_lim), 2));
-            tc = seg_duration - ta - td;
+        if (reaches_speed_cap) {
+            // Average speed gives the distance for either ramp direction.
+            // An endpoint can exceed the internal speed cap; that ramp must
+            // decelerate toward the cap instead of accelerating away from it.
+            const double first_distance = 0.5 * (v0 + v_lim) * ta;
+            const double last_distance = 0.5 * (v_lim + v1) * td;
+            const double cruise_distance = h - first_distance - last_distance;
+            const double distance_tolerance =
+                64.0 * std::numeric_limits<double>::epsilon() *
+                std::max({h, first_distance, last_distance});
+            if (!std::isfinite(cruise_distance) ||
+                cruise_distance < -distance_tolerance) {
+                return false;
+            }
+            tc = std::max(0.0, cruise_distance) / v_lim;
         }
-        holistic_motion::utility::LogDebug("Compute trapezium time, ta:{}, tc:{}, td:{}",
-                                ta, tc, td);
+        if (!std::isfinite(ta) || !std::isfinite(tc) || !std::isfinite(td) ||
+            !std::isfinite(t0 + ta + tc + td) || t0 + ta + tc + td <= t0)
+            return false;
+        holistic_motion::utility::LogDebug(
+            "Compute trapezium time, ta:{}, tc:{}, td:{}", ta, tc, td);
 
-        TrajectorySeg current_segment =
-                TrajectorySeg(seg_no, t0, q0, v0, 0.0, 0.0);
+        TrajectorySeg current_segment = TrajectorySeg(seg_no, t0, q0, v0, 0.0, 0.0);
 
-        if (ta > Epsilon) {  // if there is acceleration period
-            current_segment.acc = max_acceleration;
-            traj_segs.push_back(current_segment);
-            current_segment = _ComputeNextTrajStep(current_segment, ta, 0.0, seg_no);
+        std::list<TrajectorySeg> phases;
+        bool collapsed_phase = false;
+        const auto append_phase = [&](double duration, double acceleration) {
+            collapsed_phase = false;
+            if (duration == 0.0)
+                return true;
+            current_segment.acc = acceleration;
+            const auto next =
+                _ComputeNextTrajStep(current_segment, duration, 0.0, seg_no);
+            if (!std::isfinite(next.timestamp) || !std::isfinite(next.pos) ||
+                !std::isfinite(next.vel) || !std::isfinite(next.acc))
+                return false;
+            if (next.timestamp <= current_segment.timestamp) {
+                collapsed_phase = true;
+                // Adjacent path segments can disagree on their speed cap by
+                // a few ulps. Omit the resulting unrepresentable ramp only
+                // when displacement is roundoff relative to this path interval
+                // and the speed change is itself roundoff. Keep the current
+                // state to preserve the requested start velocity. A larger
+                // change must be represented by motion, not omitted here.
+                const double speed_roundoff =
+                    64.0 * std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(current_segment.vel), std::abs(next.vel));
+                const double position_roundoff =
+                    64.0 * std::numeric_limits<double>::epsilon() * h;
+                return std::abs(next.pos - current_segment.pos) <= position_roundoff &&
+                       std::abs(next.vel - current_segment.vel) <= speed_roundoff;
+            }
+            phases.push_back(current_segment);
+            current_segment = next;
+            return true;
+        };
+        const auto append_cruise_transition = [&](double end_position,
+                                                  double end_velocity,
+                                                  double planned_end_time) {
+            // Absorb an unrepresentable ramp into the adjacent cruise rather
+            // than discarding its velocity change. The replacement is an
+            // independently checked constant-acceleration phase.
+            const double displacement = end_position - current_segment.pos;
+            const double average_speed = 0.5 * current_segment.vel + 0.5 * end_velocity;
+            if (!std::isfinite(displacement) || displacement <= 0.0 ||
+                average_speed <= 0.0)
+                return false;
+            const double end_time =
+                current_segment.timestamp + displacement / average_speed;
+            const double elapsed = end_time - current_segment.timestamp;
+            if (!std::isfinite(end_time) || !std::isfinite(elapsed) || elapsed <= 0.0)
+                return false;
+            const double acceleration = (end_velocity - current_segment.vel) / elapsed;
+            constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
+            const double time_budget =
+                roundoff * std::max(std::abs(planned_end_time),
+                                    std::abs(current_segment.timestamp));
+            const double distance_error =
+                std::abs(average_speed * elapsed - displacement);
+            if (!std::isfinite(acceleration) ||
+                std::abs(acceleration) > max_acceleration ||
+                std::abs(end_time - planned_end_time) > time_budget ||
+                !std::isfinite(distance_error) || distance_error > roundoff * h)
+                return false;
+            current_segment.acc = acceleration;
+            phases.push_back(current_segment);
+            current_segment = TrajectorySeg(seg_no, end_time, end_position,
+                                            end_velocity, acceleration, 0.0);
+            return true;
+        };
+        const double first_acceleration =
+            reaches_speed_cap ? std::copysign(max_acceleration, v_lim - v0)
+                              : max_acceleration;
+        const double last_acceleration =
+            reaches_speed_cap ? std::copysign(max_acceleration, v1 - v_lim)
+                              : -max_acceleration;
+        bool has_cruise_phase = false;
+        if (!append_phase(ta, first_acceleration)) {
+            if (!collapsed_phase || tc <= 0.0)
+                return false;
+            const double last_distance = (0.5 * v_lim + 0.5 * v1) * td;
+            if (!append_cruise_transition(q1 - last_distance, v_lim, t0 + ta + tc))
+                return false;
+            has_cruise_phase = true;
+        } else {
+            const auto prefix_size = phases.size();
+            if (!append_phase(tc, 0.0))
+                return false;
+            has_cruise_phase = phases.size() > prefix_size;
         }
-        if (tc > Epsilon) {  // if there is constant speed period
-            current_segment.acc = 0.0;
-            traj_segs.push_back(current_segment);
-            current_segment = _ComputeNextTrajStep(current_segment, tc, 0.0, seg_no);
+        if (!append_phase(td, last_acceleration)) {
+            if (!collapsed_phase || !has_cruise_phase)
+                return false;
+            const double planned_end_time = current_segment.timestamp + td;
+            current_segment = phases.back();
+            phases.pop_back();
+            if (!append_cruise_transition(q1, v1, planned_end_time))
+                return false;
         }
-        if (td > Epsilon) {  // if there is deceleration period
-            current_segment.acc = -max_acceleration;
-            traj_segs.push_back(current_segment);
-        }
-        traj_segs.push_back(
-                TrajectorySeg(seg_no, t0 + seg_duration, q1, v1, 0.0, 0.0));
+        phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
+        traj_segs.swap(phases);
         return true;
     }
 }
 
 template <typename LieGroup>
 TrajectorySeg TrajectoryTrapezium<LieGroup>::_ComputeNextTrajStep(
-        const TrajectorySeg &traj_seg,
-        const double &t,
-        const double &next_jerk,
-        const int &next_seg_no) {
+    const TrajectorySeg &traj_seg, const double &t, const double &next_jerk,
+    const int &next_seg_no) {
     double acc = traj_seg.acc + traj_seg.jerk * t;
-    double vel = traj_seg.vel + traj_seg.acc * t + 0.5 * traj_seg.jerk * t * t;
-    double pos = traj_seg.pos + traj_seg.vel * t + 0.5 * traj_seg.acc * t * t +
-                 traj_seg.jerk * std::pow(t, 3) / 6.0;
+    double vel = traj_seg.vel + traj_seg.acc * t +
+                 detail::QuadraticContribution(traj_seg.jerk, t);
+    double pos = traj_seg.pos + traj_seg.vel * t +
+                 detail::QuadraticContribution(traj_seg.acc, t);
+    if (traj_seg.jerk != 0.0)
+        pos += detail::CubicJerkDisplacement(traj_seg.jerk, t);
     return TrajectorySeg(next_seg_no, (traj_seg.timestamp + t), pos, vel, acc,
                          next_jerk);
 }
 
-}  // namespace robotics
-}  // namespace holistic_motion
+} // namespace robotics
+} // namespace holistic_motion

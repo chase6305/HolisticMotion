@@ -12,11 +12,11 @@ namespace robotics {
 
 class Polynomial : public std::enable_shared_from_this<Polynomial> {
     ///< https://en.wikipedia.org/wiki/Polynomial
-public:
+   public:
     ///@brief Default construction method
     Polynomial() : data_(Eigen::Vector4d::Zero()), coefficient_count_(0) {}
 
-    Polynomial(const Eigen::Vector4d &data) : data_(data) {
+    Polynomial(const Eigen::Vector4d& data) : data_(data) {
         coefficient_count_ = static_cast<unsigned>(data_.size());
     }
 
@@ -42,7 +42,7 @@ public:
         return coefficient_count_ == 0 ? 0 : coefficient_count_ - 1;
     }
 
-private:
+   private:
     Eigen::Vector4d data_;  ///< data in turn: pos, vel, acc, jerk
 
     unsigned coefficient_count_;
@@ -53,13 +53,15 @@ class PSpline {
     ///< Eilers, Paul & Marx, Brian & Durbán, María. (2015). Twenty years of
     ///< P-splines. SORT (Statistics and Operations Research Transactions). 39.
     ///< 149-186.
-public:
+   public:
     PSpline() : knots_(std::vector<double>(1, 0)) {}
 
     bool PushBack(const std::shared_ptr<Polynomial>& polynomial, double t = 1) {
         if (!polynomial || !std::isfinite(t) || t <= 0.0) return false;
+        const double next = knots_.back() + t;
+        if (!std::isfinite(next) || next <= knots_.back()) return false;
         this->polynomials_.push_back(polynomial);
-        this->knots_.push_back(t + knots_.back());
+        this->knots_.push_back(next);
         return true;
     }
 
@@ -69,70 +71,76 @@ public:
 
     // calculate the p-form-spline value of given derivative order at s
     double ComputeValueAtS(double s, const unsigned order = 0) const {
-        const unsigned index = LocatePolynomial(s);
+        const auto index = LocatePolynomial(s);
         return polynomials_[index]->ComputePolyValueAtS(s, order);
     }
 
     /// Evaluate position through jerk after locating the spline segment once.
     std::array<double, 4> ComputeJetAtS(double s) const {
-        const unsigned index = LocatePolynomial(s);
+        std::size_t index;
+        return ComputeJetAtS(s, index);
+    }
+
+    /// Also return the active phase index, with the same knot snapping policy.
+    std::array<double, 4> ComputeJetAtS(double s, std::size_t& index) const {
+        index = LocatePolynomial(s);
         std::array<double, 4> result{};
         for (unsigned order = 0; order < result.size(); ++order) {
-            result[order] =
-                    polynomials_[index]->ComputePolyValueAtS(s, order);
+            result[order] = polynomials_[index]->ComputePolyValueAtS(s, order);
         }
         return result;
     }
 
     unsigned GetDoF() const { return dof_; };
 
-private:
+   private:
     /// Locate a right-continuous segment and convert s to segment-local time.
-    unsigned LocatePolynomial(double& s) const {
+    std::size_t LocatePolynomial(double& s) const {
         if (polynomials_.empty()) {
             throw std::logic_error("cannot evaluate an empty PSpline");
         }
-        const int num = static_cast<int>(knots_.size());
-        s = clamp(s, knots_.front(), knots_.back());
-        const double knot_tolerance =
-                64.0 * std::numeric_limits<double>::epsilon() *
-                std::max(1.0, knots_.back());
-        const auto nearest_right =
-                std::lower_bound(knots_.begin(), knots_.end(), s);
-        if (nearest_right != knots_.end() &&
-            std::abs(*nearest_right - s) <= knot_tolerance) {
-            s = *nearest_right;
-        } else if (nearest_right != knots_.begin()) {
-            const auto nearest_left = std::prev(nearest_right);
-            if (std::abs(*nearest_left - s) <= knot_tolerance) {
-                s = *nearest_left;
-            }
+        if (!std::isfinite(s)) {
+            throw std::invalid_argument("spline time must be finite");
         }
-
-        holistic_motion::utility::LogDebug(
-                "ComputeValueAtS PSpline, s:{}, num: {}, this->knots_[0]:{} "
-                ",this->knots_[num-1]:{}",
-                s, num, this->knots_[0], this->knots_[num - 1]);
-
-        unsigned index = 0;
-        if (s <= knots_.front()) {
-            index = 0;
-        } else if (s >= knots_[num - 2]) {
-            index = num - 2;
+        s = clamp(s, knots_.front(), knots_.back());
+        const auto tolerance = [&](std::size_t index) {
+            // Use the local timestamp scale: an unrelated long tail must not
+            // move queries in earlier segments. Cap snapping so short segments
+            // remain queryable even when their timestamps are large.
+            double span = std::numeric_limits<double>::infinity();
+            if (index > 0) span = knots_[index] - knots_[index - 1];
+            if (index + 1 < knots_.size()) {
+                span = std::min(span, knots_[index + 1] - knots_[index]);
+            }
+            return std::min(64.0 * std::numeric_limits<double>::epsilon() *
+                                std::max(1.0, knots_[index]),
+                            0.25 * span);
+        };
+        const auto nearest_right =
+            std::lower_bound(knots_.begin(), knots_.end(), s);
+        const auto right =
+            static_cast<std::size_t>(nearest_right - knots_.begin());
+        std::size_t index;
+        if (*nearest_right - s <= tolerance(right)) {
+            s = *nearest_right;
+            index = std::min(right, polynomials_.size() - 1);
         } else {
-            index = static_cast<unsigned>(
-                    std::upper_bound(knots_.begin(), knots_.end(), s) -
-                    knots_.begin() - 1);
+            // A finite, clamped query has a right knot. If it is not snapped
+            // to that knot, lower_bound also identifies its containing segment.
+            index = right - 1;
+            if (s - knots_[index] <= tolerance(index)) {
+                s = knots_[index];
+            }
         }
 
         s -= knots_[index];
         holistic_motion::utility::LogDebug(
-                "[PSpline] index:{}, knots_[index]:{}, local time:{}", index,
-                knots_[index], s);
+            "[PSpline] index:{}, knots_[index]:{}, local time:{}", index,
+            knots_[index], s);
         return index;
     }
 
-protected:
+   protected:
     std::vector<double> knots_;
     std::vector<std::shared_ptr<Polynomial>> polynomials_;
     unsigned dof_{1};  ///< DoF = 1

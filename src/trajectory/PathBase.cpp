@@ -1,6 +1,7 @@
 #include "holistic_motion/trajectory/PathBase.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <stdexcept>
 
@@ -29,7 +30,9 @@ void PathBase<LieGroup>::_CheckPathWaypoints(std::vector<LieGroup>& waypoints) {
 template <typename LieGroup>
 std::shared_ptr<PathSegmentBase<LieGroup>>
 PathBase<LieGroup>::GetPathSegmentAtS(double s) const {
-    if (path_segments_.empty()) return nullptr;
+    if (!std::isfinite(s))
+        throw std::invalid_argument("path parameter must be finite");
+    if (!valid_ || path_segments_.empty()) return nullptr;
     holistic_motion::utility::LogDebug("GetPathSegmentAtS, s:{}", s);
     s = clamp(s, 0.0, length_);
 
@@ -56,7 +59,7 @@ PathBase<LieGroup>::GetPathSegmentAtS(double s) const {
 template <typename LieGroup>
 std::shared_ptr<PathSegmentBase<LieGroup>>
 PathBase<LieGroup>::GetPathSegmentByIndex(const int& index) const {
-    if (path_segments_.empty()) return nullptr;
+    if (!valid_ || path_segments_.empty()) return nullptr;
     if (index <= 0) {
         return path_segments_.front();
     } else if (index >= (int)path_segments_.size()) {

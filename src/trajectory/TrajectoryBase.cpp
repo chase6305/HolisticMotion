@@ -3,6 +3,19 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace {
+double SampleBeforeKnot(double start, double end) {
+    // Step beyond PSpline's snapping tolerance using the local knot scale.
+    // A long later phase must not move this sample into the interval interior.
+    const double span = end - start;
+    const double floating_offset =
+        256.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, end);
+    const double offset =
+        std::min(0.5 * span, std::max(floating_offset, 1e-9 * span));
+    return end - offset;
+}
+}  // namespace
+
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(TrajectoryBase)
 
 template <typename LieGroup>
@@ -22,139 +35,131 @@ bool TrajectoryBase<LieGroup>::SetMinimumDuration(double duration) {
     if (duration > current_duration) {
         const double requested_scale =
                 duration / trajectory_pspline_->GetLastTimeStamp();
-        if (!std::isfinite(requested_scale)) return false;
+        if (!std::isfinite(requested_scale) ||
+            !std::isfinite(trajectory_pspline_->GetLastTimeStamp() *
+                           requested_scale)) return false;
         time_scale_ = requested_scale;
     }
     return true;
 }
 
 template <typename LieGroup>
-LieGroup TrajectoryBase<LieGroup>::GetPosition(double t) const {
+bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
+    phase_path_segments_.clear();
+    const auto segments = path_->GetPathSegments();
+    // Blended time phases can span several geometric segments. Keep their
+    // position-based lookup; an all-linear path has one owner per phase.
+    if (std::any_of(segments.begin(), segments.end(), [](const auto& segment) {
+            return segment->GetPathSegType() != PathSegType::LinearSeg;
+        }))
+        return true;
+    phase_path_segments_.reserve(trajectory_pspline_->GetKnots().size() - 1);
+    for (auto it = trajectory_segments_.begin();
+         it != trajectory_segments_.end(); ++it) {
+        const auto next = std::next(it);
+        if (next == trajectory_segments_.end()) break;
+        if (next->timestamp <= it->timestamp) continue;
+        if (it->seg_no < 0 ||
+            static_cast<std::size_t>(it->seg_no) >= segments.size()) {
+            phase_path_segments_.clear();
+            return false;
+        }
+        phase_path_segments_.push_back(segments[it->seg_no]);
+    }
+    if (phase_path_segments_.size() + 1 !=
+        trajectory_pspline_->GetKnots().size()) {
+        phase_path_segments_.clear();
+        return false;
+    }
+    return true;
+}
+
+template <typename LieGroup>
+std::shared_ptr<PathSegmentBase<LieGroup>>
+TrajectoryBase<LieGroup>::EvaluatePathJet(double time,
+                                          std::array<double, 4>& jet) const {
     if (!valid_ || !trajectory_pspline_ || !path_) {
         throw std::logic_error("cannot query an invalid trajectory");
     }
-    if (!std::isfinite(t)) {
+    if (!std::isfinite(time)) {
         throw std::invalid_argument("trajectory time must be finite");
     }
-    t = clamp(t, 0.0, GetDuration());
-    t /= time_scale_;
+    time = clamp(time, 0.0, GetDuration()) / time_scale_;
+    std::size_t phase;
+    jet = trajectory_pspline_->ComputeJetAtS(time, phase);
+    if (!std::isfinite(jet[0])) {
+        throw std::runtime_error(
+            "trajectory evaluated a non-finite path parameter");
+    }
+    // At a stop, the path position can round to the next segment while time
+    // still belongs to the incoming phase. Its derivatives need that phase's
+    // geometry, including at right-continuous time knots and after rescaling.
+    const auto segment = phase_path_segments_.empty()
+                             ? path_->GetPathSegmentAtS(jet[0])
+                             : phase_path_segments_[phase];
+    if (!segment) throw std::logic_error("cannot query an invalid path");
+    return segment;
+}
 
-    holistic_motion::utility::LogDebug("[GetPosition], t:{}", t);
-
-    double position_at_t = this->trajectory_pspline_->ComputeValueAtS(t);
-    holistic_motion::utility::LogDebug(
-            "[GetPosition] After ComputeValueAtS, position_at_t:{}",
-            position_at_t);
-
-    auto p = this->path_->GetConfig(position_at_t);
-    return p;
+template <typename LieGroup>
+LieGroup TrajectoryBase<LieGroup>::GetPosition(double t) const {
+    std::array<double, 4> jet;
+    const auto segment = EvaluatePathJet(t, jet);
+    return segment->GetConfig(jet[0]);
 }
 
 template <typename LieGroup>
 typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetVelocity(
-        double t) const {
-    if (!valid_ || !trajectory_pspline_ || !path_) {
-        throw std::logic_error("cannot query an invalid trajectory");
-    }
-    if (!std::isfinite(t)) {
-        throw std::invalid_argument("trajectory time must be finite");
-    }
-    t = clamp(t, 0.0, GetDuration());
-    t /= time_scale_;
-    holistic_motion::utility::LogDebug("[GetVelocity], t:{}", t);
-
-    double position_at_t = this->trajectory_pspline_->ComputeValueAtS(t);
-    holistic_motion::utility::LogDebug(
-            "[GetVelocity] After ComputeValueAtS, position_at_t:{}",
-            position_at_t);
-
-    auto tangent = this->path_->GetTangent(position_at_t);
-    auto v = tangent * this->trajectory_pspline_->ComputeValueAtS(t, 1) /
-             time_scale_;
-    return v;
+    double t) const {
+    std::array<double, 4> jet;
+    const auto segment = EvaluatePathJet(t, jet);
+    return segment->GetTangent(jet[0]) * jet[1] / time_scale_;
 }
 
 template <typename LieGroup>
 typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetAcceleration(
-        double t) const {
-    if (!valid_ || !trajectory_pspline_ || !path_) {
-        throw std::logic_error("cannot query an invalid trajectory");
-    }
-    if (!std::isfinite(t)) {
-        throw std::invalid_argument("trajectory time must be finite");
-    }
-    t = clamp(t, 0.0, GetDuration());
-    t /= time_scale_;
-
-    holistic_motion::utility::LogDebug("[GetAcceleration], t:{}", t);
-
-    double position_at_t = this->trajectory_pspline_->ComputeValueAtS(t);
-    holistic_motion::utility::LogDebug(
-            "[GetAcceleration] After ComputeValueAtS, position_at_t:{}",
-            position_at_t);
-    auto curvature = this->path_->GetCurvature(position_at_t);
-    auto tangent = this->path_->GetTangent(position_at_t);
-    double velocity_at_t = this->trajectory_pspline_->ComputeValueAtS(t, 1);
-    double acceleration_at_t = this->trajectory_pspline_->ComputeValueAtS(t, 2);
-    auto c = tangent * acceleration_at_t +
-             curvature * std::pow(velocity_at_t, 2);
-    return c / std::pow(time_scale_, 2);
+    double t) const {
+    std::array<double, 4> jet;
+    const auto segment = EvaluatePathJet(t, jet);
+    const auto tangent = segment->GetTangent(jet[0]);
+    const auto curvature = segment->GetCurvature(jet[0]);
+    // Scale stepwise to preserve representable derivatives at large scales.
+    const double inverse_scale = 1.0 / time_scale_;
+    return (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
+           inverse_scale * inverse_scale;
 }
 
 template <typename LieGroup>
 typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetJerk(double t) const {
-    if (!valid_ || !trajectory_pspline_ || !path_) {
-        throw std::logic_error("cannot query an invalid trajectory");
-    }
-    if (!std::isfinite(t)) {
-        throw std::invalid_argument("trajectory time must be finite");
-    }
-    t = clamp(t, 0.0, GetDuration());
-    t /= time_scale_;
-    const double position = trajectory_pspline_->ComputeValueAtS(t);
-    const double velocity = trajectory_pspline_->ComputeValueAtS(t, 1);
-    const double acceleration = trajectory_pspline_->ComputeValueAtS(t, 2);
-    const double jerk = trajectory_pspline_->ComputeValueAtS(t, 3);
-    const auto tangent = path_->GetTangent(position);
-    const auto curvature = path_->GetCurvature(position);
-    const auto torsion = path_->GetTorsion(position);
-    return (tangent * jerk + 3.0 * curvature * velocity * acceleration +
-            torsion * std::pow(velocity, 3)) /
-           std::pow(time_scale_, 3);
+    std::array<double, 4> jet;
+    const auto segment = EvaluatePathJet(t, jet);
+    const auto tangent = segment->GetTangent(jet[0]);
+    const auto curvature = segment->GetCurvature(jet[0]);
+    const auto torsion = segment->GetTorsion(jet[0]);
+    const double inverse_scale = 1.0 / time_scale_;
+    return (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
+            torsion * std::pow(jet[1], 3)) *
+           inverse_scale * inverse_scale * inverse_scale;
 }
 
 template <typename LieGroup>
 typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
-        double t) const {
-    if (!valid_ || !trajectory_pspline_ || !path_) {
-        throw std::logic_error("cannot query an invalid trajectory");
-    }
-    if (!std::isfinite(t)) {
-        throw std::invalid_argument("trajectory time must be finite");
-    }
-    t = clamp(t, 0.0, GetDuration()) / time_scale_;
-    const auto path_jet = trajectory_pspline_->ComputeJetAtS(t);
-    const double path_position = path_jet[0];
-    const double path_velocity = path_jet[1];
-    const double path_acceleration = path_jet[2];
-    const double path_jerk = path_jet[3];
-    const auto tangent = path_->GetTangent(path_position);
-    const auto curvature = path_->GetCurvature(path_position);
-    const auto torsion = path_->GetTorsion(path_position);
+    double t) const {
+    std::array<double, 4> jet;
+    const auto segment = EvaluatePathJet(t, jet);
+    const auto tangent = segment->GetTangent(jet[0]);
+    const auto curvature = segment->GetCurvature(jet[0]);
+    const auto torsion = segment->GetTorsion(jet[0]);
     const double inverse_scale = 1.0 / time_scale_;
 
     State state;
-    state.position = path_->GetConfig(path_position);
-    state.velocity = tangent * path_velocity * inverse_scale;
-    state.acceleration =
-            (tangent * path_acceleration +
-             curvature * std::pow(path_velocity, 2)) *
-            std::pow(inverse_scale, 2);
-    state.jerk =
-            (tangent * path_jerk +
-             3.0 * curvature * path_velocity * path_acceleration +
-             torsion * std::pow(path_velocity, 3)) *
-            std::pow(inverse_scale, 3);
+    state.position = segment->GetConfig(jet[0]);
+    state.velocity = tangent * jet[1] * inverse_scale;
+    state.acceleration = (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
+                         inverse_scale * inverse_scale;
+    state.jerk = (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
+                  torsion * std::pow(jet[1], 3)) *
+                 inverse_scale * inverse_scale * inverse_scale;
     return state;
 }
 
@@ -165,7 +170,8 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
         throw std::logic_error("cannot inspect an invalid trajectory");
     }
     if (samples < 2) {
-        throw std::invalid_argument("constraint report requires at least 2 samples");
+        throw std::invalid_argument(
+            "constraint report requires at least 2 samples");
     }
 
     ConstraintReport report;
@@ -175,8 +181,17 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
     report.maximum_velocity_jump = Eigen::VectorXd::Zero(dof_);
     report.maximum_acceleration_jump = Eigen::VectorXd::Zero(dof_);
     const auto accumulate_state = [&](const State& state) {
-        report.peak_velocity = report.peak_velocity.cwiseMax(
-                state.velocity.Coeffs().cwiseAbs());
+        // A maximum reduction can discard NaNs and leave a plausible zero peak.
+        // Validate all state components before accumulating any diagnostics.
+        if (!state.position.Coeffs().allFinite() ||
+            !state.velocity.Coeffs().allFinite() ||
+            !state.acceleration.Coeffs().allFinite() ||
+            !state.jerk.Coeffs().allFinite()) {
+            throw std::runtime_error(
+                "constraint report encountered a non-finite trajectory state");
+        }
+        report.peak_velocity =
+            report.peak_velocity.cwiseMax(state.velocity.Coeffs().cwiseAbs());
         report.peak_acceleration = report.peak_acceleration.cwiseMax(
                 state.acceleration.Coeffs().cwiseAbs());
         report.peak_jerk = report.peak_jerk.cwiseMax(
@@ -188,21 +203,16 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
 
     const double duration = GetDuration();
     for (std::size_t sample = 0; sample < samples; ++sample) {
-        accumulate(duration * static_cast<double>(sample) /
-                   static_cast<double>(samples - 1));
+        const double fraction =
+            static_cast<double>(sample) / static_cast<double>(samples - 1);
+        accumulate(duration * fraction);
     }
     const auto breakpoints = GetBreakpoints();
     for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
         const double breakpoint = breakpoints[index];
         const double previous = breakpoints[index - 1];
-        const double floating_offset =
-                256.0 * std::numeric_limits<double>::epsilon() *
-                std::max(1.0, duration);
-        const double left_offset = std::min(
-                0.5 * (breakpoint - previous),
-                std::max(floating_offset,
-                         1e-9 * (breakpoint - previous)));
-        const auto left_state = GetState(breakpoint - left_offset);
+        const auto left_state =
+            GetState(SampleBeforeKnot(previous, breakpoint));
         const auto right_state = GetState(breakpoint);
         accumulate_state(left_state);
         accumulate_state(right_state);
@@ -249,9 +259,16 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     time_scale_ = 1.0;
     const double duration = trajectory_pspline_->GetLastTimeStamp();
     double required_scale = 0.0;
-    const double target_step = duration / (target_samples - 1.0);
     const auto evaluate = [&](double time) {
-        const auto state = GetState(time);
+        State state;
+        try {
+            state = GetState(time);
+        } catch (const std::runtime_error&) {
+            // Internal evaluation failure invalidates construction, just like
+            // a returned nonfinite state. Public diagnostics keep the error.
+            required_scale = std::numeric_limits<double>::quiet_NaN();
+            return;
+        }
         if (!state.position.Coeffs().allFinite() ||
             !state.velocity.Coeffs().allFinite() ||
             !state.acceleration.Coeffs().allFinite() ||
@@ -263,36 +280,44 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             required_scale = std::max(
                     required_scale,
                     std::abs(state.velocity[i]) / velocity_limits[i]);
+            const double acceleration = std::abs(state.acceleration[i]);
+            const double jerk = std::abs(state.jerk[i]);
+            const double acceleration_utilization =
+                acceleration / acceleration_limits[i];
+            const double jerk_utilization = jerk / jerk_limits[i];
+            // Preserve ordinary rounding. If a ratio overflows, its root can
+            // still be finite: take roots before dividing in that case.
             required_scale = std::max(
-                    required_scale,
-                    std::sqrt(std::abs(state.acceleration[i]) /
-                              acceleration_limits[i]));
-            required_scale = std::max(
-                    required_scale,
-                    std::cbrt(std::abs(state.jerk[i]) / jerk_limits[i]));
+                required_scale, std::isfinite(acceleration_utilization)
+                                    ? std::sqrt(acceleration_utilization)
+                                    : std::sqrt(acceleration) /
+                                          std::sqrt(acceleration_limits[i]));
+            required_scale =
+                std::max(required_scale,
+                         std::isfinite(jerk_utilization)
+                             ? std::cbrt(jerk_utilization)
+                             : std::cbrt(jerk) / std::cbrt(jerk_limits[i]));
         }
     };
     const auto& knots = trajectory_pspline_->GetKnots();
     for (std::size_t segment = 1; segment < knots.size(); ++segment) {
         const double start = knots[segment - 1];
         const double end = knots[segment];
-        const int samples = std::max(
-                minimum_samples_per_segment,
-                static_cast<int>(std::ceil((end - start) / target_step)) + 1);
+        // Normalize first: a time step can underflow for subnormal durations,
+        // and multiplying a long interval by a sample index can overflow.
+        const int samples =
+            std::max(minimum_samples_per_segment,
+                     static_cast<int>(std::ceil((end - start) / duration *
+                                                (target_samples - 1.0))) +
+                         1);
         for (int sample = 0; sample < samples; ++sample) {
+            const double fraction = sample / (samples - 1.0);
             double time =
-                    start + (end - start) * sample / (samples - 1.0);
+                sample == samples - 1 ? end : start + (end - start) * fraction;
             // Internal knots are right-continuous. Sample immediately before
             // the knot as well, so a jerk change cannot hide the left limit.
             if (sample == samples - 1 && segment + 1 < knots.size()) {
-                const double floating_offset =
-                        256.0 * std::numeric_limits<double>::epsilon() *
-                        std::max(1.0, duration);
-                const double left_offset = std::min(
-                        0.5 * (end - start),
-                        std::max(floating_offset,
-                                 1e-9 * (end - start)));
-                time = end - left_offset;
+                time = SampleBeforeKnot(start, end);
             }
             evaluate(time);
             if (!std::isfinite(required_scale)) {
@@ -304,7 +329,7 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     // Leave a margin only when sampled utilization approaches a constraint;
     // trajectories already comfortably below every limit are not slowed.
     time_scale_ = std::max(1.0, required_scale * 1.01);
-    if (!std::isfinite(time_scale_)) {
+    if (!std::isfinite(time_scale_) || !std::isfinite(duration * time_scale_)) {
         valid_ = false;
         return false;
     }
@@ -320,15 +345,40 @@ std::shared_ptr<PSpline> TrajectoryBase<LieGroup>::InterpolateToPSpline(
     for (auto it = traj_segs.begin(); it != traj_segs.end();) {
         auto t0 = it->timestamp;
         data << it->pos, it->vel, it->acc / 2.0, it->jerk / 6.0;
+        // Validate every state, including the terminal state and zero-duration
+        // phases that do not create a polynomial. Never return a valid prefix
+        // when a later state contains invalid kinematic data.
+        if (!data.allFinite()) {
+            holistic_motion::utility::LogWarning(
+                    "Trajectory interpolation requires finite phase states at time {}",
+                    t0);
+            return std::make_shared<PSpline>();
+        }
         ++it;
         auto t1 = it == traj_segs.end() ? t0 : it->timestamp;
         auto T = t1 - t0;
+        const double timestamp_tolerance =
+                64.0 * std::numeric_limits<double>::epsilon() *
+                std::max({1.0, std::abs(t0), std::abs(t1)});
+        if (!std::isfinite(t0) || !std::isfinite(t1) ||
+            !std::isfinite(T) || T < -timestamp_tolerance) {
+            holistic_motion::utility::LogWarning(
+                    "Trajectory interpolation requires finite ordered timestamps: "
+                    "start={}, end={}, duration={}", t0, t1, T);
+            return std::make_shared<PSpline>();
+        }
         holistic_motion::utility::LogDebug("Polynomial:{},{},{},{}, T:{}", data[0],
                                 data[1], data[2], data[3], T);
 
-        if (T > Epsilon) {
+        // A positive phase carries both elapsed time and its state change,
+        // even when shorter than the geometric path tolerance.
+        if (T > 0.0) {
             auto polynomial = std::make_shared<Polynomial>(data);
-            psline->PushBack(polynomial, T);
+            if (!psline->PushBack(polynomial, T)) {
+                holistic_motion::utility::LogWarning(
+                        "Trajectory interpolation cannot advance the spline timestamp");
+                return std::make_shared<PSpline>();
+            }
         }
     }
     holistic_motion::utility::LogDebug("InterpolateToPSpline Finish!");

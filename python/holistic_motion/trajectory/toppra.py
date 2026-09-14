@@ -193,16 +193,17 @@ class ToppraResult:
             )
         if not np.isclose(self.duration, self.times[-1], rtol=1e-12, atol=1e-12):
             raise ValueError("TOPPRA result duration must match its final time")
-        expected_speed_squared = (
-            self.path_speeds[:-1] ** 2
-            + 2.0 * np.diff(self.gridpoints) * self.path_accelerations
+        with np.errstate(over="ignore", invalid="ignore"):
+            speed_squared = self.path_speeds**2
+            change = 2.0 * np.diff(self.gridpoints) * self.path_accelerations
+        if not np.isfinite(speed_squared).all() or not np.isfinite(change).all():
+            raise ValueError("TOPPRA result path dynamics must be finite")
+        # Near a stop, x[i] and 2*ds*u cancel. Judge the residual against all
+        # participating terms, not just x[i+1], which can be exactly zero.
+        scale = np.maximum(
+            np.maximum(speed_squared[:-1], speed_squared[1:]), np.abs(change)
         )
-        if not np.allclose(
-            self.path_speeds[1:] ** 2,
-            expected_speed_squared,
-            rtol=1e-8,
-            atol=1e-10,
-        ):
+        if np.any(np.abs(np.diff(speed_squared) - change) > 1e-10 + 1e-8 * scale):
             raise ValueError("TOPPRA result violates interval path dynamics")
         distances = (
             0.5 * (self.path_speeds[:-1] + self.path_speeds[1:]) * np.diff(self.times)
@@ -277,8 +278,14 @@ class ToppraTrajectory:
                 or abs(grid[0]) > 1e-12
                 or abs(grid[-1] - 1.0) > 1e-12
                 or np.any(np.diff(grid) <= 0.0)
+                or np.any(grid[1:-1] < 0.0)
+                or np.any(grid[1:-1] > 1.0)
             ):
                 raise ValueError("gridpoints must increase strictly from 0 to 1")
+            # Endpoint tolerance accepts representation error, not intervals
+            # outside the path domain. Own the copy before canonicalizing it.
+            grid = grid.copy()
+            grid[0], grid[-1] = 0.0, 1.0
             grid = np.unique(np.concatenate((grid, waypoint_s)))
         self._grid = grid
         self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)

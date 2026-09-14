@@ -214,6 +214,26 @@ the environment changes after planning.
 
 ## Examples
 
+Run the classic self-contained plan-and-retime pipeline first:
+
+```bash
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py --plot
+```
+
+It plans a point robot around a wall with deterministic RRT-Connect, then
+applies native Double-S timing and rechecks sampled positions and derivative
+limits. It uses unit metric weights so the reported length is Euclidean, adds a
+margin larger than the discrete edge resolution, and keeps zero blend tolerance
+so timing cannot cut a checked corner. It requires no robot asset or optional
+solver; only `--plot` requires Matplotlib. Pass `--profile trapezoidal` to
+compare the second native timing profile. Before timing, a deterministic
+farthest-visible pass removes redundant RRT points and rechecks each candidate
+edge with the same margin; this reduces avoidable full stops while preserving
+the checked polyline semantics.
+
 Compare the algorithms without robot assets:
 
 ```bash

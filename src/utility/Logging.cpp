@@ -1,141 +1,99 @@
 #include "holistic_motion/utility/Logging.h"
-#ifdef _WIN32
-#include <spdlog/fmt/bundled/printf.h>
-#else
-#include <fmt/printf.h>
-#endif
 
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
-#include <functional>
-#include <iostream>
-#include <sstream>
-#include <string>
+#include <atomic>
 #include <cstring>
+#include <iostream>
+#include <mutex>
+#include <stdexcept>
+#include <utility>
 
-namespace holistic_motion {
-namespace utility {
+namespace holistic_motion::utility {
 namespace {
 
 const char *ShortFileName(const char *file) {
-    if (!file) return "<unknown>";
+    if (!file)
+        return "<unknown>";
     const char *forward = std::strrchr(file, '/');
     const char *backward = std::strrchr(file, '\\');
     const char *separator = forward;
-    if (!separator || (backward && backward > separator)) separator = backward;
+    if (!separator || (backward && backward > separator))
+        separator = backward;
     return separator ? separator + 1 : file;
 }
 
-}  // namespace
+void PrintToConsole(const std::string &message) {
+    static std::mutex output_mutex;
+    std::lock_guard<std::mutex> guard(output_mutex);
+    std::cout << message << std::endl;
+}
 
-enum class TextColor {
-    Black = 0,
-    Red = 1,
-    Green = 2,
-    Yellow = 3,
-    Blue = 4,
-    Magenta = 5,
-    Cyan = 6,
-    White = 7
-};
+spdlog::level::level_enum NativeLevel(VerbosityLevel level) {
+    switch (level) {
+    case VerbosityLevel::Error:
+        return spdlog::level::err;
+    case VerbosityLevel::Warning:
+        return spdlog::level::warn;
+    case VerbosityLevel::Info:
+        return spdlog::level::info;
+    case VerbosityLevel::Debug:
+        return spdlog::level::debug;
+    }
+    throw std::invalid_argument("invalid verbosity level");
+}
+
+std::shared_ptr<spdlog::logger> MakeFileLogger(const std::string &path) {
+    auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+        path, 1048576 * DEFAULT_LOGGER_BUFFER_SIZE, 1);
+    // Private logger: never take over the application's spdlog registry.
+    auto logger = std::make_shared<spdlog::logger>("holistic_motion", sink);
+    logger->set_level(spdlog::level::debug);
+    logger->set_pattern("%Y-%m-%d %H:%M:%S.%e|%l|%n|%s-%!-%#: %v");
+    return logger;
+}
+
+} // namespace
 
 struct Logger::Impl {
-    // The current print function.
-    std::function<void(const std::string &)> print_fcn_;
+    mutable std::mutex mutex;
+    std::function<void(const std::string &)> print_fcn = PrintToConsole;
+    std::function<void(const LogRecord &)> record_fcn;
+    std::atomic<VerbosityLevel> level{VerbosityLevel::Warning};
+    std::shared_ptr<spdlog::logger> file_logger;
+    std::string file_path = "log/holistic_motion.log";
 
-    // The default print function (that prints to console).
-    static std::function<void(const std::string &)> console_print_fcn_;
-
-    // Verbosity level.
-    VerbosityLevel verbosity_level_;
-
-    std::shared_ptr<spdlog::logger> logger_;
-    bool save_to_file_;
-    std::string log_file_path_;
-
-    // Colorize and reset the color of a string, does not work on Windows,
-    std::string ColorString(const std::string &text,
-                            TextColor text_color,
-                            int highlight_text) const {
-        std::ostringstream msg;
-#ifndef _WIN32
-        msg << fmt::sprintf("%c[%d;%dm", 0x1B, highlight_text,
-                            (int)text_color + 30);
-#endif
-        msg << text;
-#ifndef _WIN32
-        msg << fmt::sprintf("%c[0;m", 0x1B);
-#endif
-        return msg.str();
-    }
-
-    static std::shared_ptr<spdlog::logger> GetOrCreateLogger(
-            const std::string &log_name, const std::string &log_file_path) {
-        auto lp = spdlog::get(log_name);
-        if (!lp) {
-            lp = spdlog::rotating_logger_mt(
-                    log_name, log_file_path,
-                    1048576 * DEFAULT_LOGGER_BUFFER_SIZE, 1);
+    void Emit(const LogRecord &record) const {
+        if (record.level > level.load())
+            return;
+        std::function<void(const std::string &)> print;
+        std::function<void(const LogRecord &)> structured;
+        std::shared_ptr<spdlog::logger> file;
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            print = print_fcn;
+            structured = record_fcn;
+            file = file_logger;
         }
-        return lp;
-    }
-
-    void SetSpdlogLoggerLevel(const VerbosityLevel &level) {
-        if (logger_) {
-            switch (level) {
-                case VerbosityLevel::Error:
-                    logger_->set_level(spdlog::level::err);
-                    break;
-                case VerbosityLevel::Warning:
-                    logger_->set_level(spdlog::level::warn);
-                    break;
-                case VerbosityLevel::Info:
-                    logger_->set_level(spdlog::level::info);
-                    break;
-                case VerbosityLevel::Debug:
-                    logger_->set_level(spdlog::level::debug);
-                    break;
-                default:
-                    break;
-            }
+        if (file) {
+            file->log(spdlog::source_loc(record.file.c_str(), record.line,
+                                         record.function.c_str()),
+                      NativeLevel(record.level), "{}", record.message);
+            file->flush();
+        }
+        if (structured) {
+            structured(record);
+        } else if (record.level != VerbosityLevel::Error) {
+            print(fmt::format("[HOLISTIC_MOTION {}] {}:{}: {}",
+                              spdlog::level::to_string_view(NativeLevel(record.level)),
+                              ShortFileName(record.file.c_str()), record.line,
+                              record.message));
         }
     }
 };
 
-#if defined(linux) || defined(__linux) || defined(__linux__)
-std::function<void(const std::string &)> Logger::Impl::console_print_fcn_ =
-        [](const std::string &msg) { std::cout << msg << std::endl; };
-
-#elif defined(WIN32) || defined(__WIN32__) || defined(_WIN32) || \
-        defined(WIN64) || defined(__WIN64__) || defined(_WIN64)
-
-#include <windows.h>
-
-std::string utf8_to_gbk(const char *src_str) {
-    int len = MultiByteToWideChar(CP_UTF8, 0, src_str, -1, NULL, 0);
-    std::unique_ptr<wchar_t[]> wszGBK(new wchar_t[len + 1]);
-    MultiByteToWideChar(CP_UTF8, 0, src_str, -1, wszGBK.get(), len);
-    len = WideCharToMultiByte(CP_ACP, 0, wszGBK.get(), -1, NULL, 0, NULL, NULL);
-    std::unique_ptr<char[]> szGBK(new char[len + 1]);
-    WideCharToMultiByte(CP_ACP, 0, wszGBK.get(), -1, szGBK.get(), len, NULL,
-                        NULL);
-    std::string strTemp(szGBK.get());
-    return strTemp;
-}
-
-std::function<void(const std::string &)> Logger::Impl::console_print_fcn_ =
-        [](const std::string &msg) {
-            std::cout << utf8_to_gbk(msg.c_str()) << std::endl;
-        };
-#endif
-
-Logger::Logger() : impl_(new Logger::Impl()) {
-    impl_->print_fcn_ = Logger::Impl::console_print_fcn_;
-    impl_->verbosity_level_ = VerbosityLevel::Info;
-    impl_->log_file_path_ = "log/holistic_motion.log";
-    impl_->save_to_file_ = false;
-}
+Logger::Logger() : impl_(new Impl()) {}
 
 Logger &Logger::GetInstance() {
     static Logger instance;
@@ -143,122 +101,96 @@ Logger &Logger::GetInstance() {
 }
 
 void Logger::SetLoggerFilePath(const std::string &path) {
-    impl_->log_file_path_ = path;
+    if (path.empty())
+        throw std::invalid_argument("logger file path must not be empty");
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    if (path == impl_->file_path)
+        return;
+    auto replacement = impl_->file_logger ? MakeFileLogger(path) : nullptr;
+    impl_->file_path = path;
+    impl_->file_logger = std::move(replacement);
 }
 
 void Logger::EnableSaveToFile(bool enable) {
-    if (enable) {
-        impl_->logger_ =
-                Logger::Impl::GetOrCreateLogger("HOLISTIC_MOTION", impl_->log_file_path_);
-        impl_->SetSpdlogLoggerLevel(impl_->verbosity_level_);
-    } else {
-        impl_->logger_ = nullptr;
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    if (enable && !impl_->file_logger) {
+        impl_->file_logger = MakeFileLogger(impl_->file_path);
+    } else if (!enable) {
+        impl_->file_logger.reset();
     }
-
-    impl_->save_to_file_ = enable;
 }
 
-void Logger::VError [[noreturn]] (const char *file,
-                                  int line,
-                                  const std::string &message) const {
-    file = ShortFileName(file);
-    std::string err_msg =
-            fmt::format("[HOLISTIC_MOTION Error] {}:{}: {}\n", file, line, message);
-    err_msg = impl_->ColorString(err_msg, TextColor::Red, 1);
-
-    if (impl_->save_to_file_ && impl_->logger_) {
-        impl_->logger_->error(err_msg);
-        impl_->logger_->flush();
-    }
-
-#ifdef _MSC_VER  // Uncaught exception error messages not shown in Windows
-    std::cerr << err_msg << std::endl;
-#endif
-    throw std::runtime_error(err_msg);
-}
-
-void Logger::VWarning(const char *file,
-                      int line,
-                      const std::string &message) const {
-    file = ShortFileName(file);
-    std::string msg = fmt::format("{}:{}: {}", file, line, message);
-    if (impl_->save_to_file_ && impl_->logger_) {
-        impl_->logger_->warn(msg);
-        impl_->logger_->flush();
-    }
-
-    std::string err_msg = fmt::format("[HOLISTIC_MOTION WARNING] {}", msg);
-    err_msg = impl_->ColorString(err_msg, TextColor::Yellow, 1);
-
-    impl_->print_fcn_(err_msg);
-}
-
-void Logger::VInfo(const char *file,
-                   int line,
-                   const std::string &message) const {
-    file = ShortFileName(file);
-    std::string msg = fmt::format("{}:{}: {}", file, line, message);
-    if (impl_->save_to_file_ && impl_->logger_) {
-        impl_->logger_->info(msg);
-        impl_->logger_->flush();
-    }
-
-    std::string err_msg = fmt::format("[HOLISTIC_MOTION INFO] {}", msg);
-    impl_->print_fcn_(err_msg);
-}
-
-void Logger::VDebug(const char *file,
-                    int line,
+void Logger::VError(const char *file, int line, const char *function,
                     const std::string &message) const {
-    file = ShortFileName(file);
-    std::string msg = fmt::format("{}:{}: {}", file, line, message);
-    if (impl_->save_to_file_ && impl_->logger_) {
-        impl_->logger_->debug(msg);
-        impl_->logger_->flush();
+    // A logging sink must not replace the algorithm's primary error.
+    try {
+        impl_->Emit({VerbosityLevel::Error, file ? file : "<unknown>", line,
+                     function ? function : "", message});
+    } catch (...) {
     }
-
-    std::string err_msg = fmt::format("[HOLISTIC_MOTION DEBUG] {}", msg);
-    err_msg = impl_->ColorString(err_msg, TextColor::Cyan, 1);
-    impl_->print_fcn_(err_msg);
+    throw std::runtime_error(fmt::format("[HOLISTIC_MOTION Error] {}:{}: {}",
+                                         ShortFileName(file), line, message));
 }
 
-void Logger::SetPrintFunction(
-        std::function<void(const std::string &)> print_fcn) {
-    impl_->print_fcn_ = print_fcn;
+void Logger::VWarning(const char *file, int line, const char *function,
+                      const std::string &message) const {
+    impl_->Emit({VerbosityLevel::Warning, file ? file : "<unknown>", line,
+                 function ? function : "", message});
+}
+
+void Logger::VInfo(const char *file, int line, const char *function,
+                   const std::string &message) const {
+    impl_->Emit({VerbosityLevel::Info, file ? file : "<unknown>", line,
+                 function ? function : "", message});
+}
+
+void Logger::VDebug(const char *file, int line, const char *function,
+                    const std::string &message) const {
+    impl_->Emit({VerbosityLevel::Debug, file ? file : "<unknown>", line,
+                 function ? function : "", message});
+}
+
+void Logger::SetPrintFunction(std::function<void(const std::string &)> print_fcn) {
+    if (!print_fcn)
+        throw std::invalid_argument("print function must not be empty");
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->print_fcn = std::move(print_fcn);
+    impl_->record_fcn = {};
 }
 
 const std::function<void(const std::string &)> Logger::GetPrintFunction() {
-    return impl_->print_fcn_;
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    return impl_->print_fcn;
 }
 
-void Logger::ResetPrintFunction() {
-    impl_->print_fcn_ = impl_->console_print_fcn_;
+void Logger::ResetPrintFunction() { SetPrintFunction(PrintToConsole); }
+
+void Logger::SetRecordFunction(std::function<void(const LogRecord &)> record_fcn) {
+    if (!record_fcn)
+        throw std::invalid_argument("record function must not be empty");
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->record_fcn = std::move(record_fcn);
 }
 
-void Logger::SetVerbosityLevel(VerbosityLevel verbosity_level) {
-    impl_->verbosity_level_ = verbosity_level;
-    impl_->SetSpdlogLoggerLevel(verbosity_level);
+void Logger::ResetRecordFunction() {
+    std::lock_guard<std::mutex> guard(impl_->mutex);
+    impl_->record_fcn = {};
 }
 
-VerbosityLevel Logger::GetVerbosityLevel() const {
-    return impl_->verbosity_level_;
+void Logger::SetVerbosityLevel(VerbosityLevel level) {
+    (void)NativeLevel(level);
+    impl_->level.store(level);
 }
+
+VerbosityLevel Logger::GetVerbosityLevel() const { return impl_->level.load(); }
 
 void SetVerbosityLevel(VerbosityLevel level) {
     Logger::GetInstance().SetVerbosityLevel(level);
 }
-
-void EnableSaveToFile(bool enable) {
-    Logger::GetInstance().EnableSaveToFile(enable);
-}
-
-VerbosityLevel GetVerbosityLevel() {
-    return Logger::GetInstance().GetVerbosityLevel();
-}
-
+void EnableSaveToFile(bool enable) { Logger::GetInstance().EnableSaveToFile(enable); }
+VerbosityLevel GetVerbosityLevel() { return Logger::GetInstance().GetVerbosityLevel(); }
 void SetLoggerFilePath(const std::string &path) {
     Logger::GetInstance().SetLoggerFilePath(path);
 }
 
-}  // namespace utility
-}  // namespace holistic_motion
+} // namespace holistic_motion::utility

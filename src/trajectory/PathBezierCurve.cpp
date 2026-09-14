@@ -1,6 +1,7 @@
 #include "holistic_motion/trajectory/PathBezierCurve.h"
 
 #include <algorithm>
+#include <type_traits>
 
 namespace holistic_motion {
 namespace robotics {
@@ -8,24 +9,22 @@ namespace robotics {
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathBezierCurve)
 
 template <typename LieGroup>
-PathBezierCurve<LieGroup>::PathBezierCurve(
-        const std::vector<LieGroup> &waypoints,
-        const int degree,
-        const bool is_cartesian_space,
-        const double blend_tolerance) {
+PathBezierCurve<LieGroup>::PathBezierCurve(const std::vector<LieGroup> &waypoints,
+                                           const int degree,
+                                           const bool is_cartesian_space,
+                                           const double blend_tolerance) {
     holistic_motion::utility::LogDebug("Constucting Path...");
     if ((degree != 2 && degree != 5) || !std::isfinite(blend_tolerance) ||
         blend_tolerance < 0.0) {
         holistic_motion::utility::LogWarning(
-                "Path requires degree 2 or 5 and a finite non-negative blend");
+            "Path requires degree 2 or 5 and a finite non-negative blend");
         return;
     }
     if (waypoints.size() < 2 ||
-        std::any_of(waypoints.begin(), waypoints.end(), [](const auto& point) {
-            return !point.Coeffs().allFinite();
-        })) {
+        std::any_of(waypoints.begin(), waypoints.end(),
+                    [](const auto &point) { return !point.Coeffs().allFinite(); })) {
         holistic_motion::utility::LogWarning(
-                "Path requires at least two finite waypoints");
+            "Path requires at least two finite waypoints");
         return;
     }
     this->waypoints_ = waypoints;
@@ -33,26 +32,32 @@ PathBezierCurve<LieGroup>::PathBezierCurve(
     this->is_cartesian_space_ = is_cartesian_space;
     if (degree == 2) {
         this->path_type_ = this->is_cartesian_space_ == true
-                                   ? PathType::Bezier2ndCartesianSpace
-                                   : PathType::Bezier2ndJointSpace;
+                               ? PathType::Bezier2ndCartesianSpace
+                               : PathType::Bezier2ndJointSpace;
     } else if (degree == 5) {
         this->path_type_ = this->is_cartesian_space_ == true
-                                   ? PathType::Bezier5thCartesianSpace
-                                   : PathType::Bezier5thJointSpace;
+                               ? PathType::Bezier5thCartesianSpace
+                               : PathType::Bezier5thJointSpace;
     }
-    std::string waypoints_str;
-    for (auto p : this->waypoints_)
-        waypoints_str += fmt::format("[{}],", fmt::join(p.Coeffs(), ","));
-    holistic_motion::utility::LogDebug("[PathBezierCurve] input waypoints list:{}",
-                            waypoints_str);
+    if (holistic_motion::utility::GetVerbosityLevel() >=
+        holistic_motion::utility::VerbosityLevel::Debug) {
+        std::string waypoints_str;
+        for (const auto &p : this->waypoints_)
+            waypoints_str += fmt::format("[{}],", fmt::join(p.Coeffs(), ","));
+        holistic_motion::utility::LogDebug("[PathBezierCurve] input waypoints list:{}",
+                                           waypoints_str);
+    }
 
     this->_CheckPathWaypoints(this->waypoints_);
 
-    waypoints_str = "";
-    for (auto p : this->waypoints_)
-        waypoints_str += fmt::format("[{}],", fmt::join(p.Coeffs(), ","));
-    holistic_motion::utility::LogDebug("[PathBezierCurve] check waypoints list:{}",
-                            waypoints_str);
+    if (holistic_motion::utility::GetVerbosityLevel() >=
+        holistic_motion::utility::VerbosityLevel::Debug) {
+        std::string waypoints_str;
+        for (const auto &p : this->waypoints_)
+            waypoints_str += fmt::format("[{}],", fmt::join(p.Coeffs(), ","));
+        holistic_motion::utility::LogDebug("[PathBezierCurve] check waypoints list:{}",
+                                           waypoints_str);
+    }
 
     if (this->waypoints_.size() == 0 || this->waypoints_.size() == 1) {
         holistic_motion::utility::LogWarning("Input: at least 2 waypoints.");
@@ -64,10 +69,9 @@ PathBezierCurve<LieGroup>::PathBezierCurve(
         // construct a linear path
         holistic_motion::utility::LogDebug("Line construction begin...\n");
         std::shared_ptr<PathSegmentBase<LieGroup>> path_seg =
-                std::make_shared<PathSegLinear<LieGroup>>(
-                        std::array<LieGroup, 2>{waypoints.front(),
-                                                waypoints.back()},
-                        0.0, this->is_cartesian_space_);
+            std::make_shared<PathSegLinear<LieGroup>>(
+                std::array<LieGroup, 2>{waypoints.front(), waypoints.back()}, 0.0,
+                this->is_cartesian_space_);
         // Check path length after construct straight path segments
         if (path_seg->IsValid()) {
             this->valid_ = true;
@@ -76,15 +80,13 @@ PathBezierCurve<LieGroup>::PathBezierCurve(
             if (this->length_ <= 0) {
                 this->valid_ = false;
                 auto str_joint_front = fmt::format(
-                        "joint_front:[{}]",
-                        fmt::join(waypoints.front().Coeffs(), " , "));
-                auto str_joint_back =
-                        fmt::format("joint_back:[{}]",
-                                    fmt::join(waypoints.back().Coeffs(), " ,"));
+                    "joint_front:[{}]", fmt::join(waypoints.front().Coeffs(), " , "));
+                auto str_joint_back = fmt::format(
+                    "joint_back:[{}]", fmt::join(waypoints.back().Coeffs(), " ,"));
                 holistic_motion::utility::LogDebug(
-                        "Invalid line construction, cause path lenth is zero, "
-                        "{} , {}\n",
-                        str_joint_front, str_joint_back);
+                    "Invalid line construction, cause path lenth is zero, "
+                    "{} , {}\n",
+                    str_joint_front, str_joint_back);
                 return;
             }
             holistic_motion::utility::LogDebug("Line construction success!\n");
@@ -98,23 +100,21 @@ PathBezierCurve<LieGroup>::PathBezierCurve(
 
     // TODO: may not be appropriate to choose a different method
     switch (degree) {
-        case 2:
-            this->PathBezierCurve2nd();
-            break;
-        case 5:
-            this->PathBezierCurve5th();
-            break;
+    case 2:
+        this->PathBezierCurve2nd();
+        break;
+    case 5:
+        this->PathBezierCurve5th();
+        break;
 
-        default:
-            holistic_motion::utility::LogWarning(
-                    "The method corresponding to "
-                    "the order has not yet been implemented!");
-            break;
+    default:
+        holistic_motion::utility::LogWarning("The method corresponding to "
+                                             "the order has not yet been implemented!");
+        break;
     }
 }
 
-template <typename LieGroup>
-void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
+template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
     holistic_motion::utility::LogDebug("Constucting PathBezierCurve2nd...");
 
     double path_len = 0.0;
@@ -138,11 +138,12 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
     std::shared_ptr<PathSegmentBase<LieGroup>> path_seg;
 
     while (waypoint2 != this->waypoints_.end()) {
+        control_1 = *waypoint1;
         // calculate the tangent between waypoint1 and waypoint2;
         holistic_motion::utility::LogDebug("waypoint0:{}, waypoint1:{}, waypoint2:{}.",
-                                fmt::join((*waypoint0).Coeffs(), ","),
-                                fmt::join((*waypoint1).Coeffs(), ","),
-                                fmt::join((*waypoint2).Coeffs(), ","));
+                                           fmt::join((*waypoint0).Coeffs(), ","),
+                                           fmt::join((*waypoint1).Coeffs(), ","),
+                                           fmt::join((*waypoint2).Coeffs(), ","));
 
         tangent_1_0 = *waypoint1 - *waypoint0;
         double length_1_0 = tangent_1_0.WeightedNorm();
@@ -152,24 +153,24 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
         double length_2_1 = tangent_2_1.WeightedNorm();
         tangent_2_1 = 1.0 / length_2_1 * tangent_2_1;
 
-        tangent_2_0 = *waypoint2 - *waypoint0;
+        tangent_2_0 = tangent_2_1 - tangent_1_0;
         double length_2_0 = tangent_2_0.WeightedNorm();
 
-        dis = this->blend_tolerance_ <= Epsilon
-                      ? 0.0
-                      : 4.0 * this->blend_tolerance_ / length_2_0;
+        const bool reverses = (tangent_1_0 + tangent_2_1).WeightedNorm() <= Epsilon;
+        dis = (this->blend_tolerance_ <= Epsilon || length_2_0 <= Epsilon || reverses)
+                  ? 0.0
+                  : 4.0 * this->blend_tolerance_ / length_2_0;
         dis = std::min(dis, length_1_0 / 3.0);
         dis = std::min(dis, length_2_1 / 3.0);
 
-        holistic_motion::utility::LogDebug(
-                "length_1_0:{}, length_2_1:{}, "
-                "length_2_0:{}, dis:{}",
-                length_1_0, length_2_1, length_2_0, dis);
+        holistic_motion::utility::LogDebug("length_1_0:{}, length_2_1:{}, "
+                                           "length_2_0:{}, dis:{}",
+                                           length_1_0, length_2_1, length_2_0, dis);
 
         control_2 = (control_1 + (-dis) * tangent_1_0);
         path_seg = std::make_shared<PathSegLinear<LieGroup>>(
-                std::array<LieGroup, 2>{control_0, control_2}, path_len,
-                this->is_cartesian_space_);
+            std::array<LieGroup, 2>{control_0, control_2}, path_len,
+            this->is_cartesian_space_);
         if (!path_seg->IsValid()) {
             this->valid_ = false;
             holistic_motion::utility::LogWarning("Invalid line construction!");
@@ -182,8 +183,8 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
             this->path_segments_.push_back(path_seg);
             path_len += len_path1;
             holistic_motion::utility::LogDebug(
-                    "The {}th segment, startposition:{}, length:{} ", i,
-                    path_seg->GetStartParameter(), len_path1);
+                "The {}th segment, startposition:{}, length:{} ", i,
+                path_seg->GetStartParameter(), len_path1);
         } else {
             holistic_motion::utility::LogWarning("Invalid line construction!");
         }
@@ -202,18 +203,17 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
         control_0 = control_2;
         control_2 = (*waypoint1 + dis * tangent_2_1);
         path_seg = std::make_shared<PathSegBezierCurve2nd<LieGroup>>(
-                std::array<LieGroup, 3>{control_0, control_1, control_2},
-                path_len, this->is_cartesian_space_);
+            std::array<LieGroup, 3>{control_0, control_1, control_2}, path_len,
+            this->is_cartesian_space_);
         if (!path_seg->IsValid()) {
-            holistic_motion::utility::LogWarning(
-                    "Invalid 2nd-BezierCurve "
-                    "construction!");
+            holistic_motion::utility::LogWarning("Invalid 2nd-BezierCurve "
+                                                 "construction!");
             return;
         }
         holistic_motion::utility::LogDebug(
-                "The {}th segment,{} startposition:{}, length:{}", i,
-                to_underlying_type(path_seg->GetPathSegType()),
-                path_seg->GetStartParameter(), path_seg->GetLength());
+            "The {}th segment,{} startposition:{}, length:{}", i,
+            to_underlying_type(path_seg->GetPathSegType()),
+            path_seg->GetStartParameter(), path_seg->GetLength());
         this->path_segments_.push_back(path_seg);
         path_len += path_seg->GetLength();
 
@@ -226,18 +226,18 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
 
     // the last straight line segment
     path_seg = std::make_shared<PathSegLinear<LieGroup>>(
-            std::array<LieGroup, 2>{control_2, this->waypoints_.back()},
-            path_len, this->is_cartesian_space_);
+        std::array<LieGroup, 2>{control_2, this->waypoints_.back()}, path_len,
+        this->is_cartesian_space_);
     if (!path_seg->IsValid()) {
         this->valid_ = false;
         holistic_motion::utility::LogWarning("Invalid last line construction!");
         return;
     }
 
-    holistic_motion::utility::LogDebug("The {}th segment,{} startposition:{}, length:{}",
-                            i, to_underlying_type(path_seg->GetPathSegType()),
-                            path_seg->GetStartParameter(),
-                            path_seg->GetLength());
+    holistic_motion::utility::LogDebug(
+        "The {}th segment,{} startposition:{}, length:{}", i,
+        to_underlying_type(path_seg->GetPathSegType()), path_seg->GetStartParameter(),
+        path_seg->GetLength());
 
     this->path_segments_.push_back(path_seg);
     path_len += path_seg->GetLength();
@@ -246,8 +246,7 @@ void PathBezierCurve<LieGroup>::PathBezierCurve2nd() {
     holistic_motion::utility::LogDebug("Construct PathBezierCurve2nd success!\n");
 }
 
-template <typename LieGroup>
-void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
+template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
     holistic_motion::utility::LogDebug("Constucting PathBezierCurve5th...");
 
     double path_len = 0.0;
@@ -279,12 +278,16 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
 
     // compute bezier curve
     while (true) {
-        holistic_motion::utility::LogDebug("waypoint0:{}, waypoint1:{}, waypoint2:{}.",
-                                fmt::join((*waypoint0).Coeffs(), ","),
-                                fmt::join((*waypoint1).Coeffs(), ","),
-                                fmt::join((*waypoint2).Coeffs(), ","));
-        // Determine whether the traversal is complete
+        // The final segment has only two waypoints. Never dereference end(),
+        // even as an argument to a disabled debug call.
         bool last_loop = (waypoint2 == this->waypoints_.end());
+        if (!last_loop) {
+            holistic_motion::utility::LogDebug(
+                "waypoint0:{}, waypoint1:{}, waypoint2:{}.",
+                fmt::join((*waypoint0).Coeffs(), ","),
+                fmt::join((*waypoint1).Coeffs(), ","),
+                fmt::join((*waypoint2).Coeffs(), ","));
+        }
         control_1 = *waypoint1;
         // calculate the tangent between waypoint1 and waypoint2;
         tangent_1_0 = *waypoint1 - *waypoint0;
@@ -305,20 +308,32 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
         tangent_2_0 = tangent_2_1 - tangent_1_0;
         double length_2_0 = tangent_2_0.WeightedNorm();
 
-        dis = (this->blend_tolerance_ <= Epsilon ||
-               length_2_0 <= Epsilon)
-                      ? 0.0
-                      : 4.0 * this->blend_tolerance_ / length_2_0;
+        // A reversal is a stopped waypoint, not a blend with coincident ends.
+        const double direction_sum = (tangent_1_0 + tangent_2_1).WeightedNorm();
+        const bool reverses = direction_sum <= Epsilon;
+        dis = (this->blend_tolerance_ <= Epsilon || length_2_0 <= Epsilon || reverses)
+                  ? 0.0
+                  : 4.0 * this->blend_tolerance_ / length_2_0;
         dis = std::min(dis, length_1_0 / 2.0);
         dis = std::min(dis, length_2_1 / 2.0);
 
-        holistic_motion::utility::LogDebug(
-                "length_1_0:{}, length_2_1:{}, "
-                "length_2_0:{}, dis:{}",
-                length_1_0, length_2_1, length_2_0, dis);
+        if constexpr (!std::is_same_v<LieGroup, SE3d>) {
+            // For symmetric Rn controls and unit endpoint tangents, the
+            // positive length root simplifies to 30*d*u/(16+7*u), where
+            // u is the norm of the sum of the two directions. A near reversal
+            // can make this smaller than the segment's minimum length even
+            // though both legs are valid. Retain a stopped waypoint then.
+            if (dis > Epsilon) {
+                const double blend_length =
+                    dis * (30.0 * direction_sum / (16.0 + 7.0 * direction_sum));
+                if (blend_length <= Epsilon)
+                    dis = 0.0;
+            }
+        }
 
-        // TODO: may opposite direction, may exchange waypoint0 and waypoint2 or
-        // use linear segment
+        holistic_motion::utility::LogDebug("length_1_0:{}, length_2_1:{}, "
+                                           "length_2_0:{}, dis:{}",
+                                           length_1_0, length_2_1, length_2_0, dis);
 
         if (last_loop) {
             control_2 = control_1;
@@ -327,8 +342,8 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
         }
 
         path_seg = std::make_shared<PathSegLinear<LieGroup>>(
-                std::array<LieGroup, 2>{control_0, control_2}, path_len,
-                this->is_cartesian_space_);
+            std::array<LieGroup, 2>{control_0, control_2}, path_len,
+            this->is_cartesian_space_);
         if (!path_seg->IsValid()) {
             holistic_motion::utility::LogWarning("Invalid line construction!");
             return;
@@ -339,12 +354,13 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
             this->path_segments_.push_back(path_seg);
             path_len += len_path1;
             holistic_motion::utility::LogDebug(
-                    "The {}th segment, startposition:{}, length:{} ", i,
-                    path_seg->GetStartParameter(), len_path1);
+                "The {}th segment, startposition:{}, length:{} ", i,
+                path_seg->GetStartParameter(), len_path1);
         } else {
             holistic_motion::utility::LogDebug("Invalid line construction!");
         }
-        if (last_loop) break;
+        if (last_loop)
+            break;
 
         if (dis <= Epsilon) {
             holistic_motion::utility::LogDebug("Distance[{}] is close to 0.0!", dis);
@@ -360,27 +376,24 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
         control_2 = (control_1 + dis * tangent_2_1);
 
         holistic_motion::utility::LogDebug(
-                "path_len:{}, tstart_norm:{}, tend_norm:{}, cstart_norm:{}, "
-                "cend_norm:{}, control_0:[{}], control_1:[{}], control_2:[{}]",
-                path_len, tstart_norm, tend_norm, cstart_norm, cend_norm,
-                fmt::join(control_0.Coeffs(), ","),
-                fmt::join(control_1.Coeffs(), ","),
-                fmt::join(control_2.Coeffs(), ","));
+            "path_len:{}, tstart_norm:{}, tend_norm:{}, cstart_norm:{}, "
+            "cend_norm:{}, control_0:[{}], control_1:[{}], control_2:[{}]",
+            path_len, tstart_norm, tend_norm, cstart_norm, cend_norm,
+            fmt::join(control_0.Coeffs(), ","), fmt::join(control_1.Coeffs(), ","),
+            fmt::join(control_2.Coeffs(), ","));
         path_seg = std::make_shared<PathSegBezierCurve5th<LieGroup>>(
-                std::array<LieGroup, 3>{control_0, control_1, control_2},
-                path_len, tstart_norm, cstart_norm, tend_norm, cend_norm,
-                this->is_cartesian_space_);
+            std::array<LieGroup, 3>{control_0, control_1, control_2}, path_len,
+            tstart_norm, cstart_norm, tend_norm, cend_norm, this->is_cartesian_space_);
         if (!path_seg->IsValid()) {
-            holistic_motion::utility::LogWarning(
-                    "Invalid 5th-BezierCurve "
-                    "construction!");
+            holistic_motion::utility::LogWarning("Invalid 5th-BezierCurve "
+                                                 "construction!");
             return;
         }
 
         holistic_motion::utility::LogDebug(
-                "The {}th segment,{} start position:{}, length:{}", i,
-                to_underlying_type(path_seg->GetPathSegType()),
-                path_seg->GetStartParameter(), path_seg->GetLength());
+            "The {}th segment,{} start position:{}, length:{}", i,
+            to_underlying_type(path_seg->GetPathSegType()),
+            path_seg->GetStartParameter(), path_seg->GetLength());
         this->path_segments_.push_back(path_seg);
         path_len += path_seg->GetLength();
 
@@ -397,5 +410,5 @@ void PathBezierCurve<LieGroup>::PathBezierCurve5th() {
     holistic_motion::utility::LogDebug("Construct PathBezierCurve5th success!\n");
 }
 
-}  // namespace robotics
-}  // namespace holistic_motion
+} // namespace robotics
+} // namespace holistic_motion

@@ -128,6 +128,13 @@ voxelization. `inscribed` mode keeps sampled interior radii; the optional
 sample. The latter remains a discrete approximation, not a mathematical proof
 of continuous mesh coverage.
 
+`SphereFitOptions.chunk_size` (default 512) bounds both dimensions of the
+temporary distance blocks. Radius fitting, sampled expansion, and coverage
+metrics process blocks without creating an all-samples distance matrix.
+Coordinate differences are computed directly, preserving small separations
+when the model is far from the origin, within floating-point input precision.
+This preprocessing uses NumPy and does not require the native collision component.
+
 ```bash
 python -m pip install '.[examples]'
 ./scripts/run.sh python3 \
@@ -174,6 +181,9 @@ If the output JSON already exists, the editor loads and displays its spheres.
 Refitting one link preserves every untouched link, and **Fit all links** is
 available for deliberate full regeneration. Saving uses an atomic replacement
 so a validation or write failure cannot leave a partially written model.
+Temporary files are also removed if writing, flushing or syncing fails or is
+interrupted, provided the filesystem permits cleanup; the existing model is
+preserved until the final replacement succeeds.
 
 ## HumanoidAssets gizmo demo
 

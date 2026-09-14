@@ -112,6 +112,11 @@ NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候�
 `sampled_coverage` 模式会扩张选中的球，使所有输入样本被覆盖。后者仍是离散近似，
 不能当作连续三角网格覆盖的数学证明。
 
+`SphereFitOptions.chunk_size`（默认 512）同时限制临时距离块的两个维度。
+半径拟合、采样覆盖扩张和覆盖率评估均分块处理，无需创建包含全部采样点的
+距离矩阵。距离直接由坐标差计算，在输入浮点精度允许的范围内，保留模型
+远离原点时的小间距。这一预处理只使用 NumPy，不需要启用原生碰撞组件。
+
 ```bash
 python -m pip install '.[examples]'
 ./scripts/run.sh python3 \
@@ -154,6 +159,8 @@ origin。支持 mesh、box、cylinder 和 sphere；`package://` 资源可重复�
 如果输出 JSON 已存在，编辑器会加载并显示已有球。重新拟合单个 link 时会保留所有
 未改动 link；需要明确执行整机重新生成时可使用 **Fit all links**。保存使用原子
 替换，校验或写入失败不会留下半写入的模型文件。
+写入、flush 或同步失败或被中断时，也会清理本次临时文件（前提是文件系统
+允许清理）；最终替换成功之前，已有模型保持原样。
 
 ## HumanoidAssets Gizmo Demo
 

@@ -111,6 +111,24 @@ run outside timing. `ik_limit_smoke` has a ten-second CTest timeout and covers
 extreme seeds, inclusive endpoints, independent turn enumeration, mixed-radix
 output order, budgets, and empty results after failure.
 
+`<build-directory>/path_construction_benchmark` measures native fifth-degree
+Bezier path construction for 2/7 dimensions and 32/512/4096 synthetic waypoints,
+with zero blend tolerance and warning-level logging. CSV contains the median
+of 30 measured calls after one warmup, plus a path-length checksum. It isolates
+path construction and disabled debug formatting, excluding time parameterization,
+Python bindings, and robot assets. Compare versions under the same build and
+machine conditions; timing is not a CI threshold.
+
+`benchmarks/trajectory_audit.py` generates native trajectories with an explicit
+seed and checks finite samples, endpoints, and derivative limits at uniform
+times plus every breakpoint. For example, run
+`PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`.
+JSON reports rejected inputs separately from invariant failures and includes
+the first ten failures. Replay one with the same `--seed` and `--case-index`.
+Any failure returns status 1; construction success alone is insufficient.
+This diagnostic does not prove continuous collision freedom or derivative
+limits between samples, and its elapsed time is not an isolated benchmark.
+
 ## Generated numerical regression tests
 
 The optional `test` extra adds pytest and Hypothesis. To test an existing Conan

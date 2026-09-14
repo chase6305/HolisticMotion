@@ -2,6 +2,6 @@
 
 from holistic_motion import kinematics
 
-from . import retargeting
+from . import retargeting, simulation
 
-__all__ = ["kinematics", "retargeting"]
+__all__ = ["kinematics", "retargeting", "simulation"]

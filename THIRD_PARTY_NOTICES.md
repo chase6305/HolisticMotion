@@ -27,6 +27,21 @@ Coal is resolved by Conan and linked by the optional collision component,
 which is enabled by default. It is not vendored in this repository. Conan is
 configured with Coal's OctoMap integration disabled.
 
+### dex-retargeting (optional Python hand backend)
+
+- Project: dex-retargeting
+- Upstream: <https://github.com/dexsuite/dex-retargeting>
+- Version declared by HolisticMotion: 0.5.0
+- License: MIT
+
+The `hand-retargeting` extra imports the upstream VectorOptimizer, RobotWrapper,
+and mimic-joint adaptor. Integration was validated against the caller-provided
+checkout at commit `3f56141`. Source and robot assets are not vendored or downloaded
+implicitly. The HolisticMotion adapter corrects the temporal objective scalar,
+enforces mimic-induced position limits, and reports native optimizer failures.
+This optional backend requires PyTorch and the upstream runtime dependencies,
+including NLopt; those packages retain their own licenses.
+
 ## Algorithm and design references
 
 The projects below are not imported, linked, or vendored at runtime.
@@ -62,9 +77,9 @@ runtime dependency on Pink or qpsolvers.
 cuRobo informed the collision-sphere representation, batched-query design,
 deterministic multi-seed retargeting, and the separation between seed
 generation, feasibility-aware optimization, and best-solution tracking.
-HolisticMotion's sphere fitting, collision model, path optimizer, retargeting,
-and query APIs are maintained locally and do not depend on cuRobo, PyTorch, or
-Warp.
+HolisticMotion's sphere fitting, collision model, path optimizer, cuRobo-style
+retargeting, and query APIs are maintained locally and do not depend on cuRobo,
+PyTorch, or Warp. The separate optional dex-retargeting hand backend uses PyTorch.
 
 ## Scope
 

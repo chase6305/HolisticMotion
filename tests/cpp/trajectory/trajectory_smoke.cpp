@@ -54,13 +54,91 @@ bool DerivativesAreFiniteAndBounded(Trajectory& trajectory,
     return true;
 }
 
+bool PathQueriesRespectValidation() {
+    using Group = Rn<double, 2>;
+    std::vector<Group> points(3);
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    points[2].Coeffs() << 1.0, 1.0;
+    PathBezierCurve<Group> path(points, 5, false, 0.0);
+    if (!path.IsValid() || path.GetNumOfPathSegments() != 2) return false;
+    const auto query = [](const PathBase<Group>& target, int kind, double s) {
+        switch (kind) {
+            case 0:
+                target.GetPathSegmentAtS(s);
+                break;
+            case 1:
+                target.GetConfig(s);
+                break;
+            case 2:
+                target.GetTangent(s);
+                break;
+            case 3:
+                target.GetCurvature(s);
+                break;
+            case 4:
+                target.GetTorsion(s);
+                break;
+        }
+    };
+    for (double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(),
+                           -std::numeric_limits<double>::infinity()}) {
+        for (int kind = 0; kind < 5; ++kind) {
+            try {
+                query(path, kind, invalid);
+                return false;
+            } catch (const std::invalid_argument&) {
+            }
+        }
+    }
+    const auto first = path.GetPathSegmentByIndex(0);
+    const auto last = path.GetPathSegmentByIndex(1);
+    if (path.GetPathSegmentAtS(-1.0) != first ||
+        path.GetPathSegmentAtS(3.0) != last ||
+        path.GetPathSegmentAtS(std::nextafter(1.0, 0.0)) != first ||
+        path.GetPathSegmentAtS(1.0) != last ||
+        path.GetPathSegmentByIndex(-1) != first ||
+        path.GetPathSegmentByIndex(99) != last ||
+        (path.GetConfig(-1.0) - points.front()).Coeffs().norm() != 0.0 ||
+        (path.GetConfig(3.0) - points.back()).Coeffs().norm() != 0.0 ||
+        path.GetTangent(1.0)[0] != 0.0 || path.GetTangent(1.0)[1] != 1.0)
+        return false;
+
+    struct InvalidatedPath : PathBezierCurve<Group> {
+        explicit InvalidatedPath(const std::vector<Group>& points)
+            : PathBezierCurve(points, 5, false, 0.0) {
+            this->valid_ = false;
+        }
+    } invalidated(points);
+    const PathBezierCurve<Group> empty(std::vector<Group>{}, 5, false, 0.0);
+    // Failed construction can retain segments; neither invalid form is
+    // queryable.
+    for (const PathBase<Group>* invalid :
+         {static_cast<const PathBase<Group>*>(&invalidated),
+          static_cast<const PathBase<Group>*>(&empty)}) {
+        if (invalid->GetPathSegmentAtS(0.5) ||
+            invalid->GetPathSegmentByIndex(0))
+            return false;
+        for (int kind = 1; kind < 5; ++kind) {
+            try {
+                query(*invalid, kind, 0.5);
+                return false;
+            } catch (const std::logic_error&) {
+            }
+        }
+    }
+    return true;
+}
+
 int main() {
+    if (!PathQueriesRespectValidation()) return 12;
     if (!LowDimensionalCartesianBlendIsValid<1>() ||
         !LowDimensionalCartesianBlendIsValid<2>() ||
         !LowDimensionalCartesianBlendIsValid<3>())
         return 11;
     const TrajectoryConstraints null_joint_constraints(
-            std::vector<std::shared_ptr<Joint>>(1));
+        std::vector<std::shared_ptr<Joint>>(1));
     if (null_joint_constraints.IsValid()) return 1;
 
     Eigen::Vector4d coefficients;

@@ -1,4 +1,5 @@
 import json
+import tracemalloc
 
 import holistic_motion as hm
 import numpy as np
@@ -196,3 +197,95 @@ def test_sphere_fit_result_value_objects_validate_and_own_state():
 
 def test_geometry_is_available_from_package_namespace():
     assert hm.geometry.fit_spheres is fit_spheres
+
+
+@pytest.mark.parametrize("sampled_coverage", [False, True])
+@pytest.mark.parametrize("chunk_size", [1, 4, 512])
+def test_fitting_preserves_radii_after_large_translation(sampled_coverage, chunk_size):
+    interior, surface = _unit_sphere_samples()
+    options = SphereFitOptions(
+        min_radius=0.1, sampled_coverage=sampled_coverage, chunk_size=chunk_size
+    )
+    expected = fit_spheres(interior, surface, options)
+    offset = np.array([1e8, -1e8, 1e8])
+    actual = fit_spheres(interior + offset, surface + offset, options)
+    assert actual.metrics == expected.metrics
+    np.testing.assert_array_equal(
+        np.array([sphere.center for sphere in actual.spheres]) - offset,
+        [sphere.center for sphere in expected.spheres],
+    )
+    np.testing.assert_array_equal(
+        [sphere.radius for sphere in actual.spheres],
+        [sphere.radius for sphere in expected.spheres],
+    )
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 16, 512])
+def test_nearest_surface_distances_match_direct_reference(chunk_size):
+    from holistic_motion.geometry.sphere_fit import _minimum_distances
+
+    rng = np.random.default_rng(913)
+    # Non-contiguous inputs, unequal tile tails, and exactly coincident samples.
+    query = (rng.normal(size=(34, 3)) + 1e8)[::2]
+    reference = (rng.normal(size=(46, 3)) + 1e8)[::2]
+    reference[-1] = query[0]
+    expected = np.min(
+        np.linalg.norm(query[:, None, :] - reference[None, :, :], axis=2), axis=1
+    )
+    np.testing.assert_allclose(
+        _minimum_distances(query, reference, chunk_size), expected, rtol=1e-14
+    )
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 16, 512])
+def test_coverage_metrics_match_direct_reference(chunk_size):
+    rng = np.random.default_rng(471)
+    points = rng.normal(size=(37, 3))
+    centers = rng.normal(size=(19, 3))
+    radii = rng.uniform(0.1, 0.8, size=19)
+    spheres = tuple(SphereSpec(tuple(c), r) for c, r in zip(centers, radii))
+    gaps = np.maximum(
+        np.min(
+            np.linalg.norm(points[:, None, :] - centers[None, :, :], axis=2) - radii,
+            axis=1,
+        ),
+        0.0,
+    )
+    actual = evaluate_sphere_fit(points, spheres, chunk_size=chunk_size)
+    assert actual.sampled_coverage == pytest.approx(np.mean(gaps <= 1e-12))
+    assert actual.mean_uncovered_distance == pytest.approx(np.mean(gaps))
+    assert actual.maximum_uncovered_distance == pytest.approx(np.max(gaps))
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 512])
+def test_coverage_assignment_keeps_first_center_on_ties(chunk_size):
+    # The origin is equidistant from both centers, which are in separate tiles
+    # at chunk_size=1. Stable selection/assignment must expand the first sphere.
+    interior = np.array([[-1.0, 0, 0], [1.0, 0, 0]])
+    surface = np.array([[-1.25, 0, 0], [1.25, 0, 0], [0.0, 0, 0]])
+    result = fit_spheres(
+        interior,
+        surface,
+        SphereFitOptions(
+            max_spheres=2, min_radius=0.1, sampled_coverage=True, chunk_size=chunk_size
+        ),
+    )
+    assert [sphere.radius for sphere in result.spheres] == [1.0, 0.25]
+    assert result.metrics.sampled_coverage == 1.0
+
+
+def test_nearest_surface_workspace_stays_bounded_with_many_samples():
+    from holistic_motion.geometry.sphere_fit import _minimum_distances
+
+    query = np.zeros((64, 3))
+    surface = np.ones((8192, 3))
+    # Input storage is outside the measured region. This guards the working
+    # memory budget without depending on timing or a particular buffer layout.
+    tracemalloc.start()
+    try:
+        actual = _minimum_distances(query, surface, chunk_size=64)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    np.testing.assert_allclose(actual, np.sqrt(3))
+    assert peak < 1024 * 1024

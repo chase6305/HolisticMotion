@@ -1,13 +1,14 @@
 #pragma once
 
+#include <stdexcept>
+
 #include "holistic_motion/trajectory/Types.h"
 
 namespace holistic_motion {
 namespace robotics {
 
 template <typename LieGroup>
-class PathSegmentBase
-    : public std::enable_shared_from_this<PathSegmentBase<LieGroup>> {
+class PathSegmentBase : public std::enable_shared_from_this<PathSegmentBase<LieGroup>> {
 private:
     using Tangent = typename LieGroup::Tangent;
 
@@ -19,7 +20,8 @@ public:
     /// \brief judge whether there is a trajectory length to determine its
     /// effectiveness
     bool IsValid() const {
-        return std::isfinite(this->GetLength());
+        return std::isfinite(length_) && length_ >= 0.0 && std::isfinite(sp_) &&
+               std::isfinite(sp_ + length_);
     }
 
     double GetStartParameter() const { return sp_; }
@@ -52,7 +54,8 @@ public:
     ///
     /// \param s path parameter
     /// \return Eigen::VectorXd
-    virtual Tangent GetCurvature(double /*s*/) const {
+    virtual Tangent GetCurvature(double s) const {
+        ValidateQuery(s);
         return Tangent::ZeroHelper();
     };
 
@@ -60,17 +63,27 @@ public:
     ///
     /// \param s path parameter
     /// \return Eigen::VectorXd
-    virtual Tangent GetTorsion(double /*s*/) const {
+    virtual Tangent GetTorsion(double s) const {
+        ValidateQuery(s);
         return Tangent::ZeroHelper();
     };
 
 protected:
+    // Native segments use the same query contract as PathBase: reject non-finite
+    // parameters and invalid geometry before clamping or accessing control points.
+    void ValidateQuery(double s) const {
+        if (!std::isfinite(s))
+            throw std::invalid_argument("path parameter must be finite");
+        if (!IsValid())
+            throw std::logic_error("cannot query an invalid path segment");
+    }
+
     PathSegmentBase() = default;
     PathSegType path_seg_type_{PathSegType::LinearSeg};
-    std::vector<LieGroup> waypoints_;  ///< path blending tolerance
-    double length_{0.0};               ///< path blending tolerance
-    double sp_{0.0};                   ///< start param of segment
-    Tangent tangent_;                  ///< tangent of segment
+    std::vector<LieGroup> waypoints_; ///< path blending tolerance
+    double length_{0.0};              ///< path blending tolerance
+    double sp_{0.0};                  ///< start param of segment
+    Tangent tangent_;                 ///< tangent of segment
 };
 
 template <typename LieGroup>
@@ -88,7 +101,7 @@ public:
     ///  6-axis industrial robotic arms)
     ///
     /// \param waypoints waypoints of the path
-    void _CheckPathWaypoints(std::vector<LieGroup>& waypoints);
+    void _CheckPathWaypoints(std::vector<LieGroup> &waypoints);
 
     /// \brief judge whether the path is valid
     bool IsValid() const { return this->valid_; };
@@ -97,7 +110,7 @@ public:
     PathType GetType() const { return this->path_type_; }
 
     /// \brief get the waypoints of the path
-    const std::vector<LieGroup>& GetWaypoints() const { return waypoints_; }
+    const std::vector<LieGroup> &GetWaypoints() const { return waypoints_; }
 
     /// \brief get the blend tolerance of the path
     double GetBlendTolerance() const { return this->blend_tolerance_; }
@@ -113,8 +126,7 @@ public:
     ///
     /// \param s path parameter
     /// \return std::shared_ptr<PathSegmentBase>
-    std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> GetPathSegments()
-            const {
+    std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> GetPathSegments() const {
         return path_segments_;
     }
 
@@ -123,19 +135,22 @@ public:
     /// \return int
     int GetNumOfPathSegments() const { return path_segments_.size(); }
 
-    /// \brief get the segment of the path by index
+    /// \brief get the segment at a finite path parameter
     ///
-    /// \param index path segment index
+    /// \param s path parameter
     /// \return std::shared_ptr<PathSegmentBase>
-    std::shared_ptr<PathSegmentBase<LieGroup>> GetPathSegmentAtS(
-            double s) const;
+    /// Finite out-of-range parameters are clamped; internal boundaries select
+    /// the following segment. Returns nullptr if the path is invalid.
+    /// \throws std::invalid_argument if s is not finite.
+    std::shared_ptr<PathSegmentBase<LieGroup>> GetPathSegmentAtS(double s) const;
 
     /// \brief get the segment of the path by index
     ///
     /// \param index path segment index
     /// \return std::shared_ptr<PathSegmentBase>
-    std::shared_ptr<PathSegmentBase<LieGroup>> GetPathSegmentByIndex(
-            const int& index) const;
+    /// Returns nullptr if the path is invalid; valid paths clamp the index.
+    std::shared_ptr<PathSegmentBase<LieGroup>>
+    GetPathSegmentByIndex(const int &index) const;
 
     /// \brief get the segment of the path
     ///
@@ -171,14 +186,14 @@ protected:
     PathBase() = default;
     PathType path_type_{PathType::NoBlend};
     bool is_cartesian_space_{false};
-    std::vector<LieGroup> waypoints_;       ///< waypoints of the path
-    std::vector<LieGroup> control_points_;  ///< control points of the path
+    std::vector<LieGroup> waypoints_;      ///< waypoints of the path
+    std::vector<LieGroup> control_points_; ///< control points of the path
     std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> path_segments_;
-    double blend_tolerance_{0.0};  ///< path blending tolerance
-    bool valid_{false};            ///< if path is valid
-    double length_{0.0};           ///< path length
+    double blend_tolerance_{0.0}; ///< path blending tolerance
+    bool valid_{false};           ///< if path is valid
+    double length_{0.0};          ///< path length
     Eigen::VectorXd weights_;
 };
 
-}  // namespace robotics
-}  // namespace holistic_motion
+} // namespace robotics
+} // namespace holistic_motion

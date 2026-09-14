@@ -33,6 +33,7 @@ set(HOLISTICMOTION_COLLISION_SOURCES
     src/collision/SphereCollisionModel.cpp)
 
 set(HOLISTICMOTION_PYTHON_BINDING_SOURCES
+    bindings/python/LoggingBindings.cpp
     bindings/python/module.cpp
     bindings/python/PlanningBindings.cpp
     bindings/python/CollisionBindings.cpp)

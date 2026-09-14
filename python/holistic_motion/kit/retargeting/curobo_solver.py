@@ -7,7 +7,7 @@ only optional robotics dependency; Torch, Warp, and CUDA are not imported.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from numbers import Integral
 from time import perf_counter
@@ -64,6 +64,17 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         self.last_seed_index = 0
         self.last_num_seeds_evaluated = 0
 
+    def _snapshot_solve_state(self) -> dict:
+        state = super()._snapshot_solve_state()
+        state["seed_index"] = self.last_seed_index
+        state["seeds_evaluated"] = self.last_num_seeds_evaluated
+        return state
+
+    def _restore_solve_state(self, state: dict) -> None:
+        super()._restore_solve_state(state)
+        self.last_seed_index = state["seed_index"]
+        self.last_num_seeds_evaluated = state["seeds_evaluated"]
+
     def solve(
         self,
         targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
@@ -72,12 +83,17 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         max_iterations: Optional[int] = None,
         enforce_acceleration: bool = False,
     ) -> RetargetingResult:
-        """Refine a deterministic seed bank and return its best solution."""
+        """Refine a seed bank, or return one acceleration-enforced cycle.
+
+        With ``enforce_acceleration=True``, only the primary seed and one QP
+        update are used, regardless of the otherwise valid iteration budget.
+        Exceptions and interrupts restore history and selection diagnostics.
+        """
 
         started = perf_counter()
         desired_poses, frame_weights = self._prepare_targets(targets)
         primary = self._configuration(seed) if seed is not None else self._last_q.copy()
-        seeds = [primary.copy()] if enforce_acceleration else self._seed_bank(primary)
+        seeds = [primary.copy()] if enforce_acceleration else self._iter_seeds(primary)
         best = None
         best_rank = None
         best_index = 0
@@ -85,8 +101,8 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         evaluated = 0
         total_collision_evaluations = 0
         total_collision_gradient_evaluations = 0
-        initial_q = self._last_q.copy()
-        initial_velocity = self._last_velocity.copy()
+        initial_state = self._snapshot_solve_state()
+        initial_velocity = initial_state["velocity"]
         collision_cost_cache = {}
         collision_gradient_cache = {}
         try:
@@ -116,38 +132,57 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
                     best_velocity = self._last_velocity.copy()
                 if self.stop_on_success and result.success:
                     break
-        except Exception:
-            self._last_q = initial_q
-            self._last_velocity = initial_velocity
+            final = replace(
+                best,
+                solve_ms=(perf_counter() - started) * 1000.0,
+                collision_evaluations=total_collision_evaluations,
+                collision_gradient_evaluations=total_collision_gradient_evaluations,
+            )
+            self._last_q = best.configuration.copy()
+            self._last_velocity = best_velocity
+            self.last_seed_index = best_index
+            self.last_num_seeds_evaluated = evaluated
+            return final
+        except BaseException:
+            self._restore_solve_state(initial_state)
             raise
 
-        self._last_q = best.configuration.copy()
-        self._last_velocity = best_velocity
-        self.last_seed_index = best_index
-        self.last_num_seeds_evaluated = evaluated
-        return replace(
-            best,
-            solve_ms=(perf_counter() - started) * 1000.0,
-            collision_evaluations=total_collision_evaluations,
-            collision_gradient_evaluations=total_collision_gradient_evaluations,
-        )
-
     def _seed_bank(self, primary: np.ndarray) -> list[np.ndarray]:
-        seeds = [primary.copy()]
-        if self.num_seeds == 1:
-            return seeds
+        """Materialize the deterministic candidates for inspection."""
 
-        neutral = self._neutral_q
+        return list(self._iter_seeds(primary))
+
+    def _iter_seeds(self, primary: np.ndarray) -> Iterator[np.ndarray]:
+        """Generate alternatives only after the preceding trial needs another."""
+
+        seeds = [primary.copy()]
+        yield seeds[0]
+        active, velocity_limits = self._mode_limits()
+        active = active[velocity_limits > 0.0]
+        if self.num_seeds == 1 or not active.size:
+            return
+
+        # Every candidate must preserve the primary configuration outside the
+        # selected mode, including for manifold joints with nq != nv.
+        tangent = np.zeros(self.model.nv)
+        difference = np.asarray(
+            self.pin.difference(self.model, primary, self._neutral_q), dtype=float
+        )
+        tangent[active] = difference[active]
+        neutral = self._project_limits(
+            np.asarray(self.pin.integrate(self.model, primary, tangent))
+        )
         if not np.allclose(neutral, seeds[0], rtol=0.0, atol=1e-12):
             seeds.append(neutral)
+            yield neutral
 
         if self.seed_spread == 0.0:
-            return seeds[: self.num_seeds]
+            return
 
         attempts = 0
         maximum_attempts = 10 * self.num_seeds
         while len(seeds) < self.num_seeds and attempts < maximum_attempts:
-            tangent = self.seed_spread * self._seed_samples[attempts]
+            tangent[active] = self.seed_spread * self._seed_samples[attempts, active]
             attempts += 1
             candidate = np.asarray(self.pin.integrate(self.model, primary, tangent))
             candidate = self._project_limits(candidate)
@@ -156,7 +191,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
                 for existing in seeds
             ):
                 seeds.append(candidate)
-        return seeds[: self.num_seeds]
+                yield candidate
 
     def _rank(self, result: RetargetingResult) -> tuple[float, ...]:
         values = (

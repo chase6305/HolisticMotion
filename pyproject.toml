@@ -13,6 +13,7 @@ dependencies = ["numpy>=1.23"]
 test = ["pytest>=7", "hypothesis>=6.112,<7"]
 examples = ["matplotlib>=3.7", "trimesh>=4.0", "viser>=1.0"]
 retargeting = ["pin>=3.8,<5"]
+hand-retargeting = ["dex-retargeting==0.5.0", "torch>=2.2", "pin>=3.8,<5"]
 docs = [
     "Sphinx>=8,<10",
     "breathe>=4.35,<5",

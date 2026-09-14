@@ -81,20 +81,48 @@ def _points(value, name: str, *, allow_empty: bool = False) -> np.ndarray:
     return points
 
 
-def _minimum_distances(
-    query: np.ndarray, reference: np.ndarray, chunk_size: int
-) -> np.ndarray:
-    output = np.empty(len(query), dtype=float)
-    reference_norm = np.sum(reference * reference, axis=1)[None, :]
+def _squared_distance_tiles(query: np.ndarray, reference: np.ndarray, chunk_size: int):
+    """Yield squared distance blocks, reusing two bounded 2D buffers.
+
+    Subtract coordinates before squaring to avoid cancellation in the norm
+    expansion for nearby points far from the origin. Consumers must finish
+    using a block before requesting the next one, which overwrites it.
+    """
+    shape = (min(len(query), chunk_size), min(len(reference), chunk_size))
+    squared = np.empty(shape, dtype=float)
+    scratch = np.empty(shape, dtype=float)
     for start in range(0, len(query), chunk_size):
         chunk = query[start : start + chunk_size]
-        squared = (
-            np.sum(chunk * chunk, axis=1)[:, None]
-            + reference_norm
-            - 2.0 * chunk @ reference.T
-        )
-        np.maximum(squared, 0.0, out=squared)
-        output[start : start + len(chunk)] = np.sqrt(np.min(squared, axis=1))
+        for offset in range(0, len(reference), chunk_size):
+            other = reference[offset : offset + chunk_size]
+            distances = squared[: len(chunk), : len(other)]
+            delta = scratch[: len(chunk), : len(other)]
+            np.subtract(chunk[:, 0, None], other[None, :, 0], out=distances)
+            np.square(distances, out=distances)
+            for axis in (1, 2):
+                np.subtract(chunk[:, axis, None], other[None, :, axis], out=delta)
+                np.square(delta, out=delta)
+                np.add(distances, delta, out=distances)
+            yield start, offset, distances
+
+
+def _minimum_distances(
+    query: np.ndarray,
+    reference: np.ndarray,
+    chunk_size: int,
+    radii: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    output = np.full(len(query), np.inf, dtype=float)
+    for start, offset, distances in _squared_distance_tiles(
+        query, reference, chunk_size
+    ):
+        if radii is not None:
+            np.sqrt(distances, out=distances)
+            distances -= radii[None, offset : offset + distances.shape[1]]
+        best = output[start : start + len(distances)]
+        np.minimum(best, np.min(distances, axis=1), out=best)
+    if radii is None:
+        np.sqrt(output, out=output)
     return output
 
 
@@ -118,7 +146,11 @@ class SphereSpec:
 
 @dataclass(frozen=True)
 class SphereFitOptions:
-    """Controls deterministic greedy sphere selection."""
+    """Controls deterministic greedy sphere selection.
+
+    ``chunk_size`` bounds both dimensions of temporary pairwise distance
+    blocks, independently of the number of samples and selected spheres.
+    """
 
     max_spheres: int = 32
     min_radius: float = 0.002
@@ -221,21 +253,30 @@ def evaluate_sphere_fit(
         or chunk_size < 1
     ):
         raise ValueError("chunk_size must be a positive integer")
+    return _evaluate_point_sets((points,), spheres, chunk_size)
+
+
+def _evaluate_point_sets(point_sets, spheres, chunk_size: int) -> SphereFitMetrics:
     centers = np.asarray([sphere.center for sphere in spheres], dtype=float)
     radii = np.asarray([sphere.radius for sphere in spheres], dtype=float)
-    gaps = np.empty(len(points), dtype=float)
-    for start in range(0, len(points), chunk_size):
-        chunk = points[start : start + chunk_size]
-        distances = (
-            np.linalg.norm(chunk[:, None, :] - centers[None, :, :], axis=2)
-            - radii[None, :]
-        )
-        gaps[start : start + len(chunk)] = np.maximum(np.min(distances, axis=1), 0.0)
-    uncovered = gaps > 1e-12
+    count = covered = 0
+    mean_gap = maximum_gap = 0.0
+    for points in point_sets:
+        for start in range(0, len(points), chunk_size):
+            chunk = points[start : start + chunk_size]
+            gaps = _minimum_distances(chunk, centers, chunk_size, radii)
+            np.maximum(gaps, 0.0, out=gaps)
+            new_count = count + len(chunk)
+            # Combine block means without retaining all gaps or summing a
+            # potentially very large number of distances at once.
+            mean_gap += (float(np.mean(gaps)) - mean_gap) * (len(chunk) / new_count)
+            count = new_count
+            covered += int(np.count_nonzero(gaps <= 1e-12))
+            maximum_gap = max(maximum_gap, float(np.max(gaps)))
     return SphereFitMetrics(
-        sampled_coverage=float(np.mean(~uncovered)),
-        mean_uncovered_distance=float(np.mean(gaps)),
-        maximum_uncovered_distance=float(np.max(gaps)),
+        sampled_coverage=covered / count,
+        mean_uncovered_distance=mean_gap,
+        maximum_uncovered_distance=maximum_gap,
         sphere_count=len(spheres),
     )
 
@@ -285,16 +326,25 @@ def fit_spheres(
     selected_radii = radii[np.asarray(selected)].copy()
     mode = "inscribed"
     if options.sampled_coverage:
-        all_samples = np.concatenate((interior, surface), axis=0)
         maximum_assigned = np.zeros(len(centers), dtype=float)
-        for start in range(0, len(all_samples), options.chunk_size):
-            samples = all_samples[start : start + options.chunk_size]
-            distances = np.linalg.norm(
-                samples[:, None, :] - centers[None, :, :], axis=2
-            )
-            assignments = np.argmin(distances, axis=1)
-            assigned_distances = distances[np.arange(len(samples)), assignments]
-            np.maximum.at(maximum_assigned, assignments, assigned_distances)
+        for points in (interior, surface):
+            for start in range(0, len(points), options.chunk_size):
+                samples = points[start : start + options.chunk_size]
+                nearest = np.full(len(samples), np.inf)
+                assignments = np.zeros(len(samples), dtype=np.intp)
+                rows = np.arange(len(samples))
+                for _, offset, distances in _squared_distance_tiles(
+                    samples, centers, options.chunk_size
+                ):
+                    np.sqrt(distances, out=distances)
+                    indices = np.argmin(distances, axis=1)
+                    candidates = distances[rows, indices]
+                    # Strict comparison keeps the first center on equal
+                    # distances, including ties across reference blocks.
+                    closer = candidates < nearest
+                    nearest[closer] = candidates[closer]
+                    assignments[closer] = offset + indices[closer]
+                np.maximum.at(maximum_assigned, assignments, nearest)
         selected_radii = np.maximum(selected_radii, maximum_assigned)
         mode = "sampled_coverage"
     selected_radii += options.padding
@@ -303,11 +353,7 @@ def fit_spheres(
         SphereSpec(tuple(center), radius)
         for center, radius in zip(centers, selected_radii)
     )
-    metrics = evaluate_sphere_fit(
-        np.concatenate((interior, surface), axis=0),
-        spheres,
-        chunk_size=options.chunk_size,
-    )
+    metrics = _evaluate_point_sets((interior, surface), spheres, options.chunk_size)
     return SphereFitResult(spheres=spheres, metrics=metrics, mode=mode)
 
 
@@ -385,10 +431,12 @@ def save_sphere_model(
             suffix=".tmp",
             delete=False,
         ) as temporary:
+            # Register ownership before the first fallible write/flush so a
+            # partial file is removed even after disk errors or interruption.
+            temporary_path = Path(temporary.name)
             temporary.write(serialized)
             temporary.flush()
             os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
         os.replace(temporary_path, target)
     finally:
         if temporary_path is not None and temporary_path.exists():

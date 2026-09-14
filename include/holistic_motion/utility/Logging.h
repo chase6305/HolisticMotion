@@ -41,9 +41,10 @@
 //
 // Usage  : utility::LogError(format_string, arg0, arg1, ...);
 // Example: utility::LogError("name: {}, age: {}", "dog", 5);
-#define LogError(...)                     \
-    Logger::LogError_(__FILE__, __LINE__, \
-                      static_cast<const char *>(HOLISTIC_MOTION_FUNCTION), __VA_ARGS__)
+#define LogError(...)                                                                  \
+    Logger::LogError_(__FILE__, __LINE__,                                              \
+                      static_cast<const char *>(HOLISTIC_MOTION_FUNCTION),             \
+                      __VA_ARGS__)
 
 // LogWarning is used if an error occurs, but the error is also signaled
 // via a return value (i.e., there is no need to throw an exception). This
@@ -53,9 +54,9 @@
 //
 // Usage  : utility::LogWarning(format_string, arg0, arg1, ...);
 // Example: utility::LogWarning("name: {}, age: {}", "dog", 5);
-#define LogWarning(...)                                             \
-    Logger::LogWarning_(__FILE__, __LINE__,                         \
-                        static_cast<const char *>(HOLISTIC_MOTION_FUNCTION), \
+#define LogWarning(...)                                                                \
+    Logger::LogWarning_(__FILE__, __LINE__,                                            \
+                        static_cast<const char *>(HOLISTIC_MOTION_FUNCTION),           \
                         __VA_ARGS__)
 
 // LogInfo is used to inform the user with expected output, e.g, pressed a
@@ -63,8 +64,8 @@
 //
 // Usage  : utility::LogInfo(format_string, arg0, arg1, ...);
 // Example: utility::LogInfo("name: {}, age: {}", "dog", 5);
-#define LogInfo(...)                     \
-    Logger::LogInfo_(__FILE__, __LINE__, \
+#define LogInfo(...)                                                                   \
+    Logger::LogInfo_(__FILE__, __LINE__,                                               \
                      static_cast<const char *>(HOLISTIC_MOTION_FUNCTION), __VA_ARGS__)
 
 // LogDebug is used to print debug/additional information on the state of
@@ -72,9 +73,10 @@
 //
 // Usage  : utility::LogDebug(format_string, arg0, arg1, ...);
 // Example: utility::LogDebug("name: {}, age: {}", "dog", 5);
-#define LogDebug(...)                     \
-    Logger::LogDebug_(__FILE__, __LINE__, \
-                      static_cast<const char *>(HOLISTIC_MOTION_FUNCTION), __VA_ARGS__)
+#define LogDebug(...)                                                                  \
+    Logger::LogDebug_(__FILE__, __LINE__,                                              \
+                      static_cast<const char *>(HOLISTIC_MOTION_FUNCTION),             \
+                      __VA_ARGS__)
 
 namespace holistic_motion {
 namespace utility {
@@ -99,6 +101,15 @@ enum class VerbosityLevel {
     Debug = 3,
 };
 
+/// A structured message. Strings own their data and may be retained by a sink.
+struct LogRecord {
+    VerbosityLevel level;
+    std::string file;
+    int line;
+    std::string function;
+    std::string message;
+};
+
 /// Logger class should be used as a global singleton object (GetInstance()).
 class Logger {
 public:
@@ -109,12 +120,17 @@ public:
     static Logger &GetInstance();
 
     /// Overwrite the default print function, this is useful when you want to
-    /// redirect prints rather than printing to stdout. For example, in HOLISTIC_MOTION's
-    /// python binding, the default print function is replaced with py::print().
+    /// redirect prints rather than printing to stdout. Python bindings use
+    /// SetRecordFunction for structured forwarding.
     ///
     /// \param print_fcn The function for printing. It should take a string
     /// input and returns nothing.
     void SetPrintFunction(std::function<void(const std::string &)> print_fcn);
+
+    /// Route console messages to a structured sink. File output is independent.
+    /// The callback runs without the configuration lock; it may query settings.
+    void SetRecordFunction(std::function<void(const LogRecord &)> record_fcn);
+    void ResetRecordFunction();
 
     /// Reset the print function to the default one (print to console).
     void ResetPrintFunction();
@@ -138,45 +154,33 @@ public:
     void EnableSaveToFile(bool enable);
 
     template <typename... Args>
-    static void LogError_ [[noreturn]] (const char *file,
-                                        int line,
-                                        const char *function,
-                                        const char *format,
-                                        Args &&... args) {
-        (void)function;
+    static void LogError_
+        [[noreturn]] (const char *file, int line, const char *function,
+                      const char *format, Args &&...args) {
         std::string message;
         if (sizeof...(Args) > 0) {
             message = FormatArgs(format, fmt::make_format_args(args...));
         } else {
             message = std::string(format);
         }
-        Logger::GetInstance().VError(file, line, message);
+        Logger::GetInstance().VError(file, line, function, message);
     }
     template <typename... Args>
-    static void LogWarning_(const char *file,
-                            int line,
-                            const char *function,
-                            const char *format,
-                            Args &&... args) {
-        (void)function;
-        if (Logger::GetInstance().GetVerbosityLevel() >=
-            VerbosityLevel::Warning) {
+    static void LogWarning_(const char *file, int line, const char *function,
+                            const char *format, Args &&...args) {
+        if (Logger::GetInstance().GetVerbosityLevel() >= VerbosityLevel::Warning) {
             std::string message;
             if (sizeof...(Args) > 0) {
                 message = FormatArgs(format, fmt::make_format_args(args...));
             } else {
                 message = std::string(format);
             }
-            Logger::GetInstance().VWarning(file, line, message);
+            Logger::GetInstance().VWarning(file, line, function, message);
         }
     }
     template <typename... Args>
-    static void LogInfo_(const char *file,
-                         int line,
-                         const char *function,
-                         const char *format,
-                         Args &&... args) {
-        (void)function;
+    static void LogInfo_(const char *file, int line, const char *function,
+                         const char *format, Args &&...args) {
         if (Logger::GetInstance().GetVerbosityLevel() >= VerbosityLevel::Info) {
             std::string message;
             if (sizeof...(Args) > 0) {
@@ -184,25 +188,20 @@ public:
             } else {
                 message = std::string(format);
             }
-            Logger::GetInstance().VInfo(file, line, message);
+            Logger::GetInstance().VInfo(file, line, function, message);
         }
     }
     template <typename... Args>
-    static void LogDebug_(const char *file,
-                          int line,
-                          const char *function,
-                          const char *format,
-                          Args &&... args) {
-        (void)function;
-        if (Logger::GetInstance().GetVerbosityLevel() >=
-            VerbosityLevel::Debug) {
+    static void LogDebug_(const char *file, int line, const char *function,
+                          const char *format, Args &&...args) {
+        if (Logger::GetInstance().GetVerbosityLevel() >= VerbosityLevel::Debug) {
             std::string message;
             if (sizeof...(Args) > 0) {
                 message = FormatArgs(format, fmt::make_format_args(args...));
             } else {
                 message = std::string(format);
             }
-            Logger::GetInstance().VDebug(file, line, message);
+            Logger::GetInstance().VDebug(file, line, function, message);
         }
     }
 
@@ -212,12 +211,14 @@ private:
         std::string err_msg = fmt::vformat(format, args);
         return err_msg;
     }
-    void VError [[noreturn]] (const char *file,
-                              int line,
+    void VError [[noreturn]] (const char *file, int line, const char *function,
                               const std::string &message) const;
-    void VWarning(const char *file, int line, const std::string &message) const;
-    void VInfo(const char *file, int line, const std::string &message) const;
-    void VDebug(const char *file, int line, const std::string &message) const;
+    void VWarning(const char *file, int line, const char *function,
+                  const std::string &message) const;
+    void VInfo(const char *file, int line, const char *function,
+               const std::string &message) const;
+    void VDebug(const char *file, int line, const char *function,
+                const std::string &message) const;
 
 private:
     struct Impl;
@@ -241,5 +242,5 @@ void EnableSaveToFile(bool enable);
 /// Set logger file path.
 void SetLoggerFilePath(const std::string &path);
 
-}  // namespace utility
-}  // namespace holistic_motion
+} // namespace utility
+} // namespace holistic_motion

@@ -20,6 +20,10 @@ class RetargetingMode(str, Enum):
     DUAL_LEG = "dual_leg"
     WHOLE_BODY = "whole_body"
     FULL_BODY = "full_body"
+    TORSO = "torso"
+    TORSO_LEFT_ARM = "torso_left_arm"
+    TORSO_RIGHT_ARM = "torso_right_arm"
+    TORSO_DUAL_ARM = "torso_dual_arm"
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,16 @@ DEFAULT_MODE_SPECS = MappingProxyType(
                 "pelvis",
             ),
             ("whole_body",),
+        ),
+        RetargetingMode.TORSO: RetargetingModeSpec(("torso",), ("torso",)),
+        RetargetingMode.TORSO_LEFT_ARM: RetargetingModeSpec(
+            ("left_hand",), ("torso", "left_arm")
+        ),
+        RetargetingMode.TORSO_RIGHT_ARM: RetargetingModeSpec(
+            ("right_hand",), ("torso", "right_arm")
+        ),
+        RetargetingMode.TORSO_DUAL_ARM: RetargetingModeSpec(
+            ("left_hand", "right_hand"), ("torso", "left_arm", "right_arm")
         ),
     }
 )

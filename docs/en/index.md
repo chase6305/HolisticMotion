@@ -20,6 +20,8 @@ collision
 planning
 trajectory
 retargeting
+simulation_backends
+logging
 ```
 
 ```{toctree}

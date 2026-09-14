@@ -20,7 +20,14 @@ from .pinocchio_solver import (
     RetargetingResult,
     RetargetingTarget,
 )
-from .tasks import CenterOfMassTask, FrameTask, PostureTask, SupportPolygonTask, ZmpTask
+from .tasks import (
+    CenterOfMassTask,
+    FrameTask,
+    PostureTask,
+    SupportPolygonTask,
+    ZmpTask,
+    _joint_costs,
+)
 
 
 class PinkRetargetingSolver(PinocchioRetargetingSolver):
@@ -31,6 +38,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         *args,
         frame_tasks: Optional[Mapping[str, FrameTask]] = None,
         posture_task: Optional[PostureTask] = None,
+        joint_motion_costs: Optional[Mapping[str, float]] = None,
         integration_dt: float = 0.05,
         position_tolerance: Optional[float] = None,
         orientation_tolerance: Optional[float] = None,
@@ -72,6 +80,13 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         if posture_task is not None and not isinstance(posture_task, PostureTask):
             raise TypeError("posture_task must be PostureTask or None")
         self.posture_task = posture_task or PostureTask()
+        self._resolved_posture_task = None
+        self._posture_weights()
+        self._joint_motion_weights = self._resolve_joint_costs(
+            {} if joint_motion_costs is None else joint_motion_costs,
+            0.0,
+            "joint motion costs",
+        )
         if not np.isfinite(integration_dt) or integration_dt <= 0.0:
             raise ValueError("integration_dt must be finite and positive")
         self.integration_dt = float(integration_dt)
@@ -177,6 +192,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         self._center_of_mass_acceleration = np.zeros(3)
         if (
             self.support_polygon_task is not None
+            and self.support_polygon_task.cost > 0.0
             and self.support_polygon_task.reference == "zmp"
             and self.zmp_task is None
         ):
@@ -191,22 +207,64 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         model_velocity_limits = np.asarray(self.model.velocityLimit, dtype=float)
         self._model_velocity_limits = model_velocity_limits
         self._velocity_limit_cache = {}
+        # A continuous/floating joint changes nq relative to nv for the whole
+        # model. Scalar arm limits must still constrain their own QP variables.
+        self._scalar_position_indices = np.full(self.model.nv, -1, dtype=int)
+        for joint_id in range(1, self.model.njoints):
+            joint = self.model.joints[joint_id]
+            if joint.nq == 1 and joint.nv == 1:
+                self._scalar_position_indices[joint.idx_v] = joint.idx_q
+        self._scalar_position_indices.setflags(write=False)
 
     def set_posture_target(self, configuration: Sequence[float]) -> None:
         self._posture_q = self._configuration(configuration)
 
-    def prepare(
-        self, mode: Optional[Union[RetargetingMode, str]] = None
-    ) -> None:
+    def _resolve_joint_costs(self, costs, default: float, name: str) -> np.ndarray:
+        costs = _joint_costs(costs, name)
+        weights = np.full(self.model.nv, default, dtype=float)
+        for joint_name, cost in costs.items():
+            if joint_name not in self.model.names:
+                raise ValueError(f"{name} references unknown joint {joint_name!r}")
+            joint_id = self.model.getJointId(joint_name)
+            joint = self.model.joints[joint_id]
+            if joint_id == 0 or joint.nv == 0:
+                raise ValueError(f"{name} requires movable joint {joint_name!r}")
+            weights[joint.idx_v : joint.idx_v + joint.nv] = cost
+        with np.errstate(over="ignore"):
+            squared = weights * weights
+        if not np.isfinite(squared).all():
+            raise ValueError(f"{name} squared weights must be finite")
+        weights.setflags(write=False)
+        return weights
+
+    def _posture_weights(self) -> np.ndarray:
+        task = self.posture_task
+        if task is not self._resolved_posture_task:
+            if not isinstance(task, PostureTask):
+                raise TypeError("posture_task must be PostureTask")
+            weights = self._resolve_joint_costs(
+                task.joint_costs, task.cost, "posture joint costs"
+            )
+            self._posture_joint_weights = weights
+            self._resolved_posture_task = task
+        return self._posture_joint_weights
+
+    def prepare(self, mode: Optional[Union[RetargetingMode, str]] = None) -> None:
         """Prepare mode indices, limits, and numerical workspaces."""
 
-        super().prepare(mode)
-        active, _ = self._mode_limits()
-        if self.mode not in self._system_workspace:
-            self._system_workspace[self.mode] = (
-                np.empty((active.size, active.size), dtype=float),
-                np.empty(active.size, dtype=float),
-            )
+        self._posture_weights()
+        previous_mode = self.mode
+        try:
+            super().prepare(mode)
+            active, _ = self._mode_limits()
+            if self.mode not in self._system_workspace:
+                self._system_workspace[self.mode] = (
+                    np.empty((active.size, active.size), dtype=float),
+                    np.empty(active.size, dtype=float),
+                )
+        except BaseException:
+            self.set_mode(previous_mode)
+            raise
 
     def set_center_of_mass_target(self, target: Sequence[float]) -> None:
         value = np.asarray(target, dtype=float).reshape(-1)
@@ -232,6 +290,18 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         super().reset(configuration)
         self._last_velocity.fill(0.0)
 
+    def _snapshot_solve_state(self) -> dict:
+        """Snapshot persistent solve history, including subclass diagnostics."""
+
+        return {
+            "configuration": self._last_q.copy(),
+            "velocity": self._last_velocity.copy(),
+        }
+
+    def _restore_solve_state(self, state: dict) -> None:
+        self._last_q = state["configuration"]
+        self._last_velocity = state["velocity"]
+
     def step(
         self,
         targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
@@ -254,10 +324,17 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         max_iterations: Optional[int] = None,
         enforce_acceleration: bool = False,
     ) -> RetargetingResult:
+        """Solve offline, or return one physical-cycle update when constrained.
+
+        ``enforce_acceleration=True`` caps the iteration budget at one so the
+        returned displacement and velocity history describe the same interval.
+        ``step()`` is the convenience entry point for this single-cycle mode.
+        Exceptions and interrupts restore solve history before propagating.
+        """
+
         started = perf_counter()
         desired_poses, frame_weights = self._prepare_targets(targets)
-        initial_q = self._last_q.copy()
-        initial_velocity = self._last_velocity.copy()
+        initial_state = self._snapshot_solve_state()
         try:
             return self._solve_seed(
                 desired_poses,
@@ -267,9 +344,9 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 enforce_acceleration=enforce_acceleration,
                 started=started,
             )
-        except Exception:
-            self._last_q = initial_q
-            self._last_velocity = initial_velocity
+        except BaseException:
+            # A cancelled cycle must not leave an unreturned velocity update.
+            self._restore_solve_state(initial_state)
             raise
 
     def _prepare_targets(
@@ -279,11 +356,16 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         normalized = self._normalize_targets(targets)
         if (
             self.support_polygon_task is not None
+            and self.support_polygon_task.cost > 0.0
             and self.support_polygon_task.reference == "zmp"
             and self.zmp_task is None
         ):
             raise ValueError("ZMP support polygon reference requires zmp_task")
-        if self.center_of_mass_task is not None and self._center_of_mass_target is None:
+        if (
+            self.center_of_mass_task is not None
+            and np.max(self.center_of_mass_task.cost) > 0.0
+            and self._center_of_mass_target is None
+        ):
             raise ValueError("center_of_mass_task requires a center-of-mass target")
         if (
             self.zmp_task is not None
@@ -338,29 +420,63 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         )
         if iteration_limit < 1:
             raise ValueError("max_iterations must be positive")
+        if enforce_acceleration:
+            # Each accepted update consumes one integration_dt. Combining
+            # several here would return a multi-cycle displacement as a single
+            # command, while retaining only the last substep's velocity.
+            iteration_limit = 1
         full_displacement = np.zeros(self.model.nv)
+        final_state = None
         for iteration in range(1, iteration_limit + 1):
+            bounds = (
+                self._displacement_bounds(
+                    q, active, velocity_limits, enforce_acceleration
+                )
+                if active.size
+                else None
+            )
+            can_move = bounds is not None and bool(
+                np.any(bounds[0] != 0.0) or np.any(bounds[1] != 0.0)
+            )
             state = self._task_state(
                 q,
                 frame_weights,
                 desired_poses,
                 active,
                 regularization,
-                True,
+                can_move,
                 True,
                 collision_evaluations,
                 collision_cost_cache,
                 collision_gradient_cache,
             )
-            if self._converged(state):
+            can_hold = bounds is None or (
+                np.all(bounds[0] <= 0.0) and np.all(bounds[1] >= 0.0)
+            )
+            # Pose convergence alone does not permit an instantaneous stop.
+            # If zero displacement is infeasible, continue through the QP to
+            # brake within the active joints' acceleration/position bounds.
+            if self._converged(state) and can_hold:
+                if enforce_acceleration:
+                    self._last_velocity.fill(0.0)
                 termination_reason = "converged"
+                final_state = state
                 break
             if not active.size:
+                if enforce_acceleration:
+                    self._last_velocity.fill(0.0)
                 termination_reason = "no_active_dofs"
+                final_state = state
                 break
-            lower, upper = self._displacement_bounds(
-                q, active, velocity_limits, enforce_acceleration
-            )
+            if not can_move:
+                # A box containing only zero displacement needs diagnostics,
+                # not derivatives or repeated attempts to solve the same QP.
+                if enforce_acceleration:
+                    self._last_velocity.fill(0.0)
+                termination_reason = "no_feasible_motion"
+                final_state = state
+                break
+            lower, upper = bounds
             unconstrained = self._linear_solve(state["hessian"], state["gradient"])
             displacement = self._solve_box_qp(
                 state["hessian"],
@@ -376,10 +492,26 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             accepted = False
             candidate_state = state
             backtrack_count = 0 if enforce_acceleration else self.max_backtracks
+            initial_scale = 1.0 if enforce_acceleration else self.step_size
+            if initial_scale > 1.0:
+                # Over-relaxation must stay inside the QP box. Cap one shared
+                # scale to preserve the coupled search direction, then backtrack
+                # from that feasible step rather than repeatedly clipping it.
+                positive = displacement > 0.0
+                negative = displacement < 0.0
+                with np.errstate(over="ignore"):
+                    if np.any(positive):
+                        initial_scale = min(
+                            initial_scale,
+                            float(np.min(upper[positive] / displacement[positive])),
+                        )
+                    if np.any(negative):
+                        initial_scale = min(
+                            initial_scale,
+                            float(np.min(lower[negative] / displacement[negative])),
+                        )
             for backtrack in range(backtrack_count + 1):
-                scale = (
-                    1.0 if enforce_acceleration else self.step_size * (0.5**backtrack)
-                )
+                scale = initial_scale * (0.5**backtrack)
                 full_displacement[active] = scale * displacement
                 candidate = np.asarray(
                     self.pin.integrate(self.model, q, full_displacement)
@@ -427,18 +559,20 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 termination_reason = "stagnated"
                 break
 
-        state = self._task_state(
-            q,
-            frame_weights,
-            desired_poses,
-            active,
-            regularization,
-            False,
-            True,
-            collision_evaluations,
-            collision_cost_cache,
-            collision_gradient_cache,
-        )
+        state = final_state
+        if state is None:
+            state = self._task_state(
+                q,
+                frame_weights,
+                desired_poses,
+                active,
+                regularization,
+                False,
+                True,
+                collision_evaluations,
+                collision_cost_cache,
+                collision_gradient_cache,
+            )
         success = self._converged(state)
         if success:
             termination_reason = "converged"
@@ -468,11 +602,16 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
     def _mode_limits(self) -> tuple[np.ndarray, np.ndarray]:
         if self.mode not in self._active_cache:
             active = self._mode_plan().active_velocity_indices
-            self._active_cache[self.mode] = active
             values = self._model_velocity_limits[active]
-            self._velocity_limit_cache[self.mode] = np.where(
-                np.isfinite(values) & (values > 0.0), values, np.inf
-            )
+            if np.any(np.isnan(values)) or np.any(values < 0.0):
+                raise ValueError(
+                    "joint velocity limits must be non-negative and not NaN"
+                )
+            values.setflags(write=False)
+            # Zero is a fixed joint, while positive infinity is unbounded.
+            # Publish both caches only after validation has succeeded.
+            self._velocity_limit_cache[self.mode] = values
+            self._active_cache[self.mode] = active
         return self._active_cache[self.mode], self._velocity_limit_cache[self.mode]
 
     def _converged(self, state: dict) -> bool:
@@ -482,6 +621,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             and state["collision_cost"] <= self.collision_tolerance
             and (
                 self.center_of_mass_task is None
+                or np.max(self.center_of_mass_task.cost) == 0.0
                 or state["center_of_mass_convergence_residual"]
                 <= self.center_of_mass_tolerance
             )
@@ -510,6 +650,22 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         collision_cost_cache: dict[bytes, float],
         collision_gradient_cache: dict[bytes, np.ndarray],
     ) -> dict:
+        center_enabled = (
+            self.center_of_mass_task is not None
+            and np.max(self.center_of_mass_task.cost) > 0.0
+        )
+        support_enabled = (
+            self.support_polygon_task is not None
+            and self.support_polygon_task.cost > 0.0
+        )
+        zmp_tracking_enabled = (
+            self.zmp_task is not None and np.max(self.zmp_task.cost) > 0.0
+        )
+        # A zero-weight ZMP tracker can still supply the support constraint's
+        # plane/gravity model without requiring a point-tracking target.
+        zmp_required = zmp_tracking_enabled or (
+            support_enabled and self.support_polygon_task.reference == "zmp"
+        )
         frame_jacobians_required = (
             build_system
             and active.size
@@ -518,17 +674,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         center_jacobian_required = (
             build_system
             and active.size
-            and (
-                (
-                    self.center_of_mass_task is not None
-                    and np.max(self.center_of_mass_task.cost) > 0.0
-                )
-                or (
-                    self.support_polygon_task is not None
-                    and self.support_polygon_task.cost > 0.0
-                )
-                or (self.zmp_task is not None and np.max(self.zmp_task.cost) > 0.0)
-            )
+            and (center_enabled or support_enabled or zmp_required)
         )
         if build_system and (frame_jacobians_required or center_jacobian_required):
             # Build the model-wide joint Jacobians once, then extract every
@@ -552,8 +698,14 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             hessian, gradient = workspace
             hessian.fill(0.0)
             gradient.fill(0.0)
-            hessian.flat[:: active.size + 1] = regularization
+            hessian.flat[:: active.size + 1] = (
+                regularization + self._joint_motion_weights[active] ** 2
+            )
         weighted_error_squared = 0.0
+        # The QP gradient scales each task correction by its gain once.
+        # Apply that same factor to the merit function used by backtracking
+        # and seed ranking; keep residual telemetry independent of gains.
+        task_objective = 0.0
         target_residuals = {} if compute_metrics else None
         position_convergence_residual = 0.0
         orientation_convergence_residual = 0.0
@@ -561,7 +713,14 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             task = self.frame_tasks[name]
             desired = desired_poses[name]
             current = self.data.oMf[self._frame_ids[name]]
-            error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
+            relative = current.inverse() * desired
+            # Keep translation independent of the target's rotation. The
+            # translational part of log6 includes rotation-dependent coupling,
+            # so masking its angular components does not disable orientation.
+            # Both errors use current-frame axes, matching the LOCAL Jacobian.
+            error = np.empty(6)
+            error[:3] = relative.translation
+            error[3:] = self.pin.log3(relative.rotation)
             if compute_metrics:
                 position_error = float(np.linalg.norm(error[:3]))
                 orientation_error = float(np.linalg.norm(error[3:]))
@@ -579,8 +738,10 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                     else float(np.linalg.norm(error[3:][task.orientation_cost > 0.0])),
                 )
             weights = frame_weights[name]
-            weighted_error = weights * task.gain * error
-            weighted_error_squared += float(weighted_error @ weighted_error)
+            weighted_error = weights * error
+            error_squared = float(weighted_error @ weighted_error)
+            weighted_error_squared += error_squared
+            task_objective += 0.5 * task.gain * error_squared
             if build_system:
                 if active.size and np.max(weights) > 0.0:
                     jacobian = np.asarray(
@@ -592,23 +753,35 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                         ),
                         dtype=float,
                     ).reshape(6, self.model.nv)[:, active]
+                    # Unequal axis costs require the residual derivative,
+                    # including rotation of the current frame's error axes.
+                    # For isotropic blocks these terms cancel in J.T @ error;
+                    # retain their existing velocity-task Hessian and fast path.
+                    if np.any(task.position_cost != task.position_cost[0]):
+                        jacobian[:3] -= self.pin.skew(error[:3]) @ jacobian[3:]
+                    if np.any(task.orientation_cost != task.orientation_cost[0]):
+                        jacobian[3:] = (
+                            self.pin.Jlog3(relative.rotation.T) @ jacobian[3:]
+                        )
                     weighted_jacobian = weights[:, None] * jacobian
                     hessian += weighted_jacobian.T @ weighted_jacobian
-                    gradient += weighted_jacobian.T @ weighted_error
+                    gradient += weighted_jacobian.T @ (task.gain * weighted_error)
                 if task.lm_damping:
-                    hessian.flat[:: active.size + 1] += task.lm_damping * float(
-                        weighted_error @ weighted_error
+                    hessian.flat[:: active.size + 1] += (
+                        task.lm_damping * task.gain**2 * error_squared
                     )
 
         posture_objective = 0.0
-        if self.posture_task.cost > 0.0:
+        weight = self._posture_weights()[active]
+        if np.any(weight > 0.0):
             posture_error = np.asarray(
                 self.pin.difference(self.model, q, self._posture_q), dtype=float
             )[active]
-            weight = self.posture_task.cost
             weighted_posture_error = weight * posture_error
-            posture_objective = 0.5 * float(
-                weighted_posture_error @ weighted_posture_error
+            posture_objective = (
+                0.5
+                * self.posture_task.gain
+                * float(weighted_posture_error @ weighted_posture_error)
             )
             if build_system:
                 hessian.flat[:: active.size + 1] += weight * weight
@@ -616,11 +789,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
 
         current_center = None
         center_jacobian = None
-        if (
-            self.center_of_mass_task is not None
-            or self.support_polygon_task is not None
-            or self.zmp_task is not None
-        ):
+        if center_enabled or support_enabled or zmp_required:
             if build_system and center_jacobian_required:
                 center_jacobian = np.asarray(
                     self.pin.jacobianCenterOfMass(self.model, self.data, False),
@@ -639,7 +808,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
 
         center_of_mass_residual = float("nan")
         center_of_mass_convergence_residual = float("nan")
-        if self.center_of_mass_task is not None:
+        if center_enabled:
             center_error = self._center_of_mass_target - current_center
             if compute_metrics:
                 center_of_mass_residual = float(np.linalg.norm(center_error))
@@ -653,28 +822,29 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                     )
                 )
             center_weights = self.center_of_mass_task.cost
-            weighted_center_error = (
-                center_weights * self.center_of_mass_task.gain * center_error
-            )
-            weighted_error_squared += float(
-                weighted_center_error @ weighted_center_error
-            )
+            weighted_center_error = center_weights * center_error
+            error_squared = float(weighted_center_error @ weighted_center_error)
+            weighted_error_squared += error_squared
+            task_objective += 0.5 * self.center_of_mass_task.gain * error_squared
             if build_system:
                 if np.max(center_weights) > 0.0:
                     weighted_center_jacobian = center_weights[:, None] * center_jacobian
                     hessian += weighted_center_jacobian.T @ weighted_center_jacobian
-                    gradient += weighted_center_jacobian.T @ weighted_center_error
+                    gradient += weighted_center_jacobian.T @ (
+                        self.center_of_mass_task.gain * weighted_center_error
+                    )
                 if self.center_of_mass_task.lm_damping:
                     hessian.flat[:: active.size + 1] += (
                         self.center_of_mass_task.lm_damping
-                        * float(weighted_center_error @ weighted_center_error)
+                        * self.center_of_mass_task.gain**2
+                        * error_squared
                     )
 
         zmp_residual = float("nan")
         zmp_convergence_residual = float("nan")
         current_zmp = None
         zmp_jacobian = None
-        if self.zmp_task is not None:
+        if zmp_required:
             task = self.zmp_task
             acceleration_scale = self._center_of_mass_acceleration[:2] / task.gravity
             current_zmp = (
@@ -685,7 +855,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 zmp_jacobian = center_jacobian[:2] - np.outer(
                     acceleration_scale, center_jacobian[2]
                 )
-            if self._zmp_target is not None:
+            if zmp_tracking_enabled:
                 zmp_error = self._zmp_target - current_zmp
                 if compute_metrics:
                     zmp_residual = float(np.linalg.norm(zmp_error))
@@ -694,20 +864,24 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                         if np.min(task.cost) > 0.0
                         else float(np.linalg.norm(zmp_error[task.cost > 0.0]))
                     )
-                weighted_zmp_error = task.cost * task.gain * zmp_error
-                weighted_error_squared += float(weighted_zmp_error @ weighted_zmp_error)
+                weighted_zmp_error = task.cost * zmp_error
+                error_squared = float(weighted_zmp_error @ weighted_zmp_error)
+                weighted_error_squared += error_squared
+                task_objective += 0.5 * task.gain * error_squared
                 if build_system:
                     if np.max(task.cost) > 0.0:
                         weighted_zmp_jacobian = task.cost[:, None] * zmp_jacobian
                         hessian += weighted_zmp_jacobian.T @ weighted_zmp_jacobian
-                        gradient += weighted_zmp_jacobian.T @ weighted_zmp_error
+                        gradient += weighted_zmp_jacobian.T @ (
+                            task.gain * weighted_zmp_error
+                        )
                     if task.lm_damping:
-                        hessian.flat[:: active.size + 1] += task.lm_damping * float(
-                            weighted_zmp_error @ weighted_zmp_error
+                        hessian.flat[:: active.size + 1] += (
+                            task.lm_damping * task.gain**2 * error_squared
                         )
 
         support_polygon_violation = 0.0
-        if self.support_polygon_task is not None:
+        if support_enabled:
             task = self.support_polygon_task
             support_point = (
                 current_zmp if task.reference == "zmp" else current_center[:2]
@@ -717,19 +891,27 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 support_point_jacobian = (
                     zmp_jacobian if task.reference == "zmp" else center_jacobian[:2]
                 )
-            signed_distances = task.normals @ support_point - task.offsets
+            # Subtract before projecting to avoid cancellation between large
+            # world-coordinate dot products near a support boundary.
+            signed_distances = np.einsum(
+                "ei,ei->e", task.normals, support_point - task.vertices
+            )
             violations = np.maximum(0.0, task.margin - signed_distances)
             if compute_metrics:
                 support_polygon_violation = float(np.max(violations))
-            weighted_violations = task.cost * task.gain * violations
-            weighted_error_squared += float(weighted_violations @ weighted_violations)
+            weighted_violations = task.cost * violations
+            error_squared = float(weighted_violations @ weighted_violations)
+            weighted_error_squared += error_squared
+            task_objective += 0.5 * task.gain * error_squared
             if build_system and task.cost > 0.0 and np.any(violations > 0.0):
                 active_edges = violations > 0.0
                 support_jacobian = (
                     task.cost * task.normals[active_edges] @ support_point_jacobian
                 )
                 hessian += support_jacobian.T @ support_jacobian
-                gradient += support_jacobian.T @ weighted_violations[active_edges]
+                gradient += support_jacobian.T @ (
+                    task.gain * weighted_violations[active_edges]
+                )
 
         if (
             build_system
@@ -766,9 +948,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 raise ValueError("weighted collision gradient must be finite")
             gradient -= collision_update
 
-        objective = (
-            0.5 * weighted_error_squared + posture_objective + collision_objective
-        )
+        objective = task_objective + posture_objective + collision_objective
         if not np.isfinite(objective):
             raise ValueError("retargeting objective must be finite")
         if not compute_metrics:
@@ -848,8 +1028,21 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
 
         gradient = np.zeros(active.size)
         step = self.collision_finite_difference_step
+        relative_sample_tolerance = np.sqrt(np.finfo(float).eps)
         tangent = np.zeros(self.model.nv)
+        mode_active, velocity_limits = self._mode_limits()
+        fixed_velocity = set(mode_active[velocity_limits == 0.0])
         for output_index, velocity_index in enumerate(active):
+            position_index = self._scalar_position_indices[velocity_index]
+            if velocity_index in fixed_velocity or (
+                position_index >= 0
+                and self._lower_position_limits[position_index]
+                == self._upper_position_limits[position_index]
+            ):
+                # This QP coordinate cannot move. Its objective derivative
+                # cannot change the constrained optimum, so do not integrate
+                # or query costs for samples that the solver will never use.
+                continue
             tangent[velocity_index] = step
             positive = self._project_limits(
                 np.asarray(self.pin.integrate(self.model, q, tangent), dtype=float)
@@ -865,20 +1058,49 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             negative_delta = np.asarray(
                 self.pin.difference(self.model, negative, q), dtype=float
             )[velocity_index]
+            if positive_delta > 0.0 and negative_delta > 0.0:
+                # A nearly collapsed side makes the nonuniform three-point
+                # formula amplify cost roundoff. Compare sample distances,
+                # not an absolute joint-unit threshold, and use the longer
+                # one-sided difference when their scales are far apart.
+                if positive_delta < relative_sample_tolerance * negative_delta:
+                    positive_delta = 0.0
+                elif negative_delta < relative_sample_tolerance * positive_delta:
+                    negative_delta = 0.0
             span = positive_delta + negative_delta
-            if span <= 1e-15:
+            # A fixed absolute epsilon discards valid small-scale motion.
+            # Integration/difference already reveals whether the sample is
+            # representably distinct from q, including at a projected bound.
+            if span <= 0.0:
                 continue
             positive_cost = (
                 current_cost
-                if positive_delta <= 1e-15
+                if positive_delta <= 0.0
                 else self._collision_cost_value(positive, evaluations, cache)
             )
             negative_cost = (
                 current_cost
-                if negative_delta <= 1e-15
+                if negative_delta <= 0.0
                 else self._collision_cost_value(negative, evaluations, cache)
             )
-            gradient[output_index] = (positive_cost - negative_cost) / span
+            if (
+                positive_delta > 0.0
+                and negative_delta > 0.0
+                and positive_delta != negative_delta
+            ):
+                # Different distances after limit projection require the
+                # derivative of the three-point interpolant at q. A plain
+                # secant instead estimates the derivative at the samples'
+                # midpoint and can point uphill near a bound.
+                forward = (positive_cost - current_cost) / positive_delta
+                backward = (current_cost - negative_cost) / negative_delta
+                gradient[output_index] = (negative_delta / span) * forward + (
+                    positive_delta / span
+                ) * backward
+            else:
+                # Preserve symmetric cancellation and one-sided differences
+                # at a bound, including reuse of the current point's cost.
+                gradient[output_index] = (positive_cost - negative_cost) / span
         if gradient_cache is not None:
             gradient_cache[key] = gradient
         return gradient
@@ -930,20 +1152,21 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         *,
         unconstrained: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Solve a positive-definite QP with projected-gradient refinement."""
+        """Solve a positive-definite QP with a feasible active-set method."""
 
         if unconstrained is None:
             unconstrained = cls._linear_solve(hessian, gradient)
         if np.all(unconstrained >= lower) and np.all(unconstrained <= upper):
             return unconstrained
         solution = np.clip(unconstrained, lower, upper)
-        # status: -1 at lower bound, +1 at upper bound, 0 free. Solving the
-        # reduced positive-definite system gives the exact minimizer for one
-        # active set; violated bounds are activated and KKT-violating bounds
-        # are released until the global box optimum is reached.
+        # status: -1 at lower bound, +1 at upper bound, 0 free, 2 fixed.
+        # Move toward each reduced minimizer only as far as the first blocking
+        # bound. Clipping all violating coordinates independently can increase
+        # the objective and cycle between active sets for coupled joints.
         status = np.zeros(solution.size, dtype=np.int8)
         status[unconstrained < lower] = -1
         status[unconstrained > upper] = 1
+        status[lower == upper] = 2
         scale = max(1.0, float(np.max(np.abs(gradient))))
         kkt_tolerance = 1e-10 * scale
         for _ in range(10 * solution.size + 10):
@@ -958,11 +1181,24 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 below = free_solution < lower[free_indices]
                 above = free_solution > upper[free_indices]
                 if np.any(below | above):
+                    direction = free_solution - solution[free_indices]
+                    fractions = np.full(free_indices.size, np.inf)
+                    fractions[below] = (
+                        lower[free_indices[below]] - solution[free_indices[below]]
+                    ) / direction[below]
+                    fractions[above] = (
+                        upper[free_indices[above]] - solution[free_indices[above]]
+                    ) / direction[above]
+                    blocking = int(np.argmin(fractions))
+                    fraction = np.clip(fractions[blocking], 0.0, 1.0)
                     solution[free_indices] = np.clip(
-                        free_solution, lower[free_indices], upper[free_indices]
+                        solution[free_indices] + fraction * direction,
+                        lower[free_indices],
+                        upper[free_indices],
                     )
-                    status[free_indices[below]] = -1
-                    status[free_indices[above]] = 1
+                    joint = free_indices[blocking]
+                    status[joint] = -1 if below[blocking] else 1
+                    solution[joint] = lower[joint] if below[blocking] else upper[joint]
                     continue
                 solution[free_indices] = free_solution
 
@@ -1000,19 +1236,27 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         if self.model.nq == self.model.nv:
             position_lower = self._lower_position_limits[active] - q[active]
             position_upper = self._upper_position_limits[active] - q[active]
-            dynamic_lower = lower.copy()
-            dynamic_upper = upper.copy()
-            lower = np.maximum(lower, position_lower)
-            upper = np.minimum(upper, position_upper)
-            # Position safety has priority when acceleration-limited braking
-            # would otherwise force the next state across a hard joint bound.
-            infeasible = lower > upper
-            force_lower = infeasible & (position_lower > dynamic_upper)
-            force_upper = infeasible & (position_upper < dynamic_lower)
-            lower[force_lower] = position_lower[force_lower]
-            upper[force_lower] = position_lower[force_lower]
-            lower[force_upper] = position_upper[force_upper]
-            upper[force_upper] = position_upper[force_upper]
+        else:
+            position_indices = self._scalar_position_indices[active]
+            scalar = position_indices >= 0
+            indices = position_indices[scalar]
+            position_lower = np.full(active.size, -np.inf)
+            position_upper = np.full(active.size, np.inf)
+            position_lower[scalar] = self._lower_position_limits[indices] - q[indices]
+            position_upper[scalar] = self._upper_position_limits[indices] - q[indices]
+        dynamic_lower = lower.copy()
+        dynamic_upper = upper.copy()
+        lower = np.maximum(lower, position_lower)
+        upper = np.minimum(upper, position_upper)
+        # Position safety has priority when acceleration-limited braking
+        # would otherwise force the next state across a hard joint bound.
+        infeasible = lower > upper
+        force_lower = infeasible & (position_lower > dynamic_upper)
+        force_upper = infeasible & (position_upper < dynamic_lower)
+        lower[force_lower] = position_lower[force_lower]
+        upper[force_lower] = position_lower[force_lower]
+        lower[force_upper] = position_upper[force_upper]
+        upper[force_upper] = position_upper[force_upper]
         if np.any(lower > upper):
             raise RuntimeError("joint displacement bounds remain infeasible")
         return lower, upper
@@ -1031,7 +1275,12 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                     f"unknown acceleration-limit joints: {sorted(unknown)}"
                 )
             for name, value in limits.items():
-                joint = self.model.joints[self.model.getJointId(name)]
+                joint_id = self.model.getJointId(name)
+                joint = self.model.joints[joint_id]
+                if joint_id == 0 or joint.nv == 0:
+                    raise ValueError(
+                        f"acceleration limits require movable joint {name!r}"
+                    )
                 if not np.isfinite(value) or value <= 0.0:
                     raise ValueError("acceleration limits must be finite and positive")
                 resolved[joint.idx_v : joint.idx_v + joint.nv] = float(value)

@@ -2,6 +2,47 @@
 
 Examples are grouped first by language and then by robotics domain.
 
+Start with the classic self-contained pipeline: a 2-D point robot uses
+RRT-Connect to route around a wall, then applies native Double-S timing to the
+collision-checked polyline:
+
+```bash
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py --plot
+```
+
+It needs no robot assets or optional solver. The plot flag requires Matplotlib.
+Use `--profile trapezoidal` to compare timing profiles. The example deliberately
+uses zero blend tolerance because smoothing a checked polyline requires another
+collision check. A deterministic farthest-visible shortcut pass rechecks every
+candidate edge with the same margin and typically reduces 17 planner points to
+5 execution waypoints, avoiding unnecessary stops at tree expansion points.
+
+The classic upper-body sequence aligns the torso first, then solves one or both
+arms from the aligned configuration. Supply every asset and robot-specific name
+explicitly; repeat a joint option for each joint in that group:
+
+```bash
+./scripts/run-python-toolkit.sh python3 \
+  examples/python/retargeting/classic_torso_first.py \
+  --urdf /absolute/path/to/robot.urdf \
+  --torso-frame torso_link --torso-joint waist_yaw \
+  --left-frame left_tool --left-joint left_shoulder --left-joint left_elbow \
+  --right-frame right_tool --right-joint right_shoulder --right-joint right_elbow \
+  --joint-delta waist_yaw=-0.2 --joint-delta left_elbow=0.4
+```
+
+Use `--arm-mode left_arm` or `right_arm` for a single arm. The demo creates
+reachable targets from the neutral configuration; its scalar joint deltas must
+remain inside the URDF limits. `--torso-delta` and `--arm-delta` provide group
+defaults; repeat `--joint-delta JOINT=DELTA` for robot-specific overrides. It
+reports two offline IK waypoints, which still
+need collision-checked planning before execution. The output includes each
+stage's convergence diagnostics and solve time, named torso/arm joint values,
+and the complete model configurations.
+
 - `python/collision/`: collision queries, pair policies, group checks, and path scans.
 - `python/visualization/`: interactive Viser applications.
 - `python/kinematics/`: forward/inverse kinematics and CUDA benchmarks.

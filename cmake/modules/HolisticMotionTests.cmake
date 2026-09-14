@@ -8,6 +8,12 @@ function(holistic_motion_add_smoke_test target source)
 endfunction()
 
 function(holistic_motion_register_tests)
+    find_package(Threads REQUIRED)
+    holistic_motion_add_smoke_test(
+        logging_smoke_test
+        tests/cpp/utility/logging_smoke.cpp
+        holistic_motion Threads::Threads)
+    set_tests_properties(logging_smoke PROPERTIES TIMEOUT 10)
     add_test(NAME compiler_check_smoke COMMAND ${CMAKE_COMMAND}
         -P ${PROJECT_SOURCE_DIR}/tests/cmake/compiler_check_smoke.cmake)
     holistic_motion_add_smoke_test(
@@ -18,6 +24,23 @@ function(holistic_motion_register_tests)
     holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        path_bezier_smoke_test
+        tests/cpp/trajectory/path_bezier_smoke.cpp
+        holistic_motion)
+    set_tests_properties(path_bezier_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
+        pspline_smoke_test
+        tests/cpp/trajectory/pspline_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        double_s_profile_smoke_test
+        tests/cpp/trajectory/double_s_profile_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        trapezoidal_profile_smoke_test
+        tests/cpp/trajectory/trapezoidal_profile_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
         analytic_kinematics_smoke_test

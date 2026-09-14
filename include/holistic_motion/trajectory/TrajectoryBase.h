@@ -88,9 +88,17 @@ public:
 
     /// Sample the complete trajectory, including both sides of internal
     /// breakpoints, and summarize derivative-limit utilization.
+    /// Throws std::runtime_error if a sampled state contains non-finite values.
     ConstraintReport GetConstraintReport(std::size_t samples = 2001) const;
 
 protected:
+    /// Associate phases with their owning segments for entirely linear paths.
+    bool InitializePhasePathSegments();
+
+    /// Evaluate the time law and select geometry using the same active phase.
+    std::shared_ptr<PathSegmentBase<LieGroup>> EvaluatePathJet(
+            double time, std::array<double, 4>& jet) const;
+
     /// \brief Interpolates a given trajectory segment list into a PSpline.
     ///
     /// \param traj_segs A list of trajectory segments to be interpolated.
@@ -131,6 +139,7 @@ protected:
     PathType path_type_;
     std::list<TrajectorySeg> trajectory_segments_;
     std::shared_ptr<PSpline> trajectory_pspline_;
+    std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> phase_path_segments_;
     Eigen::VectorXd max_velocity_;
     Eigen::VectorXd max_acceleration_;
     Eigen::VectorXd max_jerk_;

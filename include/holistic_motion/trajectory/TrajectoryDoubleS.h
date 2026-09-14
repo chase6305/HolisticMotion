@@ -99,6 +99,11 @@ protected:
                                               const int& next_seg_no);
 
     bool _ReverseWithMaxJerk(std::list<TrajectorySeg>& traj_seg);
+
+    // Align a profile after a preceding segment and its constant-speed bridge.
+    // On failure, preserve every original timestamp.
+    static bool _AlignProfileAfter(const TrajectorySeg& previous,
+                                   std::list<TrajectorySeg>& profile);
 };
 
 }  // namespace robotics

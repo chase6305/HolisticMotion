@@ -41,6 +41,17 @@ def _positive_float(value, name: str) -> float:
     return result
 
 
+def _stable_norm(value) -> float:
+    """Return a Euclidean norm without squaring finite large components."""
+
+    values = np.asarray(value, dtype=float).reshape(-1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        norm = float(np.linalg.norm(values))
+    if np.isfinite(norm) or not np.isfinite(values).all():
+        return norm
+    return float(np.hypot.reduce(np.abs(values)))
+
+
 def _load_pinocchio():
     try:
         import pinocchio as pin
@@ -208,9 +219,7 @@ class PinocchioRetargetingSolver:
         damping = _positive_float(damping, "damping")
         step_size = _positive_float(step_size, "step_size")
         tolerance = _positive_float(tolerance, "tolerance")
-        if not isinstance(max_iterations, Integral) or isinstance(
-            max_iterations, bool
-        ):
+        if not isinstance(max_iterations, Integral) or isinstance(max_iterations, bool):
             raise TypeError("max_iterations must be an integer")
         if max_iterations < 1:
             raise ValueError("max_iterations must be positive")
@@ -258,21 +267,15 @@ class PinocchioRetargetingSolver:
         self._frame_ids = self._resolve_frames()
         self._group_velocity_indices = self._resolve_joint_groups()
         self._mode_plans: dict[RetargetingMode, _RetargetingModePlan] = {}
-        self._solve_workspaces: dict[
-            RetargetingMode, _PinocchioSolveWorkspace
-        ] = {}
+        self._solve_workspaces: dict[RetargetingMode, _PinocchioSolveWorkspace] = {}
         self._lower_position_limits = np.asarray(
             self.model.lowerPositionLimit, dtype=float
         ).copy()
         self._upper_position_limits = np.asarray(
             self.model.upperPositionLimit, dtype=float
         ).copy()
-        self._finite_lower_position_limits = np.isfinite(
-            self._lower_position_limits
-        )
-        self._finite_upper_position_limits = np.isfinite(
-            self._upper_position_limits
-        )
+        self._finite_lower_position_limits = np.isfinite(self._lower_position_limits)
+        self._finite_upper_position_limits = np.isfinite(self._upper_position_limits)
         self._neutral_q = self._project_limits(
             np.asarray(self.pin.neutral(self.model), dtype=float)
         )
@@ -289,18 +292,16 @@ class PinocchioRetargetingSolver:
     def set_mode(self, mode: Union[RetargetingMode, str]) -> None:
         self.mode_manager.set_mode(mode)
 
-    def prepare(
-        self, mode: Optional[Union[RetargetingMode, str]] = None
-    ) -> None:
+    def prepare(self, mode: Optional[Union[RetargetingMode, str]] = None) -> None:
         """Prepare immutable indices for a mode outside the solve hot path."""
 
         previous = self.mode
-        if mode is not None:
-            self.mode_manager.set_mode(mode)
         try:
+            if mode is not None:
+                self.mode_manager.set_mode(mode)
             plan = self._mode_plan()
             self._solve_workspace(plan)
-        except Exception:
+        except BaseException:
             if self.mode is not previous:
                 self.mode_manager.set_mode(previous)
             raise
@@ -313,6 +314,12 @@ class PinocchioRetargetingSolver:
         targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
         seed: Optional[Sequence[float]] = None,
     ) -> RetargetingResult:
+        """Solve IK and update the warm start only after result validation.
+
+        A returned result, including budget exhaustion, becomes the next seed.
+        Failure to construct a valid result leaves the previous seed intact.
+        """
+
         normalized = self._normalize_targets(targets)
         plan = self._mode_plan()
         desired_poses = {
@@ -356,7 +363,7 @@ class PinocchioRetargetingSolver:
                         dtype=float,
                     ).reshape(6, self.model.nv)
                     weighted_jacobian[rows] = scale * jacobian[:, active]
-            residual = float(np.linalg.norm(weighted_error))
+            residual = _stable_norm(weighted_error)
             if residual <= self.tolerance or not active.size:
                 break
             jacobian = weighted_jacobian
@@ -386,25 +393,31 @@ class PinocchioRetargetingSolver:
         ):
             self.pin.forwardKinematics(self.model, self.data, q)
             self.pin.updateFramePlacements(self.model, self.data)
-            squared_residual = 0.0
+            residual = 0.0
             for name, frame_id in zip(plan.targets, plan.frame_ids):
                 current = self.data.oMf[frame_id]
                 error = np.asarray(
                     self.pin.log6(current.inverse() * desired_poses[name]).vector
                 )
-                squared_residual += normalized[name].weight * float(error @ error)
-            residual = float(np.sqrt(squared_residual))
+                weighted_norm = np.sqrt(normalized[name].weight) * _stable_norm(error)
+                residual = float(np.hypot(residual, weighted_norm))
 
-        self._last_q = q.copy()
-        return RetargetingResult(
+        objective = 0.5 * residual * residual
+        if not np.isfinite(objective):
+            # The residual remains useful even when its square exceeds double.
+            objective = float("nan")
+
+        result = RetargetingResult(
             configuration=q,
             success=residual <= self.tolerance,
             iterations=iteration,
             residual=residual,
             solve_ms=(perf_counter() - started) * 1000.0,
             mode=self.mode,
-            objective=0.5 * residual * residual,
+            objective=objective,
         )
+        self._last_q = result.configuration.copy()
+        return result
 
     def solve_ik(
         self,
@@ -508,9 +521,7 @@ class PinocchioRetargetingSolver:
         self._mode_plans[self.mode] = plan
         return plan
 
-    def _solve_workspace(
-        self, plan: _RetargetingModePlan
-    ) -> _PinocchioSolveWorkspace:
+    def _solve_workspace(self, plan: _RetargetingModePlan) -> _PinocchioSolveWorkspace:
         cached = self._solve_workspaces.get(self.mode)
         if cached is not None:
             return cached
@@ -552,7 +563,9 @@ class PinocchioRetargetingSolver:
         self._mode_plan()
 
     def _project_limits(self, q: np.ndarray) -> np.ndarray:
-        bounded = q.copy()
+        # Normalize manifold coordinates before applying coordinate bounds:
+        # clipping a scaled sine/cosine pair or quaternion changes its rotation.
+        bounded = np.asarray(self.pin.normalize(self.model, q.copy()), dtype=float)
         finite_lower = self._finite_lower_position_limits
         finite_upper = self._finite_upper_position_limits
         np.maximum(
@@ -567,7 +580,11 @@ class PinocchioRetargetingSolver:
             out=bounded,
             where=finite_upper,
         )
-        return np.asarray(self.pin.normalize(self.model, bounded), dtype=float)
+        if not np.isfinite(bounded).all() or not self.pin.isNormalized(
+            self.model, bounded, 1e-8
+        ):
+            raise ValueError("configuration cannot be normalized to the model manifold")
+        return bounded
 
     def _resolve_joint_groups(self) -> dict[str, np.ndarray]:
         resolved = {"whole_body": np.arange(self.model.nv, dtype=int)}
@@ -580,7 +597,12 @@ class PinocchioRetargetingSolver:
                 )
             indices = []
             for name in names:
-                joint = self.model.joints[self.model.getJointId(name)]
+                joint_id = self.model.getJointId(name)
+                joint = self.model.joints[joint_id]
+                if joint_id == 0 or joint.nv == 0:
+                    raise ValueError(
+                        f"joint group {group!r} requires movable joint {name!r}"
+                    )
                 indices.extend(range(joint.idx_v, joint.idx_v + joint.nv))
             resolved[group] = np.asarray(sorted(set(indices)), dtype=int)
         return resolved

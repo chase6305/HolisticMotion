@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Union
 
 import numpy as np
@@ -19,6 +20,20 @@ def _finite_scalar(value, name: str) -> float:
     if not np.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result
+
+
+def _joint_costs(value, name: str) -> Mapping[str, float]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping of joint names to costs")
+    result = {}
+    for joint, cost in value.items():
+        if not isinstance(joint, str) or not joint:
+            raise ValueError(f"{name} must use non-empty joint names")
+        cost = _finite_scalar(cost, name)
+        if cost < 0.0:
+            raise ValueError(f"{name} must be non-negative")
+        result[joint] = cost
+    return MappingProxyType(result)
 
 
 def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
@@ -37,7 +52,11 @@ def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
 
 @dataclass(frozen=True)
 class FrameTask:
-    """An anisotropically weighted world-frame pose task."""
+    """Track a world-frame pose with costs along the current frame's axes.
+
+    Translation and rotation errors are separate, so disabling orientation
+    tracking does not let the target rotation affect the position objective.
+    """
 
     position_cost: Cost = 1.0
     orientation_cost: Cost = 1.0
@@ -73,10 +92,11 @@ class FrameTask:
 
 @dataclass(frozen=True)
 class PostureTask:
-    """Regularize the solution toward a preferred configuration."""
+    """Regularize toward a configuration, with optional named cost overrides."""
 
     cost: float = 1e-3
     gain: float = 1.0
+    joint_costs: Mapping[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         cost = _finite_scalar(self.cost, "posture cost")
@@ -87,6 +107,9 @@ class PostureTask:
             raise ValueError("gain must be in (0, 1]")
         object.__setattr__(self, "cost", cost)
         object.__setattr__(self, "gain", gain)
+        object.__setattr__(
+            self, "joint_costs", _joint_costs(self.joint_costs, "posture joint costs")
+        )
 
 
 @dataclass(frozen=True)
@@ -130,18 +153,29 @@ class SupportPolygonTask:
             raise ValueError(
                 "support polygon must contain at least three finite XY vertices"
             )
-        edges = np.roll(vertices, -1, axis=0) - vertices
-        lengths = np.linalg.norm(edges, axis=1)
-        if np.any(lengths <= 1e-12):
+        with np.errstate(over="ignore", invalid="ignore"):
+            relative = vertices - vertices[0]
+            edges = np.roll(vertices, -1, axis=0) - vertices
+            lengths = np.hypot(edges[:, 0], edges[:, 1])
+        if not np.isfinite(relative).all() or not np.isfinite(lengths).all():
+            raise ValueError("support polygon spans and edge lengths must be finite")
+        if np.any(lengths == 0.0):
             raise ValueError("support polygon edges must have positive length")
-        next_edges = np.roll(edges, -1, axis=0)
-        turns = edges[:, 0] * next_edges[:, 1] - edges[:, 1] * next_edges[:, 0]
+        # Test angles on unit edges, not areas in squared world units. This
+        # avoids rejecting small valid polygons or overflowing large ones.
+        directions = edges / np.max(np.abs(edges), axis=1)[:, None]
+        directions /= np.hypot(directions[:, 0], directions[:, 1])[:, None]
+        next_edges = np.roll(directions, -1, axis=0)
+        turns = (
+            directions[:, 0] * next_edges[:, 1] - directions[:, 1] * next_edges[:, 0]
+        )
         if np.any(np.abs(turns) <= 1e-12) or np.any(turns * turns[0] < 0.0):
             raise ValueError("support polygon must be strictly convex")
         if turns[0] < 0.0:
             vertices = vertices[::-1].copy()
-            edges = np.roll(vertices, -1, axis=0) - vertices
-            lengths = np.linalg.norm(edges, axis=1)
+            # Reversing vertices reverses and negates the incident edges.
+            directions = -np.roll(directions[::-1], -1, axis=0)
+            relative = relative[::-1]
         cost = _finite_scalar(self.cost, "support polygon cost")
         margin = _finite_scalar(self.margin, "support polygon margin")
         gain = _finite_scalar(self.gain, "gain")
@@ -155,15 +189,19 @@ class SupportPolygonTask:
             raise ValueError(
                 "support polygon reference must be 'center_of_mass' or 'zmp'"
             )
-        normals = np.column_stack((-edges[:, 1], edges[:, 0])) / lengths[:, None]
+        normals = np.column_stack((-directions[:, 1], directions[:, 0]))
+        relative = relative / np.max(np.abs(relative))
         all_edge_distances = np.einsum(
-            "evi,ei->ev", vertices[None, :, :] - vertices[:, None, :], normals
+            "evi,ei->ev", relative[None, :, :] - relative[:, None, :], normals
         )
         if np.any(all_edge_distances < -1e-12):
             raise ValueError("support polygon must be strictly convex and ordered")
         vertices = vertices.copy()
         normals = normals.copy()
-        offsets = np.sum(normals * vertices, axis=1)
+        with np.errstate(over="ignore", invalid="ignore"):
+            offsets = np.sum(normals * vertices, axis=1)
+        if not np.isfinite(offsets).all():
+            raise ValueError("support polygon offsets must be finite")
         vertices.setflags(write=False)
         normals.setflags(write=False)
         offsets.setflags(write=False)

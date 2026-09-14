@@ -379,7 +379,7 @@ def test_curobo_style_seeds_share_exact_collision_cost_cache(tmp_path, monkeypat
     )
     seed = np.array([0.0])
     monkeypatch.setattr(
-        solver, "_seed_bank", lambda _primary: [seed.copy(), seed.copy()]
+        solver, "_iter_seeds", lambda _primary: iter([seed.copy(), seed.copy()])
     )
 
     result = solver.solve(_target(solver, 0.0), seed=seed)
@@ -390,21 +390,22 @@ def test_curobo_style_seeds_share_exact_collision_cost_cache(tmp_path, monkeypat
     assert calls == {"cost": 1, "gradient": 1}
 
 
-def test_curobo_style_solver_restores_history_after_seed_failure(tmp_path):
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_curobo_style_solver_restores_history_after_seed_failure(tmp_path, error_type):
     calls = 0
 
     def collision_cost(_q):
         nonlocal calls
         calls += 1
         if calls > 1:
-            raise RuntimeError("later seed failed")
+            raise error_type("later seed failed")
         return 0.0
 
     solver = _solver(tmp_path, num_seeds=2, collision_cost=collision_cost)
     solver.reset([0.3])
     solver._last_velocity[:] = 0.2
 
-    with pytest.raises(RuntimeError, match="later seed failed"):
+    with pytest.raises(error_type, match="later seed failed"):
         solver.solve(_target(solver, 0.0), seed=[0.0])
 
     np.testing.assert_allclose(solver._last_q, [0.3])

@@ -168,6 +168,24 @@ shortcut 还会重新检查两侧保留的边片段，因为截短边会改变�
 
 ## Demo
 
+建议先运行自包含的经典“规划并重定时”流程：
+
+```bash
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py
+./scripts/run.sh python3 \
+  examples/python/planning/classic_plan_and_retime.py --plot
+```
+
+示例使用固定随机种子的 RRT-Connect 让二维点机器人绕过墙体，再用原生
+Double-S 进行时间参数化，并复查采样位置和导数限位。它显式使用单位度量权重，
+因此统计长度就是图中的欧氏长度；规划裕量大于离散边分辨率，并保持零圆滑容差，
+避免时间参数化切过已检查的拐角。默认无需机器人资源或可选求解器，只有
+`--plot` 需要 Matplotlib；传入 `--profile trapezoidal` 可对比另一种原生剖面。
+在时间参数化前，示例还会确定性地保留每个路点处最远的可直达后续点，并用
+相同裕量重新检查每条候选边，从而删除冗余 RRT 点、减少不必要的完全停车，
+同时保持已检查折线的语义。
+
 不使用机器人资源对比三种算法：
 
 ```bash
