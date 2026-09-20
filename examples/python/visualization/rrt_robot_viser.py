@@ -32,6 +32,7 @@ hm = _import_holistic_motion()
 
 from holistic_motion.visualization.viser import (
     add_line_segments,
+    configure_scene,
     pose_components,
     tree_topology,
     tree_transforms,
@@ -409,10 +410,10 @@ def main() -> None:
         ) from error
 
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid("/ground", width=3.0, height=3.0)
+    configure_scene(server.scene, ground_width=4.0)
     for obstacle in obstacles:
         server.scene.add_box(
-            f"/environment/{obstacle['name']}",
+            f"/obstacles/{obstacle['name']}",
             color=tuple(obstacle.get("color", (70, 110, 165))),
             dimensions=tuple(obstacle["size"]),
             position=np.asarray(obstacle["position"], dtype=float),

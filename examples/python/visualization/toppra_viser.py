@@ -80,6 +80,7 @@ def main() -> None:
         from holistic_motion.visualization.viser import (
             ViserPerformanceMonitor,
             add_line_segments,
+            configure_scene,
         )
     except ImportError as error:
         raise SystemExit(
@@ -87,7 +88,7 @@ def main() -> None:
         ) from error
 
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid("/ground", width=3.0, height=3.0)
+    configure_scene(server.scene, ground_width=3.0)
     add_line_segments(
         server.scene,
         "/toppra/joint_path",
