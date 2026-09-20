@@ -24,6 +24,7 @@ from holistic_motion.visualization.viser import (
     ViserPerformanceMonitor,
     add_line_segments,
     chain_joint_names,
+    configure_scene,
     pose_components,
     tree_topology,
     tree_transforms,
@@ -367,6 +368,7 @@ def main() -> None:
 
     robot.load_visuals()
     server = viser.ViserServer(port=args.port)
+    configure_scene(server.scene, ground_width=4.0)
     performance = ViserPerformanceMonitor(server.gui)
     scene_lock = threading.RLock()
     positions = dict.fromkeys(

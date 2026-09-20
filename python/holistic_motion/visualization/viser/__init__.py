@@ -5,6 +5,8 @@ import os
 from .scene import (
     ViserPerformanceMonitor,
     add_line_segments,
+    configure_scene,
+    configure_scene_from_bounds,
     pose_components,
     visual_mesh,
 )
@@ -12,6 +14,8 @@ from .scene import (
 __all__ = [
     "ViserPerformanceMonitor",
     "add_line_segments",
+    "configure_scene",
+    "configure_scene_from_bounds",
     "pose_components",
     "visual_mesh",
 ]

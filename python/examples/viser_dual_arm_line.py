@@ -16,6 +16,7 @@ from _bootstrap import import_holistic_motion
 from _viser_utils import (
     ViserPerformanceMonitor,
     add_line_segments,
+    configure_scene,
     pose_components,
     visual_mesh,
 )
@@ -383,6 +384,7 @@ def main() -> None:
         return
 
     server = viser.ViserServer(port=args.port)
+    configure_scene(server.scene, ground_width=4.0)
     positions = dict.fromkeys(left_names + right_names, 0.0)
     current_joints = {
         "left": LEFT_ARM_SEED.copy(),

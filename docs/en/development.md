@@ -162,6 +162,22 @@ budget; equal wall-clock budgets do not guarantee the same explored samples.
 Trajectory sampling properties complement the existing analytic polynomial
 extrema tests and do not prove collision or dynamic feasibility between samples.
 
+## Viser scene environment
+
+Repository Viser applications call `configure_scene(server.scene)` from
+`holistic_motion.visualization.viser`. It establishes Z-up camera controls, a
+blurred studio background, environment/fill/key lighting, shadows, and a solid
+metric floor grid. Pass `ground_width`, `ground_height`, and `ground_z` for the
+scene scale and `ground_center_xy` for an offset scene. Mesh inspection tools
+can call `configure_scene_from_bounds()` to center and place the floor just
+below finite bounds. Grid cells automatically follow a decimal 1-2-5 scale;
+pass `grid_cell_size` only when a scene needs a fixed spacing. The helper uses
+richer Viser APIs when available, reduces optional environment and light
+parameters across transitional releases, and preserves floor position whenever
+the grid API supports it. Bounds whose span or padded floor cannot be
+represented by finite coordinates are rejected before scene creation. Keep
+application geometry outside the reserved `/environment` scene subtree.
+
 ## Documentation build
 
 ```bash

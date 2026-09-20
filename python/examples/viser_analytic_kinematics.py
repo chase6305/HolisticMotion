@@ -16,7 +16,8 @@ EXAMPLES_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(EXAMPLES_DIR))
 from _bootstrap import import_holistic_motion  # noqa: E402
 from _viser_utils import (  # noqa: E402
-    ViserPerformanceMonitor, add_line_segments, pose_components, visual_mesh,
+    ViserPerformanceMonitor, add_line_segments, configure_scene,
+    pose_components, visual_mesh,
 )
 from viser_robot import _link_transforms, _tree_topology  # noqa: E402
 
@@ -175,10 +176,7 @@ def main() -> None:
     joints = seed.copy()
     transforms = _link_transforms(robot, joints, topology)
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid(
-        "/world/grid", width=3.0, height=3.0, cell_size=0.1,
-        section_size=0.5, plane_opacity=0.08, shadow_opacity=0.15,
-    )
+    configure_scene(server.scene, ground_width=4.0)
     server.scene.add_frame(
         "/world/base", axes_length=0.16, axes_radius=0.006,
     )

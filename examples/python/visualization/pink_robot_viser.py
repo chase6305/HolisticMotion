@@ -36,6 +36,7 @@ from holistic_motion.kit.retargeting import (
 )
 from holistic_motion.visualization.viser import (
     ViserPerformanceMonitor,
+    configure_scene,
     pose_components,
 )
 
@@ -152,7 +153,7 @@ def main() -> None:
         ) from error
 
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid("/ground", width=3.0, height=3.0)
+    configure_scene(server.scene, ground_width=4.0)
     mesh_handles = []
     for index, geometry in enumerate(visual_model.geometryObjects):
         mesh = load_mesh(geometry.meshPath)

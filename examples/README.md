@@ -53,6 +53,15 @@ and the complete model configurations.
 
 Legacy launchers under `python/examples/` remain available during the migration.
 
+All Viser applications use the shared studio scene environment: a blurred HDRI
+background, balanced environment/fill/key lighting, shadow-casting default
+lights, and a solid metric floor grid. Robot scenes use a 4 m floor, compact
+plots and editors use a 3 m floor, and mesh fitting places a scale-aware floor
+just below the supplied geometry. New examples should call
+`holistic_motion.visualization.viser.configure_scene()` after creating their
+`ViserServer`; mesh viewers can use `configure_scene_from_bounds()` to center
+and size the floor from finite world-space bounds.
+
 TOPPRA timing can be inspected interactively with:
 
 ```bash

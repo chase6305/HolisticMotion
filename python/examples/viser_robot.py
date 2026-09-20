@@ -14,7 +14,8 @@ import viser
 
 from _bootstrap import import_holistic_motion
 from _viser_utils import (
-    ViserPerformanceMonitor, add_line_segments, pose_components, visual_mesh,
+    ViserPerformanceMonitor, add_line_segments, configure_scene,
+    pose_components, visual_mesh,
 )
 
 
@@ -270,6 +271,7 @@ def main() -> None:
         return
 
     server = viser.ViserServer(port=args.port)
+    configure_scene(server.scene, ground_width=4.0)
     handles = []
     for link, transform in zip(robot.links, transforms):
         if not link.visuals:

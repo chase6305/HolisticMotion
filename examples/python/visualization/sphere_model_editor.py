@@ -13,6 +13,7 @@ from holistic_motion.geometry import (
     load_urdf_collision_meshes,
     save_sphere_model,
 )
+from holistic_motion.visualization.viser import configure_scene_from_bounds
 
 
 def main():
@@ -26,6 +27,8 @@ def main():
     meshes = load_urdf_collision_meshes(
         args.urdf, package_dirs=args.package_dir
     )
+    if not meshes:
+        raise SystemExit(f"no collision meshes found in URDF: {args.urdf}")
     link_names = tuple(sorted(meshes))
     if args.output.is_file():
         model_links, metadata = load_sphere_model(args.output)
@@ -35,6 +38,12 @@ def main():
     fit_metrics = {}
     sphere_handles = []
     server = viser.ViserServer(port=args.port)
+    mesh_bounds = np.asarray([mesh.bounds for mesh in meshes.values()])
+    configure_scene_from_bounds(
+        server.scene,
+        np.stack((mesh_bounds[:, 0].min(axis=0), mesh_bounds[:, 1].max(axis=0))),
+        minimum_ground_size=3.0,
+    )
     selected_link = server.gui.add_dropdown(
         "Collision link", link_names, initial_value=link_names[0]
     )

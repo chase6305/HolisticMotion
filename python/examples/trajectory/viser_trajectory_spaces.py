@@ -101,13 +101,13 @@ def main() -> None:
     try:
         import viser
         from _viser_utils import (ViserPerformanceMonitor, add_line_segments,
-                                  pose_components)
+                                  configure_scene, pose_components)
     except ImportError as error:
         raise SystemExit("install examples with `pip install -e '.[examples]'`") \
             from error
 
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid("/ground", width=3.0, height=3.0)
+    configure_scene(server.scene, ground_width=3.0)
     base_frame = server.scene.add_frame("/base", axes_length=0.25,
                                         axes_radius=0.012)
     tcp_frame = server.scene.add_frame("/tcp", axes_length=0.2,

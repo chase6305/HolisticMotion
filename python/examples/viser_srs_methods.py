@@ -17,6 +17,7 @@ from _bootstrap import import_holistic_motion
 from _viser_utils import (
     ViserPerformanceMonitor,
     add_line_segments,
+    configure_scene,
     pose_components,
     visual_mesh,
 )
@@ -111,6 +112,7 @@ def main() -> None:
 
     robot.load_visuals()
     server = viser.ViserServer(port=args.port)
+    configure_scene(server.scene, ground_width=4.0)
     performance = ViserPerformanceMonitor(server.gui)
     lock = threading.RLock()
     joints = seed.copy()

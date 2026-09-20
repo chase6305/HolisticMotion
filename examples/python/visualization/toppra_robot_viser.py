@@ -43,6 +43,7 @@ from holistic_motion.trajectory import ToppraTrajectory
 from holistic_motion.visualization.viser import (
     ViserPerformanceMonitor,
     add_line_segments,
+    configure_scene,
     pose_components,
     tree_topology,
     tree_transforms,
@@ -160,7 +161,7 @@ def main() -> None:
         ) from error
 
     server = viser.ViserServer(port=args.port)
-    server.scene.add_grid("/ground", width=3.0, height=3.0)
+    configure_scene(server.scene, ground_width=4.0)
     positions = {joint.name: 0.0 for joint in robot.actuated_joints}
     positions.update(zip(joint_names, configurations[0]))
     initial_tree = tree_transforms(robot, positions, topology)

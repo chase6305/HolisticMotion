@@ -130,6 +130,20 @@ TOPPRA 空间单位与时间缩放，以及增加 RRT* 迭代预算时最佳路�
 相同数量的样例。轨迹采样性质补充已有的多项式解析极值测试，不构成采样点之间
 无碰撞或满足动力学约束的证明。
 
+## Viser 场景环境
+
+仓库内的 Viser 应用统一调用
+`holistic_motion.visualization.viser.configure_scene(server.scene)`。该入口设置
+Z 轴朝上、模糊 Studio 背景、环境光/补光/主光、阴影和带实体底色的公制地板网格。
+可通过 `ground_width`、`ground_height`、`ground_z` 和 `ground_center_xy`
+匹配场景尺度与偏移；网格或碰撞球检查工具可调用
+`configure_scene_from_bounds()`，根据有限包围盒居中地板并放在模型下方。
+网格间距按十进制 1-2-5 序列随地板范围自动调整；只有需要固定间距时才传入
+`grid_cell_size`。较新 Viser 使用完整效果，过渡版本会逐级减少不支持的环境和
+灯光参数，并在网格 API 允许时保留地板位置。无法以有限坐标表示跨度或带边距
+地板的包围盒会在创建场景前被拒绝。应用自身的几何体应避开预留的
+`/environment` 场景子树。
+
 ## 构建文档
 
 ```bash

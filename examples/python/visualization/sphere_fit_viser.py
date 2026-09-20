@@ -12,6 +12,7 @@ from holistic_motion.geometry import (
     fit_trimesh,
     save_sphere_model,
 )
+from holistic_motion.visualization.viser import configure_scene_from_bounds
 
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
@@ -78,6 +79,7 @@ def main():
         return
 
     server = viser.ViserServer(port=args.port)
+    configure_scene_from_bounds(server.scene, mesh.bounds)
     server.scene.add_mesh_trimesh("/mesh", mesh, opacity=0.35)
     colors = [(45, 170, 255), (255, 155, 40)]
     for index, sphere in enumerate(result.spheres):
