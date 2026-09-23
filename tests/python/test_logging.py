@@ -138,19 +138,26 @@ def test_default_handler_is_replaced_and_closed(monkeypatch):
 
 
 @pytest.mark.parametrize("reset", [False, True])
-def test_reset_handler_is_owned_until_replaced(reset):
+def test_reset_handler_is_owned_until_replaced(reset, monkeypatch):
     reset_logging()
     previous = get_logger().handlers[0]
-    assert not previous._closed
+    closed = []
+    original_close = previous.close
+
+    def close():
+        closed.append(previous)
+        original_close()
+
+    monkeypatch.setattr(previous, "close", close)
     if reset:
         reset_logging()
     else:
         # Reusing an owned handler must preserve ownership until it is removed.
         setup_logging("INFO", [previous, previous])
         assert get_logger().handlers == [previous]
-        assert not previous._closed
+        assert closed == []
         setup_logging(handlers=[])
-    assert previous._closed
+    assert closed == [previous]
 
 
 def test_empty_handlers_silence_and_reset_restores_root_propagation(caplog):
@@ -192,6 +199,14 @@ def test_failed_configuration_preserves_output_and_releases_candidates(
     logger = get_logger()
     previous = logger.handlers
     old = previous[0]
+    closed = []
+    original_close = old.close
+
+    def close_old():
+        closed.append(old)
+        original_close()
+
+    monkeypatch.setattr(old, "close", close_old)
     # Populate the effective-level cache before trying a different level.
     child = get_logger("configuration_test")
     assert child.isEnabledFor(logging.INFO)
@@ -204,10 +219,18 @@ def test_failed_configuration_preserves_output_and_releases_candidates(
             super().__init__(*args, **kwargs)
             candidates.append(self)
 
+        def close(self):
+            closed.append(self)
+            super().close()
+
     class PendingNullHandler(logging.NullHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             candidates.append(self)
+
+        def close(self):
+            closed.append(self)
+            super().close()
 
     def fail_sync(*args, **kwargs):
         raise failure
@@ -227,13 +250,13 @@ def test_failed_configuration_preserves_output_and_releases_candidates(
     assert caught.value is failure
     assert logger.handlers is previous
     assert logger.level == logging.INFO and not logger.propagate
-    assert not old._closed and not borrowed.closed_by_setup
-    assert all(handler._closed for handler in candidates)
+    assert old not in closed and not borrowed.closed_by_setup
+    assert closed == candidates
     child.info("still using previous configuration")
     assert output.getvalue().count("still using previous configuration") == 1
     # A failed replacement must not lose ownership of the original handler.
     setup_logging("WARNING", [borrowed])
-    assert old._closed
+    assert closed == candidates + [old]
     child.warning("replacement works")
     assert [record.getMessage() for record in borrowed.records] == ["replacement works"]
 
@@ -333,6 +356,12 @@ holistic_motion.get_logger('pipeline').info('frame ready')
 
 @pytest.mark.parametrize("exception", [False, True])
 def test_json_queue_preserves_diagnostics_after_synchronous_handler(exception):
+    class PreparedMessageFormatter(logging.Formatter):
+        def format(self, record):
+            # Older QueueHandler implementations retain stack_info after JSON
+            # encoding. The destination writes the prepared message verbatim.
+            return record.getMessage()
+
     synchronous = io.StringIO()
     asynchronous = io.StringIO()
     text_handler = logging.StreamHandler(synchronous)
@@ -340,6 +369,7 @@ def test_json_queue_preserves_diagnostics_after_synchronous_handler(exception):
     queued = QueueHandler(queue)
     queued.setFormatter(JsonFormatter())
     destination = logging.StreamHandler(asynchronous)
+    destination.setFormatter(PreparedMessageFormatter())
     listener = QueueListener(queue, destination)
     setup_logging("INFO", [text_handler, queued])
     metrics = {"residual": float("inf"), "frame": 8}

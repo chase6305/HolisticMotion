@@ -26,6 +26,15 @@ class JointSpaceMetric {
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })) {}
 
+    Eigen::Index Dimension() const { return weights_.size(); }
+    bool HasContinuous() const { return has_continuous_; }
+    bool IsContinuous(Eigen::Index index) const {
+        return continuous_[static_cast<std::size_t>(index)];
+    }
+    double SquaredAxisDistance(double delta, Eigen::Index index) const {
+        return weights_[index] * (delta * delta);
+    }
+
     double SquaredDistance(const Eigen::VectorXd &from,
                            const Eigen::VectorXd &to) const {
         if (!has_continuous_)

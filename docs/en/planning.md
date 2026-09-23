@@ -29,6 +29,14 @@ interpolation remains inside its limits and continuous joints wrap normally.
 `edge_resolution` then has no validation work to control, and `collision_checks`
 remains zero. Configure a validator to check obstacles or additional constraints.
 
+For mixed bounded/continuous spaces with up to eight coordinates, trees of at
+least 128 states use an internal balanced spatial index. It splits only bounded
+coordinates and evaluates candidates with the original weighted, wrapped
+metric. Recent insertions are scanned until the next rebuild; ties and radius
+results retain insertion order. Small trees, fully bounded or fully continuous
+spaces, and higher dimensions retain linear searches. No external indexing
+dependency or public configuration option is required.
+
 ## Python example
 
 ```python
@@ -130,7 +138,12 @@ call per attempted waypoint update. `state_cost_gradient_evaluations` records
 this path independently; omitting the callback preserves the finite-difference
 fallback.
 At a bounded joint limit, a finite-difference side that clamps to the current
-state reuses the waypoint's cached cost.
+state reuses the waypoint's cached cost. Unequal sample offsets use the
+three-point derivative at the waypoint, so projection does not shift the
+derivative to the samples' midpoint. A nearly collapsed side is omitted using
+a relative offset comparison. Continuous-joint steps are capped at `pi/2`
+to keep the samples on opposite sides of the waypoint; unrepresentable
+numerical gradients raise `ValueError`.
 
 A timeout still returns the best feasible path found so far. Invalid input
 paths are rejected rather than repaired, so sampling remains responsible for

@@ -75,6 +75,12 @@ coordinates; Pinocchio transforms them during FK and the backend evaluates the
 active sphere pairs. It supports semantic groups, safety margins, signed
 minimum distance, world-space sphere output, and `[batch, nq]` distance queries.
 
+Sphere geometry is fixed when the model is constructed. The Python `spheres`
+property returns independent snapshots; editing them does not change the model.
+Construct a new model to use modified geometry. Boolean queries check immutable
+radius bounds once per query to select the ordinary squared-distance loop;
+extreme radii or margins retain the extended-precision fallback.
+
 ```python
 spheres = [
     hm.CollisionSphere("left_upper_0", "left_upper_arm", [0, 0, 0.12], 0.09),
@@ -98,6 +104,12 @@ The combined query returns the minimum signed distance and its analytic
 `nv`-dimensional tangent-space gradient from one kinematics and Jacobian update,
 including for manifold configurations where `nq != nv`. Link-local sphere
 offsets include both frame translation and angular point-velocity terms.
+The local offset is rotated directly, preserving its Jacobian contribution
+after large world translations. Every nonzero center separation has a unit
+normal; exactly coincident centers use the deterministic +X normal and a zero
+distance gradient. Distances and collision predicates fall back to extended
+precision when squared lengths overflow or underflow. World coordinates or
+signed distances that remain unrepresentable raise `OverflowError`.
 `PathOptimizer.from_sphere_collision_model` automatically uses this gradient
 for vector-space configurations when a positive soft `clearance` is requested;
 its manifold configuration updates still fall back to finite differences.
