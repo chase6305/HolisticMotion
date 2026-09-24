@@ -515,6 +515,14 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
         // plateau a few ulps negative. Do not create backwards timestamps.
         duration = std::max(0.0, duration);
     }
+    // Subtracting twice the jerk-ramp time from a triangular phase can
+    // leave a positive residue as well as a negative one. Normalize both
+    // signs before integration: a representable residue here can collapse
+    // when backtracking rebases the profile at a larger timestamp.
+    constexpr double plateau_roundoff =
+        64.0 * std::numeric_limits<double>::epsilon();
+    if (durations[1] <= plateau_roundoff * std::abs(ta)) durations[1] = 0.0;
+    if (durations[5] <= plateau_roundoff * std::abs(td)) durations[5] = 0.0;
     const double acceleration_jerk = v0 > max_velocity ? -max_jerk : max_jerk;
     const double deceleration_jerk = v1 > max_velocity ? max_jerk : -max_jerk;
     const std::array<double, 7> next_jerks{

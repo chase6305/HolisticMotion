@@ -416,9 +416,38 @@ void CheckRoundoffEquivalentSpeedCaps() {
     }
 }
 
+void CheckTriangularPlateauCanBeRebased() {
+    double start_velocity = 0.010460993369887253;
+    double end_velocity = 0.0005738784102910987;
+    std::list<TrajectorySeg> phases;
+    // A triangular deceleration needs start-speed backtracking. Cancellation
+    // used to leave a one-ulp plateau that collapsed after timestamp rebasing.
+    ProfileProbe::_ComputeDoubleSProfile(
+        0.004866954021559577, 0.006014272160646773,
+        start_velocity, end_velocity, 0.13629581798020268,
+        1.519583360954827, 0.20274587983978792, 0.6899296743090442,
+        phases, 2, false);
+    if (phases.size() != 8)
+        throw std::runtime_error("triangular deceleration profile missing");
+    const TrajectorySeg previous(0, 0.74964750099387845,
+                                 0.0023503957270758049,
+                                 0.0062706691450572782, 0.0, 0.0);
+    if (!ProfileProbe::_AlignProfileAfter(previous, phases))
+        throw std::runtime_error("roundoff plateau must not prevent rebasing");
+    auto first = phases.begin();
+    for (auto next = std::next(first); next != phases.end(); ++first, ++next) {
+        if (next->timestamp < first->timestamp ||
+            (next->timestamp == first->timestamp &&
+             (next->pos != first->pos || next->vel != first->vel ||
+              next->acc != first->acc)))
+            throw std::runtime_error("rebased plateau changed state at zero time");
+    }
+}
+
 int main() {
     try {
         CheckRoundoffEquivalentSpeedCaps();
+        CheckTriangularPlateauCanBeRebased();
         ProfileProbe probe;
         sampling_checks::CheckSegmentSampling(
             [&](const auto &segment, const auto &v, const auto &a, const auto &j) {
