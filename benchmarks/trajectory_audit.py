@@ -30,21 +30,21 @@ def _inputs(rng, trial):
     }, scale
 
 
-def _check(inputs, scale, sample_count):
+def _check(inputs, scale, sample_count, phase_samples=0):
     try:
         trajectory = hm.RnTrajectory(**inputs)
     except (ValueError, RuntimeError) as error:
         return "rejected", {"error": str(error)}
     if not np.isfinite(trajectory.duration) or trajectory.duration <= 0.0:
         return "invalid_duration", {}
-    times = np.unique(
-        np.concatenate(
-            (
-                np.linspace(0, trajectory.duration, sample_count),
-                trajectory.breakpoints,
-            )
+    breakpoints = trajectory.breakpoints
+    grids = [np.linspace(0, trajectory.duration, sample_count), breakpoints]
+    if phase_samples:
+        grids.extend(
+            np.linspace(start, end, phase_samples)
+            for start, end in zip(breakpoints[:-1], breakpoints[1:])
         )
-    )
+    times = np.unique(np.concatenate(grids))
     try:
         q, dq, ddq, dddq = trajectory.sample(times)
     except (ValueError, RuntimeError) as error:
@@ -71,9 +71,17 @@ def main():
     parser.add_argument("--cases", type=int, default=3000)
     parser.add_argument("--samples", type=int, default=2001)
     parser.add_argument("--case-index", type=int)
+    parser.add_argument(
+        "--phase-samples",
+        type=int,
+        default=0,
+        help="also sample each time phase independently (0 disables)",
+    )
     args = parser.parse_args()
     if args.seed < 0 or args.cases < 1 or args.samples < 2:
         parser.error("seed must be non-negative, cases positive, and samples >= 2")
+    if args.phase_samples < 0 or args.phase_samples == 1:
+        parser.error("phase-samples must be zero or at least 2")
     if args.case_index is not None and args.case_index < 0:
         parser.error("case-index must be non-negative")
     hm.setup_logging("ERROR", handlers=[])
@@ -85,7 +93,7 @@ def main():
         inputs, scale = _inputs(rng, trial)
         if args.case_index is not None and trial != args.case_index:
             continue
-        kind, details = _check(inputs, scale, args.samples)
+        kind, details = _check(inputs, scale, args.samples, args.phase_samples)
         counts[kind] = counts.get(kind, 0) + 1
         if kind != "passed" and len(failures) < 10:
             failures.append(
@@ -97,6 +105,7 @@ def main():
                 "seed": args.seed,
                 "numpy_version": np.__version__,
                 "samples": args.samples,
+                "phase_samples": args.phase_samples,
                 "elapsed_seconds": time.perf_counter() - started,
                 "counts": counts,
                 "first_failures": failures,
