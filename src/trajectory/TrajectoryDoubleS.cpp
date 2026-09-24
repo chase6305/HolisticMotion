@@ -281,11 +281,10 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
 
 template <typename LieGroup>
 bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
-    const double &q0, const double &q1, double &start_velocity,
-    double &end_velocity, const double &requested_max_velocity, double max_acceleration,
-    const double &max_jerk, const double &t0,
-    std::list<TrajectorySeg> &traj_seg, const int &seg_no,
-    const bool &allow_concave) {
+    const double &q0, const double &q1, double &start_velocity, double &end_velocity,
+    const double &requested_max_velocity, double max_acceleration,
+    const double &max_jerk, const double &t0, std::list<TrajectorySeg> &traj_seg,
+    const int &seg_no, const bool &allow_concave) {
     // Publish adjusted endpoint speeds only with a complete usable profile.
     double v0 = start_velocity;
     double v1 = end_velocity;
@@ -314,8 +313,7 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     // ulps apart. Preserve the endpoint speed within a relative roundoff
     // budget instead of needlessly rebuilding the entire preceding profile.
     // The composed trajectory still receives the global joint-limit check.
-    constexpr double speed_roundoff =
-        128.0 * std::numeric_limits<double>::epsilon();
+    constexpr double speed_roundoff = 128.0 * std::numeric_limits<double>::epsilon();
     for (double endpoint : {v0, v1}) {
         if (endpoint > max_velocity &&
             endpoint - requested_max_velocity <= speed_roundoff * endpoint)
@@ -521,10 +519,11 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     // leave a positive residue as well as a negative one. Normalize both
     // signs before integration: a representable residue here can collapse
     // when backtracking rebases the profile at a larger timestamp.
-    constexpr double plateau_roundoff =
-        64.0 * std::numeric_limits<double>::epsilon();
-    if (durations[1] <= plateau_roundoff * std::abs(ta)) durations[1] = 0.0;
-    if (durations[5] <= plateau_roundoff * std::abs(td)) durations[5] = 0.0;
+    constexpr double plateau_roundoff = 64.0 * std::numeric_limits<double>::epsilon();
+    if (durations[1] <= plateau_roundoff * std::abs(ta))
+        durations[1] = 0.0;
+    if (durations[5] <= plateau_roundoff * std::abs(td))
+        durations[5] = 0.0;
     const double acceleration_jerk = v0 > max_velocity ? -max_jerk : max_jerk;
     const double deceleration_jerk = v1 > max_velocity ? max_jerk : -max_jerk;
     const std::array<double, 7> next_jerks{
@@ -689,6 +688,24 @@ bool TrajectoryDoubleS<LieGroup>::_ReverseWithMaxJerk(
         amax = std::max(std::abs(step->acc), amax);
         jmax = std::max(std::abs(step->jerk), jmax);
         traj_seg.pop_back();
+    }
+    // An earlier profile may never have reached its acceleration limit;
+    // a pure cruise records only zero acceleration. Recover the configured
+    // capacity from its linear geometry instead of treating that observed
+    // peak as a new constraint during backtracking.
+    if (this->path_ && seg_no >= 0 && seg_no < this->path_->GetNumOfPathSegments() &&
+        this->max_acceleration_.size() == static_cast<Eigen::Index>(this->dof_)) {
+        const auto segment = this->path_->GetPathSegmentByIndex(seg_no);
+        if (segment && segment->GetPathSegType() == PathSegType::LinearSeg) {
+            const auto tangent = segment->GetTangent(segment->GetStartParameter());
+            double allowed = std::numeric_limits<double>::max();
+            for (std::size_t joint = 0; joint < this->dof_; ++joint)
+                if (tangent[joint] != 0.0)
+                    allowed = std::min(allowed, this->max_acceleration_[joint] /
+                                                    std::abs(tangent[joint]));
+            if (std::isfinite(allowed) && allowed > 0.0)
+                amax = allowed;
+        }
     }
     std::list<TrajectorySeg> seg_traj_seg;
     if (_ComputeDoubleSProfile(q0, q1, v0, v1, vmax, amax, jmax, t0,

@@ -19,6 +19,13 @@ struct ProfileProbe : TrajectoryDoubleS<Rn<double, 2>> {
     using TrajectoryDoubleS<Rn<double, 2>>::_ComputeNextTrajStep;
     using TrajectoryDoubleS<Rn<double, 2>>::_AlignProfileAfter;
     using TrajectoryDoubleS<Rn<double, 2>>::_ReverseWithMaxJerk;
+    void ConfigureStraightPath() {
+        std::vector<Rn<double, 2>> points(2);
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << 2.0, 0.0;
+        path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5);
+        max_acceleration_ = Eigen::Vector2d::Ones();
+    }
 };
 
 void CheckProfileAlignment() {
@@ -384,34 +391,39 @@ void CheckRoundoffEquivalentSpeedCaps() {
             const double retained = initial;
             double terminal = scale * (1.0 + 192.0 * eps);
             std::list<TrajectorySeg> phases;
-            if (!ProfileProbe::_ComputeDoubleSProfile(
-                    0.0, 3.0 * scale, initial, terminal, scale, scale, scale,
-                    0.0, phases, 1, false) || initial != retained ||
-                terminal != retained)
-                throw std::runtime_error("speed-cap budget accumulated across endpoints");
+            if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0 * scale, initial,
+                                                      terminal, scale, scale, scale,
+                                                      0.0, phases, 1, false) ||
+                initial != retained || terminal != retained)
+                throw std::runtime_error(
+                    "speed-cap budget accumulated across endpoints");
         }
         for (double ulps : {64.0, 512.0}) {
-            const double original = scale *
-                (1.0 + ulps * std::numeric_limits<double>::epsilon());
+            const double original =
+                scale * (1.0 + ulps * std::numeric_limits<double>::epsilon());
             double initial = original;
             double terminal = 0.4 * scale;
             std::list<TrajectorySeg> phases;
             const bool success = ProfileProbe::_ComputeDoubleSProfile(
-                0.0, 3.0 * scale, initial, terminal, scale, scale, scale,
-                0.0, phases, 1, false);
+                0.0, 3.0 * scale, initial, terminal, scale, scale, scale, 0.0, phases,
+                1, false);
             if (phases.size() != 8 || success != (ulps == 64.0) ||
                 initial != (success ? original : scale) || terminal != 0.4 * scale)
-                throw std::runtime_error("speed-cap roundoff changed endpoint semantics");
+                throw std::runtime_error(
+                    "speed-cap roundoff changed endpoint semantics");
             auto previous = phases.begin();
-            for (auto next = std::next(previous); next != phases.end(); ++previous, ++next) {
+            for (auto next = std::next(previous); next != phases.end();
+                 ++previous, ++next) {
                 if (next->timestamp < previous->timestamp ||
                     !std::isfinite(next->pos) || !std::isfinite(next->vel) ||
                     !std::isfinite(next->acc))
-                    throw std::runtime_error("speed-cap adjustment produced invalid phases");
+                    throw std::runtime_error(
+                        "speed-cap adjustment produced invalid phases");
             }
             if (std::abs(phases.back().pos / scale - 3.0) > 1e-12 ||
                 std::abs(phases.back().vel / scale - 0.4) > 1e-13)
-                throw std::runtime_error("speed-cap adjustment lost integrated endpoints");
+                throw std::runtime_error(
+                    "speed-cap adjustment lost integrated endpoints");
         }
     }
 }
@@ -423,14 +435,12 @@ void CheckTriangularPlateauCanBeRebased() {
     // A triangular deceleration needs start-speed backtracking. Cancellation
     // used to leave a one-ulp plateau that collapsed after timestamp rebasing.
     ProfileProbe::_ComputeDoubleSProfile(
-        0.004866954021559577, 0.006014272160646773,
-        start_velocity, end_velocity, 0.13629581798020268,
-        1.519583360954827, 0.20274587983978792, 0.6899296743090442,
+        0.004866954021559577, 0.006014272160646773, start_velocity, end_velocity,
+        0.13629581798020268, 1.519583360954827, 0.20274587983978792, 0.6899296743090442,
         phases, 2, false);
     if (phases.size() != 8)
         throw std::runtime_error("triangular deceleration profile missing");
-    const TrajectorySeg previous(0, 0.74964750099387845,
-                                 0.0023503957270758049,
+    const TrajectorySeg previous(0, 0.74964750099387845, 0.0023503957270758049,
                                  0.0062706691450572782, 0.0, 0.0);
     if (!ProfileProbe::_AlignProfileAfter(previous, phases))
         throw std::runtime_error("roundoff plateau must not prevent rebasing");
@@ -449,9 +459,8 @@ void CheckConcaveProfilePropagatesInfeasibleStartSpeed() {
     double end = 0.0;
     std::list<TrajectorySeg> phases;
     const bool complete = ProfileProbe::_ComputeDoubleSProfile(
-        1.1555194425820554, 1.361950310411495, start, end,
-        1.3662218246634337, 1.6326396524052214, 2.981372779263992,
-        1.6089231672976763, phases, 2, true);
+        1.1555194425820554, 1.361950310411495, start, end, 1.3662218246634337,
+        1.6326396524052214, 2.981372779263992, 1.6089231672976763, phases, 2, true);
     if (complete || phases.size() != 8 || start >= 1.1798009563230965 ||
         phases.front().vel != start)
         throw std::runtime_error("reduced final entry speed needs backtracking");
@@ -459,14 +468,38 @@ void CheckConcaveProfilePropagatesInfeasibleStartSpeed() {
     // sufficient. That case does not need an upstream speed adjustment.
     start = 1.01;
     end = 0.0;
-    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0,
-                                             2.0, 5.0, 0.0, phases, 2, true) ||
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0, 2.0, 5.0, 0.0,
+                                              phases, 2, true) ||
         start != 1.01 || phases.front().vel != start)
         throw std::runtime_error("feasible concave entry speed must be retained");
 }
 
+void CheckBacktrackingCanAccelerateAnEarlierCruise() {
+    double start = 1.0;
+    double end = 1.0;
+    std::list<TrajectorySeg> phases;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 2.0, start, end, 1.0, 1.0, 1.0, 0.0,
+                                              phases, 0))
+        throw std::runtime_error("constant-speed profile must be feasible");
+    for (const auto &phase : phases)
+        if (phase.acc != 0.0)
+            throw std::runtime_error("cruise must have zero observed acceleration");
+    phases.back().vel = 0.5;
+    ProfileProbe probe;
+    probe.ConfigureStraightPath();
+    if (!probe._ReverseWithMaxJerk(phases) || phases.size() != 8 ||
+        std::abs(phases.front().vel - 1.0) > 1e-12 ||
+        std::abs(phases.back().vel - 0.5) > 1e-12 ||
+        std::abs(phases.back().pos - 2.0) > 1e-12)
+        throw std::runtime_error("backtracking must use available acceleration");
+    for (const auto &phase : phases)
+        if (std::abs(phase.acc) > 1.0 + 1e-12)
+            throw std::runtime_error("backtracking exceeded configured acceleration");
+}
+
 int main() {
     try {
+        CheckBacktrackingCanAccelerateAnEarlierCruise();
         CheckConcaveProfilePropagatesInfeasibleStartSpeed();
         CheckRoundoffEquivalentSpeedCaps();
         CheckTriangularPlateauCanBeRebased();

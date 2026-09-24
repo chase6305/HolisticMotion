@@ -316,3 +316,22 @@ preserves that endpoint instead of backtracking through preceding segments;
 the comparison always uses the original cap, so the allowance cannot accumulate
 across endpoints. Larger differences still reduce the speed and backtrack,
 and global joint-limit enforcement still applies to the composed trajectory.
+
+A reduced Double-S entry speed is propagated to preceding phases even for the
+final segment; otherwise the curve-to-line join would have a velocity jump.
+Backtracking uses the segment's configured acceleration capacity, including
+when the original profile was a pure cruise with zero observed acceleration.
+Roundoff-sized triangular acceleration plateaus are removed before integration,
+so rebasing them at a later timestamp cannot create state changes at zero time.
+
+For a reproducible numerical audit with dense local sampling and phase-join
+continuity checks, run:
+
+```bash
+PYTHONPATH=build/install python benchmarks/trajectory_audit.py \
+  --seed 20260925 --cases 3000 --samples 2001 \
+  --phase-samples 101 --check-continuity
+```
+
+The JSON output includes the seed, failing case index, and complete inputs.
+These sampled checks are diagnostics, not a proof of continuous feasibility.
