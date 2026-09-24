@@ -10,18 +10,16 @@ namespace holistic_motion::robotics::planning::detail {
 class PathGeometryWorkspace {
   public:
     PathGeometryWorkspace(const Eigen::VectorXd &weights,
-                          const std::vector<bool> &continuous,
-                          double length_weight, double smoothness_weight)
+                          const std::vector<bool> &continuous, double length_weight,
+                          double smoothness_weight)
         : weights_(weights), continuous_(continuous),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
           length_weight_(length_weight), smoothness_weight_(smoothness_weight),
-          left_(weights.size()), right_(weights.size()),
-          previous_(weights.size()), next_(weights.size()),
-          acceleration_(weights.size()) {}
+          left_(weights.size()), right_(weights.size()), previous_(weights.size()),
+          next_(weights.size()), acceleration_(weights.size()) {}
 
-    void SetWaypoint(const std::vector<Eigen::VectorXd> &path,
-                     std::size_t index) {
+    void SetWaypoint(const std::vector<Eigen::VectorXd> &path, std::size_t index) {
         if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
             return;
         DifferenceInto(path[index - 1], path[index], left_);
@@ -38,8 +36,7 @@ class PathGeometryWorkspace {
         double length = 0.0;
         double smoothness = 0.0;
         if (length_weight_ > 0.0)
-            length =
-                std::sqrt(SquaredNorm(left_)) + std::sqrt(SquaredNorm(right_));
+            length = std::sqrt(SquaredNorm(left_)) + std::sqrt(SquaredNorm(right_));
         if (smoothness_weight_ > 0.0) {
             acceleration_ = right_ - left_;
             smoothness = SquaredNorm(acceleration_);
@@ -73,25 +70,25 @@ class PathGeometryWorkspace {
             left_length = std::sqrt(SquaredNorm(left_));
             right_length = std::sqrt(SquaredNorm(right_));
             if (left_length > 1e-15)
-                gradient.array() += length_weight_ * weights_.array() *
-                                    left_.array() / left_length;
+                gradient.array() +=
+                    length_weight_ * weights_.array() * left_.array() / left_length;
             if (right_length > 1e-15)
-                gradient.array() -= length_weight_ * weights_.array() *
-                                    right_.array() / right_length;
+                gradient.array() -=
+                    length_weight_ * weights_.array() * right_.array() / right_length;
         }
         if (smoothness_weight_ > 0.0) {
             if (has_previous_) {
                 acceleration_ = left_ - previous_;
-                gradient.array() += 2.0 * smoothness_weight_ *
-                                    weights_.array() * acceleration_.array();
+                gradient.array() +=
+                    2.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
             }
             acceleration_ = right_ - left_;
-            gradient.array() -= 4.0 * smoothness_weight_ * weights_.array() *
-                                acceleration_.array();
+            gradient.array() -=
+                4.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
             if (has_next_) {
                 acceleration_ = next_ - right_;
-                gradient.array() += 2.0 * smoothness_weight_ *
-                                    weights_.array() * acceleration_.array();
+                gradient.array() +=
+                    2.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
             }
         }
         if (!gradient.allFinite()) {
@@ -104,25 +101,21 @@ class PathGeometryWorkspace {
                     continue;
                 long double value = 0.0L;
                 if (left_length > 1e-15)
-                    value += static_cast<long double>(length_weight_) *
-                             left_[i] / left_length;
+                    value += static_cast<long double>(length_weight_) * left_[i] /
+                             left_length;
                 if (right_length > 1e-15)
-                    value -= static_cast<long double>(length_weight_) *
-                             right_[i] / right_length;
+                    value -= static_cast<long double>(length_weight_) * right_[i] /
+                             right_length;
                 if (smoothness_weight_ > 0.0) {
                     long double smoothness =
-                        -4.0L *
-                        (static_cast<long double>(right_[i]) - left_[i]);
+                        -4.0L * (static_cast<long double>(right_[i]) - left_[i]);
                     if (has_previous_)
                         smoothness +=
-                            2.0L *
-                            (static_cast<long double>(left_[i]) - previous_[i]);
+                            2.0L * (static_cast<long double>(left_[i]) - previous_[i]);
                     if (has_next_)
                         smoothness +=
-                            2.0L *
-                            (static_cast<long double>(next_[i]) - right_[i]);
-                    value += static_cast<long double>(smoothness_weight_) *
-                             smoothness;
+                            2.0L * (static_cast<long double>(next_[i]) - right_[i]);
+                    value += static_cast<long double>(smoothness_weight_) * smoothness;
                 }
                 gradient[i] = static_cast<double>(value * weights_[i]);
             }

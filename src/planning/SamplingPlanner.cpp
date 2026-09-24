@@ -67,8 +67,7 @@ class PlanningContext {
         return std::sqrt(metric_.SquaredDistance(first, second));
     }
 
-    bool SameState(const Eigen::VectorXd &first,
-                   const Eigen::VectorXd &second) const {
+    bool SameState(const Eigen::VectorXd &first, const Eigen::VectorXd &second) const {
         for (Eigen::Index i = 0; i < first.size(); ++i) {
             const double delta = second[i] - first[i];
             if ((continuous_[static_cast<std::size_t>(i)]
@@ -84,8 +83,7 @@ class PlanningContext {
         return Normalize(from + ratio * Difference(from, to));
     }
 
-    Eigen::VectorXd Steer(const Eigen::VectorXd &from,
-                          const Eigen::VectorXd &to,
+    Eigen::VectorXd Steer(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
                           bool *target_reached = nullptr) const {
         const double distance = Distance(from, to);
         const bool reached = distance <= options_.extension_range;
@@ -198,8 +196,7 @@ class PlanningContext {
             Steer(tree.nodes[nearest].state, target, &target_reached);
         if (SameState(tree.nodes[nearest].state, candidate)) {
             new_index = nearest;
-            return target_reached ? ExtendStatus::REACHED
-                                  : ExtendStatus::TRAPPED;
+            return target_reached ? ExtendStatus::REACHED : ExtendStatus::TRAPPED;
         }
         if (!IsMotionValid(tree.nodes[nearest].state, candidate)) {
             return ExtendStatus::TRAPPED;
@@ -451,13 +448,11 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
                            tree.nodes[index].children.end());
         }
     };
-    const auto reparent = [&](std::size_t index, std::size_t parent,
-                              double cost) {
+    const auto reparent = [&](std::size_t index, std::size_t parent, double cost) {
         const double delta = cost - tree.nodes[index].cost;
         auto &old_children = tree.nodes[tree.nodes[index].parent].children;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), index),
-            old_children.end());
+        old_children.erase(std::remove(old_children.begin(), old_children.end(), index),
+                           old_children.end());
         tree.nodes[index].parent = parent;
         tree.nodes[index].cost = cost;
         tree.nodes[parent].children.push_back(index);
@@ -487,19 +482,16 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         // A repeated goal sample can still improve its parent or nearby nodes.
         // Reuse the existing state while retaining those rewiring
         // opportunities.
-        const bool existing =
-            context.SameState(tree.nodes[nearest].state, candidate);
-        if (!existing &&
-            !context.IsMotionValid(tree.nodes[nearest].state, candidate))
+        const bool existing = context.SameState(tree.nodes[nearest].state, candidate);
+        if (!existing && !context.IsMotionValid(tree.nodes[nearest].state, candidate))
             continue;
         const double dimension = static_cast<double>(start.size());
         const double radius = std::min(
             options.extension_range * 4.0,
             options.extension_range * 2.0 *
-                std::pow(
-                    std::log(static_cast<double>(radius_sample_count + 1)) /
-                        static_cast<double>(radius_sample_count + 1),
-                    1.0 / dimension));
+                std::pow(std::log(static_cast<double>(radius_sample_count + 1)) /
+                             static_cast<double>(radius_sample_count + 1),
+                         1.0 / dimension));
         auto near = context.Near(tree, candidate,
                                  std::max(radius, options.extension_range));
         std::size_t parent = nearest;

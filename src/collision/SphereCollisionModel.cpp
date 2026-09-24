@@ -103,9 +103,8 @@ class SphereCollisionModel::Impl {
         }
         used_frame_ids = frame_ids;
         std::sort(used_frame_ids.begin(), used_frame_ids.end());
-        used_frame_ids.erase(
-            std::unique(used_frame_ids.begin(), used_frame_ids.end()),
-            used_frame_ids.end());
+        used_frame_ids.erase(std::unique(used_frame_ids.begin(), used_frame_ids.end()),
+                             used_frame_ids.end());
         world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
         for (std::size_t i = 0; i < spheres.size(); ++i)
             world_spheres(static_cast<Eigen::Index>(i), 3) = spheres[i].radius;

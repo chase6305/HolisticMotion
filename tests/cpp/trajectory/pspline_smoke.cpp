@@ -109,7 +109,7 @@ void CheckJetExtremeCoefficients() {
         Eigen::Vector4d(huge / 8, -huge / 16, huge / 32, -huge / 64),
         Eigen::Vector4d(1.0, -1e100, 1e200, -1e300),
         Eigen::Vector4d(huge, huge, huge, huge)};
-    for (const auto& data : coefficients) {
+    for (const auto &data : coefficients) {
         PSpline spline;
         Require(spline.PushBack(std::make_shared<Polynomial>(data), 2.0),
                 "append extreme coefficients");
@@ -421,8 +421,8 @@ void CheckLinearPhaseVelocityExtremum() {
             std::vector<Rn<double, 2>> points(2);
             points[0].Coeffs() << 0.0, 0.0;
             points[1].Coeffs() << 1.0, 0.0;
-            path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5,
-                                                                     false, 0.0);
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.0);
             constexpr double acceleration = 0.742468;
             trajectory_segments_ = {
                 TrajectorySeg(0, 0.0, 0.0, 0.7, acceleration, -2.0),
@@ -451,27 +451,27 @@ void CheckLinearPhaseVelocityExtremum() {
 
 void CheckReturningPhaseStillSamplesCurvedExcursion() {
     struct ReturningPhase : SplineTrajectory {
-        explicit ReturningPhase(const std::shared_ptr<PSpline>& spline)
+        explicit ReturningPhase(const std::shared_ptr<PSpline> &spline)
             : SplineTrajectory(spline) {
             std::vector<Rn<double, 2>> points(3);
             points[0].Coeffs() << 0.0, 0.0;
             points[1].Coeffs() << 1.0, 0.0;
             points[2].Coeffs() << 1.0, 1.0;
-            path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5,
-                                                                     false, 0.1);
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.1);
         }
     };
     auto spline = std::make_shared<PSpline>();
     // Both endpoints lie on the first line, but the interior reaches the
     // curve and returns. Equal owners alone do not establish a linear phase.
-    Require(spline->PushBack(std::make_shared<Polynomial>(
-                                 Eigen::Vector4d(0.25, 4.0, -4.0, 0.0)), 1.0),
-            "append returning phase");
+    Require(
+        spline->PushBack(
+            std::make_shared<Polynomial>(Eigen::Vector4d(0.25, 4.0, -4.0, 0.0)), 1.0),
+        "append returning phase");
     ReturningPhase trajectory(spline);
     Require(!trajectory.GetConstraintReport(10001).within_limits,
             "curved excursion should exceed the original limits");
-    Require(trajectory.Enforce() &&
-                trajectory.GetConstraintReport(10001).within_limits,
+    Require(trajectory.Enforce() && trajectory.GetConstraintReport(10001).within_limits,
             "nonmonotone phase must retain curved-path limit checks");
 }
 
@@ -483,12 +483,10 @@ int main() {
          {CheckLinearPhaseVelocityExtremum,
           CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
           CheckAppendValidation, CheckJetAndInvalidTimes, CheckJetExtremeCoefficients,
-          CheckInvalidProfilesAreNotTruncated,
-          CheckAllPhaseStatesAreFinite,
+          CheckInvalidProfilesAreNotTruncated, CheckAllPhaseStatesAreFinite,
           CheckShortPositivePhasesArePreserved,
           CheckTimeScalingRejectsOverflowWithoutMutation,
-          CheckContinuityUsesLocalTimeScale,
-          CheckLimitSamplingSupportsExtremeDurations,
+          CheckContinuityUsesLocalTimeScale, CheckLimitSamplingSupportsExtremeDurations,
           CheckReportRejectsNonFiniteStates,
           CheckSmallLimitsAllowRepresentableTimeScaling,
           CheckLinearPathPhaseOwnership}) {

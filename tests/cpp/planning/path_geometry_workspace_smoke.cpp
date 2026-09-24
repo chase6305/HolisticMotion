@@ -15,8 +15,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 double Objective(const std::vector<Eigen::VectorXd> &path,
-                 const Eigen::VectorXd &weights, bool continuous,
-                 double length_weight, double smoothness_weight) {
+                 const Eigen::VectorXd &weights, bool continuous, double length_weight,
+                 double smoothness_weight) {
     std::vector<Eigen::VectorXd> differences;
     for (std::size_t i = 1; i < path.size(); ++i) {
         Eigen::VectorXd difference = path[i] - path[i - 1];
@@ -66,16 +66,15 @@ int main() {
         if (!large_gradient.allFinite() ||
             std::abs(large_gradient[0] / large[0] -
                      (positive - negative) / (2.0 * step)) > 1e-10) {
-            std::cerr
-                << "large-weight geometry gradient is not representable\n";
+            std::cerr << "large-weight geometry gradient is not representable\n";
             return 1;
         }
     }
     // A disabled term must not participate in the objective, even if its
     // unweighted value would overflow. Exercise local and line-search costs.
-    const std::vector<Eigen::VectorXd> zigzag{
-        Eigen::VectorXd::Constant(1, -0.5), Eigen::VectorXd::Constant(1, 0.5),
-        Eigen::VectorXd::Constant(1, -0.5)};
+    const std::vector<Eigen::VectorXd> zigzag{Eigen::VectorXd::Constant(1, -0.5),
+                                              Eigen::VectorXd::Constant(1, 0.5),
+                                              Eigen::VectorXd::Constant(1, -0.5)};
     for (double length_weight : {0.0, 1.0}) {
         PathGeometryWorkspace disabled(large, bounded, length_weight, 0.0);
         disabled.SetWaypoint(zigzag, 1);

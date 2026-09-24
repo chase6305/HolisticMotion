@@ -23,9 +23,8 @@ double Checksum(const std::vector<Eigen::VectorXd> &path) {
 
 int main(int argc, char *argv[]) {
     if (argc != 1 && argc != 3 && argc != 5 && argc != 7) {
-        std::cerr
-            << "usage: path_optimizer_benchmark [dof waypoints "
-               "continuous validator] [length_weight smoothness_weight]\n";
+        std::cerr << "usage: path_optimizer_benchmark [dof waypoints "
+                     "continuous validator] [length_weight smoothness_weight]\n";
         return 2;
     }
     double length_weight = 1.0;
@@ -37,19 +36,18 @@ int main(int argc, char *argv[]) {
         } catch (const std::exception &) {
             return 2;
         }
-        if (!std::isfinite(length_weight) ||
-            !std::isfinite(smoothness_weight) || length_weight < 0.0 ||
-            smoothness_weight < 0.0 || length_weight + smoothness_weight <= 0.0)
+        if (!std::isfinite(length_weight) || !std::isfinite(smoothness_weight) ||
+            length_weight < 0.0 || smoothness_weight < 0.0 ||
+            length_weight + smoothness_weight <= 0.0)
             return 2;
     }
     bool matched = false;
     constexpr double kPi = 3.14159265358979323846;
-    std::cout
-        << "dof,waypoints,continuous,validator,length_weight,smoothness_weight,"
-           "time_us,iterations,attempted,"
-           "line_search,accepted,checks,initial_objective,final_objective,"
-           "final_length,checksum\n"
-        << std::setprecision(17);
+    std::cout << "dof,waypoints,continuous,validator,length_weight,smoothness_weight,"
+                 "time_us,iterations,attempted,"
+                 "line_search,accepted,checks,initial_objective,final_objective,"
+                 "final_length,checksum\n"
+              << std::setprecision(17);
     for (int dof : {2, 7, 14}) {
         for (int count : {32, 256}) {
             for (bool continuous : {false, true}) {
@@ -128,17 +126,15 @@ int main(int argc, char *argv[]) {
                     }
                     std::sort(samples.begin(), samples.end());
                     const auto &stats = reference.statistics;
-                    std::cout
-                        << dof << ',' << count << ',' << continuous << ','
-                        << validate << ',' << length_weight << ','
-                        << smoothness_weight << ',' << samples[3] << ','
-                        << stats.iterations << ',' << stats.attempted_updates
-                        << ',' << stats.line_search_evaluations << ','
-                        << stats.accepted_updates << ','
-                        << stats.collision_checks << ','
-                        << stats.initial_objective << ','
-                        << stats.final_objective << ','
-                        << stats.final_path_length << ',' << checksum << '\n';
+                    std::cout << dof << ',' << count << ',' << continuous << ','
+                              << validate << ',' << length_weight << ','
+                              << smoothness_weight << ',' << samples[3] << ','
+                              << stats.iterations << ',' << stats.attempted_updates
+                              << ',' << stats.line_search_evaluations << ','
+                              << stats.accepted_updates << ',' << stats.collision_checks
+                              << ',' << stats.initial_objective << ','
+                              << stats.final_objective << ',' << stats.final_path_length
+                              << ',' << checksum << '\n';
                 }
             }
         }

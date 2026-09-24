@@ -64,8 +64,7 @@ public:
         }
         bool has_motion = false;
         for (Eigen::Index row = 1; row < waypoints.rows(); ++row) {
-            if ((waypoints.row(row).array() !=
-                 waypoints.row(row - 1).array()).any()) {
+            if ((waypoints.row(row).array() != waypoints.row(row - 1).array()).any()) {
                 has_motion = true;
                 break;
             }

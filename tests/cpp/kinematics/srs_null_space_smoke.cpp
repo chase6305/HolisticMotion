@@ -10,9 +10,8 @@ using namespace holistic_motion::robotics;
 
 int main() {
     const std::vector<Eigen::Vector3d> axes{
-        Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(),
-        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
-        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(), Eigen::Vector3d::UnitX(),
+        Eigen::Vector3d::UnitY(), Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
         Eigen::Vector3d::UnitX()};
     std::vector<JointNode> nodes;
     for (const auto &axis : axes)
@@ -38,15 +37,13 @@ int main() {
             return 7;
     Eigen::VectorXd outside = nominal;
     outside[0] += 2.0 * std::acos(-1.0);
-    if (planner.Plan(outside, direction, 2, 0.01, scaled_path) ||
-        !scaled_path.empty())
+    if (planner.Plan(outside, direction, 2, 0.01, scaled_path) || !scaled_path.empty())
         return 8;
     Eigen::VectorXd upper = Eigen::VectorXd::Constant(7, 3.0);
     const Eigen::VectorXd lower = -upper;
     upper[0] = nominal[0] - 0.01;
     if (!shared_solver->SetUserJointLimits(upper, lower) ||
-        planner.Plan(nominal, direction, 2, 0.01, scaled_path) ||
-        !scaled_path.empty())
+        planner.Plan(nominal, direction, 2, 0.01, scaled_path) || !scaled_path.empty())
         return 9;
     for (const Eigen::VectorXd &q : std::vector<Eigen::VectorXd>{
              nominal, Eigen::VectorXd::Zero(7), 1e-10 * nominal}) {
@@ -55,8 +52,7 @@ int main() {
             return 2;
         Eigen::MatrixXd projection(7, 7);
         for (Eigen::Index axis = 0; axis < 7; ++axis) {
-            Eigen::VectorXd preferred = Eigen::VectorXd::Unit(7, axis),
-                            velocity;
+            Eigen::VectorXd preferred = Eigen::VectorXd::Unit(7, axis), velocity;
             // In particular, exercise the 6-by-7 thin SVD with Eigen assertions
             // enabled in the sanitizer build of the library itself.
             if (!solver.GetNullSpaceVelocity(q, preferred, velocity))
@@ -64,8 +60,7 @@ int main() {
             projection.col(axis) = velocity;
             if (!solver.GetNullSpaceVelocity(q, preferred, preferred) ||
                 !preferred.isApprox(velocity, 1e-12)) {
-                std::cerr
-                    << "in-place null-space projection changed the result\n";
+                std::cerr << "in-place null-space projection changed the result\n";
                 return 4;
             }
         }
@@ -74,10 +69,8 @@ int main() {
             (projection * projection - projection).norm() > 1e-12 ||
             (jacobian * projection).norm() > 1e-8 * jacobian.norm() ||
             projection.trace() < 1.0 - 1e-12 ||
-            std::abs(projection.trace() - std::round(projection.trace())) >
-                1e-12) {
-            std::cerr
-                << "SRS result is not an orthogonal null-space projection\n";
+            std::abs(projection.trace() - std::round(projection.trace())) > 1e-12) {
+            std::cerr << "SRS result is not an orthogonal null-space projection\n";
             return 5;
         }
     }

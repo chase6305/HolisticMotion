@@ -6,20 +6,18 @@
 
 namespace holistic_motion::robotics {
 
-bool SRSKinematics::GetNullSpaceVelocity(
-    const Eigen::VectorXd &joints, const Eigen::VectorXd &preferred_velocity,
-    Eigen::VectorXd &velocity) const {
-    if (!IsCompatible() || joints.size() != 7 ||
-        preferred_velocity.size() != 7 || !joints.allFinite() ||
-        !preferred_velocity.allFinite())
+bool SRSKinematics::GetNullSpaceVelocity(const Eigen::VectorXd &joints,
+                                         const Eigen::VectorXd &preferred_velocity,
+                                         Eigen::VectorXd &velocity) const {
+    if (!IsCompatible() || joints.size() != 7 || preferred_velocity.size() != 7 ||
+        !joints.allFinite() || !preferred_velocity.allFinite())
         return false;
     Eigen::MatrixXd jacobian;
     if (!GetJacobian(joints, jacobian))
         return false;
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian, Eigen::ComputeThinV);
     const auto &singular = svd.singularValues();
-    if (svd.info() != Eigen::Success || singular.size() == 0 ||
-        !singular.allFinite())
+    if (svd.info() != Eigen::Success || singular.size() == 0 || !singular.allFinite())
         return false;
     // Treat numerically weak task directions as singular. A machine-epsilon
     // cutoff can invert near-zero singular values and inject large joint

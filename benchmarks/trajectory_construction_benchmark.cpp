@@ -12,8 +12,7 @@
 
 using namespace holistic_motion::robotics;
 
-template <int DoF>
-void Measure(std::size_t count, double blend, bool trapezoidal) {
+template <int DoF> void Measure(std::size_t count, double blend, bool trapezoidal) {
     using Group = Rn<double, DoF>;
     std::vector<Group> points(count);
     for (std::size_t i = 0; i < count; ++i) {
@@ -21,11 +20,9 @@ void Measure(std::size_t count, double blend, bool trapezoidal) {
         for (int joint = 1; joint < DoF; ++joint)
             points[i].Coeffs()[joint] = 0.2 * std::sin(0.7 * i + 0.3 * joint);
     }
-    auto path =
-        std::make_shared<PathBezierCurve<Group>>(points, 5, false, blend);
+    auto path = std::make_shared<PathBezierCurve<Group>>(points, 5, false, blend);
     const Eigen::VectorXd limits = Eigen::VectorXd::Ones(DoF);
-    auto constraints =
-        std::make_shared<TrajectoryConstraints>(limits, limits, limits);
+    auto constraints = std::make_shared<TrajectoryConstraints>(limits, limits, limits);
     std::vector<double> timings;
     double duration = 0.0, checksum = 0.0;
     for (int repeat = -1; repeat < 21; ++repeat) {
@@ -35,8 +32,7 @@ void Measure(std::size_t count, double blend, bool trapezoidal) {
             trajectory =
                 std::make_unique<TrajectoryTrapezium<Group>>(path, constraints);
         else
-            trajectory =
-                std::make_unique<TrajectoryDoubleS<Group>>(path, constraints);
+            trajectory = std::make_unique<TrajectoryDoubleS<Group>>(path, constraints);
         const double elapsed = std::chrono::duration<double, std::micro>(
                                    std::chrono::steady_clock::now() - start)
                                    .count();
@@ -47,11 +43,9 @@ void Measure(std::size_t count, double blend, bool trapezoidal) {
         duration = trajectory->GetDuration();
         checksum = 0.0;
         for (int sample = 0; sample <= 100; ++sample) {
-            const auto state =
-                trajectory->GetState(duration * (sample / 100.0));
-            checksum +=
-                state.position.Coeffs().sum() + state.velocity.Coeffs().sum() +
-                state.acceleration.Coeffs().sum() + state.jerk.Coeffs().sum();
+            const auto state = trajectory->GetState(duration * (sample / 100.0));
+            checksum += state.position.Coeffs().sum() + state.velocity.Coeffs().sum() +
+                        state.acceleration.Coeffs().sum() + state.jerk.Coeffs().sum();
         }
         if (repeat >= 0)
             timings.push_back(elapsed);
@@ -59,8 +53,8 @@ void Measure(std::size_t count, double blend, bool trapezoidal) {
     std::sort(timings.begin(), timings.end());
     std::cout << DoF << ',' << count << ',' << blend << ','
               << (trapezoidal ? "trapezoidal" : "double_s") << ','
-              << timings[timings.size() / 2] << ',' << duration << ','
-              << checksum << '\n';
+              << timings[timings.size() / 2] << ',' << duration << ',' << checksum
+              << '\n';
 }
 
 int main() {

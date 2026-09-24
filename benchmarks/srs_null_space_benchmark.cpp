@@ -11,9 +11,8 @@ using namespace holistic_motion::robotics;
 
 int main() {
     const std::vector<Eigen::Vector3d> axes{
-        Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(),
-        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
-        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(), Eigen::Vector3d::UnitX(),
+        Eigen::Vector3d::UnitY(), Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
         Eigen::Vector3d::UnitX()};
     std::vector<JointNode> nodes;
     for (const auto &axis : axes)
@@ -43,8 +42,7 @@ int main() {
         for (const auto &preferred : directions) {
             if (!solver.GetNullSpaceVelocity(q, preferred, velocity))
                 return 1;
-            maximum_residual =
-                std::max(maximum_residual, (jacobian * velocity).norm());
+            maximum_residual = std::max(maximum_residual, (jacobian * velocity).norm());
         }
         if (maximum_residual > 1e-7)
             return 1;
@@ -71,7 +69,7 @@ int main() {
             checksum = sum;
         }
         std::sort(times.begin(), times.end());
-        std::cout << scale << ',' << times[times.size() / 2] << ',' << checksum
-                  << ',' << maximum_residual << '\n';
+        std::cout << scale << ',' << times[times.size() / 2] << ',' << checksum << ','
+                  << maximum_residual << '\n';
     }
 }

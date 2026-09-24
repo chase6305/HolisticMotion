@@ -344,22 +344,19 @@ void CheckShortFinalLeg() {
             points[3].Coeffs()[0] += displacement;
             PathBezierCurve<Group> path(points, degree, false, 0.01);
             if (!path.IsValid() ||
-                (path.GetWaypoints().back() - points.back()).Coeffs().norm() >
-                    1e-14 ||
-                (path.GetConfig(path.GetLength()) - points.back())
-                        .Coeffs()
-                        .norm() > 1e-14)
+                (path.GetWaypoints().back() - points.back()).Coeffs().norm() > 1e-14 ||
+                (path.GetConfig(path.GetLength()) - points.back()).Coeffs().norm() >
+                    1e-14)
                 throw std::runtime_error("a short final leg lost its endpoint");
             const auto segments = path.GetPathSegments();
             for (std::size_t i = 1; i < segments.size(); ++i) {
                 const auto &previous = segments[i - 1];
-                const auto end = previous->GetConfig(
-                    previous->GetStartParameter() + previous->GetLength());
+                const auto end = previous->GetConfig(previous->GetStartParameter() +
+                                                     previous->GetLength());
                 const auto begin =
                     segments[i]->GetConfig(segments[i]->GetStartParameter());
                 if ((end - begin).Coeffs().norm() > 1e-14)
-                    throw std::runtime_error(
-                        "a suppressed short blend left a gap");
+                    throw std::runtime_error("a suppressed short blend left a gap");
             }
         }
     }
@@ -367,8 +364,7 @@ void CheckShortFinalLeg() {
     start.Coeffs() << 0.1, 0.2;
     end.Coeffs() << 0.1 + 2e-6, 0.2;
     PathSegLinear<Group> segment({start, end});
-    if ((segment.GetConfig(segment.GetLength()) - end).Coeffs().norm() >
-            1e-15 ||
+    if ((segment.GetConfig(segment.GetLength()) - end).Coeffs().norm() > 1e-15 ||
         std::abs(segment.GetTangent(0.0).Coeffs().norm() - 1.0) > 1e-14)
         throw std::runtime_error("short linear segment is not normalized");
 }

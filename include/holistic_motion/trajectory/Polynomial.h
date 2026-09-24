@@ -43,20 +43,21 @@ class Polynomial : public std::enable_shared_from_this<Polynomial> {
     }
 
    private:
-    friend class PSpline;
+     friend class PSpline;
 
-    std::array<double, 4> ComputeJet(double s) const {
-        if (coefficient_count_ == 0) return {};
-        // Share derivative coefficients while retaining the scalar evaluator's
-        // multiplication order, including for subnormal coefficients.
-        const double cubic = 0.0 + data_[3];
-        const double cubic_derivative = 0.0 + data_[3] * 3.0;
-        const double quadratic_derivative = data_[2] * 2.0;
-        const double jerk = 0.0 + data_[3] * 3.0 * 2.0;
-        return {((cubic * s + data_[2]) * s + data_[1]) * s + data_[0],
-                (cubic_derivative * s + quadratic_derivative) * s + data_[1],
-                jerk * s + quadratic_derivative, jerk};
-    }
+     std::array<double, 4> ComputeJet(double s) const {
+         if (coefficient_count_ == 0)
+             return {};
+         // Share derivative coefficients while retaining the scalar evaluator's
+         // multiplication order, including for subnormal coefficients.
+         const double cubic = 0.0 + data_[3];
+         const double cubic_derivative = 0.0 + data_[3] * 3.0;
+         const double quadratic_derivative = data_[2] * 2.0;
+         const double jerk = 0.0 + data_[3] * 3.0 * 2.0;
+         return {((cubic * s + data_[2]) * s + data_[1]) * s + data_[0],
+                 (cubic_derivative * s + quadratic_derivative) * s + data_[1],
+                 jerk * s + quadratic_derivative, jerk};
+     }
 
     Eigen::Vector4d data_;  ///< data in turn: pos, vel, acc, jerk
 

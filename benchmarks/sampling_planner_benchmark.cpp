@@ -24,17 +24,14 @@ int main(int argc, char **argv) {
             goal_bias = std::stod(argument, &consumed);
             if (consumed != argument.size() || !std::isfinite(goal_bias) ||
                 goal_bias < 0.0 || goal_bias > 1.0)
-                throw std::invalid_argument(
-                    "goal bias must be between zero and one");
+                throw std::invalid_argument("goal bias must be between zero and one");
         }
     } catch (const std::exception &) {
-        std::cerr
-            << "usage: sampling_planner_benchmark [goal_bias in [0, 1]]\n";
+        std::cerr << "usage: sampling_planner_benchmark [goal_bias in [0, 1]]\n";
         return 2;
     }
-    std::cout
-        << "dof,continuous,goal_bias,median_ms,success,iterations,nodes,checks,"
-           "path_length\n";
+    std::cout << "dof,continuous,goal_bias,median_ms,success,iterations,nodes,checks,"
+                 "path_length\n";
     for (const Eigen::Index dof : {2, 7, 14}) {
         for (const bool continuous : {false, true}) {
             Eigen::VectorXd lower = Eigen::VectorXd::Constant(dof, -1.0);
@@ -93,10 +90,9 @@ int main(int argc, char **argv) {
             std::cout << dof << ',' << continuous << ',' << goal_bias << ','
                       << std::fixed << std::setprecision(3)
                       << elapsed[elapsed.size() / 2] << ',' << success << ','
-                      << statistics.iterations << ',' << statistics.tree_nodes
-                      << ',' << statistics.collision_checks << ','
-                      << std::setprecision(12) << statistics.final_path_length
-                      << '\n';
+                      << statistics.iterations << ',' << statistics.tree_nodes << ','
+                      << statistics.collision_checks << ',' << std::setprecision(12)
+                      << statistics.final_path_length << '\n';
         }
     }
 }

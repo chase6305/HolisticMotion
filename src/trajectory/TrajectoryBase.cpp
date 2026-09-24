@@ -303,13 +303,11 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     for (std::size_t segment = 1; segment < knots.size(); ++segment) {
         const double start = knots[segment - 1];
         const double end = knots[segment];
-        const double left_end = segment + 1 < knots.size()
-                                    ? SampleBeforeKnot(start, end)
-                                    : end;
+        const double left_end =
+            segment + 1 < knots.size() ? SampleBeforeKnot(start, end) : end;
         const auto initial_jet = trajectory_pspline_->ComputeJetAtS(start);
-        const double stationary = initial_jet[3] != 0.0
-                                      ? -initial_jet[2] / initial_jet[3]
-                                      : -1.0;
+        const double stationary =
+            initial_jet[3] != 0.0 ? -initial_jet[2] / initial_jet[3] : -1.0;
         bool linear_phase = !phase_path_segments_.empty();
         if (!linear_phase) {
             const auto final_jet = trajectory_pspline_->ComputeJetAtS(left_end);
@@ -318,15 +316,16 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             // path position is monotone throughout this phase.
             double minimum_velocity = std::min(initial_jet[1], final_jet[1]);
             if (stationary > 0.0 && stationary < end - start) {
-                const double velocity = initial_jet[1] +
-                                        stationary * (initial_jet[2] +
-                                                      0.5 * stationary * initial_jet[3]);
+                const double velocity =
+                    initial_jet[1] +
+                    stationary * (initial_jet[2] + 0.5 * stationary * initial_jet[3]);
                 minimum_velocity = std::min(minimum_velocity, velocity);
             }
             if (minimum_velocity >= 0.0 && std::isfinite(initial_jet[0]) &&
                 std::isfinite(final_jet[0])) {
                 const auto first = path_->GetPathSegmentAtS(initial_jet[0]);
-                linear_phase = first && first->GetPathSegType() == PathSegType::LinearSeg &&
+                linear_phase = first &&
+                               first->GetPathSegType() == PathSegType::LinearSeg &&
                                first == path_->GetPathSegmentAtS(final_jet[0]);
             }
         }

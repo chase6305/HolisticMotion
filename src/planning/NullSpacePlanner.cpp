@@ -21,8 +21,8 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
     path.clear();
     if (!kinematics_->IsCompatible() || start.size() != 7 ||
         preferred_direction.size() != 7 || !start.allFinite() ||
-        !preferred_direction.allFinite() || steps < 1 ||
-        !std::isfinite(step_size) || step_size <= 0.0) {
+        !preferred_direction.allFinite() || steps < 1 || !std::isfinite(step_size) ||
+        step_size <= 0.0) {
         return false;
     }
 

@@ -75,9 +75,8 @@ class OptimizationContext {
         if (options_.length_weight == 0.0 && options_.smoothness_weight == 0.0)
             return 0.0;
         Eigen::VectorXd previous = Difference(path[0], path[1]);
-        double length = options_.length_weight > 0.0
-                            ? std::sqrt(SquaredNorm(previous))
-                            : 0.0;
+        double length =
+            options_.length_weight > 0.0 ? std::sqrt(SquaredNorm(previous)) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
             Eigen::VectorXd next = Difference(path[i], path[i + 1]);
@@ -104,10 +103,10 @@ class OptimizationContext {
             // This also works where long double has the range of double.
             const auto ratio = [&](Eigen::Index i, int &exponent) {
                 int gradient_exponent, weight_exponent, ratio_exponent;
-                const double mantissa = std::frexp(
-                    std::frexp(std::abs(gradient[i]), &gradient_exponent) /
-                        std::frexp(weights_[i], &weight_exponent),
-                    &ratio_exponent);
+                const double mantissa =
+                    std::frexp(std::frexp(std::abs(gradient[i]), &gradient_exponent) /
+                                   std::frexp(weights_[i], &weight_exponent),
+                               &ratio_exponent);
                 exponent = gradient_exponent - weight_exponent + ratio_exponent;
                 return mantissa;
             };
@@ -119,8 +118,7 @@ class OptimizationContext {
                 int exponent;
                 const double mantissa = ratio(i, exponent);
                 if (exponent > largest_exponent ||
-                    (exponent == largest_exponent &&
-                     mantissa > largest_mantissa)) {
+                    (exponent == largest_exponent && mantissa > largest_mantissa)) {
                     largest_exponent = exponent;
                     largest_mantissa = mantissa;
                 }
@@ -132,10 +130,9 @@ class OptimizationContext {
                 }
                 int exponent;
                 const double mantissa = ratio(i, exponent);
-                direction[i] =
-                    -std::copysign(std::scalbn(mantissa / largest_mantissa,
-                                               exponent - largest_exponent),
-                                   gradient[i]);
+                direction[i] = -std::copysign(std::scalbn(mantissa / largest_mantissa,
+                                                          exponent - largest_exponent),
+                                              gradient[i]);
             }
             return;
         }
@@ -581,10 +578,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 if (previous_local_objective - candidate_local_objective >=
                         options.minimum_improvement &&
                     context.IsStateValid(candidate) &&
-                    context.IsMotionInteriorValid(result.path[i - 1],
-                                                  candidate) &&
-                    context.IsMotionInteriorValid(candidate,
-                                                  result.path[i + 1])) {
+                    context.IsMotionInteriorValid(result.path[i - 1], candidate) &&
+                    context.IsMotionInteriorValid(candidate, result.path[i + 1])) {
                     if (options.state_cost_weight > 0.0)
                         state_costs[i] = candidate_state_cost;
                     accepted = true;

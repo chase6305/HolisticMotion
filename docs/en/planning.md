@@ -181,7 +181,8 @@ second-difference terms. Full passes compute the initial and final reported
 objectives. Acceptance compares the affected local terms directly, so unchanged
 large costs elsewhere cannot hide a local improvement or permit an uphill trial.
 Final state-cost statistics are summed from cached accepted values without new
-callbacks, avoiding drift from repeated subtraction. Geometric bookkeeping therefore scales linearly with waypoint count per sweep
+callbacks, avoiding drift from repeated subtraction. Geometric bookkeeping
+therefore scales linearly with waypoint count per sweep
 for a fixed line-search budget. Collision and state-cost callbacks add their own
 costs.
 
