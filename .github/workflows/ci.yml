@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install build tools
-        run: python -m pip install 'conan>=2.28' 'pytest>=7' 'hypothesis>=6.112,<7'
+        run: python -m pip install 'conan>=2.28' 'numpy>=1.23' 'pytest>=7' 'hypothesis>=6.112,<7'
       - name: Detect Conan profile
         run: conan profile detect
       - name: Build CPU, collision, and Python components
@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install build tools
-        run: python -m pip install 'conan>=2.28' 'pytest>=7' 'hypothesis>=6.112,<7'
+        run: python -m pip install 'conan>=2.28' 'numpy>=1.23' 'pytest>=7' 'hypothesis>=6.112,<7'
       - name: Detect Conan profile
         run: conan profile detect
       - name: Build Python without CUDA or collision

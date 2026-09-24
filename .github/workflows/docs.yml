@@ -25,7 +25,20 @@ jobs:
       - name: Install Doxygen
         run: sudo apt-get update && sudo apt-get install --yes doxygen
       - name: Install documentation dependencies
-        run: python -m pip install '.[docs]'
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as stream:
+              project = tomllib.load(stream)["project"]
+          subprocess.check_call([
+              sys.executable, "-m", "pip", "install",
+              *project["dependencies"],
+              *project["optional-dependencies"]["docs"],
+          ])
+          PY
       - name: Build English and Chinese documentation
         run: ./scripts/docs.sh
       - name: Upload generated site
