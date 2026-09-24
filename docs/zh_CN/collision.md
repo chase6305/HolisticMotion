@@ -119,7 +119,7 @@ Eigen 独立实现；HolisticMotion 不导入 Torch、Warp 或 cuRobo。
 ### 离线球化
 
 NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候选球；网格适配层使用
-可选 `trimesh` 进行体素化。`inscribed` 模式保留采样意义下的内接半径；可选的
+可选 `trimesh` 和 SciPy 进行体素化与填充。`inscribed` 模式保留采样意义下的内接半径；可选的
 `sampled_coverage` 模式会扩张选中的球，使所有输入样本被覆盖。后者仍是离散近似，
 不能当作连续三角网格覆盖的数学证明。
 
@@ -129,7 +129,7 @@ NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候�
 远离原点时的小间距。这一预处理只使用 NumPy，不需要启用原生碰撞组件。
 
 ```bash
-python -m pip install '.[examples]'
+python -m pip install '.[examples]' 'scipy>=1.10'
 ./scripts/run.sh python3 \
   examples/python/visualization/sphere_fit_viser.py \
   --mesh /absolute/path/to/link.stl \

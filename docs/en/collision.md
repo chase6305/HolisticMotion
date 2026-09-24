@@ -137,8 +137,8 @@ and Eigen; HolisticMotion does not import Torch, Warp, or cuRobo.
 ### Offline sphere fitting
 
 The NumPy fitter selects large medial candidates from interior and surface
-samples. Its mesh adapter uses the optional `trimesh` dependency for
-voxelization. `inscribed` mode keeps sampled interior radii; the optional
+samples. Its mesh adapter uses optional `trimesh` and SciPy dependencies for
+voxelization and filling. `inscribed` mode keeps sampled interior radii; the optional
 `sampled_coverage` mode expands the selected spheres to cover every supplied
 sample. The latter remains a discrete approximation, not a mathematical proof
 of continuous mesh coverage.
@@ -151,7 +151,7 @@ when the model is far from the origin, within floating-point input precision.
 This preprocessing uses NumPy and does not require the native collision component.
 
 ```bash
-python -m pip install '.[examples]'
+python -m pip install '.[examples]' 'scipy>=1.10'
 ./scripts/run.sh python3 \
   examples/python/visualization/sphere_fit_viser.py \
   --mesh /absolute/path/to/link.stl \

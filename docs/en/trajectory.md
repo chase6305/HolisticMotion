@@ -319,6 +319,11 @@ the comparison always uses the original cap, so the allowance cannot accumulate
 across endpoints. Larger differences still reduce the speed and backtrack,
 and global joint-limit enforcement still applies to the composed trajectory.
 
+Trapezoidal timing uses the same original-cap comparison with a relative budget
+of 256 machine epsilons. This preserves nearly equal curve/line endpoint speeds
+without creating unrepresentable acceleration ramps. The composed trajectory
+still receives the global joint-limit check.
+
 A reduced Double-S entry speed is propagated to preceding phases even for the
 final segment; otherwise the curve-to-line join would have a velocity jump.
 Backtracking uses the segment's configured acceleration capacity, including
