@@ -42,6 +42,11 @@ results retain insertion order. Small trees, fully bounded or fully continuous
 spaces, and higher dimensions retain linear searches. No external indexing
 dependency or public configuration option is required.
 
+RRT* and Informed RRT* reuse an existing nearest state when it is sampled again,
+while still reconsidering its parent and rewiring its neighbors. This avoids
+storing duplicate goal samples. The neighborhood radius follows the admitted
+sample count; `tree_nodes` reports the nodes actually stored in the tree.
+
 ## Python example
 
 ```python

@@ -432,6 +432,10 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             const std::chrono::steady_clock::time_point &deadline,
             bool informed) {
     Tree tree{{Node{start, 0, 0.0, {}}}, true, {}};
+    // Keep the neighborhood schedule based on admitted samples, including
+    // repeated states that need not be stored. Removing duplicate goal nodes
+    // should not otherwise change the seeded search's rewiring radii.
+    std::size_t radius_sample_count = tree.nodes.size();
     std::size_t best_goal = std::numeric_limits<std::size_t>::max();
     double best_cost = std::numeric_limits<double>::infinity();
     std::uniform_real_distribution<double> unit(0.0, 1.0);
@@ -444,6 +448,18 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             pending.insert(pending.end(), tree.nodes[index].children.begin(),
                            tree.nodes[index].children.end());
         }
+    };
+    const auto reparent = [&](std::size_t index, std::size_t parent,
+                              double cost) {
+        const double delta = cost - tree.nodes[index].cost;
+        auto &old_children = tree.nodes[tree.nodes[index].parent].children;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), index),
+            old_children.end());
+        tree.nodes[index].parent = parent;
+        tree.nodes[index].cost = cost;
+        tree.nodes[parent].children.push_back(index);
+        update_descendant_costs(index, delta);
     };
     for (; statistics.iterations < options.max_iterations &&
            std::chrono::steady_clock::now() < deadline;
@@ -466,15 +482,22 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         const std::size_t nearest = context.Nearest(tree, sample);
         Eigen::VectorXd candidate =
             context.Steer(tree.nodes[nearest].state, sample);
-        if (!context.IsMotionValid(tree.nodes[nearest].state, candidate))
+        // A repeated goal sample can still improve its parent or nearby nodes.
+        // Reuse the existing state while retaining those rewiring
+        // opportunities.
+        const bool existing =
+            context.SameState(tree.nodes[nearest].state, candidate);
+        if (!existing &&
+            !context.IsMotionValid(tree.nodes[nearest].state, candidate))
             continue;
         const double dimension = static_cast<double>(start.size());
         const double radius = std::min(
             options.extension_range * 4.0,
             options.extension_range * 2.0 *
-                std::pow(std::log(static_cast<double>(tree.nodes.size() + 1)) /
-                             static_cast<double>(tree.nodes.size() + 1),
-                         1.0 / dimension));
+                std::pow(
+                    std::log(static_cast<double>(radius_sample_count + 1)) /
+                        static_cast<double>(radius_sample_count + 1),
+                    1.0 / dimension));
         auto near = context.Near(tree, candidate,
                                  std::max(radius, options.extension_range));
         std::size_t parent = nearest;
@@ -490,24 +513,21 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
                 cost = candidate_cost;
             }
         }
-        const std::size_t inserted = tree.nodes.size();
-        tree.nodes.push_back({candidate, parent, cost, {}});
-        tree.nodes[parent].children.push_back(inserted);
+        const std::size_t inserted = existing ? nearest : tree.nodes.size();
+        if (existing) {
+            if (parent != nearest)
+                reparent(nearest, parent, cost);
+        } else {
+            tree.nodes.push_back({candidate, parent, cost, {}});
+            tree.nodes[parent].children.push_back(inserted);
+        }
+        ++radius_sample_count;
         for (std::size_t index : near) {
             const double rewired =
                 cost + context.Distance(candidate, tree.nodes[index].state);
             if (rewired < tree.nodes[index].cost &&
                 context.IsMotionValid(candidate, tree.nodes[index].state)) {
-                const double delta = rewired - tree.nodes[index].cost;
-                auto &old_children =
-                    tree.nodes[tree.nodes[index].parent].children;
-                old_children.erase(std::remove(old_children.begin(),
-                                               old_children.end(), index),
-                                   old_children.end());
-                tree.nodes[index].parent = inserted;
-                tree.nodes[index].cost = rewired;
-                tree.nodes[inserted].children.push_back(index);
-                update_descendant_costs(index, delta);
+                reparent(index, inserted, rewired);
             }
         }
         // Rewiring can improve the incumbent through any of its ancestors.
@@ -519,10 +539,15 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         if (remaining <= options.extension_range &&
             cost + remaining < best_cost &&
             context.IsMotionValid(candidate, goal)) {
-            best_goal = tree.nodes.size();
             best_cost = cost + remaining;
-            tree.nodes.push_back({goal, inserted, best_cost, {}});
-            tree.nodes[inserted].children.push_back(best_goal);
+            if (context.SameState(candidate, goal)) {
+                best_goal = inserted;
+            } else {
+                best_goal = tree.nodes.size();
+                tree.nodes.push_back({goal, inserted, best_cost, {}});
+                tree.nodes[inserted].children.push_back(best_goal);
+            }
+            ++radius_sample_count;
         }
     }
     statistics.tree_nodes = tree.nodes.size();
