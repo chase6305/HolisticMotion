@@ -37,3 +37,19 @@ def test_terminal_near_duplicate_does_not_erase_a_short_excursion(profile):
     )
     positions = trajectory.sample(trajectory.breakpoints)[0]
     assert positions.max() == pytest.approx(1.5e-5, abs=1e-14)
+
+
+@pytest.mark.parametrize("profile", ["double_s", "trapezoidal"])
+@pytest.mark.parametrize("dof", [1, 7])
+@pytest.mark.parametrize("displacement", [-2e-6, 2e-6])
+def test_short_two_point_motion_is_distinct(profile, dof, displacement):
+    points = np.zeros((2, dof))
+    points[1, 0] = displacement
+    limits = np.ones(dof)
+    trajectory = hm.RnTrajectory(points, limits, limits, limits, profile=profile)
+    q, dq, ddq, dddq = trajectory.sample(np.linspace(0.0, trajectory.duration, 101))
+    assert trajectory.duration > 0.0
+    np.testing.assert_allclose(q[[0, -1]], points, rtol=0.0, atol=1e-15)
+    assert trajectory.path_length == pytest.approx(abs(displacement), abs=0.0)
+    for derivative in [dq, ddq, dddq]:
+        assert np.max(np.abs(derivative)) <= 1.0 + 1e-10

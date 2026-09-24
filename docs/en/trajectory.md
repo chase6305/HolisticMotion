@@ -294,7 +294,9 @@ the subsequent global limit enforcement still applies.
 
 Near-duplicate filtering applies to interior waypoints. The requested final
 position is retained even when its last leg is shorter than the geometric
-tolerance; positive linear legs keep their normalized path tangent. Blends
+tolerance; positive linear legs keep their normalized path tangent. The Python
+constructor also accepts distinct two-point motions below that tolerance;
+exactly repeated points still do not define a moving trajectory. Blends
 smaller than that tolerance are disabled before trimming either neighboring
 line, so suppressing a blend does not leave a positional gap.
 
