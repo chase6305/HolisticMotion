@@ -60,6 +60,10 @@ function(holistic_motion_register_tests)
         tests/cpp/kinematics/kinematic_model_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        srs_null_space_smoke_test
+        tests/cpp/kinematics/srs_null_space_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         damped_ik_workspace_smoke_test
         tests/cpp/kinematics/damped_ik_workspace_smoke.cpp
         Eigen3::Eigen)

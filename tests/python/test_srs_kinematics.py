@@ -110,6 +110,62 @@ def test_srs_null_space_projection_and_path(tmp_path):
         planner.plan(joints, np.full(7, np.inf), 2, 0.01)
 
 
+@pytest.mark.parametrize("turn", [-1.0, 1.0])
+def test_null_space_planner_rejects_start_outside_joint_limits(tmp_path, turn):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "limits.urdf"
+    _write_seven_revolute_urdf(urdf)
+    solver = hm.Robot(str(urdf)).kinematics
+    start = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    start[0] += turn * 2.0 * np.pi
+    planner = hm.NullSpacePlanner(solver)
+    with pytest.raises(ValueError, match="planning failed"):
+        planner.plan(start, [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], 2, 0.01)
+
+
+@pytest.mark.parametrize("magnitude", [1e200, 1e300])
+def test_null_space_planner_normalizes_large_finite_directions(tmp_path, magnitude):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "normalization.urdf"
+    _write_seven_revolute_urdf(urdf)
+    solver = hm.Robot(str(urdf)).kinematics
+    start = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    direction = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+    planner = hm.NullSpacePlanner(solver)
+    expected = planner.plan(start, direction, 2, 0.01)
+    actual = planner.plan(start, magnitude * direction, 2, 0.01)
+    np.testing.assert_allclose(actual, expected, atol=1e-11, rtol=0.0)
+    assert np.all(np.linalg.norm(np.diff(actual, axis=0), axis=1) > 0.009)
+
+
+@pytest.mark.parametrize("joint_scale", [1.0, 0.0, 1e-10])
+@pytest.mark.parametrize("magnitude", [1.0, 1e100, 1e300])
+def test_srs_null_projection_matches_independent_full_svd(
+    tmp_path, joint_scale, magnitude
+):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "projection.urdf"
+    _write_seven_revolute_urdf(urdf)
+    solver = hm.Robot(str(urdf)).kinematics
+    joints = joint_scale * np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    jacobian = solver.jacobian(joints)
+    _, singular, right = np.linalg.svd(jacobian, full_matrices=True)
+    rank = np.count_nonzero(singular > max(1e-10, singular[0] * 1e-8))
+    null_basis = right[rank:].T
+    random = np.random.default_rng(903)
+    for preferred in random.uniform(-1.0, 1.0, (8, 7)):
+        expected = null_basis @ (null_basis.T @ preferred)
+        actual = solver.null_space_velocity(joints, magnitude * preferred) / magnitude
+        np.testing.assert_allclose(actual, expected, atol=2e-12, rtol=0.0)
+        assert np.linalg.norm(actual) <= np.linalg.norm(preferred) + 1e-12
+        np.testing.assert_allclose(
+            solver.null_space_velocity(joints, actual), actual, atol=2e-12, rtol=0.0
+        )
+
+
 def test_srs_distinct_solve_methods(tmp_path):
     import holistic_motion as hm
 
