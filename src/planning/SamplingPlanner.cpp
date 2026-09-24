@@ -308,9 +308,11 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
 
         std::vector<Eigen::VectorXd> shortened;
         shortened.reserve(path.size() + 2);
+        // Remove only exactly repeated coordinates. A small metric distance
+        // can hide a meaningful corner or even the requested final endpoint.
         const auto append = [&](const Eigen::VectorXd &state) {
             if (shortened.empty() ||
-                context.Distance(shortened.back(), state) > 1e-12) {
+                (shortened.back().array() != state.array()).any()) {
                 shortened.push_back(state);
             }
         };

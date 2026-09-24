@@ -447,3 +447,24 @@ def test_sampling_planner_uses_shortest_direct_path(algorithm):
     assert len(result.path) == 2
     np.testing.assert_allclose(result.path, [[-0.8, -0.4], [0.8, 0.4]])
     assert len(checked) == result.statistics.collision_checks
+
+
+def test_shortcut_preserves_exact_endpoints_with_small_metric_weights():
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
+    planner.set_joint_weights([1e-18, 1e-18])
+    options = _options()
+    options.random_seed = 4333
+    options.max_iterations = 4000
+    options.timeout_seconds = 3.0
+    options.extension_range = 0.15e-9
+    options.edge_resolution = 0.01
+    options.shortcut_attempts = 1000
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success, result.message
+    np.testing.assert_array_equal(result.path[0], [-0.8, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [0.8, 0.0])
+    for first, second in zip(result.path[:-1], result.path[1:]):
+        segments = max(
+            1, int(np.ceil(np.max(np.abs(second - first)) / options.edge_resolution))
+        )
+        assert all(_outside_wall(q) for q in np.linspace(first, second, segments + 1))
