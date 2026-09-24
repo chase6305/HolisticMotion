@@ -259,6 +259,8 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     time_scale_ = 1.0;
     const double duration = trajectory_pspline_->GetLastTimeStamp();
     double required_scale = 0.0;
+    double maximum_acceleration_utilization = 0.0;
+    double maximum_jerk_utilization = 0.0;
     const auto evaluate = [&](double time) {
         State state;
         try {
@@ -285,18 +287,22 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             const double acceleration_utilization =
                 acceleration / acceleration_limits[i];
             const double jerk_utilization = jerk / jerk_limits[i];
-            // Preserve ordinary rounding. If a ratio overflows, its root can
-            // still be finite: take roots before dividing in that case.
-            required_scale = std::max(
-                required_scale, std::isfinite(acceleration_utilization)
-                                    ? std::sqrt(acceleration_utilization)
-                                    : std::sqrt(acceleration) /
-                                          std::sqrt(acceleration_limits[i]));
-            required_scale =
-                std::max(required_scale,
-                         std::isfinite(jerk_utilization)
-                             ? std::cbrt(jerk_utilization)
-                             : std::cbrt(jerk) / std::cbrt(jerk_limits[i]));
+            // Positive roots preserve ordering, so reduce finite ratios
+            // before taking roots once after all samples. An overflowing
+            // ratio can still have a finite root; retain that fallback.
+            if (std::isfinite(acceleration_utilization))
+                maximum_acceleration_utilization = std::max(
+                    maximum_acceleration_utilization, acceleration_utilization);
+            else
+                required_scale =
+                    std::max(required_scale, std::sqrt(acceleration) /
+                                                 std::sqrt(acceleration_limits[i]));
+            if (std::isfinite(jerk_utilization))
+                maximum_jerk_utilization =
+                    std::max(maximum_jerk_utilization, jerk_utilization);
+            else
+                required_scale = std::max(required_scale,
+                                          std::cbrt(jerk) / std::cbrt(jerk_limits[i]));
         }
     };
     const auto& knots = trajectory_pspline_->GetKnots();
@@ -367,6 +373,9 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             }
         }
     }
+    required_scale =
+        std::max({required_scale, std::sqrt(maximum_acceleration_utilization),
+                  std::cbrt(maximum_jerk_utilization)});
     // Leave a margin only when sampled utilization approaches a constraint;
     // trajectories already comfortably below every limit are not slowed.
     time_scale_ = std::max(1.0, required_scale * 1.01);
