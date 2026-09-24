@@ -144,6 +144,11 @@ derivative to the samples' midpoint. A nearly collapsed side is omitted using
 a relative offset comparison. Continuous-joint steps are capped at `pi/2`
 to keep the samples on opposite sides of the waypoint; unrepresentable
 numerical gradients raise `ValueError`.
+Preconditioning preserves relative descent directions even when the reciprocal
+of a finite positive joint weight would overflow. Large geometric gradients use
+an extended-precision fallback when intermediate arithmetic is non-finite;
+a combined objective gradient that still cannot be represented raises
+`ValueError` before candidate callbacks run.
 
 A timeout still returns the best feasible path found so far. Invalid input
 paths are rejected rather than repaired, so sampling remains responsible for

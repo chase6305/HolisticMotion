@@ -44,6 +44,18 @@ def test_asymmetric_samples_descend_near_joint_limit(direction, step):
     assert result.statistics.state_cost_evaluations == len(samples) == 4
 
 
+def test_large_weight_does_not_overflow_representable_geometry_gradient():
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_joint_weights([1e308])
+    options = cost_options(0.001, 0.1)
+    options.state_cost_weight = 0.0
+    options.smoothness_weight = 1.0
+    result = optimizer.optimize([[-0.5], [0.1], [0.5]], options)
+    assert result.status == hm.PathOptimizationStatus.OPTIMIZED
+    np.testing.assert_allclose(result.path[1], [0.0], atol=1e-15, rtol=0.0)
+    assert result.statistics.final_objective < result.statistics.initial_objective
+
+
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 def test_almost_collapsed_sample_uses_the_longer_side(direction):
     position = direction * np.nextafter(1.0, 0.0)
@@ -88,3 +100,50 @@ def test_unrepresentable_numerical_gradient_has_clear_error():
     optimizer.set_state_cost(lambda q: 1e300 if q[0] > 0.0 else 0.0)
     with pytest.raises(ValueError, match="finite-difference state cost gradient"):
         optimizer.optimize([[-0.5], [0.0], [0.5]], cost_options(1e-20, 0.1))
+
+
+@pytest.mark.parametrize("weight", [np.nextafter(0.0, 1.0), 1e-320, 1e-300, 1.0])
+@pytest.mark.parametrize("cost_scale", [1.0, 1e200])
+@pytest.mark.parametrize("analytic", [False, True])
+def test_descent_preserves_weight_ratios_when_preconditioning_overflows(
+    weight, cost_scale, analytic
+):
+    optimizer = hm.PathOptimizer([-1.0, -1.0], [1.0, 1.0])
+    optimizer.set_joint_weights([weight, 4.0 * weight])
+    optimizer.set_state_cost(lambda q: cost_scale * np.dot(q, q))
+    if analytic:
+        optimizer.set_state_cost_gradient(lambda q: 2.0 * cost_scale * np.asarray(q))
+    result = optimizer.optimize(
+        [[-0.5, 0.0], [0.5, 0.25], [0.5, 0.0]], cost_options(0.001, 0.1)
+    )
+    assert result.status == hm.PathOptimizationStatus.OPTIMIZED
+    np.testing.assert_allclose(result.path[1], [0.4, 0.2375], atol=1e-13, rtol=0.0)
+    assert result.statistics.final_objective < result.statistics.initial_objective
+
+
+def test_zero_gradient_remains_stationary_with_subnormal_weights():
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_joint_weights([np.nextafter(0.0, 1.0)])
+    optimizer.set_state_cost(lambda q: q[0] ** 2)
+    optimizer.set_state_cost_gradient(lambda q: [2.0 * q[0]])
+    result = optimizer.optimize([[-0.5], [0.0], [0.5]], cost_options(0.001, 0.1))
+    assert result.status == hm.PathOptimizationStatus.UNCHANGED
+    np.testing.assert_array_equal(result.path[1], [0.0])
+
+
+def test_overflowing_combined_gradient_is_rejected_before_trial_callbacks():
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    samples = []
+
+    def cost(q):
+        samples.append(q.copy())
+        return 1.0
+
+    optimizer.set_state_cost(cost)
+    optimizer.set_state_cost_gradient(lambda _q: [1e308])
+    options = cost_options(0.001, 0.1)
+    options.state_cost_weight = 2.0
+    with pytest.raises(ValueError, match="combined path objective gradient"):
+        optimizer.optimize([[-0.5], [0.0], [0.5]], options)
+    assert len(samples) == 1
+    np.testing.assert_array_equal(samples[0], [0.0])

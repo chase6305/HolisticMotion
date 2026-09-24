@@ -86,7 +86,52 @@ class OptimizationContext {
 
     void PreconditionedDescent(const Eigen::VectorXd &gradient,
                                Eigen::VectorXd &direction) const {
+        if (!gradient.allFinite())
+            throw std::invalid_argument(
+                "combined path objective gradient must be finite");
         direction = (-gradient.array() * inverse_weights_.array()).matrix();
+        if (!direction.allFinite()) {
+            // Only the relative ratios matter after normalization. Form them
+            // as mantissa/exponent pairs so even a subnormal positive weight
+            // cannot overflow its reciprocal or the preconditioned gradient.
+            // This also works where long double has the range of double.
+            const auto ratio = [&](Eigen::Index i, int &exponent) {
+                int gradient_exponent, weight_exponent, ratio_exponent;
+                const double mantissa = std::frexp(
+                    std::frexp(std::abs(gradient[i]), &gradient_exponent) /
+                        std::frexp(weights_[i], &weight_exponent),
+                    &ratio_exponent);
+                exponent = gradient_exponent - weight_exponent + ratio_exponent;
+                return mantissa;
+            };
+            int largest_exponent = std::numeric_limits<int>::min();
+            double largest_mantissa = 0.0;
+            for (Eigen::Index i = 0; i < gradient.size(); ++i) {
+                if (gradient[i] == 0.0)
+                    continue;
+                int exponent;
+                const double mantissa = ratio(i, exponent);
+                if (exponent > largest_exponent ||
+                    (exponent == largest_exponent &&
+                     mantissa > largest_mantissa)) {
+                    largest_exponent = exponent;
+                    largest_mantissa = mantissa;
+                }
+            }
+            for (Eigen::Index i = 0; i < gradient.size(); ++i) {
+                if (gradient[i] == 0.0) {
+                    direction[i] = 0.0;
+                    continue;
+                }
+                int exponent;
+                const double mantissa = ratio(i, exponent);
+                direction[i] =
+                    -std::copysign(std::scalbn(mantissa / largest_mantissa,
+                                               exponent - largest_exponent),
+                                   gradient[i]);
+            }
+            return;
+        }
         const double maximum = direction.cwiseAbs().maxCoeff();
         if (maximum > 1e-15)
             direction /= maximum;

@@ -14,8 +14,8 @@ using holistic_motion::robotics::planning::detail::PathGeometryWorkspace;
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 
-double Objective(const std::vector<Eigen::VectorXd>& path,
-                 const Eigen::VectorXd& weights, bool continuous,
+double Objective(const std::vector<Eigen::VectorXd> &path,
+                 const Eigen::VectorXd &weights, bool continuous,
                  double length_weight, double smoothness_weight) {
     std::vector<Eigen::VectorXd> differences;
     for (std::size_t i = 1; i < path.size(); ++i) {
@@ -38,16 +38,46 @@ double Objective(const std::vector<Eigen::VectorXd>& path,
     }
     return length_weight * length + smoothness_weight * smoothness;
 }
-}  // namespace
+} // namespace
 
 int main() {
+    // Large but finite weights must not turn zero or small smoothness
+    // derivatives into NaN through a prematurely overflowing coefficient.
+    const Eigen::VectorXd large = Eigen::VectorXd::Constant(1, 1e308);
+    const Eigen::VectorXd unit = Eigen::VectorXd::Ones(1);
+    const std::vector<bool> bounded{false};
+    std::vector<Eigen::VectorXd> small_path;
+    for (double q : {-0.02, 0.04, -0.01, 0.015, -0.025})
+        small_path.push_back(Eigen::VectorXd::Constant(1, q));
+    PathGeometryWorkspace large_workspace(large, bounded, 0.0, 1.0);
+    Eigen::VectorXd large_gradient(1);
+    for (std::size_t i = 1; i + 1 < small_path.size(); ++i) {
+        Eigen::internal::set_is_malloc_allowed(false);
+        large_workspace.SetWaypoint(small_path, i);
+        large_workspace.Gradient(large_gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double original = small_path[i][0];
+        constexpr double step = 1e-7;
+        small_path[i][0] = original + step;
+        const double positive = Objective(small_path, unit, false, 0.0, 1.0);
+        small_path[i][0] = original - step;
+        const double negative = Objective(small_path, unit, false, 0.0, 1.0);
+        small_path[i][0] = original;
+        if (!large_gradient.allFinite() ||
+            std::abs(large_gradient[0] / large[0] -
+                     (positive - negative) / (2.0 * step)) > 1e-10) {
+            std::cerr
+                << "large-weight geometry gradient is not representable\n";
+            return 1;
+        }
+    }
     for (int dof : {2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =
                 Eigen::VectorXd::LinSpaced(dof, 0.5, 2.0);
             std::vector<bool> topology(dof, false);
             topology[0] = continuous;
-            for (const auto& terms : {std::pair<double, double>{1.0, 0.0},
+            for (const auto &terms : {std::pair<double, double>{1.0, 0.0},
                                       {0.0, 0.7},
                                       {0.8, 1.3}}) {
                 std::vector<Eigen::VectorXd> path;
@@ -118,13 +148,15 @@ int main() {
                     }
                     path[index] = candidate;
                 }
-                for (auto& state : path) state.setZero();
+                for (auto &state : path)
+                    state.setZero();
                 Eigen::internal::set_is_malloc_allowed(false);
                 workspace.SetWaypoint(path, 3);
                 workspace.Gradient(gradient);
                 const double zero_objective = workspace.LocalObjective();
                 Eigen::internal::set_is_malloc_allowed(true);
-                if (zero_objective != 0.0 || !gradient.isZero()) return 1;
+                if (zero_objective != 0.0 || !gradient.isZero())
+                    return 1;
             }
         }
     }
