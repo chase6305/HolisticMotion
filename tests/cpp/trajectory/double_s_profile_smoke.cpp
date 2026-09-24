@@ -511,8 +511,27 @@ void CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking() {
         throw std::runtime_error("infeasible requested initial speed must be rejected");
 }
 
+void CheckUnsupportedOverspeedValleyIsNotPublished() {
+    double start = 1.206062857577002;
+    double end = 1.5934050386482168;
+    std::list<TrajectorySeg> phases;
+    if (ProfileProbe::_ComputeDoubleSProfile(
+            0.0, 0.00932899000310764, start, end, 1.0862777391213074,
+            0.41177555071752814, 1.6054309265298157, 0.0, phases, 0, true) ||
+        !phases.empty() || start != 1.206062857577002 || end != 1.5934050386482168)
+        throw std::runtime_error("unsupported valley must preserve inputs and fail");
+    start = 1.2;
+    end = 1.3;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0,
+                                             2.0, 5.0, 0.0, phases, 0, true) ||
+        phases.size() != 8 || std::abs(phases.back().pos - 3.0) > 1e-12 ||
+        std::abs(phases.back().vel - 1.3) > 1e-12)
+        throw std::runtime_error("feasible overspeed valley must remain supported");
+}
+
 int main() {
     try {
+        CheckUnsupportedOverspeedValleyIsNotPublished();
         CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking();
         CheckBacktrackingCanAccelerateAnEarlierCruise();
         CheckConcaveProfilePropagatesInfeasibleStartSpeed();

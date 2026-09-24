@@ -417,6 +417,16 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     tv = (q1 - q0) / max_velocity - 0.5 * ta * (1 + v0 / max_velocity) -
          0.5 * td * (1 + v1 / max_velocity);
 
+    // The no-cruise formulas below describe a convex speed peak. They do
+    // not represent a valley between two above-cap endpoints when there is
+    // too little distance to reach the cap. Reject that unsupported boundary
+    // condition instead of integrating toward the wrong terminal speed.
+    if (allow_concave && v0 > max_velocity && v1 > max_velocity && tv <= 0.0) {
+        holistic_motion::utility::LogWarning(
+            "Double-S cannot reach the speed cap between above-cap endpoints");
+        return false;
+    }
+
     /// < 2.the second case, if tv <= 0.0, there is no constant speed period
     constexpr int maximum_acceleration_reductions = 1000;
     int acceleration_reductions = 0;

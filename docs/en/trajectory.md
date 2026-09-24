@@ -335,3 +335,9 @@ PYTHONPATH=build/install python benchmarks/trajectory_audit.py \
 
 The JSON output includes the seed, failing case index, and complete inputs.
 These sampled checks are diagnostics, not a proof of continuous feasibility.
+
+Nonzero C++ boundary speeds remain subject to profile feasibility. If the first
+segment requires reducing the requested initial speed, construction fails without
+attempting to backtrack beyond the beginning. A concave profile whose two endpoint
+speeds exceed its scalar cap is also rejected when it lacks room to reach that
+cap; the unsupported short-valley case must not publish an incorrect end state.
