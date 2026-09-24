@@ -71,6 +71,27 @@ int main() {
             return 1;
         }
     }
+    // A disabled term must not participate in the objective, even if its
+    // unweighted value would overflow. Exercise local and line-search costs.
+    const std::vector<Eigen::VectorXd> zigzag{
+        Eigen::VectorXd::Constant(1, -0.5), Eigen::VectorXd::Constant(1, 0.5),
+        Eigen::VectorXd::Constant(1, -0.5)};
+    for (double length_weight : {0.0, 1.0}) {
+        PathGeometryWorkspace disabled(large, bounded, length_weight, 0.0);
+        disabled.SetWaypoint(zigzag, 1);
+        disabled.Gradient(large_gradient);
+        const double initial = disabled.LocalObjective();
+        const Eigen::VectorXd trial = Eigen::VectorXd::Constant(1, 0.4);
+        const double candidate =
+            disabled.CandidateObjective(zigzag.front(), trial, zigzag.back());
+        if (!large_gradient.allFinite() ||
+            std::abs(initial / 1e154 - length_weight * 2.0) > 1e-14 ||
+            std::abs(candidate / 1e154 - length_weight * 1.8) > 1e-14 ||
+            !std::isfinite(initial) || !std::isfinite(candidate)) {
+            std::cerr << "disabled geometry term contaminated the objective\n";
+            return 1;
+        }
+    }
     for (int dof : {2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =
@@ -79,7 +100,8 @@ int main() {
             topology[0] = continuous;
             for (const auto &terms : {std::pair<double, double>{1.0, 0.0},
                                       {0.0, 0.7},
-                                      {0.8, 1.3}}) {
+                                      {0.8, 1.3},
+                                      {0.0, 0.0}}) {
                 std::vector<Eigen::VectorXd> path;
                 for (int i = 0; i < 7; ++i) {
                     Eigen::VectorXd state(dof);

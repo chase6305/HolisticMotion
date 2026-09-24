@@ -12,25 +12,41 @@
 using namespace holistic_motion::robotics::planning;
 
 namespace {
-double Checksum(const std::vector<Eigen::VectorXd>& path) {
+double Checksum(const std::vector<Eigen::VectorXd> &path) {
     double value = 0.0;
     for (std::size_t i = 0; i < path.size(); ++i)
         for (Eigen::Index joint = 0; joint < path[i].size(); ++joint)
             value += (i + 1) * (joint + 1) * path[i][joint];
     return value;
 }
-}  // namespace
+} // namespace
 
-int main(int argc, char* argv[]) {
-    if (argc != 1 && argc != 5) {
-        std::cerr << "usage: path_optimizer_benchmark [dof waypoints "
-                     "continuous validator]\n";
+int main(int argc, char *argv[]) {
+    if (argc != 1 && argc != 3 && argc != 5 && argc != 7) {
+        std::cerr
+            << "usage: path_optimizer_benchmark [dof waypoints "
+               "continuous validator] [length_weight smoothness_weight]\n";
         return 2;
+    }
+    double length_weight = 1.0;
+    double smoothness_weight = 0.5;
+    if (argc == 3 || argc == 7) {
+        try {
+            length_weight = std::stod(argv[argc - 2]);
+            smoothness_weight = std::stod(argv[argc - 1]);
+        } catch (const std::exception &) {
+            return 2;
+        }
+        if (!std::isfinite(length_weight) ||
+            !std::isfinite(smoothness_weight) || length_weight < 0.0 ||
+            smoothness_weight < 0.0 || length_weight + smoothness_weight <= 0.0)
+            return 2;
     }
     bool matched = false;
     constexpr double kPi = 3.14159265358979323846;
     std::cout
-        << "dof,waypoints,continuous,validator,time_us,iterations,attempted,"
+        << "dof,waypoints,continuous,validator,length_weight,smoothness_weight,"
+           "time_us,iterations,attempted,"
            "line_search,accepted,checks,initial_objective,final_objective,"
            "final_length,checksum\n"
         << std::setprecision(17);
@@ -38,7 +54,7 @@ int main(int argc, char* argv[]) {
         for (int count : {32, 256}) {
             for (bool continuous : {false, true}) {
                 for (bool validate : {false, true}) {
-                    if (argc == 5 && (std::to_string(dof) != argv[1] ||
+                    if (argc >= 5 && (std::to_string(dof) != argv[1] ||
                                       std::to_string(count) != argv[2] ||
                                       std::to_string(continuous) != argv[3] ||
                                       std::to_string(validate) != argv[4]))
@@ -46,7 +62,7 @@ int main(int argc, char* argv[]) {
                     matched = true;
                     PathOptimizer::StateValidator validator;
                     if (validate)
-                        validator = [](const Eigen::VectorXd& q) {
+                        validator = [](const Eigen::VectorXd &q) {
                             return q.allFinite() && q.squaredNorm() < 200.0;
                         };
                     PathOptimizer optimizer(
@@ -56,7 +72,8 @@ int main(int argc, char* argv[]) {
                     for (int joint = 0; joint < dof; ++joint)
                         weights[joint] = std::ldexp(1.0, joint % 3 - 1);
                     optimizer.SetJointWeights(weights);
-                    if (continuous) optimizer.SetContinuousJoints({0});
+                    if (continuous)
+                        optimizer.SetContinuousJoints({0});
                     std::vector<Eigen::VectorXd> path;
                     for (int i = 0; i < count; ++i) {
                         const double t = static_cast<double>(i) / (count - 1);
@@ -74,7 +91,8 @@ int main(int argc, char* argv[]) {
                     options.edge_resolution = 0.03;
                     options.step_size = 0.2;
                     options.line_search_steps = 6;
-                    options.smoothness_weight = 0.5;
+                    options.length_weight = length_weight;
+                    options.smoothness_weight = smoothness_weight;
                     PathOptimizationResult reference =
                         optimizer.Optimize(path, options);
                     if (!reference.Success() ||
@@ -109,10 +127,11 @@ int main(int argc, char* argv[]) {
                                 calls);
                     }
                     std::sort(samples.begin(), samples.end());
-                    const auto& stats = reference.statistics;
+                    const auto &stats = reference.statistics;
                     std::cout
                         << dof << ',' << count << ',' << continuous << ','
-                        << validate << ',' << samples[3] << ','
+                        << validate << ',' << length_weight << ','
+                        << smoothness_weight << ',' << samples[3] << ','
                         << stats.iterations << ',' << stats.attempted_updates
                         << ',' << stats.line_search_evaluations << ','
                         << stats.accepted_updates << ','

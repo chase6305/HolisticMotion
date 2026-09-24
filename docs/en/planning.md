@@ -190,6 +190,10 @@ including reverse sweeps. Local geometry and gradient evaluation allocate no
 Eigen heap storage after workspace/output initialization. The complete optimizer
 still allocates its path, validation samples, and optional state-cost buffers.
 
+Terms whose objective weight is zero are skipped in both cost and gradient
+evaluation. This avoids unnecessary geometry work and prevents an overflowing
+disabled term from contaminating an otherwise finite objective.
+
 Each waypoint update uses bounded backtracking. `line_search_steps` controls
 how many step sizes are attempted, while `line_search_decay` scales each
 retry. This recovers a smaller update when the initial step collides or

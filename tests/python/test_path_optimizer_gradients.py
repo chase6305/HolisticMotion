@@ -147,3 +147,25 @@ def test_overflowing_combined_gradient_is_rejected_before_trial_callbacks():
         optimizer.optimize([[-0.5], [0.0], [0.5]], options)
     assert len(samples) == 1
     np.testing.assert_array_equal(samples[0], [0.0])
+
+
+@pytest.mark.parametrize("length_weight", [0.0, 1.0])
+def test_disabled_smoothness_does_not_overflow_the_active_objective(length_weight):
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_joint_weights([1e308])
+    options = cost_options(0.001, 0.1)
+    options.length_weight = length_weight
+    options.state_cost_weight = 1.0 - length_weight
+    if options.state_cost_weight:
+        optimizer.set_state_cost(lambda q: 1e308 * q[0] ** 2)
+        optimizer.set_state_cost_gradient(lambda q: [1e308 * (2.0 * q[0])])
+    result = optimizer.optimize([[-0.5], [0.5], [-0.5]], options)
+    assert result.success, result.message
+    assert np.isfinite(result.statistics.final_objective)
+    assert result.statistics.initial_objective == pytest.approx(
+        2e154 if length_weight else 2.5e307
+    )
+    np.testing.assert_array_equal(np.asarray(result.path)[[0, -1]], [[-0.5], [-0.5]])
+    if options.state_cost_weight:
+        assert result.statistics.final_objective < result.statistics.initial_objective
+        assert result.path[1][0] == pytest.approx(0.4)

@@ -22,10 +22,12 @@ class PathGeometryWorkspace {
 
     void SetWaypoint(const std::vector<Eigen::VectorXd> &path,
                      std::size_t index) {
+        if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
+            return;
         DifferenceInto(path[index - 1], path[index], left_);
         DifferenceInto(path[index], path[index + 1], right_);
-        has_previous_ = index > 1;
-        has_next_ = index + 2 < path.size();
+        has_previous_ = smoothness_weight_ > 0.0 && index > 1;
+        has_next_ = smoothness_weight_ > 0.0 && index + 2 < path.size();
         if (has_previous_)
             DifferenceInto(path[index - 2], path[index - 1], previous_);
         if (has_next_)
@@ -33,17 +35,22 @@ class PathGeometryWorkspace {
     }
 
     double LocalObjective() {
-        const double length =
-            std::sqrt(SquaredNorm(left_)) + std::sqrt(SquaredNorm(right_));
-        acceleration_ = right_ - left_;
-        double smoothness = SquaredNorm(acceleration_);
-        if (has_previous_) {
-            acceleration_ = left_ - previous_;
-            smoothness += SquaredNorm(acceleration_);
-        }
-        if (has_next_) {
-            acceleration_ = next_ - right_;
-            smoothness += SquaredNorm(acceleration_);
+        double length = 0.0;
+        double smoothness = 0.0;
+        if (length_weight_ > 0.0)
+            length =
+                std::sqrt(SquaredNorm(left_)) + std::sqrt(SquaredNorm(right_));
+        if (smoothness_weight_ > 0.0) {
+            acceleration_ = right_ - left_;
+            smoothness = SquaredNorm(acceleration_);
+            if (has_previous_) {
+                acceleration_ = left_ - previous_;
+                smoothness += SquaredNorm(acceleration_);
+            }
+            if (has_next_) {
+                acceleration_ = next_ - right_;
+                smoothness += SquaredNorm(acceleration_);
+            }
         }
         return length_weight_ * length + smoothness_weight_ * smoothness;
     }
@@ -51,6 +58,8 @@ class PathGeometryWorkspace {
     double CandidateObjective(const Eigen::VectorXd &before,
                               const Eigen::VectorXd &candidate,
                               const Eigen::VectorXd &after) {
+        if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
+            return 0.0;
         DifferenceInto(before, candidate, left_);
         DifferenceInto(candidate, after, right_);
         return LocalObjective();
@@ -58,26 +67,32 @@ class PathGeometryWorkspace {
 
     void Gradient(Eigen::VectorXd &gradient) {
         gradient.setZero(weights_.size());
-        const double left_length = std::sqrt(SquaredNorm(left_));
-        const double right_length = std::sqrt(SquaredNorm(right_));
-        if (left_length > 1e-15)
-            gradient.array() +=
-                length_weight_ * weights_.array() * left_.array() / left_length;
-        if (right_length > 1e-15)
-            gradient.array() -= length_weight_ * weights_.array() *
-                                right_.array() / right_length;
-        if (has_previous_) {
-            acceleration_ = left_ - previous_;
-            gradient.array() += 2.0 * smoothness_weight_ * weights_.array() *
-                                acceleration_.array();
+        double left_length = 0.0;
+        double right_length = 0.0;
+        if (length_weight_ > 0.0) {
+            left_length = std::sqrt(SquaredNorm(left_));
+            right_length = std::sqrt(SquaredNorm(right_));
+            if (left_length > 1e-15)
+                gradient.array() += length_weight_ * weights_.array() *
+                                    left_.array() / left_length;
+            if (right_length > 1e-15)
+                gradient.array() -= length_weight_ * weights_.array() *
+                                    right_.array() / right_length;
         }
-        acceleration_ = right_ - left_;
-        gradient.array() -=
-            4.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
-        if (has_next_) {
-            acceleration_ = next_ - right_;
-            gradient.array() += 2.0 * smoothness_weight_ * weights_.array() *
+        if (smoothness_weight_ > 0.0) {
+            if (has_previous_) {
+                acceleration_ = left_ - previous_;
+                gradient.array() += 2.0 * smoothness_weight_ *
+                                    weights_.array() * acceleration_.array();
+            }
+            acceleration_ = right_ - left_;
+            gradient.array() -= 4.0 * smoothness_weight_ * weights_.array() *
                                 acceleration_.array();
+            if (has_next_) {
+                acceleration_ = next_ - right_;
+                gradient.array() += 2.0 * smoothness_weight_ *
+                                    weights_.array() * acceleration_.array();
+            }
         }
         if (!gradient.allFinite()) {
             // Finite terms can overflow before multiplication by a small (or
@@ -94,16 +109,21 @@ class PathGeometryWorkspace {
                 if (right_length > 1e-15)
                     value -= static_cast<long double>(length_weight_) *
                              right_[i] / right_length;
-                long double smoothness =
-                    -4.0L * (static_cast<long double>(right_[i]) - left_[i]);
-                if (has_previous_)
-                    smoothness += 2.0L * (static_cast<long double>(left_[i]) -
-                                          previous_[i]);
-                if (has_next_)
-                    smoothness +=
-                        2.0L * (static_cast<long double>(next_[i]) - right_[i]);
-                value +=
-                    static_cast<long double>(smoothness_weight_) * smoothness;
+                if (smoothness_weight_ > 0.0) {
+                    long double smoothness =
+                        -4.0L *
+                        (static_cast<long double>(right_[i]) - left_[i]);
+                    if (has_previous_)
+                        smoothness +=
+                            2.0L *
+                            (static_cast<long double>(left_[i]) - previous_[i]);
+                    if (has_next_)
+                        smoothness +=
+                            2.0L *
+                            (static_cast<long double>(next_[i]) - right_[i]);
+                    value += static_cast<long double>(smoothness_weight_) *
+                             smoothness;
+                }
                 gradient[i] = static_cast<double>(value * weights_[i]);
             }
         }

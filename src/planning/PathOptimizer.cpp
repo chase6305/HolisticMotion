@@ -71,13 +71,19 @@ class OptimizationContext {
     }
 
     double GeometryObjective(const std::vector<Eigen::VectorXd> &path) const {
+        if (options_.length_weight == 0.0 && options_.smoothness_weight == 0.0)
+            return 0.0;
         Eigen::VectorXd previous = Difference(path[0], path[1]);
-        double length = std::sqrt(SquaredNorm(previous));
+        double length = options_.length_weight > 0.0
+                            ? std::sqrt(SquaredNorm(previous))
+                            : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
             Eigen::VectorXd next = Difference(path[i], path[i + 1]);
-            length += std::sqrt(SquaredNorm(next));
-            smoothness += SquaredNorm(next - previous);
+            if (options_.length_weight > 0.0)
+                length += std::sqrt(SquaredNorm(next));
+            if (options_.smoothness_weight > 0.0)
+                smoothness += SquaredNorm(next - previous);
             previous = std::move(next);
         }
         return options_.length_weight * length +
