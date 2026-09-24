@@ -100,6 +100,37 @@ void CheckJetAndInvalidTimes() {
     }
 }
 
+void CheckJetExtremeCoefficients() {
+    const double tiny = std::numeric_limits<double>::denorm_min();
+    const double huge = std::numeric_limits<double>::max();
+    const std::vector<Eigen::Vector4d> coefficients{
+        Eigen::Vector4d(-0.0, -0.0, -0.0, -0.0),
+        Eigen::Vector4d(tiny, -tiny, 3 * tiny, -7 * tiny),
+        Eigen::Vector4d(huge / 8, -huge / 16, huge / 32, -huge / 64),
+        Eigen::Vector4d(1.0, -1e100, 1e200, -1e300),
+        Eigen::Vector4d(huge, huge, huge, huge)};
+    for (const auto& data : coefficients) {
+        PSpline spline;
+        Require(spline.PushBack(std::make_shared<Polynomial>(data), 2.0),
+                "append extreme coefficients");
+        for (double time : {0.0, tiny, 0.125, 0.5, 1.0, 1.5, 2.0}) {
+            const auto jet = spline.ComputeJetAtS(time);
+            for (unsigned order = 0; order < 4; ++order) {
+                const double expected = spline.ComputeValueAtS(time, order);
+                Require((std::isnan(jet[order]) && std::isnan(expected)) ||
+                            (jet[order] == expected &&
+                             std::signbit(jet[order]) == std::signbit(expected)),
+                        "fused jet must preserve scalar rounding and zero signs");
+            }
+        }
+    }
+    PSpline empty_polynomial;
+    Require(empty_polynomial.PushBack(std::make_shared<Polynomial>()),
+            "append default polynomial");
+    Require(empty_polynomial.ComputeJetAtS(0.5) == std::array<double, 4>{},
+            "default polynomial jet must remain zero");
+}
+
 void CheckInvalidProfilesAreNotTruncated() {
     struct Builder : TrajectoryBase<Rn<double, 2>> {
         using TrajectoryBase<Rn<double, 2>>::InterpolateToPSpline;
@@ -451,7 +482,7 @@ int main() {
     for (const auto check :
          {CheckLinearPhaseVelocityExtremum,
           CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
-          CheckAppendValidation, CheckJetAndInvalidTimes,
+          CheckAppendValidation, CheckJetAndInvalidTimes, CheckJetExtremeCoefficients,
           CheckInvalidProfilesAreNotTruncated,
           CheckAllPhaseStatesAreFinite,
           CheckShortPositivePhasesArePreserved,

@@ -43,6 +43,21 @@ class Polynomial : public std::enable_shared_from_this<Polynomial> {
     }
 
    private:
+    friend class PSpline;
+
+    std::array<double, 4> ComputeJet(double s) const {
+        if (coefficient_count_ == 0) return {};
+        // Share derivative coefficients while retaining the scalar evaluator's
+        // multiplication order, including for subnormal coefficients.
+        const double cubic = 0.0 + data_[3];
+        const double cubic_derivative = 0.0 + data_[3] * 3.0;
+        const double quadratic_derivative = data_[2] * 2.0;
+        const double jerk = 0.0 + data_[3] * 3.0 * 2.0;
+        return {((cubic * s + data_[2]) * s + data_[1]) * s + data_[0],
+                (cubic_derivative * s + quadratic_derivative) * s + data_[1],
+                jerk * s + quadratic_derivative, jerk};
+    }
+
     Eigen::Vector4d data_;  ///< data in turn: pos, vel, acc, jerk
 
     unsigned coefficient_count_;
@@ -84,11 +99,7 @@ class PSpline {
     /// Also return the active phase index, with the same knot snapping policy.
     std::array<double, 4> ComputeJetAtS(double s, std::size_t& index) const {
         index = LocatePolynomial(s);
-        std::array<double, 4> result{};
-        for (unsigned order = 0; order < result.size(); ++order) {
-            result[order] = polynomials_[index]->ComputePolyValueAtS(s, order);
-        }
-        return result;
+        return polynomials_[index]->ComputeJet(s);
     }
 
     unsigned GetDoF() const { return dof_; };
