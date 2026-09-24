@@ -29,6 +29,11 @@ interpolation remains inside its limits and continuous joints wrap normally.
 `edge_resolution` then has no validation work to control, and `collision_checks`
 remains zero. Configure a validator to check obstacles or additional constraints.
 
+Joint weights control search distances, not a goal tolerance. A direct solution
+preserves distinct endpoints even with very small weights. RRT-Connect joins
+its trees only after a validated extension actually reaches the target state;
+a small weighted gap cannot substitute for checking the connecting motion.
+
 For mixed bounded/continuous spaces with up to eight coordinates, trees of at
 least 128 states use an internal balanced spatial index. It splits only bounded
 coordinates and evaluates candidates with the original weighted, wrapped

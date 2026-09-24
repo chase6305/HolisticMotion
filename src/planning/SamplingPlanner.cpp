@@ -67,16 +67,32 @@ class PlanningContext {
         return std::sqrt(metric_.SquaredDistance(first, second));
     }
 
+    bool SameState(const Eigen::VectorXd &first,
+                   const Eigen::VectorXd &second) const {
+        for (Eigen::Index i = 0; i < first.size(); ++i) {
+            const double delta = second[i] - first[i];
+            if ((continuous_[static_cast<std::size_t>(i)]
+                     ? detail::WrappedDifference(delta)
+                     : delta) != 0.0)
+                return false;
+        }
+        return true;
+    }
+
     Eigen::VectorXd Interpolate(const Eigen::VectorXd &from,
                                 const Eigen::VectorXd &to, double ratio) const {
         return Normalize(from + ratio * Difference(from, to));
     }
 
     Eigen::VectorXd Steer(const Eigen::VectorXd &from,
-                          const Eigen::VectorXd &to) const {
+                          const Eigen::VectorXd &to,
+                          bool *target_reached = nullptr) const {
         const double distance = Distance(from, to);
-        if (distance <= options_.extension_range)
-            return Normalize(to);
+        const bool reached = distance <= options_.extension_range;
+        if (target_reached)
+            *target_reached = reached;
+        if (reached)
+            return to;
         return Interpolate(from, to, options_.extension_range / distance);
     }
 
@@ -177,9 +193,15 @@ class PlanningContext {
     ExtendStatus Extend(Tree &tree, const Eigen::VectorXd &target,
                         std::size_t &new_index) {
         const std::size_t nearest = Nearest(tree, target);
-        Eigen::VectorXd candidate = Steer(tree.nodes[nearest].state, target);
-        if (Distance(tree.nodes[nearest].state, candidate) < 1e-12 ||
-            !IsMotionValid(tree.nodes[nearest].state, candidate)) {
+        bool target_reached;
+        Eigen::VectorXd candidate =
+            Steer(tree.nodes[nearest].state, target, &target_reached);
+        if (SameState(tree.nodes[nearest].state, candidate)) {
+            new_index = nearest;
+            return target_reached ? ExtendStatus::REACHED
+                                  : ExtendStatus::TRAPPED;
+        }
+        if (!IsMotionValid(tree.nodes[nearest].state, candidate)) {
             return ExtendStatus::TRAPPED;
         }
         new_index = tree.nodes.size();
@@ -190,8 +212,9 @@ class PlanningContext {
                  Distance(tree.nodes[nearest].state, candidate),
              {}});
         tree.nodes[nearest].children.push_back(new_index);
-        return Distance(candidate, target) < 1e-9 ? ExtendStatus::REACHED
-                                                  : ExtendStatus::ADVANCED;
+        // A small weighted distance is not evidence of a validated connection:
+        // small weights can hide a large, obstructed gap in joint coordinates.
+        return target_reached ? ExtendStatus::REACHED : ExtendStatus::ADVANCED;
     }
 
     std::vector<Eigen::VectorXd> Trace(const Tree &tree,
@@ -357,7 +380,7 @@ ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
     // The goal-rooted trace runs goal -> connection after reversal.
     std::reverse(second_path.begin(), second_path.end());
     if (!first_path.empty() && !second_path.empty() &&
-        context.Distance(first_path.back(), second_path.front()) < 1e-9) {
+        context.SameState(first_path.back(), second_path.front())) {
         second_path.erase(second_path.begin());
     }
     first_path.insert(first_path.end(), second_path.begin(), second_path.end());
@@ -621,7 +644,7 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
     if (!goal_valid) {
         return finish(PlanningStatus::INVALID_GOAL, "goal state is invalid");
     }
-    if (context.Distance(start, goal) < 1e-12) {
+    if (context.SameState(start, goal)) {
         result.path = {start};
         result.statistics.tree_nodes = 1;
         return finish(PlanningStatus::EXACT_SOLUTION,

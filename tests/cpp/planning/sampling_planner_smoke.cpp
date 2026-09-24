@@ -21,6 +21,27 @@ bool OutsideObstacle(const Eigen::VectorXd &q) {
 } // namespace
 
 int main() {
+    for (double weight : {1e-18, 1e-30}) {
+        SamplingPlanner blocked(Eigen::VectorXd::Constant(1, -1.0),
+                                Eigen::VectorXd::Constant(1, 1.0),
+                                [](const Eigen::VectorXd &q) {
+                                    return q[0] < -0.25 || q[0] > -0.15;
+                                });
+        blocked.SetJointWeights(Eigen::VectorXd::Constant(1, weight));
+        PlanningOptions scaled;
+        scaled.extension_range = 0.3 * std::sqrt(weight);
+        scaled.edge_resolution = 0.01;
+        scaled.goal_bias = 1.0;
+        scaled.max_iterations = 10;
+        scaled.simplify_path = false;
+        const auto result = blocked.Plan(Eigen::VectorXd::Constant(1, -0.9),
+                                         Eigen::VectorXd::Constant(1, 0.9), scaled);
+        if (result.Success() || !result.path.empty()) {
+            std::cerr << "small metric weights bypassed an impassable wall\n";
+            return 8;
+        }
+    }
+
   auto incompatible =
       std::make_shared<holistic_motion::robotics::SRSKinematics>(
           std::vector<holistic_motion::robotics::JointNode>(1));

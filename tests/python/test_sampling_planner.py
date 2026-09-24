@@ -29,6 +29,61 @@ def _outside_wall(q):
         hm.SamplingAlgorithm.INFORMED_RRT_STAR,
     ],
 )
+@pytest.mark.parametrize("weight", [1e-18, 1e-30, 1e-320])
+def test_small_metric_weights_cannot_connect_across_an_impassable_wall(
+    algorithm, weight
+):
+    planner = hm.SamplingPlanner([-1.0], [1.0], lambda q: not (-0.25 <= q[0] <= -0.15))
+    planner.set_joint_weights([weight])
+    options = _options(algorithm)
+    options.extension_range = 0.3 * np.sqrt(weight)
+    options.edge_resolution = 0.01
+    options.goal_bias = 1.0
+    options.max_iterations = 10
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    result = planner.plan([-0.9], [0.9], options)
+    assert result.status == hm.PlanningStatus.NO_SOLUTION
+    assert not result.success
+    assert len(result.path) == 0
+
+
+@pytest.mark.parametrize("weight", [1e-30, 1e-320])
+def test_small_metric_weights_preserve_distinct_unobstructed_endpoints(weight):
+    planner = hm.SamplingPlanner([-1.0], [1.0])
+    planner.set_joint_weights([weight])
+    result = planner.plan([-0.9], [0.9], _options())
+    assert result.success
+    np.testing.assert_array_equal(result.path, [[-0.9], [0.9]])
+
+
+@pytest.mark.parametrize("weight", [1.0, 1e-18, 1e-30])
+def test_rrt_connect_validates_every_edge_under_metric_rescaling(weight):
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
+    planner.set_joint_weights([weight, weight])
+    options = _options()
+    options.extension_range = 0.15 * np.sqrt(weight)
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success, result.message
+    np.testing.assert_array_equal(result.path[0], [-0.8, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [0.8, 0.0])
+    for first, second in zip(result.path[:-1], result.path[1:]):
+        segments = max(
+            1, int(np.ceil(np.max(np.abs(second - first)) / options.edge_resolution))
+        )
+        assert all(_outside_wall(q) for q in np.linspace(first, second, segments + 1))
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    [
+        hm.SamplingAlgorithm.RRT_CONNECT,
+        hm.SamplingAlgorithm.RRT_STAR,
+        hm.SamplingAlgorithm.INFORMED_RRT_STAR,
+    ],
+)
 def test_sampling_planner_routes_around_obstacle(algorithm):
     planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
     result = planner.plan([-0.8, 0.0], [0.8, 0.0], _options(algorithm))
