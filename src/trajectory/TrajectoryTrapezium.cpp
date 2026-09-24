@@ -254,8 +254,9 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
 template <typename LieGroup>
 bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
     const double &q0, const double &q1, double v0, double &v1,
-    const double &max_velocity, double max_acceleration, const double &t0,
+    const double &requested_max_velocity, double max_acceleration, const double &t0,
     std::list<TrajectorySeg> &traj_segs, const int &seg_no) {
+    double max_velocity = requested_max_velocity;
     holistic_motion::utility::LogDebug(
         "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
         "max_acceleration:{}, seg_no:{}",
@@ -275,6 +276,16 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
     }
     v0 = std::max(0.0, v0);
     v1 = std::max(0.0, v1);
+    // Curve and line tangents can disagree on the same speed cap by a few
+    // ulps. Retain roundoff-equivalent endpoints instead of creating a ramp
+    // too short to advance the timestamp. Always compare against the original
+    // cap so the allowance cannot accumulate between endpoints.
+    constexpr double speed_roundoff = 256.0 * std::numeric_limits<double>::epsilon();
+    for (double endpoint : {v0, v1}) {
+        if (endpoint > max_velocity &&
+            endpoint - requested_max_velocity <= speed_roundoff * endpoint)
+            max_velocity = endpoint;
+    }
     const double h = q1 - q0;
     if (!std::isfinite(h))
         return false;
