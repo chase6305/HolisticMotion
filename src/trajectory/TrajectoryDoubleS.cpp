@@ -282,13 +282,14 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
 template <typename LieGroup>
 bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     const double &q0, const double &q1, double &start_velocity,
-    double &end_velocity, const double &max_velocity, double max_acceleration,
+    double &end_velocity, const double &requested_max_velocity, double max_acceleration,
     const double &max_jerk, const double &t0,
     std::list<TrajectorySeg> &traj_seg, const int &seg_no,
     const bool &allow_concave) {
     // Publish adjusted endpoint speeds only with a complete usable profile.
     double v0 = start_velocity;
     double v1 = end_velocity;
+    double max_velocity = requested_max_velocity;
     holistic_motion::utility::LogDebug(
         "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
         "max_acceleration:{}, max_jerk:{}, seg_no:{}, allow_concave:{}",
@@ -309,6 +310,17 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     }
     v0 = std::max(0.0, v0);
     v1 = std::max(0.0, v1);
+    // Adjacent curve and line tangents can compute the same speed cap a few
+    // ulps apart. Preserve the endpoint speed within a relative roundoff
+    // budget instead of needlessly rebuilding the entire preceding profile.
+    // The composed trajectory still receives the global joint-limit check.
+    constexpr double speed_roundoff =
+        128.0 * std::numeric_limits<double>::epsilon();
+    for (double endpoint : {v0, v1}) {
+        if (endpoint > max_velocity &&
+            endpoint - requested_max_velocity <= speed_roundoff * endpoint)
+            max_velocity = endpoint;
+    }
     double acc_init = .0;
 
     // duration

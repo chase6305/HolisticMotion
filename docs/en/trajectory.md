@@ -309,3 +309,10 @@ time-proportional sampling with at least 65 checks per phase, so short curved
 phases receive enough local resolution to expose peaks missed by a coarse
 global grid. Curved-path checks remain sampled bounds rather than a proof of
 continuous constraint satisfaction.
+
+Double-S treats an endpoint speed above a neighboring segment cap by at most
+128 machine epsilons (relative to that speed) as the same numerical cap. It
+preserves that endpoint instead of backtracking through preceding segments;
+the comparison always uses the original cap, so the allowance cannot accumulate
+across endpoints. Larger differences still reduce the speed and backtrack,
+and global joint-limit enforcement still applies to the composed trajectory.

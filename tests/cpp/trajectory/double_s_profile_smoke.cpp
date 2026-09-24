@@ -376,8 +376,49 @@ void CheckRecordedTrajectory() {
         throw std::runtime_error("recorded trajectory misses its final waypoint");
 }
 
+void CheckRoundoffEquivalentSpeedCaps() {
+    for (double scale : {1e-8, 1.0, 1e8}) {
+        {
+            const double eps = std::numeric_limits<double>::epsilon();
+            double initial = scale * (1.0 + 64.0 * eps);
+            const double retained = initial;
+            double terminal = scale * (1.0 + 192.0 * eps);
+            std::list<TrajectorySeg> phases;
+            if (!ProfileProbe::_ComputeDoubleSProfile(
+                    0.0, 3.0 * scale, initial, terminal, scale, scale, scale,
+                    0.0, phases, 1, false) || initial != retained ||
+                terminal != retained)
+                throw std::runtime_error("speed-cap budget accumulated across endpoints");
+        }
+        for (double ulps : {64.0, 512.0}) {
+            const double original = scale *
+                (1.0 + ulps * std::numeric_limits<double>::epsilon());
+            double initial = original;
+            double terminal = 0.4 * scale;
+            std::list<TrajectorySeg> phases;
+            const bool success = ProfileProbe::_ComputeDoubleSProfile(
+                0.0, 3.0 * scale, initial, terminal, scale, scale, scale,
+                0.0, phases, 1, false);
+            if (phases.size() != 8 || success != (ulps == 64.0) ||
+                initial != (success ? original : scale) || terminal != 0.4 * scale)
+                throw std::runtime_error("speed-cap roundoff changed endpoint semantics");
+            auto previous = phases.begin();
+            for (auto next = std::next(previous); next != phases.end(); ++previous, ++next) {
+                if (next->timestamp < previous->timestamp ||
+                    !std::isfinite(next->pos) || !std::isfinite(next->vel) ||
+                    !std::isfinite(next->acc))
+                    throw std::runtime_error("speed-cap adjustment produced invalid phases");
+            }
+            if (std::abs(phases.back().pos / scale - 3.0) > 1e-12 ||
+                std::abs(phases.back().vel / scale - 0.4) > 1e-13)
+                throw std::runtime_error("speed-cap adjustment lost integrated endpoints");
+        }
+    }
+}
+
 int main() {
     try {
+        CheckRoundoffEquivalentSpeedCaps();
         ProfileProbe probe;
         sampling_checks::CheckSegmentSampling(
             [&](const auto &segment, const auto &v, const auto &a, const auto &j) {
