@@ -444,8 +444,30 @@ void CheckTriangularPlateauCanBeRebased() {
     }
 }
 
+void CheckConcaveProfilePropagatesInfeasibleStartSpeed() {
+    double start = 1.1798009563230965;
+    double end = 0.0;
+    std::list<TrajectorySeg> phases;
+    const bool complete = ProfileProbe::_ComputeDoubleSProfile(
+        1.1555194425820554, 1.361950310411495, start, end,
+        1.3662218246634337, 1.6326396524052214, 2.981372779263992,
+        1.6089231672976763, phases, 2, true);
+    if (complete || phases.size() != 8 || start >= 1.1798009563230965 ||
+        phases.front().vel != start)
+        throw std::runtime_error("reduced final entry speed needs backtracking");
+    // Concave profiles may preserve an above-cap endpoint when distance is
+    // sufficient. That case does not need an upstream speed adjustment.
+    start = 1.01;
+    end = 0.0;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0,
+                                             2.0, 5.0, 0.0, phases, 2, true) ||
+        start != 1.01 || phases.front().vel != start)
+        throw std::runtime_error("feasible concave entry speed must be retained");
+}
+
 int main() {
     try {
+        CheckConcaveProfilePropagatesInfeasibleStartSpeed();
         CheckRoundoffEquivalentSpeedCaps();
         CheckTriangularPlateauCanBeRebased();
         ProfileProbe probe;

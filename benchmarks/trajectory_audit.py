@@ -30,7 +30,7 @@ def _inputs(rng, trial):
     }, scale
 
 
-def _check(inputs, scale, sample_count, phase_samples=0):
+def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False):
     try:
         trajectory = hm.RnTrajectory(**inputs)
     except (ValueError, RuntimeError) as error:
@@ -62,6 +62,41 @@ def _check(inputs, scale, sample_count, phase_samples=0):
         ratios.append(float(np.max(np.abs(dddq) / inputs["max_jerk"])))
     if max(ratios) > 1.0001:
         return "limits", {"ratios": ratios}
+    if check_continuity and len(breakpoints) > 2:
+        knots = np.asarray(breakpoints)
+        # Stay outside knot snapping while approaching from the left, even
+        # when phase lengths differ substantially. The next derivative bounds
+        # the genuine state change over this interval; the residual allowance
+        # accounts for evaluation roundoff rather than physical motion.
+        spans = np.diff(knots)[:-1]
+        offset = np.minimum(
+            0.25 * spans,
+            np.maximum(
+                1e-8 * spans,
+                256 * np.finfo(float).eps * np.maximum(1.0, np.abs(knots[1:-1])),
+            ),
+        )
+        left = trajectory.sample(knots[1:-1] - offset)
+        right = trajectory.sample(knots[1:-1])
+        allowances = [
+            ("max_velocity", 1e-9 * max(1.0, scale)),
+            ("max_acceleration", 1e-7 * np.maximum(1.0, inputs["max_velocity"])),
+        ]
+        if inputs["profile"] == "double_s":
+            allowances.append(
+                ("max_jerk", 1e-7 * np.maximum(1.0, inputs["max_acceleration"]))
+            )
+        jumps = [
+            float(
+                np.max(
+                    np.abs(right[order] - left[order])
+                    / (np.outer(offset, inputs[limit]) + roundoff)
+                )
+            )
+            for order, (limit, roundoff) in enumerate(allowances)
+        ]
+        if not np.isfinite(jumps).all() or max(jumps) > 1.0:
+            return "continuity", {"jump_ratios": jumps}
     return "passed", {}
 
 
@@ -76,6 +111,11 @@ def main():
         type=int,
         default=0,
         help="also sample each time phase independently (0 disables)",
+    )
+    parser.add_argument(
+        "--check-continuity",
+        action="store_true",
+        help="check state changes across time-phase joins against derivative bounds",
     )
     args = parser.parse_args()
     if args.seed < 0 or args.cases < 1 or args.samples < 2:
@@ -93,7 +133,9 @@ def main():
         inputs, scale = _inputs(rng, trial)
         if args.case_index is not None and trial != args.case_index:
             continue
-        kind, details = _check(inputs, scale, args.samples, args.phase_samples)
+        kind, details = _check(
+            inputs, scale, args.samples, args.phase_samples, args.check_continuity
+        )
         counts[kind] = counts.get(kind, 0) + 1
         if kind != "passed" and len(failures) < 10:
             failures.append(
@@ -106,6 +148,7 @@ def main():
                 "numpy_version": np.__version__,
                 "samples": args.samples,
                 "phase_samples": args.phase_samples,
+                "check_continuity": args.check_continuity,
                 "elapsed_seconds": time.perf_counter() - started,
                 "counts": counts,
                 "first_failures": failures,

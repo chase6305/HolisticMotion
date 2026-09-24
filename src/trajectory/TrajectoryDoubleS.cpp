@@ -332,7 +332,9 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     ///< delta to compute
     double jerk_accel_time{0.0}, ta{0.0}, tv{0.0};
     double jerk_decel_time{0.0}, td{0.0}, delta{0.0}, jerk_time{0.0};
-    bool need_reduce_v0 = v0 > max_velocity ? true : false;
+    // A concave phase can retain an above-cap endpoint, but reducing an
+    // infeasible start speed below still requires upstream backtracking.
+    bool need_reduce_v0 = !allow_concave && v0 > max_velocity;
     // const double v0_init = v0;
 
     // const double max_acceleration_const = max_acceleration;
@@ -581,7 +583,7 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
 
     holistic_motion::utility::LogDebug("Finsh to Add trajectory seg!");
 
-    return !need_reduce_v0 || allow_concave;
+    return !need_reduce_v0;
 }
 
 template <typename LieGroup>
