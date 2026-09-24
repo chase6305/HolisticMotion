@@ -181,7 +181,8 @@ TrajectoryDoubleS<LieGroup>::TrajectoryDoubleS(
             if (!res) {
                 if (traj_segs.empty()) {
                     holistic_motion::utility::LogWarning(
-                        "Initial velocity cannot be reached without an earlier segment");
+                        "Initial velocity cannot be reached without an earlier "
+                        "segment");
                     return;
                 }
                 traj_segs.back().vel = pre_vel;

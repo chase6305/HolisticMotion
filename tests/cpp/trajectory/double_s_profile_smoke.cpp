@@ -522,8 +522,8 @@ void CheckUnsupportedOverspeedValleyIsNotPublished() {
         throw std::runtime_error("unsupported valley must preserve inputs and fail");
     start = 1.2;
     end = 1.3;
-    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0,
-                                             2.0, 5.0, 0.0, phases, 0, true) ||
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0, 2.0, 5.0, 0.0,
+                                              phases, 0, true) ||
         phases.size() != 8 || std::abs(phases.back().pos - 3.0) > 1e-12 ||
         std::abs(phases.back().vel - 1.3) > 1e-12)
         throw std::runtime_error("feasible overspeed valley must remain supported");
