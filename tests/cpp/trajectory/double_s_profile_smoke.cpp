@@ -497,8 +497,23 @@ void CheckBacktrackingCanAccelerateAnEarlierCruise() {
             throw std::runtime_error("backtracking exceeded configured acceleration");
 }
 
+void CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking() {
+    using Group = Rn<double, 2>;
+    std::vector<Group> points(2);
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1e-7, 0.0;
+    auto path = std::make_shared<PathBezierCurve<Group>>(points, 5);
+    auto limits = std::make_shared<TrajectoryConstraints>(
+        Eigen::Vector2d::Constant(1e-4), Eigen::Vector2d::Constant(1e-6),
+        Eigen::Vector2d::Constant(1e-6));
+    const TrajectoryDoubleS<Group> trajectory(path, limits, 5e-6, 0.0);
+    if (trajectory.IsValid())
+        throw std::runtime_error("infeasible requested initial speed must be rejected");
+}
+
 int main() {
     try {
+        CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking();
         CheckBacktrackingCanAccelerateAnEarlierCruise();
         CheckConcaveProfilePropagatesInfeasibleStartSpeed();
         CheckRoundoffEquivalentSpeedCaps();
