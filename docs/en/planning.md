@@ -178,8 +178,10 @@ because a complete objective was never evaluated.
 Waypoint updates use an incremental objective: moving one interior waypoint
 recomputes only its two adjacent length terms and the at most three affected
 second-difference terms. Full passes compute the initial and final reported
-objectives; accepted updates maintain the running objective by local deltas.
-Geometric bookkeeping therefore scales linearly with waypoint count per sweep
+objectives. Acceptance compares the affected local terms directly, so unchanged
+large costs elsewhere cannot hide a local improvement or permit an uphill trial.
+Final state-cost statistics are summed from cached accepted values without new
+callbacks, avoiding drift from repeated subtraction. Geometric bookkeeping therefore scales linearly with waypoint count per sweep
 for a fixed line-search budget. Collision and state-cost callbacks add their own
 costs.
 
