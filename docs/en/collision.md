@@ -80,6 +80,9 @@ property returns independent snapshots; editing them does not change the model.
 Construct a new model to use modified geometry. Boolean queries check immutable
 radius bounds once per query to select the ordinary squared-distance loop;
 extreme radii or margins retain the extended-precision fallback.
+Each query updates joint kinematics and the distinct frames owning spheres;
+unrelated sensor and tool frames are not refreshed. Spheres sharing a frame
+reuse its placement, including when the active collision groups change.
 
 ```python
 spheres = [
