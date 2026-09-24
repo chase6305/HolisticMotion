@@ -384,12 +384,74 @@ void CheckLinearPathPhaseOwnership() {
     CheckCornerPhaseOwnership<TrajectoryDoubleS>();
     CheckCornerPhaseOwnership<TrajectoryTrapezium>();
 }
+void CheckLinearPhaseVelocityExtremum() {
+    struct LinearPhase : TrajectoryBase<Rn<double, 2>> {
+        explicit LinearPhase(bool cache_owner) {
+            std::vector<Rn<double, 2>> points(2);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5,
+                                                                     false, 0.0);
+            constexpr double acceleration = 0.742468;
+            trajectory_segments_ = {
+                TrajectorySeg(0, 0.0, 0.0, 0.7, acceleration, -2.0),
+                TrajectorySeg(0, 1.0, 0.7 + acceleration / 2.0 - 1.0 / 3.0,
+                              0.7 + acceleration - 1.0, acceleration - 2.0, -2.0)};
+            trajectory_pspline_ = InterpolateToPSpline(trajectory_segments_);
+            dof_ = 2;
+            max_velocity_ = Eigen::VectorXd::Constant(2, 0.5);
+            max_acceleration_ = max_jerk_ = Eigen::VectorXd::Constant(2, 100.0);
+            valid_ = InitializePhasePathSegments();
+            if (!cache_owner)
+                phase_path_segments_.clear();
+            valid_ = valid_ &&
+                     EnforceJointLimits(max_velocity_, max_acceleration_, max_jerk_);
+        }
+    };
+    constexpr double stationary = 0.742468 / 2.0;
+    const double expected = 1.01 * (0.7 + stationary * stationary) / 0.5;
+    for (bool cache_owner : {false, true}) {
+        const LinearPhase trajectory(cache_owner);
+        Require(trajectory.IsValid() &&
+                    std::abs(trajectory.GetTimeScale() - expected) < 2e-14,
+                "linear phase must include the interior velocity extremum");
+    }
+}
+
+void CheckReturningPhaseStillSamplesCurvedExcursion() {
+    struct ReturningPhase : SplineTrajectory {
+        explicit ReturningPhase(const std::shared_ptr<PSpline>& spline)
+            : SplineTrajectory(spline) {
+            std::vector<Rn<double, 2>> points(3);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            points[2].Coeffs() << 1.0, 1.0;
+            path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5,
+                                                                     false, 0.1);
+        }
+    };
+    auto spline = std::make_shared<PSpline>();
+    // Both endpoints lie on the first line, but the interior reaches the
+    // curve and returns. Equal owners alone do not establish a linear phase.
+    Require(spline->PushBack(std::make_shared<Polynomial>(
+                                 Eigen::Vector4d(0.25, 4.0, -4.0, 0.0)), 1.0),
+            "append returning phase");
+    ReturningPhase trajectory(spline);
+    Require(!trajectory.GetConstraintReport(10001).within_limits,
+            "curved excursion should exceed the original limits");
+    Require(trajectory.Enforce() &&
+                trajectory.GetConstraintReport(10001).within_limits,
+            "nonmonotone phase must retain curved-path limit checks");
+}
+
 }  // namespace
 
 int main() {
     int failures = 0;
     for (const auto check :
-         {CheckLocalBoundaries, CheckAppendValidation, CheckJetAndInvalidTimes,
+         {CheckLinearPhaseVelocityExtremum,
+          CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
+          CheckAppendValidation, CheckJetAndInvalidTimes,
           CheckInvalidProfilesAreNotTruncated,
           CheckAllPhaseStatesAreFinite,
           CheckShortPositivePhasesArePreserved,

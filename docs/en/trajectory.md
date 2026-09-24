@@ -297,3 +297,13 @@ position is retained even when its last leg is shorter than the geometric
 tolerance; positive linear legs keep their normalized path tangent. Blends
 smaller than that tolerance are disabled before trimming either neighboring
 line, so suppressing a blend does not leave a positional gap.
+
+For time phases contained in one linear geometric segment, limit enforcement
+evaluates the endpoints and any interior zero of scalar acceleration. These
+are the possible extrema of the quadratic velocity, linear acceleration, and
+constant jerk, avoiding a dense uniform time grid. A monotonicity check also
+identifies these phases inside blended paths. Curved phases retain
+time-proportional sampling with at least 65 checks per phase, so short curved
+phases receive enough local resolution to expose peaks missed by a coarse
+global grid. Curved-path checks remain sampled bounds rather than a proof of
+continuous constraint satisfaction.
