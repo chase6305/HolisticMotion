@@ -163,8 +163,10 @@ derivatives with `std::runtime_error` (`RuntimeError` in Python), so a NaN canno
 be silently omitted from a peak calculation. If acceleration or jerk utilization
 overflows during construction-time limit enforcement, its square or cube root
 is computed by taking roots before dividing. A finite time-scale factor is not
-rejected merely because the unrooted ratio overflows. Finite ratios retain their
-existing calculation order.
+rejected merely because the unrooted ratio overflows. Finite acceleration and
+jerk ratios are reduced to their maxima before taking roots, avoiding repeated
+root evaluations at each sample. This preserves the sampling grid, though
+floating-point root rounding can change the last bits of the resulting scale.
 
 For paths consisting entirely of linear segments, trajectory queries retain
 the geometric segment that owns each time phase. Near a stopped corner, the
