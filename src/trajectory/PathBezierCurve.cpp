@@ -162,6 +162,8 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd(
                   : 4.0 * this->blend_tolerance_ / length_2_0;
         dis = std::min(dis, length_1_0 / 3.0);
         dis = std::min(dis, length_2_1 / 3.0);
+        if (dis <= Epsilon)
+            dis = 0.0;
 
         holistic_motion::utility::LogDebug("length_1_0:{}, length_2_1:{}, "
                                            "length_2_0:{}, dis:{}",
@@ -178,7 +180,10 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd(
         }
 
         double len_path1 = path_seg->GetLength();
-        if (len_path1 > Epsilon) {
+        const double join_roundoff =
+            64.0 * std::numeric_limits<double>::epsilon() *
+            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm()});
+        if (len_path1 > join_roundoff) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);
             path_len += len_path1;
@@ -335,6 +340,8 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
                                            "length_2_0:{}, dis:{}",
                                            length_1_0, length_2_1, length_2_0, dis);
 
+        if (dis <= Epsilon)
+            dis = 0.0;
         if (last_loop) {
             control_2 = control_1;
         } else {
@@ -349,7 +356,13 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
             return;
         }
         auto len_path1 = path_seg->GetLength();
-        if (len_path1 > Epsilon) {
+        // Neighboring blends can meet up to coordinate roundoff. Do not
+        // introduce a microscopic timing phase for that numerical residue,
+        // but always retain a real final leg to the requested endpoint.
+        const double join_roundoff =
+            64.0 * std::numeric_limits<double>::epsilon() *
+            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm()});
+        if (len_path1 > join_roundoff || (last_loop && len_path1 > 0.0)) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);
             path_len += len_path1;

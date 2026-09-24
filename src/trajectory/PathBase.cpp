@@ -20,7 +20,11 @@ void PathBase<LieGroup>::_CheckPathWaypoints(std::vector<LieGroup>& waypoints) {
     for (auto waypoint = std::next(waypoints.begin());
          waypoint != waypoints.end(); ++waypoint) {
         const auto difference = *waypoint - filtered.back();
-        if (difference.Coeffs().norm() > Epsilon) {
+        const bool last = std::next(waypoint) == waypoints.end();
+        // The tolerance removes redundant interior points, not the requested
+        // endpoint. A final short leg still carries real displacement.
+        if (difference.Coeffs().norm() > Epsilon ||
+            (last && (difference.Coeffs().array() != 0.0).any())) {
             filtered.push_back(*waypoint);
         }
     }

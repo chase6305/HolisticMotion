@@ -28,7 +28,7 @@ template <typename LieGroup>
 LieGroup PathSegLinear<LieGroup>::GetConfig(double s) const {
     this->ValidateQuery(s);
     s = clamp(s - this->sp_, 0.0, this->length_);
-    s = this->length_ > Epsilon ? (s / this->length_) : 0;
+    s = this->length_ > 0.0 ? (s / this->length_) : 0;
     holistic_motion::utility::LogDebug("[PathSegLinear] s:{}, sp_:{}", s, this->sp_);
 
     return this->waypoints_[0] + s * this->tangent_;
@@ -37,7 +37,7 @@ LieGroup PathSegLinear<LieGroup>::GetConfig(double s) const {
 template <typename LieGroup>
 typename LieGroup::Tangent PathSegLinear<LieGroup>::GetTangent(double s) const {
     this->ValidateQuery(s);
-    return this->length_ > Epsilon ? this->tangent_ / this->length_ : this->tangent_;
+    return this->length_ > 0.0 ? this->tangent_ / this->length_ : this->tangent_;
 }
 
 template <typename LieGroup>

@@ -291,3 +291,9 @@ joint limit. Curvature and torsion bounds take square or cube roots before
 division when the direct limit-to-derivative ratio overflows or underflows.
 Ordinary ratios retain the existing arithmetic. These remain sampled bounds;
 the subsequent global limit enforcement still applies.
+
+Near-duplicate filtering applies to interior waypoints. The requested final
+position is retained even when its last leg is shorter than the geometric
+tolerance; positive linear legs keep their normalized path tangent. Blends
+smaller than that tolerance are disabled before trimming either neighboring
+line, so suppressing a blend does not leave a positional gap.
