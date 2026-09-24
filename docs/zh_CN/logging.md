@@ -76,8 +76,13 @@ from holistic_motion.logging import JsonFormatter
 
 queued = QueueHandler(Queue())
 queued.setFormatter(JsonFormatter())
+
+class PreparedMessageFormatter(logging.Formatter):
+    def format(self, record):
+        return record.getMessage()
+
 destination = logging.StreamHandler()
-destination.setFormatter(logging.Formatter("%(message)s"))
+destination.setFormatter(PreparedMessageFormatter())
 listener = QueueListener(queued.queue, destination)
 listener.start()
 try:
@@ -92,7 +97,8 @@ finally:
 ```
 
 JSON 转换仍在产生日志的线程执行，入队前固定消息、extra 和异常内容。
-输出端使用普通消息 formatter，避免将 JSON 再次编码。默认 `QueueHandler`
+输出端直接写入已格式化的消息，避免将 JSON 再次编码，也避免旧版 Python
+保留的 `stack_info` 被重复追加到 JSON 行之后。默认 `QueueHandler`
 会将异常文本合并到消息，并清空 `exc_info` 和 `exc_text`；仅在 listener
 输出端安装 `JsonFormatter` 无法从这种记录恢复独立的异常字段。
 队列与 listener 的生命周期由应用管理，setup/reset 不会启动、停止或

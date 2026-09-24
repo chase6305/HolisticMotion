@@ -86,8 +86,13 @@ from holistic_motion.logging import JsonFormatter
 
 queued = QueueHandler(Queue())
 queued.setFormatter(JsonFormatter())
+
+class PreparedMessageFormatter(logging.Formatter):
+    def format(self, record):
+        return record.getMessage()
+
 destination = logging.StreamHandler()
-destination.setFormatter(logging.Formatter("%(message)s"))
+destination.setFormatter(PreparedMessageFormatter())
 listener = QueueListener(queued.queue, destination)
 listener.start()
 try:
@@ -102,8 +107,9 @@ finally:
 ```
 
 JSON conversion still runs on the emitting thread and snapshots the message,
-extras and exception before enqueueing. The destination uses a plain message
-formatter so it does not encode JSON a second time. A default `QueueHandler`
+extras and exception before enqueueing. The destination writes only the prepared
+message, avoiding both a second JSON encoding and duplicate stack text from
+older Python versions that retain `stack_info`. A default `QueueHandler`
 merges exception text into the message and clears `exc_info` and `exc_text`;
 placing `JsonFormatter` only on the listener cannot recover a separate exception
 field from that record. Queue/listener lifecycle belongs to the application;

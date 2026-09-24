@@ -26,6 +26,7 @@ struct PathOptimizationOptions {
   double length_weight{1.0};
   double smoothness_weight{0.25};
   double state_cost_weight{0.0};
+  // Actual projected offsets are used; circular steps are capped at pi/2.
   double finite_difference_step{1e-3};
   double state_cost_step_size{0.1};
   double minimum_improvement{1e-9};
