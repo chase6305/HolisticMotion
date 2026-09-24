@@ -65,12 +65,14 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
     if check_continuity and len(breakpoints) > 2:
         knots = np.asarray(breakpoints)
         # Stay outside knot snapping while approaching from the left, even
-        # when phase lengths differ substantially. The next derivative bounds
-        # the genuine state change over this interval; the residual allowance
+        # when phase lengths differ substantially. A half-span cap stays beyond
+        # the spline's quarter-span snapping tolerance on very short phases.
+        # The next derivative bounds the genuine state change over this
+        # interval; the residual allowance
         # accounts for evaluation roundoff rather than physical motion.
         spans = np.diff(knots)[:-1]
         offset = np.minimum(
-            0.25 * spans,
+            0.5 * spans,
             np.maximum(
                 1e-8 * spans,
                 256 * np.finfo(float).eps * np.maximum(1.0, np.abs(knots[1:-1])),
