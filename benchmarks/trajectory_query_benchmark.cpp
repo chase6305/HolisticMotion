@@ -28,6 +28,7 @@ void Measure(std::size_t waypoint_count) {
     TrajectoryDoubleS<Group> trajectory(path, constraints);
     if (!trajectory.IsValid())
         throw std::runtime_error("invalid benchmark trajectory");
+    const auto report = trajectory.GetConstraintReport(2001);
     constexpr int samples = 20000;
     for (int mode = 0; mode < 2; ++mode) {
         std::vector<double> elapsed;
@@ -36,8 +37,7 @@ void Measure(std::size_t waypoint_count) {
             checksum = 0.0;
             const auto begin = std::chrono::steady_clock::now();
             for (int i = 0; i < samples; ++i) {
-                const double time =
-                    trajectory.GetDuration() * i / (samples - 1.0);
+                const double time = trajectory.GetDuration() * i / (samples - 1.0);
                 if (mode == 0) {
                     const auto state = trajectory.GetState(time);
                     checksum += state.position.Coeffs().sum() +
@@ -60,16 +60,18 @@ void Measure(std::size_t waypoint_count) {
         }
         std::sort(elapsed.begin(), elapsed.end());
         std::cout << DoF << ',' << waypoint_count << ','
-                  << (mode ? "separate" : "state") << ','
-                  << std::setprecision(3) << elapsed[elapsed.size() / 2] << ','
-                  << std::setprecision(12) << trajectory.GetDuration() << ','
-                  << checksum << '\n';
+                  << (mode ? "separate" : "state") << ',' << std::setprecision(3)
+                  << elapsed[elapsed.size() / 2] << ',' << std::setprecision(12)
+                  << trajectory.GetDuration() << ',' << checksum << ','
+                  << report.within_limits << ',' << report.velocity_continuous << ','
+                  << report.acceleration_continuous << '\n';
     }
 }
 
 int main() {
     std::cout << std::fixed
-              << "dof,waypoints,query,median_ns,duration,checksum\n";
+              << "dof,waypoints,query,median_ns,duration,checksum,within_limits,"
+                 "velocity_continuous,acceleration_continuous\n";
     for (std::size_t count : {4, 64}) {
         Measure<2>(count);
         Measure<7>(count);

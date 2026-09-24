@@ -76,8 +76,13 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
                 256 * np.finfo(float).eps * np.maximum(1.0, np.abs(knots[1:-1])),
             ),
         )
-        left = trajectory.sample(knots[1:-1] - offset)
-        right = trajectory.sample(knots[1:-1])
+        try:
+            left = trajectory.sample(knots[1:-1] - offset)
+            right = trajectory.sample(knots[1:-1])
+        except (ValueError, RuntimeError) as error:
+            return "evaluation_error", {"stage": "phase_join", "error": str(error)}
+        if not all(np.isfinite(value).all() for value in (*left, *right)):
+            return "nonfinite", {"stage": "phase_join"}
         allowances = [
             ("max_velocity", 1e-9 * max(1.0, scale)),
             ("max_acceleration", 1e-7 * np.maximum(1.0, inputs["max_velocity"])),
