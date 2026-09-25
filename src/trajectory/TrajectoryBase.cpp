@@ -387,10 +387,23 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     const bool finite_reciprocals = inverse_velocity_limits.allFinite() &&
                                     inverse_acceleration_limits.allFinite() &&
                                     inverse_jerk_limits.allFinite();
+    std::size_t sampling_phase = 0;
     const auto evaluate = [&](double time) {
         State state;
         try {
-            state = GetState(time);
+            std::size_t phase;
+            const auto jet =
+                trajectory_pspline_->ComputeJetInPhase(time, sampling_phase, phase);
+            if (!std::isfinite(jet[0]))
+                throw std::runtime_error(
+                    "trajectory evaluated a non-finite path parameter");
+            const auto geometry =
+                !phase_path_segments_.empty() && phase_path_segments_[phase]
+                    ? phase_path_segments_[phase]
+                    : path_->GetPathSegmentAtS(jet[0]);
+            if (!geometry)
+                throw std::logic_error("cannot query an invalid path");
+            state = ComposeState(jet, geometry);
         } catch (const std::runtime_error&) {
             // Internal evaluation failure invalidates construction, just like
             // a returned nonfinite state. Public diagnostics keep the error.
@@ -464,6 +477,7 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
                     [](const auto &owner) { return !owner; }))
         geometric_segments = path_->GetPathSegments();
     for (std::size_t segment = 1; segment < knots.size(); ++segment) {
+        sampling_phase = segment - 1;
         const double start = knots[segment - 1];
         const double end = knots[segment];
         const double left_end =
