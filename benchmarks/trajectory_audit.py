@@ -140,6 +140,17 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
         ]
         if not np.isfinite(jumps).all() or max(jumps) > 1.0:
             return "continuity", {"jump_ratios": jumps}
+        try:
+            report = trajectory.constraint_report(2)
+        except (ValueError, RuntimeError) as error:
+            return "evaluation_error", {"stage": "constraint_report", "error": str(error)}
+        if not report["velocity_continuous"] or (
+            inputs["profile"] == "double_s" and not report["acceleration_continuous"]
+        ):
+            return "report_continuity", {
+                "maximum_velocity_jump": report["maximum_velocity_jump"].tolist(),
+                "maximum_acceleration_jump": report["maximum_acceleration_jump"].tolist(),
+            }
     return "passed", {}
 
 
@@ -164,7 +175,7 @@ def main():
     parser.add_argument(
         "--check-continuity",
         action="store_true",
-        help="check state changes across time-phase joins against derivative bounds",
+        help="check phase-join state changes and native one-sided continuity diagnostics",
     )
     args = parser.parse_args()
     if args.seed < 0 or args.cases < 1 or args.samples < 2:

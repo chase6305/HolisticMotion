@@ -106,6 +106,16 @@ class PSpline {
     unsigned GetDoF() const { return dof_; };
 
    private:
+       template <typename LieGroup> friend class TrajectoryBase;
+
+       // Diagnostics need the actual one-sided endpoint, without knot snapping
+       // or a round trip through the externally scaled trajectory clock.
+       std::array<double, 4> ComputePhaseEndpoint(std::size_t phase,
+                                                  bool at_end) const {
+           return polynomials_[phase]->ComputeJet(
+               at_end ? knots_[phase + 1] - knots_[phase] : 0.0);
+       }
+
     /// Locate a right-continuous segment and convert s to segment-local time.
     std::size_t LocatePolynomial(double& s) const {
         if (polynomials_.empty()) {

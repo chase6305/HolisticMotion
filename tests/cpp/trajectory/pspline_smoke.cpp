@@ -328,6 +328,82 @@ void CheckContinuityUsesLocalTimeScale() {
     }
 }
 
+void CheckContinuityUsesExactPhaseEndpoints() {
+    for (double lead : {0.0, 1e6}) {
+        for (unsigned jump_order : {0u, 1u, 2u}) {
+            auto spline = std::make_shared<PSpline>();
+            if (lead > 0.0)
+                Require(spline->PushBack(Constant(0.25), lead),
+                        "append long stationary lead");
+            const auto ramp = std::make_shared<Polynomial>(
+                Eigen::Vector4d(0.25, 0.0, 0.0, 1e4 / 3.0));
+            Require(spline->PushBack(ramp, 1e-4), "append high-jerk ramp");
+            const double span = spline->GetLastTimeStamp() - lead;
+            Eigen::Vector4d next(ramp->ComputePolyValueAtS(span),
+                                 ramp->ComputePolyValueAtS(span, 1),
+                                 0.5 * ramp->ComputePolyValueAtS(span, 2), 0.0);
+            if (jump_order != 0)
+                next[jump_order] += jump_order == 1 ? 1e-4 : 0.5e-4;
+            Require(spline->PushBack(std::make_shared<Polynomial>(next), 1e-4),
+                    "append matching or discontinuous phase");
+            SplineTrajectory trajectory(spline);
+            // A large next-derivative limit must not mask a genuine jump.
+            trajectory.SetDerivativeLimit(3, 1e30);
+            for (double scale : {1.0, 1.7}) {
+                Require(trajectory.SetMinimumDuration(scale * trajectory.GetDuration()),
+                        "rescale endpoint diagnostic");
+                const auto report = trajectory.GetConstraintReport(3);
+                Require(report.velocity_continuous == (jump_order != 1) &&
+                            report.acceleration_continuous == (jump_order != 2),
+                        "endpoint diagnostics must separate high jerk from jumps");
+                if (jump_order == 0)
+                    Require(report.maximum_velocity_jump.isZero() &&
+                                report.maximum_acceleration_jump.isZero(),
+                            "identical endpoint derivatives have zero jump");
+            }
+        }
+    }
+}
+
+void CheckContinuityUsesOneSidedGeometry() {
+    struct CornerTrajectory : SplineTrajectory {
+        explicit CornerTrajectory(const std::shared_ptr<PSpline> &spline)
+            : SplineTrajectory(spline) {
+            std::vector<Rn<double, 2>> points(3);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            points[2].Coeffs() << 1.0, 1.0;
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.0);
+        }
+    };
+    for (double direction : {-1.0, 1.0}) {
+        for (unsigned order : {1u, 2u, 3u}) {
+            auto spline = std::make_shared<PSpline>();
+            // p=1+direction*(t-1)^order reaches the corner at t=1.
+            const Eigen::Vector4d incoming =
+                order == 1 ? Eigen::Vector4d(1.0 - direction, direction, 0.0, 0.0)
+                : order == 2
+                    ? Eigen::Vector4d(1.0 + direction, -2.0 * direction, direction, 0.0)
+                    : Eigen::Vector4d(1.0 - direction, 3.0 * direction,
+                                      -3.0 * direction, direction);
+            Eigen::Vector4d outgoing = Eigen::Vector4d::Zero();
+            outgoing[0] = 1.0;
+            outgoing[order] = direction;
+            Require(spline->PushBack(std::make_shared<Polynomial>(incoming), 1.0) &&
+                        spline->PushBack(std::make_shared<Polynomial>(outgoing), 1.0),
+                    "append corner diagnostic phases");
+            const auto report = CornerTrajectory(spline).GetConstraintReport(3);
+            Require(report.velocity_continuous == (order != 1) &&
+                        report.acceleration_continuous,
+                    "corner diagnostics must use the geometric one-sided limits");
+            if (order == 1)
+                Require(report.maximum_velocity_jump.isApprox(Eigen::Vector2d::Ones()),
+                        "a moving sharp corner has a velocity jump in both joints");
+        }
+    }
+}
+
 void CheckLimitSamplingSupportsExtremeDurations() {
     for (double duration : {std::numeric_limits<double>::denorm_min(), 1e308}) {
         auto spline = std::make_shared<PSpline>();
@@ -507,7 +583,8 @@ void CheckReturningPhaseStillSamplesCurvedExcursion() {
 int main() {
     int failures = 0;
     for (const auto check :
-         {CheckLinearPhaseVelocityExtremum,
+         {CheckContinuityUsesExactPhaseEndpoints, CheckContinuityUsesOneSidedGeometry,
+          CheckLinearPhaseVelocityExtremum,
           CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
           CheckAppendValidation, CheckJetAndInvalidTimes, CheckJetExtremeCoefficients,
           CheckInvalidProfilesAreNotTruncated, CheckAllPhaseStatesAreFinite,

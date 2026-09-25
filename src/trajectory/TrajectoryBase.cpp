@@ -234,6 +234,13 @@ typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
     double t) const {
     std::array<double, 4> jet;
     const auto segment = EvaluatePathJet(t, jet);
+    return ComposeState(jet, segment);
+}
+
+template <typename LieGroup>
+inline typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::ComposeState(
+    const std::array<double, 4> &jet,
+    const std::shared_ptr<PathSegmentBase<LieGroup>> &segment) const {
     State state;
     typename LieGroup::Tangent tangent, curvature, torsion;
     segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
@@ -248,6 +255,34 @@ typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
                   ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
                  inverse_scale * inverse_scale * inverse_scale;
     return state;
+}
+
+template <typename LieGroup>
+typename TrajectoryBase<LieGroup>::State
+TrajectoryBase<LieGroup>::GetPhaseEndpoint(std::size_t phase, bool at_end) const {
+    const auto jet = trajectory_pspline_->ComputePhaseEndpoint(phase, at_end);
+    if (!std::isfinite(jet[0])) {
+        throw std::runtime_error("trajectory evaluated a non-finite path parameter");
+    }
+    auto segment = !phase_path_segments_.empty() && phase_path_segments_[phase]
+                       ? phase_path_segments_[phase]
+                       : path_->GetPathSegmentAtS(jet[0]);
+    if (!segment)
+        throw std::logic_error("cannot query an invalid path");
+    if (phase_path_segments_.empty() || !phase_path_segments_[phase]) {
+        // At a geometric boundary, choose the side approached from inside this
+        // phase. The first nonzero Taylor term determines that side, including
+        // reversed motion, a turning point, and a stationary phase.
+        const double direction = at_end ? -1.0 : 1.0;
+        const double approach = jet[1] != 0.0   ? direction * jet[1]
+                                : jet[2] != 0.0 ? jet[2]
+                                                : direction * jet[3];
+        if (approach < 0.0 && jet[0] == segment->GetStartParameter()) {
+            segment = path_->GetPathSegmentAtS(
+                std::nextafter(jet[0], -std::numeric_limits<double>::infinity()));
+        }
+    }
+    return ComposeState(jet, segment);
 }
 
 template <typename LieGroup>
@@ -294,13 +329,10 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             static_cast<double>(sample) / static_cast<double>(samples - 1);
         accumulate(duration * fraction);
     }
-    const auto breakpoints = GetBreakpoints();
+    const auto &breakpoints = trajectory_pspline_->GetKnots();
     for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
-        const double breakpoint = breakpoints[index];
-        const double previous = breakpoints[index - 1];
-        const auto left_state =
-            GetState(SampleBeforeKnot(previous, breakpoint));
-        const auto right_state = GetState(breakpoint);
+        const auto left_state = GetPhaseEndpoint(index - 1, true);
+        const auto right_state = GetPhaseEndpoint(index, false);
         accumulate_state(left_state);
         accumulate_state(right_state);
         report.maximum_velocity_jump = report.maximum_velocity_jump.cwiseMax(

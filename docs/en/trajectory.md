@@ -161,10 +161,12 @@ or tiny scalar product does not lose a representable result.
 Native constraint reports form sample times from normalized fractions, avoiding
 intermediate overflow for large finite durations. Construction-time limit
 sampling also normalizes interval lengths before choosing a sample count, so
-subnormal durations do not require a time step that rounds to zero. Samples on
-the left of a knot use its local timestamp and preceding interval: an unrelated
-long tail cannot create a false velocity or acceleration discontinuity. These
-reports summarize discrete samples and do not certify continuous-time bounds.
+subnormal durations do not require a time step that rounds to zero. Continuity
+diagnostics evaluate each adjacent phase at its exact local endpoint and use
+the geometric side approached by that phase. Normal derivative changes over a
+finite sampling offset therefore do not become reported jumps, even with high
+jerk or a large accumulated clock. Peak limits still summarize discrete samples
+and phase endpoints; they do not certify continuous-time bounds.
 
 Constraint reports reject sampled states containing non-finite positions or
 derivatives with `std::runtime_error` (`RuntimeError` in Python), so a NaN cannot

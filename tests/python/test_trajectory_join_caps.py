@@ -56,13 +56,17 @@ def test_blended_joins_preserve_limits_and_continuity(fixture, scale, reverse):
         assert report["acceleration_continuous"]
 
 
-def test_final_jerk_phase_keeps_incoming_line_at_stop():
+@pytest.mark.parametrize("scale", [0.01, 1.0, 100.0])
+def test_final_jerk_phase_keeps_incoming_line_at_stop(scale):
     inputs = json.loads(
         (
             Path(__file__).resolve().parents[2]
             / "benchmarks/fixtures/double_s_linear_join_continuity.json"
         ).read_text()
     )
+    for name in ("waypoints", "max_velocity", "max_acceleration", "max_jerk"):
+        inputs[name] = np.asarray(inputs[name]) * scale
+    inputs["blend_tolerance"] *= scale
     trajectory = hm.RnTrajectory(**inputs)
     # The incoming final jerk phase travels only a few coordinate ulps.
     # Its terminal state belongs to the next line, whose tangent is reversed.
@@ -74,5 +78,5 @@ def test_final_jerk_phase_keeps_incoming_line_at_stop():
         trajectory.sample([0.0, trajectory.duration])[0],
         np.asarray(inputs["waypoints"])[[0, -1]],
         rtol=0.0,
-        atol=1e-12,
+        atol=scale * 1e-12,
     )
