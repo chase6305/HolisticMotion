@@ -6,10 +6,12 @@ import pytest
 
 
 @pytest.mark.parametrize("profile", ["trapezoidal", "double_s"])
-@pytest.mark.parametrize("scale", [1.0, 1e4, 1e12, 1e100])
+@pytest.mark.parametrize("scale", [1.0, 1e4, 1e6, 1e12, 1e100])
 def test_large_coordinate_blended_trajectory(profile, scale):
-    points = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]]) * scale
-    limits = np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]]) * scale
+    base_points = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0]])
+    base_limits = np.array([[1.0, 2.0], [2.0, 3.0], [3.0, 4.0]])
+    points = base_points * scale
+    limits = base_limits * scale
     trajectory = hm.RnTrajectory(
         waypoints=points,
         max_velocity=limits[0],
@@ -19,10 +21,10 @@ def test_large_coordinate_blended_trajectory(profile, scale):
         profile=profile,
     )
     reference = hm.RnTrajectory(
-        waypoints=points / scale,
-        max_velocity=limits[0] / scale,
-        max_acceleration=limits[1] / scale,
-        max_jerk=limits[2] / scale,
+        waypoints=base_points,
+        max_velocity=base_limits[0],
+        max_acceleration=base_limits[1],
+        max_jerk=base_limits[2],
         blend_tolerance=0.1,
         profile=profile,
     )
