@@ -46,3 +46,38 @@ def test_short_blended_phase_respects_acceleration_between_old_grid_points(profi
     assert np.max(np.abs(ddq) / acceleration) <= 1.0 + 1e-8
     if profile == "double_s":
         assert np.max(np.abs(dddq) / jerk) <= 1.0 + 1e-8
+
+
+@pytest.mark.parametrize("profile", ["trapezoidal", "double_s"])
+def test_short_curve_inside_shared_time_phase_is_checked(profile):
+    # The middle leg leaves two adjacent curves with very different lengths.
+    # A uniform grid over their shared time phase misses the shorter curve's
+    # acceleration peak; this four-point Double-S case exceeded its cap by 30%.
+    points = [[-0.392, 0.195], [-2.92, 1.842], [-2.926, 1.874], [-2.315, -2.285]]
+    velocity = [1.0, 0.025]
+    acceleration = [0.034, 20.0]
+    jerk = [40.0, 4.0]
+    trajectory = hm.RnTrajectory(
+        points,
+        velocity,
+        acceleration,
+        jerk,
+        blend_tolerance=0.1,
+        profile=profile,
+    )
+    times = np.unique(
+        np.concatenate(
+            [
+                np.linspace(start, end, 2001)
+                for start, end in zip(
+                    trajectory.breakpoints[:-1], trajectory.breakpoints[1:]
+                )
+            ]
+        )
+    )
+    q, dq, ddq, dddq = trajectory.sample(times)
+    np.testing.assert_allclose(q[[0, -1]], np.asarray(points)[[0, -1]], atol=1e-12)
+    assert np.max(np.abs(dq) / velocity) <= 1.0 + 1e-8
+    assert np.max(np.abs(ddq) / acceleration) <= 1.0 + 1e-8
+    if profile == "double_s":
+        assert np.max(np.abs(dddq) / jerk) <= 1.0 + 1e-8
