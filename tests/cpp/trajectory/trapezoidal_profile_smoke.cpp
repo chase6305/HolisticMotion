@@ -173,6 +173,18 @@ void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
                 throw std::runtime_error("lower peak bypassed displacement checks");
         }
     }
+    // A second recorded interval still cannot reproduce its displacement on
+    // the stored clock, even with the lower peak. The retry must fail cleanly.
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    constexpr double requested_end = 0.025525313930515454;
+    double end_velocity = requested_end;
+    if (probe._ComputeTrapeziumProfile(
+            5.816989524500355, 5.83685302311743, 0.003100713199719044,
+            end_velocity, 0.02552531393051614, 0.08426101559757797,
+            1569.5044297131274, phases, 0) ||
+        !phases.empty() || end_velocity != requested_end)
+        throw std::runtime_error("lower-peak retry bypassed its displacement budget");
 }
 
 void CheckShortTransition(double length, double v0, double requested_v1) {
