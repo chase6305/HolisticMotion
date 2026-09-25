@@ -127,12 +127,15 @@ remain unchanged; non-positive or non-finite lengths are still rejected.
 For native Double-S and trapezoidal trajectories, `state(t)` returns position,
 velocity, acceleration, and jerk together. It shares one time-spline lookup and
 one geometric-segment selection; batch sampling uses the same combined query.
+Built-in linear and fifth-degree segments also share geometric derivative
+evaluation. Custom segment subclasses retain their virtual scalar-query behavior.
 Scalar queries remain available and include the same time scaling.
 
 The C++ `PSpline` uses right-continuous internal knots and clamps finite queries
 outside its time range. Knot snapping uses the local timestamp and adjacent
 interval lengths, so a long trailing segment does not erase earlier short
-segments. Non-finite query times throw `std::invalid_argument`. `PushBack`
+segments. The tolerance scales with the actual timestamp, including clocks much
+smaller than one second, without a fixed one-second floor. Non-finite query times throw `std::invalid_argument`. `PushBack`
 returns false without changing the spline when the accumulated timestamp would
 overflow or fail to advance in floating-point arithmetic.
 
@@ -149,6 +152,11 @@ shorter than 10 microseconds. Dropping a short acceleration or jerk phase would
 change the final state and elapsed time. Large time-scale factors are applied
 stepwise to derivatives to preserve representable small values; a duration
 update that would overflow is rejected without changing the previous scale.
+The chain rule also uses stepwise products when squaring or cubing scalar speed
+would overflow or underflow, preserving finite geometric derivative products.
+The mixed jerk term combines its scalar factors once; products outside the
+normal range are evaluated with separate binary exponents, so a large curvature
+or tiny scalar product does not lose a representable result.
 
 Native constraint reports form sample times from normalized fractions, avoiding
 intermediate overflow for large finite durations. Construction-time limit
@@ -165,8 +173,10 @@ overflows during construction-time limit enforcement, its square or cube root
 is computed by taking roots before dividing. A finite time-scale factor is not
 rejected merely because the unrooted ratio overflows. Finite acceleration and
 jerk ratios are reduced to their maxima before taking roots, avoiding repeated
-root evaluations at each sample. This preserves the sampling grid, though
-floating-point root rounding can change the last bits of the resulting scale.
+root evaluations at each sample. Finite reciprocal limits are reused in vector
+reductions; unrepresentable reciprocals or products retain division-based
+fallbacks. These arithmetic changes preserve the sampling grid, though rounding
+can change the last bits of the resulting scale.
 
 For paths consisting entirely of linear segments, trajectory queries retain
 the geometric segment that owns each time phase. Near a stopped corner, the
@@ -306,11 +316,13 @@ For time phases contained in one linear geometric segment, limit enforcement
 evaluates the endpoints and any interior zero of scalar acceleration. These
 are the possible extrema of the quadratic velocity, linear acceleration, and
 constant jerk, avoiding a dense uniform time grid. A monotonicity check also
-identifies these phases inside blended paths. Curved phases retain
-time-proportional sampling with at least 65 checks per phase, so short curved
-phases receive enough local resolution to expose peaks missed by a coarse
-global grid. Curved-path checks remain sampled bounds rather than a proof of
-continuous constraint satisfaction.
+identifies these phases inside blended paths. A monotone time phase spanning
+several geometric segments is split at their boundaries by inverting the actual
+time spline. Each curved subinterval receives time-proportional sampling with
+at least 65 checks, exposing short-curve peaks even inside a long shared time
+phase. Linear subintervals retain the analytic extrema checks. Custom nonmonotone
+phases use the dense fallback. Curved-path checks remain sampled bounds rather
+than a proof of continuous constraint satisfaction.
 
 Double-S treats an endpoint speed above a neighboring segment cap by at most
 128 machine epsilons (relative to that speed) as the same numerical cap. It
@@ -340,8 +352,13 @@ PYTHONPATH=build/install python benchmarks/trajectory_audit.py \
   --phase-samples 101 --check-continuity
 ```
 
-The JSON output includes the seed, failing case index, and complete inputs.
-These sampled checks are diagnostics, not a proof of continuous feasibility.
+Add `--distribution stress` for unequal segment lengths, nearly collinear
+points, near reversals, and wider per-joint limits, up to 32 dimensions. Each
+shape is exercised with both profiles. Replay a failure with the same
+`--distribution`, `--seed`, and `--case-index`. The JSON output includes complete
+inputs and separates construction rejections from sampled invariant failures;
+either makes the command exit with status 1. These checks are diagnostics, not
+a proof of continuous feasibility.
 
 Nonzero C++ boundary speeds remain subject to profile feasibility. If the first
 segment requires reducing the requested initial speed, construction fails without

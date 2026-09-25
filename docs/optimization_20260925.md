@@ -30,6 +30,10 @@
 [`trapezoidal_timestamp_rejection.json`](../benchmarks/fixtures/trapezoidal_timestamp_rejection.json)，
 可传给 `hm.RnTrajectory(**json.load(open(path)))` 复现。未把该构造拒绝计为通过。
 
+后续两小时优化已修复该保留用例，并重跑上述 300,000 组专项审计，全部通过。
+此处保留原轮次结果；当前修复、压力分布下仍存在的拒绝及验证结果见
+[追加优化报告](optimization_20260925_followup.md)。
+
 另修复了 `main` 已有的 CI 环境问题：两个测试任务显式安装已声明的 NumPy 依赖，
 并在测试环境安装场景样式及体素拟合测试需要的可选 trimesh、SciPy；
 文档任务从 `pyproject.toml` 安装文档及 Python 运行依赖，使用现有的原生扩展 mock
