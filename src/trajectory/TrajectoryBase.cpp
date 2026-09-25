@@ -144,9 +144,17 @@ bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
                     next->pos >= it->pos;
             const double stationary = it->jerk != 0.0 ? -it->acc / it->jerk : -1.0;
             if (stationary > 0.0 && stationary < next->timestamp - it->timestamp) {
-                owned = owned && it->vel + stationary * (it->acc +
-                                                         0.5 * stationary * it->jerk) >=
-                                     0.0;
+                const double minimum_velocity =
+                    it->vel + stationary * (it->acc + 0.5 * stationary * it->jerk);
+                // A nominal stop can have a tiny negative quadratic minimum
+                // after clock/state rounding. Bound its entire possible
+                // backwards travel by the same geometric roundoff budget;
+                // otherwise it can lose its owner and take the next line's
+                // reversed tangent while acceleration is still nonzero.
+                const double span = next->timestamp - it->timestamp;
+                owned = owned &&
+                        (minimum_velocity >= 0.0 ||
+                         -minimum_velocity <= budget / span);
             }
         }
         phase_path_segments_.push_back(owned ? geometry : nullptr);

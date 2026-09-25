@@ -135,3 +135,34 @@ def test_coarse_clock_profile_can_use_a_lower_peak():
     audit = runpy.run_path(benchmarks / "trajectory_audit.py")
     kind, details = audit["_check"](inputs, 1.0, 20001, 1001, True)
     assert kind == "passed", details
+
+
+@pytest.mark.parametrize("scale", [0.01, 1.0, 100.0])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rounded_velocity_minimum_keeps_stop_geometry(scale, reverse):
+    inputs = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "benchmarks/fixtures/double_s_rounded_stop_ownership.json"
+        ).read_text()
+    )
+    for name in ("waypoints", "max_velocity", "max_acceleration", "max_jerk"):
+        inputs[name] = np.asarray(inputs[name]) * scale
+    if reverse:
+        inputs["waypoints"] = inputs["waypoints"][::-1]
+    inputs["blend_tolerance"] *= scale
+    trajectory = hm.RnTrajectory(**inputs)
+    # The final jerk ramp's velocity minimum can round slightly below zero.
+    # Its negligible backwards displacement must not select a reversed line.
+    for slowdown in (1.0, 1.7):
+        trajectory.set_minimum_duration(slowdown * trajectory.duration)
+        report = trajectory.constraint_report(20001)
+        assert report["within_limits"]
+        assert report["velocity_continuous"]
+        assert report["acceleration_continuous"]
+        np.testing.assert_allclose(
+            trajectory.sample([0.0, trajectory.duration])[0],
+            inputs["waypoints"][[0, -1]],
+            rtol=1e-12,
+            atol=scale * 1e-10,
+        )
