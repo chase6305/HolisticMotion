@@ -21,6 +21,17 @@ std::shared_ptr<Polynomial> Constant(double value) {
 }
 
 void CheckLocalBoundaries() {
+    for (double duration : {1e-100, 1.0, 1e100}) {
+        PSpline scaled;
+        Require(scaled.PushBack(std::make_shared<Polynomial>(
+                                   Eigen::Vector4d(0.0, 1.0 / duration, 0.0, 0.0)),
+                               duration),
+                "append scaled linear time law");
+        for (double fraction : {0.01, 0.1, 0.2, 0.5, 0.8, 0.9, 0.99})
+            Require(std::abs(scaled.ComputeValueAtS(fraction * duration) - fraction) <
+                        1e-14,
+                    "knot snapping must not depend on the time unit");
+    }
     PSpline spline;
     Require(spline.PushBack(Constant(1.0), 0.001), "first segment");
     Require(spline.PushBack(Constant(2.0), 0.001), "second segment");
@@ -135,6 +146,22 @@ void CheckInvalidProfilesAreNotTruncated() {
     struct Builder : TrajectoryBase<Rn<double, 2>> {
         using TrajectoryBase<Rn<double, 2>>::InterpolateToPSpline;
     } builder;
+    for (double scale : {1e-100, 0.1, 1.0}) {
+        const std::list<TrajectorySeg> backwards{
+            TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 0.5 * scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 2.0 * scale, 2.0, 0.0, 0.0, 0.0)};
+        Require(builder.InterpolateToPSpline(backwards)->GetKnots().size() == 1,
+                "a backwards phase must not become roundoff in smaller time units");
+        const std::list<TrajectorySeg> rounded{
+            TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, std::nextafter(scale, 0.0), 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 2.0 * scale, 2.0, 0.0, 0.0, 0.0)};
+        Require(builder.InterpolateToPSpline(rounded)->GetKnots().size() == 3,
+                "one-ulp backwards rounding must remain accepted in any time unit");
+    }
     const std::list<TrajectorySeg> rounded_profile{
         TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
         TrajectorySeg(0, 1.0, 1.0, 0.0, 0.0, 0.0),

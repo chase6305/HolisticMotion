@@ -22,10 +22,11 @@ double SampleBeforeKnot(double start, double end) {
     // A long later phase must not move this sample into the interval interior.
     const double span = end - start;
     const double floating_offset =
-        256.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, end);
+        256.0 * std::numeric_limits<double>::epsilon() * std::abs(end);
     const double offset =
         std::min(0.5 * span, std::max(floating_offset, 1e-9 * span));
-    return end - offset;
+    const double before = end - offset;
+    return before < end ? before : std::nextafter(end, start);
 }
 }  // namespace
 
@@ -533,7 +534,7 @@ std::shared_ptr<PSpline> TrajectoryBase<LieGroup>::InterpolateToPSpline(
         auto T = t1 - t0;
         const double timestamp_tolerance =
                 64.0 * std::numeric_limits<double>::epsilon() *
-                std::max({1.0, std::abs(t0), std::abs(t1)});
+                std::max(std::abs(t0), std::abs(t1));
         if (!std::isfinite(t0) || !std::isfinite(t1) ||
             !std::isfinite(T) || T < -timestamp_tolerance) {
             holistic_motion::utility::LogWarning(

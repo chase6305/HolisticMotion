@@ -118,14 +118,16 @@ class PSpline {
         const auto tolerance = [&](std::size_t index) {
             // Use the local timestamp scale: an unrelated long tail must not
             // move queries in earlier segments. Cap snapping so short segments
-            // remain queryable even when their timestamps are large.
+            // remain queryable even when their timestamps are large. No unit
+            // floor: a subsecond trajectory must not acquire stationary plateaus
+            // merely because its time unit is small. Zero is represented exactly.
             double span = std::numeric_limits<double>::infinity();
             if (index > 0) span = knots_[index] - knots_[index - 1];
             if (index + 1 < knots_.size()) {
                 span = std::min(span, knots_[index + 1] - knots_[index]);
             }
             return std::min(64.0 * std::numeric_limits<double>::epsilon() *
-                                std::max(1.0, knots_[index]),
+                                std::abs(knots_[index]),
                             0.25 * span);
         };
         const auto nearest_right =

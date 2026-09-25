@@ -111,7 +111,7 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
             0.5 * spans,
             np.maximum(
                 1e-8 * spans,
-                256 * np.finfo(float).eps * np.maximum(1.0, np.abs(knots[1:-1])),
+                256 * np.finfo(float).eps * np.abs(knots[1:-1]),
             ),
         )
         try:

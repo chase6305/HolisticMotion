@@ -76,6 +76,10 @@ def test_fast_linear_motion_does_not_multiply_zero_torsion_by_infinity(dof):
     assert np.max(np.abs(dq)) <= 1e150
     assert np.max(np.abs(ddq)) <= 1e300
     np.testing.assert_array_equal(dddq, 0.0)
+    fractions = np.linspace(0.0, 1.0, 101)
+    expected = np.where(fractions <= 0.5, 2 * fractions**2, 1 - 2 * (1 - fractions) ** 2)
+    np.testing.assert_allclose(q[:, 0], expected, rtol=1e-12, atol=1e-14)
+    assert trajectory.constraint_report(101)["velocity_continuous"]
 
 
 @pytest.mark.parametrize("scale,order", [(1e105, 3), (1e155, 2)])
