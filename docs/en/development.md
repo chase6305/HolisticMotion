@@ -125,7 +125,7 @@ machine conditions; timing is not a CI threshold.
 combined state queries at the same dimensions and waypoint counts. Both emit CSV with timing,
 duration, and checksums; use paired runs on the same machine and build settings.
 
-`trajectory_report_benchmark` measures native constraint reports for 2/7/20/32
+`trajectory_report_benchmark` measures native Double-S constraint reports for 2/7/20/32
 dimensions, 4/64 waypoints, and 2/2001/20001 requested uniform samples. Reports
 also inspect phase endpoints. Its 24 workloads emit median microseconds from
 21 measured calls after one warmup, plus checksums. It excludes construction
