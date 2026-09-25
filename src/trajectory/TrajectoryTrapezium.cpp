@@ -227,7 +227,7 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
     // selected to comply with dq, ddq limits
     if (!segment)
         return 0.0;
-    double m = std::numeric_limits<double>::max();
+    detail::PathSpeedLimit speed_limit;
     double s = segment->GetStartParameter();
     const double length = segment->GetLength();
     const double ep = s + length;
@@ -253,17 +253,9 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
                 !std::isfinite(torsion[i])) {
                 return 0.0;
             }
-            if (tangent[i] != 0.0) {
-                m = std::min(m, velocity_limits[i] / std::abs(tangent[i]));
-            }
-            if (curvature[i] != 0.0) {
-                m = std::min(m, detail::SquareRootRatio(acceleration_limits[i],
-                                                        std::abs(curvature[i])));
-            }
-            if (torsion[i] != 0.0) {
-                m = std::min(
-                    m, detail::CubeRootRatio(jerk_limits[i], std::abs(torsion[i])));
-            }
+            speed_limit.AddVelocity(velocity_limits[i], tangent[i]);
+            speed_limit.AddAcceleration(acceleration_limits[i], curvature[i]);
+            speed_limit.AddJerk(jerk_limits[i], torsion[i]);
         }
         if (s == ep)
             break;
@@ -282,7 +274,7 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
         s = next;
     }
 
-    return m;
+    return speed_limit.Get();
 }
 
 template <typename LieGroup>
