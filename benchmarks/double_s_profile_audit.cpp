@@ -33,11 +33,20 @@ struct Failure {
 };
 
 const char *CheckProfile(const std::list<TrajectorySeg> &phases, double scale,
-                         double length, double final_velocity, double acceleration,
-                         double jerk) {
+                         double length, double initial_velocity, double final_velocity,
+                         double acceleration, double jerk) {
     if (phases.size() != 8 || !std::isfinite(phases.back().timestamp) ||
         phases.back().timestamp <= 0.0)
         return "invalid_duration_or_layout";
+    const auto &first = phases.front();
+    const auto &last = phases.back();
+    if (!std::isfinite(last.pos) || !std::isfinite(last.vel) ||
+        !std::isfinite(last.acc) || !std::isfinite(last.jerk))
+        return "nonfinite_endpoint";
+    if (first.timestamp != 0.0 || first.pos != 0.0 ||
+        std::abs((first.vel - initial_velocity) / scale) > 1e-10 ||
+        std::abs(first.acc / scale) > 1e-10 * acceleration)
+        return "initial_boundary";
     if (std::abs(phases.back().pos / scale - length) > 1e-9 * length ||
         std::abs((phases.back().vel - final_velocity) / scale) > 1e-10 ||
         std::abs(phases.back().acc / scale) > 1e-10 * acceleration)
@@ -93,6 +102,7 @@ int main(int argc, char **argv) {
     std::uint64_t passed = 0, rejected = 0, failed = 0;
     std::uint64_t start_reductions = 0, end_reductions = 0;
     std::vector<Failure> failures;
+    std::size_t rejected_examples = 0, failed_examples = 0;
     const auto started = std::chrono::steady_clock::now();
     for (std::uint64_t trial = 0; trial < cases; ++trial) {
         const double scale = std::pow(10.0, -200 + 400 * uniform(rng));
@@ -117,15 +127,21 @@ int main(int argc, char **argv) {
             // backtracking. Audit its adjusted boundary conditions explicitly.
             start_reductions += !success;
             end_reductions += last != v1 * scale;
-            reason = CheckProfile(phases, scale, length, last, acceleration, jerk);
+            reason =
+                CheckProfile(phases, scale, length, first, last, acceleration, jerk);
             if (reason)
                 ++failed;
             else
                 ++passed;
         }
-        if (reason && failures.size() < 10)
+        // Rejections must not crowd out examples of invalid accepted
+        // profiles. Retain the first ten of each category in trial order.
+        auto &examples = phases.empty() ? rejected_examples : failed_examples;
+        if (reason && examples < 10) {
             failures.push_back(
                 {trial, reason, scale, length, v0, v1, acceleration, jerk});
+            ++examples;
+        }
     }
     const double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started)
