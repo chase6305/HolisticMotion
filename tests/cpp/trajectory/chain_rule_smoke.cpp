@@ -21,8 +21,9 @@ void CheckValue(double actual, double expected) {
 struct Monomial : PathSegmentBase<Group> {
     int degree;
     double inverse_length;
-    explicit Monomial(int power)
-        : degree(power), inverse_length(power == 2 ? 1e150 : 1e100) {
+    explicit Monomial(int power, double scale = 0.0)
+        : degree(power),
+          inverse_length(scale != 0.0 ? scale : (power == 2 ? 1e150 : 1e100)) {
         length_ = 1.0 / inverse_length;
         path_seg_type_ = PathSegType::Bezier5thSeg;
     }
@@ -104,6 +105,27 @@ void CheckSmallSpeedPowers() {
             CheckValue(trajectory.GetAcceleration(fraction * duration).Coeffs()[0],
                        acceleration);
             CheckValue(trajectory.GetJerk(fraction * duration).Coeffs()[0], jerk);
+        }
+    }
+}
+
+void CheckMixedJerkProduct() {
+    for (bool large_curvature : {false, true}) {
+        const double inverse_length = large_curvature ? 9e153 : 1e150;
+        const double linear = large_curvature ? 1e-155 : 1e-200;
+        const double quadratic = 0.5 * linear;
+        auto segment = std::make_shared<Monomial>(2, inverse_length);
+        QueryProbe trajectory(segment, Eigen::Vector4d(0.0, linear, quadratic, 0.0),
+                              1.0);
+        // q(t)=(a*t+b*t^2)^2 has jerk 12*a*b+24*b^2*t. All derivatives
+        // are representable even when 3*curvature overflows or speed*acc
+        // underflows. Form the reference entirely in normalized coordinates.
+        const double a = inverse_length * linear;
+        const double b = inverse_length * quadratic;
+        for (double time : {0.0, 0.125, 0.5, 0.875, 1.0}) {
+            const double expected = 12.0 * a * b + 24.0 * b * b * time;
+            CheckValue(trajectory.GetJerk(time).Coeffs()[0], expected);
+            CheckValue(trajectory.GetState(time).jerk.Coeffs()[0], expected);
         }
     }
 }
@@ -215,6 +237,7 @@ void CheckShortCurvesWithNonlinearTimeLaws() {
 int main() {
     try {
         CheckSmallSpeedPowers();
+        CheckMixedJerkProduct();
         CheckFastLinearMotion();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();
