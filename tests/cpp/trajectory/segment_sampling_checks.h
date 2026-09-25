@@ -23,7 +23,7 @@ public:
     }
     Group GetConfig(double) const override { return Group(); }
     Group::Tangent GetTangent(double s) const override {
-        if (samples.size() >= 8)
+        if (samples.size() >= maximum_samples)
             throw std::runtime_error("curve sampler repeated without progress");
         samples.push_back(s);
         return Derivative(s, 0, endpoint_peak_ && s == sp_ + length_ ? 4.0 : 2.0);
@@ -35,6 +35,7 @@ public:
         return Derivative(s, 2, 64.0);
     }
     mutable std::vector<double> samples;
+    std::size_t maximum_samples{8};
 
 private:
     Group::Tangent Derivative(double s, int order, double value) const {
@@ -117,6 +118,22 @@ template <typename Sample> void CheckSegmentSampling(Sample sample) {
         if (length > 0.01 &&
             (segment->samples[1] != 0.01 || segment->samples[2] != 0.02))
             throw std::runtime_error("ordinary sampling grid changed");
+    }
+    // Fixed absolute steps would require 1e8--1e102 evaluations here.
+    // Enforce a deterministic work bound rather than relying on a timeout.
+    for (double length : {1e6, 1e100}) {
+        auto segment = std::make_shared<SampledSegment>(0.0, length, -1, true);
+        segment->maximum_samples = 4097;
+        if (speed(segment) != 1.0 || segment->samples.size() != 4097 ||
+            segment->samples.front() != 0.0 || segment->samples.back() != length) {
+            throw std::runtime_error("large curve sampling exceeded its work bound");
+        }
+        for (std::size_t i = 1; i < segment->samples.size(); ++i) {
+            if (!std::isfinite(segment->samples[i]) ||
+                segment->samples[i] <= segment->samples[i - 1]) {
+                throw std::runtime_error("large curve sampling did not advance");
+            }
+        }
     }
     struct LimitCase {
         int order;

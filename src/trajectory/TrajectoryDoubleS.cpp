@@ -271,6 +271,13 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
         return 0.0;
     }
     const double step = std::min(0.01, length);
+    // Large coordinate units must not make preliminary cap sampling
+    // unbounded. Preserve the ordinary 0.01 grid; long intervals use 4096
+    // normalized steps before the separate composed-trajectory limit check.
+    constexpr int maximum_intervals = 4096;
+    const bool normalized_grid = length > 0.01 * maximum_intervals;
+    const double start = s;
+    int sample = 0;
 
     while (true) {
         auto tangent = segment->GetTangent(s);
@@ -295,7 +302,14 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
             }
         }
         if (s == ep) break;
-        const double next = std::min(ep, s + step);
+        ++sample;
+        const double next =
+            normalized_grid
+                ? (sample == maximum_intervals
+                       ? ep
+                       : std::min(ep, start + length *
+                                                  (sample / double(maximum_intervals))))
+                : std::min(ep, s + step);
         // A fixed step may round back to the same large path parameter.
         // Reject the unsampleable interval instead of looping indefinitely.
         if (next <= s) return 0.0;
