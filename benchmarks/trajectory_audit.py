@@ -30,6 +30,42 @@ def _inputs(rng, trial):
     }, scale
 
 
+def _stress_inputs(rng, trial):
+    """Unequal legs, near-collinearity, reversals, and anisotropic limits."""
+    dof = int(rng.choice([1, 2, 3, 7, 14, 20, 32]))
+    count = int(rng.integers(2, 33))
+    scale = 10.0 ** rng.uniform(-3, 1)
+    steps = rng.normal(size=(count, dof))
+    shape = trial % 4
+    if shape == 0:
+        steps *= 10.0 ** rng.uniform(-3, 1, (count, 1))
+    elif shape in (1, 2):
+        direction = rng.normal(size=dof)
+        direction /= np.linalg.norm(direction)
+        if shape == 1:
+            steps = direction * rng.uniform(0.1, 2, (count, 1)) + (
+                10.0 ** rng.uniform(-10, -3)
+            ) * steps
+        else:
+            steps = (
+                direction
+                * rng.choice([-1.0, 1.0], (count, 1))
+                * rng.uniform(0.1, 2, (count, 1))
+                + 1e-4 * steps
+            )
+    points = scale * np.cumsum(steps, axis=0)
+    velocity, acceleration, jerk = 10.0 ** rng.uniform(-3, 3, (3, dof))
+    return {
+        "waypoints": points.tolist(),
+        "max_velocity": velocity.tolist(),
+        "max_acceleration": acceleration.tolist(),
+        "max_jerk": jerk.tolist(),
+        "blend_tolerance": scale * 0.03,
+        # Exercise every shape with both profiles over each block of eight.
+        "profile": "double_s" if (trial // 4) % 2 == 0 else "trapezoidal",
+    }, scale
+
+
 def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False):
     try:
         trajectory = hm.RnTrajectory(**inputs)
@@ -114,6 +150,12 @@ def main():
     parser.add_argument("--samples", type=int, default=2001)
     parser.add_argument("--case-index", type=int)
     parser.add_argument(
+        "--distribution",
+        choices=("standard", "stress"),
+        default="standard",
+        help="stress also covers unequal legs, near-collinear paths, and wide limits",
+    )
+    parser.add_argument(
         "--phase-samples",
         type=int,
         default=0,
@@ -136,8 +178,9 @@ def main():
     counts, failures = {}, []
     started = time.perf_counter()
     count = args.cases if args.case_index is None else args.case_index + 1
+    generate = _stress_inputs if args.distribution == "stress" else _inputs
     for trial in range(count):
-        inputs, scale = _inputs(rng, trial)
+        inputs, scale = generate(rng, trial)
         if args.case_index is not None and trial != args.case_index:
             continue
         kind, details = _check(
@@ -152,6 +195,7 @@ def main():
         json.dumps(
             {
                 "seed": args.seed,
+                "distribution": args.distribution,
                 "numpy_version": np.__version__,
                 "samples": args.samples,
                 "phase_samples": args.phase_samples,
