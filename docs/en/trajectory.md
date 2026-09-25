@@ -278,6 +278,12 @@ to the original cruise duration. Both boundary ramps can share one replacement.
 Missing cruise time, nonfinite states, or a replacement exceeding these timing,
 displacement, or acceleration bounds still fail transactionally.
 
+If merging cannot meet the displacement budget and the planned peak exceeds
+both endpoint speeds, the solver can retry once with the faster endpoint as
+its peak. This removes the unrepresentable speed excursion while preserving
+boundary velocities and the original limits. Every replacement phase is checked
+against the same displacement budget using its stored timestamps.
+
 Double-S also validates all phase states before publishing a profile or adjusted
 endpoint speeds. A phase whose timestamp cannot advance must leave position,
 velocity, and acceleration unchanged; otherwise generation fails with an empty

@@ -125,3 +125,13 @@ def test_continuity_audit_uses_representable_sample_offsets():
     # upward. The derivative allowance must use the actual sampled interval.
     kind, details = audit["_check"](case["input"], case["scale"], 2001, 129, True)
     assert kind == "passed", details
+
+
+def test_coarse_clock_profile_can_use_a_lower_peak():
+    benchmarks = Path(__file__).resolve().parents[2] / "benchmarks"
+    inputs = json.loads(
+        (benchmarks / "fixtures/trapezoidal_clock_precision_rejection.json").read_text()
+    )
+    audit = runpy.run_path(benchmarks / "trajectory_audit.py")
+    kind, details = audit["_check"](inputs, 1.0, 20001, 1001, True)
+    assert kind == "passed", details

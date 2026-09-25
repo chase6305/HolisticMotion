@@ -137,6 +137,44 @@ void CheckCollapsedRampAtNonzeroPosition() {
     }
 }
 
+void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
+    // A recorded rejected interval has a 2.18e-14 ramp on a 5.68e-14 clock.
+    // Reducing the peak to the faster endpoint removes that excursion while
+    // retaining both endpoint speeds and the existing acceleration limit.
+    constexpr double q0 = 14.159136934492288;
+    constexpr double q1 = 14.199071545761711;
+    constexpr double fast = 0.29546205743865284;
+    constexpr double slow = 0.03750188018187762;
+    constexpr double cap = 0.2954620574387062;
+    constexpr double acceleration = 2.443973585440111;
+    constexpr double start = 273.568908829043;
+    for (double clock : {0.0, start}) {
+        CheckProfile(q1 - q0, fast, slow, cap, acceleration, q0, clock);
+        ProfileProbe probe;
+        std::list<TrajectorySeg> phases;
+        double end_velocity = slow;
+        if (!probe._ComputeTrapeziumProfile(q0, q1, fast, end_velocity, cap,
+                                            acceleration, clock, phases, 0))
+            throw std::runtime_error("lower peak did not recover a feasible profile");
+        for (auto it = phases.begin(); it != phases.end(); ++it) {
+            if (it->vel > cap)
+                throw std::runtime_error("lower peak increased the speed cap");
+            const auto next = std::next(it);
+            if (next == phases.end())
+                break;
+            const long double dt = next->timestamp - it->timestamp;
+            const long double position = static_cast<long double>(it->pos) +
+                                         it->vel * dt + 0.5L * it->acc * dt * dt;
+            const double budget =
+                64.0 * std::numeric_limits<double>::epsilon() * (q1 - q0) +
+                std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->pos), std::abs(next->pos));
+            if (std::abs(position - next->pos) > budget)
+                throw std::runtime_error("lower peak bypassed displacement checks");
+        }
+    }
+}
+
 void CheckShortTransition(double length, double v0, double requested_v1) {
     ProfileProbe probe;
     std::list<TrajectorySeg> phases;
@@ -388,6 +426,7 @@ int main() {
          {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
           CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
+          CheckLowerPeakPreservesBoundariesAtCoarseClock,
           CheckMergedCruiseTimingCorrection}) {
         try {
             check();

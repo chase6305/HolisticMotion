@@ -505,13 +505,49 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
         const double last_acceleration =
             reaches_speed_cap ? std::copysign(max_acceleration, v1 - v_lim)
                               : -max_acceleration;
+        const auto retry_with_lower_peak = [&]() {
+            // A cap just above an endpoint can require a ramp shorter than
+            // one clock ulp. If merging cannot preserve its displacement,
+            // recompute with that endpoint as the peak instead. This lowers
+            // the requested cap and removes the unrepresentable excursion;
+            // it does not discard a boundary velocity or relax error budgets.
+            // The new cap equals an endpoint, so this retry cannot recurse.
+            const double endpoint_peak = std::max(v0, v1);
+            if (endpoint_peak <= 0.0 || endpoint_peak >= max_velocity)
+                return false;
+            std::list<TrajectorySeg> candidate;
+            double candidate_end_velocity = v1;
+            if (!_ComputeTrapeziumProfile(q0, q1, v0, candidate_end_velocity,
+                                          endpoint_peak, max_acceleration, t0,
+                                          candidate, seg_no) ||
+                candidate_end_velocity != v1 || candidate.size() < 2)
+                return false;
+            // Recheck every replacement phase using its stored timestamps.
+            // Replanning must not bypass the failed merge's distance budget.
+            for (auto it = candidate.begin(); std::next(it) != candidate.end(); ++it) {
+                const auto next = std::next(it);
+                const double elapsed = next->timestamp - it->timestamp;
+                const double displacement = next->pos - it->pos;
+                const double integrated =
+                    it->vel * elapsed + detail::QuadraticContribution(it->acc, elapsed);
+                const double budget =
+                    64.0 * std::numeric_limits<double>::epsilon() * h +
+                    std::numeric_limits<double>::epsilon() *
+                        std::max(std::abs(it->pos), std::abs(next->pos));
+                if (!std::isfinite(integrated) ||
+                    std::abs(integrated - displacement) > budget)
+                    return false;
+            }
+            traj_segs.swap(candidate);
+            return true;
+        };
         bool has_cruise_phase = false;
         if (!append_phase(ta, first_acceleration)) {
             if (!collapsed_phase || tc <= 0.0)
                 return false;
             const double last_distance = (0.5 * v_lim + 0.5 * v1) * td;
             if (!append_cruise_transition(q1 - last_distance, v_lim, t0 + ta + tc))
-                return false;
+                return retry_with_lower_peak();
             has_cruise_phase = true;
         } else {
             const auto prefix_size = phases.size();
@@ -526,7 +562,7 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
             current_segment = phases.back();
             phases.pop_back();
             if (!append_cruise_transition(q1, v1, planned_end_time))
-                return false;
+                return retry_with_lower_peak();
         }
         phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
         traj_segs.swap(phases);
