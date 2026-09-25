@@ -86,7 +86,8 @@ void CheckFailedAlignmentPreservesTimestamps() {
 }
 
 void CheckFailedProfilesAreEmpty() {
-    for (const auto &input : {std::pair<double, double>{1e20, 1.0},
+    for (const auto &input : {std::pair<double, double>{0.0, 0.0},
+                              {1e20, 1.0},
                               {0.0, 1e20},
                               {std::numeric_limits<double>::max(), 1e308}}) {
         double start_velocity = 2.0;
@@ -261,6 +262,116 @@ void CheckLongZeroJerkStep() {
         next.timestamp != 1e110 || next.jerk != 5.0 || next.seg_no != 9) {
         throw std::runtime_error(
             "zero jerk must not multiply an overflowing time cube");
+    }
+}
+
+void CheckShortOneSidedProfile() {
+    // The feasible end speed leaves a sub-ulp opposite peak. A fitted
+    // one-sided transition must preserve distance without a collapsed ramp.
+    for (double scale : {1e-100, 1.0, 1e100}) {
+        for (double start_time : {0.0, 15.817517866570055, 1000.0}) {
+            constexpr double start = 0.108909003150786;
+            constexpr double end = 0.12356415609575787;
+            constexpr double acceleration = 0.00373477602911192;
+            constexpr double jerk = 35.32750676996459;
+            double v0 = 0.0, v1 = 0.8348661838669967 * scale;
+            std::list<TrajectorySeg> phases;
+            if (!ProfileProbe::_ComputeDoubleSProfile(
+                    start * scale, end * scale, v0, v1, 2.8945292478592495 * scale,
+                    acceleration * scale, jerk * scale, start_time, phases, 0, false) ||
+                phases.size() != 8 || v0 != 0.0 || v1 <= 0.0 ||
+                std::abs(phases.back().pos / scale - end) > 1e-13 ||
+                std::abs((phases.back().vel - v1) / scale) > 1e-13) {
+                throw std::runtime_error("short one-sided profile was lost");
+            }
+            for (auto previous = phases.begin(), next = std::next(previous);
+                 next != phases.end(); ++previous, ++next) {
+                const long double dt = next->timestamp - previous->timestamp;
+                const long double q = previous->pos / scale;
+                const long double v = previous->vel / scale;
+                const long double a = previous->acc / scale;
+                const long double j = previous->jerk / scale;
+                const long double clock_error =
+                    4 * std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(previous->timestamp), std::abs(next->timestamp));
+                if (dt < 0 || !std::isfinite(dt) ||
+                    std::abs(q + v * dt + a * dt * dt / 2 + j * dt * dt * dt / 6 -
+                             next->pos / scale) > 1e-13 ||
+                    std::abs(v + a * dt + j * dt * dt / 2 - next->vel / scale) >
+                        1e-13 + acceleration * clock_error ||
+                    std::abs(a + j * dt - next->acc / scale) >
+                        1e-13 + jerk * clock_error ||
+                    std::abs(a) > acceleration * (1 + 1e-12) ||
+                    std::abs(j) > jerk * (1 + 1e-12)) {
+                    throw std::runtime_error(
+                        "one-sided phase violates physical motion");
+                }
+                if (dt == 0 &&
+                    (previous->pos != next->pos || previous->vel != next->vel ||
+                     previous->acc != next->acc)) {
+                    throw std::runtime_error("collapsed one-sided phase changes state");
+                }
+            }
+        }
+    }
+}
+
+void CheckScaledProfiles() {
+    for (double scale : {1e-200, 1e-100, 1.0, 1e100, 1e200}) {
+        for (double acceleration : {0.1, 2.0}) {
+            for (double length : {1e-12, 0.1, 1.0, 10.0}) {
+                double v0 = 0.0, v1 = 0.0;
+                std::list<TrajectorySeg> phases;
+                if (!ProfileProbe::_ComputeDoubleSProfile(
+                        0.0, length * scale, v0, v1, scale, acceleration * scale,
+                        3.0 * scale, 0.0, phases, 0, false) ||
+                    phases.size() != 8) {
+                    throw std::runtime_error("scaled rest profile was rejected");
+                }
+                // Independent dimensionless long-double reference. Scaling
+                // every coordinate and derivative limit leaves time unchanged.
+                const long double a = acceleration, j = 3.0L, h = length;
+                const long double tj = std::min(std::sqrt(1.0L / j), a / j);
+                const long double ramp = tj < a / j ? 2 * tj : tj + 1 / a;
+                long double expected;
+                if (h >= ramp) {
+                    expected = h + ramp;
+                } else {
+                    const long double triangle = std::cbrt(h / (2 * j));
+                    expected = triangle <= a / j
+                                   ? 4 * triangle
+                                   : a / j + std::sqrt(a * a / (j * j) + 4 * h / a);
+                }
+                if (std::abs(phases.back().timestamp / expected - 1.0L) > 1e-12L)
+                    throw std::runtime_error(
+                        "scaled rest timing disagrees with reference");
+                for (auto previous = phases.begin(), next = std::next(previous);
+                     next != phases.end(); ++previous, ++next) {
+                    const long double dt = next->timestamp - previous->timestamp;
+                    const long double q = previous->pos / scale;
+                    const long double v = previous->vel / scale;
+                    const long double acc = previous->acc / scale;
+                    const long double jerk = previous->jerk / scale;
+                    if (!std::isfinite(dt) || dt < 0 ||
+                        std::abs(q + v * dt + acc * dt * dt / 2 +
+                                 jerk * dt * dt * dt / 6 - next->pos / scale) >
+                            1e-12L * h ||
+                        std::abs(v + acc * dt + jerk * dt * dt / 2 -
+                                 next->vel / scale) > 1e-12L ||
+                        std::abs(acc + jerk * dt - next->acc / scale) > 1e-12L ||
+                        std::abs(acc) > a * (1 + 1e-12L) ||
+                        std::abs(jerk) > j * (1 + 1e-12L)) {
+                        throw std::runtime_error(
+                            "scaled phase violates physical integration");
+                    }
+                }
+                if (std::abs(phases.back().pos / scale - length) > 1e-12 * length ||
+                    std::abs(phases.back().vel / scale) > 1e-12 ||
+                    std::abs(phases.back().acc / scale) > 1e-12) {
+                    throw std::runtime_error("scaled profile misses its endpoint");
+                }
+            }
+        }
     }
 }
 
@@ -555,6 +666,8 @@ int main() {
         CheckRecursiveProfileAlignment();
         CheckLongZeroJerkStep();
         CheckRecordedTrajectory();
+        CheckScaledProfiles();
+        CheckShortOneSidedProfile();
         for (double length : {1e-5, 1e-7, 1e-9, 0.01, 1.0}) {
             CheckProfile(length, 0.03, 0.04);
             CheckProfile(length, 0.04, 0.03);
