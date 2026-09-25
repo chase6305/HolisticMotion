@@ -59,6 +59,28 @@ template <typename LieGroup> struct QuinticEvaluation {
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathSegmentBase)
 
+template <typename LieGroup>
+void PathSegmentBase<LieGroup>::ComputeDerivatives(double s, Tangent &tangent,
+                                                 Tangent &curvature,
+                                                 Tangent &torsion) const {
+    // Speed-cap sampling needs all derivatives but not position. Share the
+    // quintic control differences without bypassing a subclass's overrides.
+    if (typeid(*this) == typeid(PathSegBezierCurve5th<LieGroup>)) {
+        ValidateQuery(s);
+        const auto &curve = static_cast<const PathSegBezierCurve5th<LieGroup> &>(*this);
+        s = clamp(s - sp_, 0.0, length_);
+        s = length_ > Epsilon ? s / length_ : 0.0;
+        const QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s, length_);
+        tangent = evaluation.FirstDerivative();
+        curvature = evaluation.SecondDerivative();
+        torsion = evaluation.ThirdDerivative();
+        return;
+    }
+    tangent = GetTangent(s);
+    curvature = GetCurvature(s);
+    torsion = GetTorsion(s);
+}
+
 // Restrict the shared evaluation to the exact built-in types. A subclass may
 // override any scalar query; it must continue to participate in GetState.
 template <typename LieGroup>

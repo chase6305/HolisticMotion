@@ -71,6 +71,37 @@ private:
 
 template <typename Sample> void CheckSegmentSampling(Sample sample) {
     {
+        using Curve = holistic_motion::robotics::PathSegBezierCurve5th<Group>;
+        struct OverriddenCurve : Curve {
+            explicit OverriddenCurve(const std::array<Group, 3>& points)
+                : Curve(points, 0.0) {}
+            Group GetConfig(double) const override {
+                throw std::runtime_error("speed-cap sampling must not query position");
+            }
+            Group::Tangent GetTangent(double) const override { return Value(0, 2.0); }
+            Group::Tangent GetCurvature(double) const override { return Value(1, 128.0); }
+            Group::Tangent GetTorsion(double) const override { return Value(2, 64.0); }
+            Group::Tangent Value(unsigned order, double value) const {
+                ++calls[order];
+                Group::Tangent result;
+                result.Coeffs() << value, 0.0;
+                return result;
+            }
+            mutable std::array<unsigned, 3> calls{};
+        };
+        std::array<Group, 3> points;
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << 0.01, 0.0;
+        points[2].Coeffs() << 0.01, 0.01;
+        auto curve = std::make_shared<OverriddenCurve>(points);
+        const double speed =
+            sample(curve, Eigen::Vector2d::Constant(4.0),
+                   Eigen::Vector2d::Constant(32.0), Eigen::Vector2d::Constant(512.0));
+        if (speed != 0.5 || curve->calls[0] < 2 || curve->calls[0] != curve->calls[1] ||
+            curve->calls[1] != curve->calls[2])
+            throw std::runtime_error("shared curve evaluation bypassed overrides");
+    }
+    {
         std::array<Group, 3> points;
         points[0].Coeffs() << 0.0, 0.0;
         points[1].Coeffs() << 2.0, 0.0;

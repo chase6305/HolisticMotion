@@ -296,9 +296,8 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
     int sample = 0;
 
     while (true) {
-        auto tangent = segment->GetTangent(s);
-        auto curvature = segment->GetCurvature(s);
-        auto torsion = segment->GetTorsion(s);
+        typename LieGroup::Tangent tangent, curvature, torsion;
+        segment->ComputeDerivatives(s, tangent, curvature, torsion);
         for (size_t i = 0; i < this->dof_; i++) {
             if (!std::isfinite(tangent[i]) || !std::isfinite(curvature[i]) ||
                 !std::isfinite(torsion[i])) {
