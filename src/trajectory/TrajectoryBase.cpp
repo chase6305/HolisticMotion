@@ -96,12 +96,10 @@ template <typename LieGroup>
 bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
     phase_path_segments_.clear();
     const auto segments = path_->GetPathSegments();
-    // Blended time phases can span several geometric segments. Keep their
-    // position-based lookup; an all-linear path has one owner per phase.
-    if (std::any_of(segments.begin(), segments.end(), [](const auto& segment) {
-            return segment->GetPathSegType() != PathSegType::LinearSeg;
-        }))
-        return true;
+    const bool all_linear =
+        std::all_of(segments.begin(), segments.end(), [](const auto &segment) {
+            return segment->GetPathSegType() == PathSegType::LinearSeg;
+        });
     phase_path_segments_.reserve(trajectory_pspline_->GetKnots().size() - 1);
     for (auto it = trajectory_segments_.begin();
          it != trajectory_segments_.end(); ++it) {
@@ -110,15 +108,44 @@ bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
         if (next->timestamp <= it->timestamp) continue;
         if (it->seg_no < 0 ||
             static_cast<std::size_t>(it->seg_no) >= segments.size()) {
-            phase_path_segments_.clear();
-            return false;
+            if (all_linear) {
+                phase_path_segments_.clear();
+                return false;
+            }
+            phase_path_segments_.push_back(nullptr);
+            continue;
         }
-        phase_path_segments_.push_back(segments[it->seg_no]);
+        const auto &geometry = segments[it->seg_no];
+        bool owned = all_linear;
+        if (!owned && geometry->GetPathSegType() == PathSegType::LinearSeg &&
+            it->seg_no == next->seg_no && it->vel >= 0.0 && next->vel >= 0.0) {
+            // A blend phase starts with the preceding line's terminal state,
+            // but ends at a different segment number. Only pin phases whose
+            // two states identify the same line and fit its geometric span.
+            const double start = geometry->GetStartParameter();
+            const double end = start + geometry->GetLength();
+            double budget = 64.0 * std::numeric_limits<double>::epsilon() *
+                            std::max(std::abs(start), std::abs(end));
+            budget = std::min(budget, 0.25 * geometry->GetLength());
+            if (it->seg_no > 0)
+                budget = std::min(budget, 0.25 * segments[it->seg_no - 1]->GetLength());
+            if (std::size_t(it->seg_no + 1) < segments.size())
+                budget = std::min(budget, 0.25 * segments[it->seg_no + 1]->GetLength());
+            owned = it->pos >= start - budget && next->pos <= end + budget &&
+                    next->pos >= it->pos;
+            const double stationary = it->jerk != 0.0 ? -it->acc / it->jerk : -1.0;
+            if (stationary > 0.0 && stationary < next->timestamp - it->timestamp) {
+                owned = owned && it->vel + stationary * (it->acc +
+                                                         0.5 * stationary * it->jerk) >=
+                                     0.0;
+            }
+        }
+        phase_path_segments_.push_back(owned ? geometry : nullptr);
     }
     if (phase_path_segments_.size() + 1 !=
         trajectory_pspline_->GetKnots().size()) {
         phase_path_segments_.clear();
-        return false;
+        return !all_linear;
     }
     return true;
 }
@@ -143,9 +170,9 @@ TrajectoryBase<LieGroup>::EvaluatePathJet(double time,
     // At a stop, the path position can round to the next segment while time
     // still belongs to the incoming phase. Its derivatives need that phase's
     // geometry, including at right-continuous time knots and after rescaling.
-    const auto segment = phase_path_segments_.empty()
-                             ? path_->GetPathSegmentAtS(jet[0])
-                             : phase_path_segments_[phase];
+    const auto segment = !phase_path_segments_.empty() && phase_path_segments_[phase]
+                             ? phase_path_segments_[phase]
+                             : path_->GetPathSegmentAtS(jet[0]);
     if (!segment) throw std::logic_error("cannot query an invalid path");
     return segment;
 }
@@ -391,7 +418,9 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     };
     const auto& knots = trajectory_pspline_->GetKnots();
     std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> geometric_segments;
-    if (phase_path_segments_.empty())
+    if (phase_path_segments_.empty() ||
+        std::any_of(phase_path_segments_.begin(), phase_path_segments_.end(),
+                    [](const auto &owner) { return !owner; }))
         geometric_segments = path_->GetPathSegments();
     for (std::size_t segment = 1; segment < knots.size(); ++segment) {
         const double start = knots[segment - 1];
@@ -402,7 +431,8 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
         const double stationary =
             initial_jet[3] != 0.0 ? -initial_jet[2] / initial_jet[3] : -1.0;
         const double stationary_time = start + stationary;
-        bool linear_phase = !phase_path_segments_.empty();
+        bool linear_phase =
+            !phase_path_segments_.empty() && bool(phase_path_segments_[segment - 1]);
         bool monotone = false;
         std::array<double, 4> final_jet{};
         if (!linear_phase) {

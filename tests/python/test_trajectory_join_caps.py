@@ -15,7 +15,9 @@ import pytest
 @pytest.mark.parametrize("reverse", [False, True])
 def test_blend_velocity_respects_adjacent_lines(fixture, scale, reverse):
     inputs = json.loads(
-        (Path(__file__).resolve().parents[2] / "benchmarks/fixtures" / fixture).read_text()
+        (
+            Path(__file__).resolve().parents[2] / "benchmarks/fixtures" / fixture
+        ).read_text()
     )
     points = np.asarray(inputs["waypoints"]) * scale
     inputs["waypoints"] = points[::-1] if reverse else points

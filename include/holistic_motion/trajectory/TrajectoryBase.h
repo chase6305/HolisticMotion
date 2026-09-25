@@ -92,7 +92,7 @@ public:
     ConstraintReport GetConstraintReport(std::size_t samples = 2001) const;
 
 protected:
-    /// Associate phases with their owning segments for entirely linear paths.
+    /// Associate unambiguous linear phases with their owning geometry.
     bool InitializePhasePathSegments();
 
     /// Evaluate the time law and select geometry using the same active phase.
