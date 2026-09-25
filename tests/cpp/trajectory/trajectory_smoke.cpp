@@ -131,7 +131,69 @@ bool PathQueriesRespectValidation() {
     return true;
 }
 
+bool CustomSegmentQueriesAreRespected() {
+    using Group = Rn<double, 2>;
+    struct CustomSegment : PathSegBezierCurve5th<Group> {
+        static std::array<Group, 3> Points() {
+            std::array<Group, 3> points;
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 2.0, 0.0;
+            points[2].Coeffs() << 5.0, 0.0;
+            return points;
+        }
+        CustomSegment() : PathSegBezierCurve5th(Points(), 0.0) {}
+        Group GetConfig(double s) const override {
+            auto result = PathSegBezierCurve5th::GetConfig(s);
+            result.Coeffs()[1] += 7.0;
+            return result;
+        }
+        Group::Tangent GetTangent(double s) const override {
+            return 2.0 * PathSegBezierCurve5th::GetTangent(s);
+        }
+        Group::Tangent GetCurvature(double) const override {
+            Group::Tangent result;
+            result.Coeffs() << 3.0, 4.0;
+            return result;
+        }
+        Group::Tangent GetTorsion(double) const override {
+            Group::Tangent result;
+            result.Coeffs() << 5.0, 6.0;
+            return result;
+        }
+    };
+    struct CustomPath : PathBase<Group> {
+        CustomPath() {
+            path_segments_.push_back(std::make_shared<CustomSegment>());
+            length_ = path_segments_.front()->GetLength();
+            valid_ = true;
+        }
+    };
+    struct QueryProbe : TrajectoryBase<Group> {
+        QueryProbe() {
+            path_ = std::make_shared<CustomPath>();
+            trajectory_pspline_ = std::make_shared<PSpline>();
+            trajectory_pspline_->PushBack(
+                std::make_shared<Polynomial>(Eigen::Vector4d(0.0, 1.0, 0.1, 0.01)),
+                1.0);
+            valid_ = true;
+            SetMinimumDuration(1.7);
+        }
+    } trajectory;
+    for (double time : {-1.0, 0.0, 0.1, 0.5, 1.0, 1.7, 2.0}) {
+        const auto state = trajectory.GetState(time);
+        if ((state.position - trajectory.GetPosition(time)).Coeffs().norm() > 1e-12 ||
+            (state.velocity - trajectory.GetVelocity(time)).Coeffs().norm() > 1e-12 ||
+            (state.acceleration - trajectory.GetAcceleration(time)).Coeffs().norm() >
+                1e-12 ||
+            (state.jerk - trajectory.GetJerk(time)).Coeffs().norm() > 1e-12)
+            return false;
+    }
+    return true;
+}
+
 int main() {
+    if (!CustomSegmentQueriesAreRespected())
+        return 13;
     if (!PathQueriesRespectValidation()) return 12;
     if (!LowDimensionalCartesianBlendIsValid<1>() ||
         !LowDimensionalCartesianBlendIsValid<2>() ||

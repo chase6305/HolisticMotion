@@ -137,8 +137,9 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetJerk(double t) const {
     const auto curvature = segment->GetCurvature(jet[0]);
     const auto torsion = segment->GetTorsion(jet[0]);
     const double inverse_scale = 1.0 / time_scale_;
+    const double speed_squared = jet[1] * jet[1];
     return (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-            torsion * std::pow(jet[1], 3)) *
+            torsion * (speed_squared * jet[1])) *
            inverse_scale * inverse_scale * inverse_scale;
 }
 
@@ -147,18 +148,17 @@ typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
     double t) const {
     std::array<double, 4> jet;
     const auto segment = EvaluatePathJet(t, jet);
-    const auto tangent = segment->GetTangent(jet[0]);
-    const auto curvature = segment->GetCurvature(jet[0]);
-    const auto torsion = segment->GetTorsion(jet[0]);
-    const double inverse_scale = 1.0 / time_scale_;
-
     State state;
-    state.position = segment->GetConfig(jet[0]);
+    typename LieGroup::Tangent tangent, curvature, torsion;
+    segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
+    const double inverse_scale = 1.0 / time_scale_;
+    const double speed_squared = jet[1] * jet[1];
+
     state.velocity = tangent * jet[1] * inverse_scale;
-    state.acceleration = (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
-                         inverse_scale * inverse_scale;
+    state.acceleration =
+        (tangent * jet[2] + curvature * speed_squared) * inverse_scale * inverse_scale;
     state.jerk = (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-                  torsion * std::pow(jet[1], 3)) *
+                  torsion * (speed_squared * jet[1])) *
                  inverse_scale * inverse_scale * inverse_scale;
     return state;
 }
