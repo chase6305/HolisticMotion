@@ -115,8 +115,12 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
             ),
         )
         try:
-            left = trajectory.sample(knots[1:-1] - offset)
+            left_times = knots[1:-1] - offset
+            left = trajectory.sample(left_times)
             right = trajectory.sample(knots[1:-1])
+            # Subtracting from a large clock rounds the requested offset.
+            # Bound state changes over the elapsed time actually sampled.
+            elapsed = knots[1:-1] - left_times
         except (ValueError, RuntimeError) as error:
             return "evaluation_error", {"stage": "phase_join", "error": str(error)}
         if not all(np.isfinite(value).all() for value in (*left, *right)):
@@ -133,7 +137,7 @@ def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False)
             float(
                 np.max(
                     np.abs(right[order] - left[order])
-                    / (np.outer(offset, inputs[limit]) + roundoff)
+                    / (np.outer(elapsed, inputs[limit]) + roundoff)
                 )
             )
             for order, (limit, roundoff) in enumerate(allowances)

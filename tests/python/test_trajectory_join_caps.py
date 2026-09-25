@@ -1,6 +1,7 @@
 """Blended paths must preserve limits and continuity at every geometric join."""
 
 import json
+import runpy
 from pathlib import Path
 
 import holistic_motion as hm
@@ -112,3 +113,15 @@ def test_touching_blends_do_not_create_a_roundoff_line(profile, scale, reverse):
             rtol=1e-12,
             atol=scale * 1e-10,
         )
+
+
+def test_continuity_audit_uses_representable_sample_offsets():
+    benchmarks = Path(__file__).resolve().parents[2] / "benchmarks"
+    case = json.loads(
+        (benchmarks / "fixtures/continuity_sample_clock_rounding.json").read_text()
+    )
+    audit = runpy.run_path(benchmarks / "trajectory_audit.py")
+    # At the large accumulated clock, subtraction rounds the requested offset
+    # upward. The derivative allowance must use the actual sampled interval.
+    kind, details = audit["_check"](case["input"], case["scale"], 2001, 129, True)
+    assert kind == "passed", details
