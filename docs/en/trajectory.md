@@ -190,7 +190,7 @@ coordinate roundoff bounded by the neighboring segment lengths. Ambiguous
 phases and phases spanning curves still locate geometry by path position.
 At a direct line-to-line stop, the final incoming phase retains its line even
 when its terminal state is also the next line's initial state. This prevents a
-sub-ulp final displacement from switching the derivative direction early.
+rounded final displacement from switching the derivative direction early.
 Corrected derivative peaks can
 reduce the global slowdown previously caused by a mismatched segment direction.
 

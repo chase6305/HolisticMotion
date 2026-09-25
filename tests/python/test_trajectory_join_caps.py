@@ -64,7 +64,7 @@ def test_final_jerk_phase_keeps_incoming_line_at_stop():
         ).read_text()
     )
     trajectory = hm.RnTrajectory(**inputs)
-    # The incoming final jerk phase travels less than one coordinate ulp.
+    # The incoming final jerk phase travels only a few coordinate ulps.
     # Its terminal state belongs to the next line, whose tangent is reversed.
     report = trajectory.constraint_report(20001)
     assert report["within_limits"]
