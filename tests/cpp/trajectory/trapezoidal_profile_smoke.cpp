@@ -108,6 +108,35 @@ void CheckCollapsedRampBesideCruise() {
     }
 }
 
+void CheckCollapsedRampAtNonzeroPosition() {
+    // Recorded from a short interval late in a blended path. Its displacement
+    // error is below one coordinate ulp but exceeds an h-only relative budget.
+    constexpr double q0 = 51.523257784451715;
+    constexpr double q1 = 51.675437373741296;
+    constexpr double v0 = 0.8398822958553492;
+    constexpr double requested_v1 = 0.8398822958553513;
+    constexpr double vmax = 0.8398822958553549;
+    constexpr double amax = 0.9354261944068154;
+    constexpr double t0 = 74.28314124735722;
+    CheckProfile(q1 - q0, v0, requested_v1, vmax, amax, q0, t0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = requested_v1;
+    if (!probe._ComputeTrapeziumProfile(q0, q1, v0, v1, vmax, amax, t0, phases, 0))
+        throw std::runtime_error("coordinate roundoff rejected a merged cruise");
+    for (auto it = phases.begin(), next = std::next(it); next != phases.end();
+         ++it, ++next) {
+        const long double dt = next->timestamp - it->timestamp;
+        const long double position = static_cast<long double>(it->pos) +
+                                     it->vel * dt + 0.5L * it->acc * dt * dt;
+        const long double coordinate_ulp =
+            std::nextafter(next->pos, std::numeric_limits<double>::infinity()) -
+            next->pos;
+        if (std::abs(position - next->pos) > coordinate_ulp)
+            throw std::runtime_error("merged cruise exceeds coordinate precision");
+    }
+}
+
 void CheckShortTransition(double length, double v0, double requested_v1) {
     ProfileProbe probe;
     std::list<TrajectorySeg> phases;
@@ -337,7 +366,7 @@ int main() {
     for (const auto check :
          {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
-          CheckCollapsedRampBesideCruise}) {
+          CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition}) {
         try {
             check();
         } catch (const std::exception &error) {

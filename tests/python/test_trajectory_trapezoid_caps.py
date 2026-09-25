@@ -1,5 +1,8 @@
 """Trapezoidal joins retain endpoint speeds when adjacent caps differ by roundoff."""
 
+import json
+from pathlib import Path
+
 import holistic_motion as hm
 import numpy as np
 import pytest
@@ -8,6 +11,12 @@ import pytest
 @pytest.mark.parametrize(
     "inputs",
     [
+        json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "benchmarks/fixtures/trapezoidal_timestamp_rejection.json"
+            ).read_text()
+        ),
         {
             "waypoints": [
                 [-2.7689420092621817, 3.7985050687871023],

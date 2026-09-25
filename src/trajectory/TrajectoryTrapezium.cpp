@@ -444,10 +444,19 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
                                     std::abs(current_segment.timestamp));
             const double distance_error =
                 std::abs(average_speed * elapsed - displacement);
+            // The stored endpoints are absolute path coordinates. A short
+            // interval far from zero also carries their rounding error; an
+            // h-only budget can reject motion accurate to one coordinate ulp.
+            // Do not scale this allowance by the absolute timestamp: a clock
+            // too coarse to reproduce the displacement must still be rejected.
+            const double coordinate_roundoff =
+                std::numeric_limits<double>::epsilon() *
+                std::max(std::abs(current_segment.pos), std::abs(end_position));
+            const double distance_budget = roundoff * h + coordinate_roundoff;
             if (!std::isfinite(acceleration) ||
                 std::abs(acceleration) > max_acceleration ||
                 std::abs(end_time - planned_end_time) > time_budget ||
-                !std::isfinite(distance_error) || distance_error > roundoff * h)
+                !std::isfinite(distance_error) || distance_error > distance_budget)
                 return false;
             current_segment.acc = acceleration;
             phases.push_back(current_segment);
