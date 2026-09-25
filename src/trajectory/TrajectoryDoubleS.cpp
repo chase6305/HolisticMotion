@@ -142,6 +142,26 @@ TrajectoryDoubleS<LieGroup>::TrajectoryDoubleS(
             i++;
         }
 
+        if (is_next_bezier_segment) {
+            // The curve's endpoint tangent and its neighboring line can
+            // produce slightly different caps after coordinate rounding.
+            // Choose the shared join speed from both geometric segments
+            // before constructing either profile, preserving continuity
+            // without increasing a requested velocity limit.
+            if (is_cur_linear_segment)
+                end_vel = std::min(end_vel, max_vel);
+            if (i < num_of_segments) {
+                const auto next_line = this->path_->GetPathSegmentByIndex(i);
+                const auto tangent =
+                    next_line->GetTangent(next_line->GetStartParameter());
+                for (size_t joint = 0; joint < this->dof_; ++joint) {
+                    if (tangent[joint] != 0.0)
+                        end_vel = std::min(end_vel, velocity_limits[joint] /
+                                                       std::abs(tangent[joint]));
+                }
+            }
+        }
+
         if (is_cur_linear_segment) {
             holistic_motion::utility::LogDebug(
                     "DoubleS profile:[ pre_pos:{}, end_pos:{}, "
