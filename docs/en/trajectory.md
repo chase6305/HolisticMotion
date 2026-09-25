@@ -184,8 +184,11 @@ path position can round to the corner before the incoming phase has ended;
 velocity, acceleration, and jerk still use the incoming segment's direction.
 At the time knot, the spline's existing right-continuous rule selects the next
 phase. Scalar, combined, and batch queries use this same selection after time
-scaling. Blended paths continue to locate geometry by path position, since one
-time phase can span several blend segments. Corrected derivative peaks can
+scaling. Blended paths also retain the owner of a monotone linear phase when
+both endpoint states identify that line and fit its geometric span within
+coordinate roundoff bounded by the neighboring segment lengths. Ambiguous
+phases and phases spanning curves still locate geometry by path position.
+Corrected derivative peaks can
 reduce the global slowdown previously caused by a mismatched segment direction.
 
 Trapezoidal profile generation also retains every positive acceleration,
@@ -220,12 +223,24 @@ decelerations retain their requested endpoint speed and use the required
 acceleration before global slowing. An unrepresentable end timestamp is
 rejected before publishing phase states or changing the requested end speed.
 
-When the peak speed stays below the speed cap, ramp durations use a rationalized
+For trapezoidal timing below the speed cap, ramp durations use a rationalized
 distance formula instead of subtracting nearly equal speeds. Nonzero endpoint
 speeds therefore do not erase travel time on a short interval. A peak exactly
 at the cap follows the capped calculation, retaining constant-speed travel.
 Peak-speed calculation uses a scaled norm when squared intermediates overflow
 or become subnormal.
+
+Convex Double-S profiles with no cruise use a closed form for rest-to-rest
+motion, or solve monotonically for the speed increment above the larger
+endpoint. This avoids fourth-power intermediates and repeated reductions of
+the acceleration limit. Root-before-ratio ramp calculations preserve finite
+durations across wide coordinate scales. If the peak rounds to an endpoint,
+the solver fits a one-sided transition while checking the achieved speed
+change and keeping acceleration and jerk within their configured limits.
+An equal-speed interval can instead remain a cruise. Endpoint speeds that
+cannot be reached within the available distance still require adjustment and,
+for an adjusted entry speed, upstream backtracking. Zero-length scalar
+profiles are rejected; above-cap concave profiles retain their separate logic.
 
 Trapezoidal phases are published only after the complete profile passes finite
 state and timestamp checks. If a positive phase cannot advance its timestamp
@@ -245,10 +260,12 @@ adjacent cruise as a constant-acceleration phase. Its duration follows distance
 divided by average endpoint speed, and acceleration uses the actual difference
 between the stored timestamps. This carries the velocity change without a jump
 at a duplicate timestamp. The replacement must meet the acceleration bound,
-reproduce displacement within the existing relative roundoff budget, and change
-the planned end time only within timestamp roundoff. Both boundary ramps can
-share one replacement. Missing cruise time, nonfinite states, or a replacement
-that materially changes timing or displacement still fail transactionally.
+reproduce displacement within the existing relative roundoff budget, and keep
+the time correction within timestamp roundoff plus the change implied by the
+actual average-speed difference. That correction need not be small relative
+to the original cruise duration. Both boundary ramps can share one replacement.
+Missing cruise time, nonfinite states, or a replacement exceeding these timing,
+displacement, or acceleration bounds still fail transactionally.
 
 Double-S also validates all phase states before publishing a profile or adjusted
 endpoint speeds. A phase whose timestamp cannot advance must leave position,
@@ -292,10 +309,13 @@ existing formulas.
 
 Curve-speed sampling validates the parameter interval and sampled tangent,
 curvature, and torsion. Invalid intervals or nonfinite derivatives return zero
-admissible speed, causing trajectory construction to fail. A fixed sample step
-that rounds back to the same path parameter is also rejected, preventing a
-stalled loop at large parameter values. Ordinary sampling retains its 0.01 step
-(or the full length for shorter segments) and includes the exact endpoint.
+admissible speed, causing trajectory construction to fail. Segments longer than
+40.96 use at most 4096 normalized sampling intervals so changing coordinate
+units cannot create unbounded preliminary work. Shorter segments retain the
+0.01 step (or their full length if shorter), and both grids include the exact
+endpoint. A step that cannot advance the stored path parameter is rejected
+instead of looping indefinitely. The composed trajectory still receives its
+separate joint-limit check.
 
 Every finite nonzero derivative contributes to the sampled speed bound, even
 below the geometric tolerance: a small derivative can still matter for a tighter
@@ -323,6 +343,10 @@ at least 65 checks, exposing short-curve peaks even inside a long shared time
 phase. Linear subintervals retain the analytic extrema checks. Custom nonmonotone
 phases use the dense fallback. Curved-path checks remain sampled bounds rather
 than a proof of continuous constraint satisfaction.
+
+Before constructing either profile, a group of curves shares a join speed
+bounded by the velocity caps of both adjacent lines. This resolves rounded
+curve/line cap disagreements without increasing either cap.
 
 Double-S treats an endpoint speed above a neighboring segment cap by at most
 128 machine epsilons (relative to that speed) as the same numerical cap. It
@@ -356,7 +380,8 @@ Add `--distribution stress` for unequal segment lengths, nearly collinear
 points, near reversals, and wider per-joint limits, up to 32 dimensions. Each
 shape is exercised with both profiles. Replay a failure with the same
 `--distribution`, `--seed`, and `--case-index`. The JSON output includes complete
-inputs and separates construction rejections from sampled invariant failures;
+inputs for the first ten examples of each failure kind and separates
+construction rejections from sampled invariant failures;
 either makes the command exit with status 1. These checks are diagnostics, not
 a proof of continuous feasibility.
 

@@ -187,7 +187,9 @@ def main():
             inputs, scale, args.samples, args.phase_samples, args.check_continuity
         )
         counts[kind] = counts.get(kind, 0) + 1
-        if kind != "passed" and len(failures) < 10:
+        # Preserve examples of each failure kind so early construction
+        # rejections cannot hide invalid trajectories that were accepted.
+        if kind != "passed" and counts[kind] <= 10:
             failures.append(
                 {"case_index": trial, "kind": kind, "input": inputs, **details}
             )
