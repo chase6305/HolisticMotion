@@ -223,10 +223,8 @@ void CheckNonzeroEndpointPeak(double length, double speed, double vmax, double a
 void CheckUnrepresentableGeneralPhasesAreRejected() {
     ProfileProbe probe;
     // All phases collapse in the first case; the short ramps in the second.
-    // The third fails only after accumulating a valid ramp and long cruise.
     for (const auto &input : {std::array<double, 3>{1e20, 1.0, 1.0},
-                              std::array<double, 3>{0x1p52, 2.01, 100.0},
-                              std::array<double, 3>{0.0, 1e20, 100.0}}) {
+                              std::array<double, 3>{0x1p52, 2.01, 100.0}}) {
         double v1 = 0.0;
         std::list<TrajectorySeg> phases;
         if (probe._ComputeTrapeziumProfile(0.0, input[1], 0.0, v1, 1.0, input[2],
@@ -235,6 +233,27 @@ void CheckUnrepresentableGeneralPhasesAreRejected() {
             throw std::runtime_error(
                 "collapsed moving phases must not return a valid prefix");
         }
+    }
+}
+
+void CheckMergedCruiseTimingCorrection() {
+    // A recorded short ramp changes the average speed by more than 256 ulps.
+    // Its corrected elapsed time is accurate in distance and acceleration.
+    CheckProfile(43.8266138539926 - 40.461565697748156, 0.001714266295441807,
+                  0.0014801148204472974, 0.0017142662954422409,
+                  0.022815250329534954, 40.461565697748156, 10728.812330648614);
+    // When the last deceleration collapses after a very long cruise, retain
+    // the complete stopping motion by spreading it across that cruise. The
+    // physical checks must validate every phase, not accept a valid prefix.
+    CheckProfile(1e20, 0.0, 0.0, 1.0, 100.0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = 0.0;
+    if (!probe._ComputeTrapeziumProfile(0.0, 1e20, 0.0, v1, 1.0, 100.0, 0.0,
+                                        phases, 0) ||
+        phases.size() != 3 || phases.back().timestamp != 2e20 ||
+        phases.back().vel != 0.0 || phases.back().pos != 1e20) {
+        throw std::runtime_error("long merged cruise must retain its stopping phase");
     }
 }
 
@@ -368,7 +387,8 @@ int main() {
     for (const auto check :
          {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
-          CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition}) {
+          CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
+          CheckMergedCruiseTimingCorrection}) {
         try {
             check();
         } catch (const std::exception &error) {
