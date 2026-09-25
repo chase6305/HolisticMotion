@@ -118,10 +118,13 @@ bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
         const auto &geometry = segments[it->seg_no];
         bool owned = all_linear;
         if (!owned && geometry->GetPathSegType() == PathSegType::LinearSeg &&
-            it->seg_no == next->seg_no && it->vel >= 0.0 && next->vel >= 0.0) {
+            it->vel >= 0.0 && next->vel >= 0.0) {
             // A blend phase starts with the preceding line's terminal state,
             // but ends at a different segment number. Only pin phases whose
             // two states identify the same line and fit its geometric span.
+            // At a direct line-to-line stop, the terminal state is replaced
+            // by the next line's initial state. The incoming final phase
+            // still belongs to this line, even if its position rounds ahead.
             const double start = geometry->GetStartParameter();
             const double end = start + geometry->GetLength();
             double budget = 64.0 * std::numeric_limits<double>::epsilon() *
@@ -131,7 +134,13 @@ bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
                 budget = std::min(budget, 0.25 * segments[it->seg_no - 1]->GetLength());
             if (std::size_t(it->seg_no + 1) < segments.size())
                 budget = std::min(budget, 0.25 * segments[it->seg_no + 1]->GetLength());
-            owned = it->pos >= start - budget && next->pos <= end + budget &&
+            const bool next_line_boundary =
+                next->seg_no == it->seg_no + 1 &&
+                std::size_t(next->seg_no) < segments.size() &&
+                segments[next->seg_no]->GetPathSegType() == PathSegType::LinearSeg &&
+                std::abs(next->pos - end) <= budget;
+            owned = (it->seg_no == next->seg_no || next_line_boundary) &&
+                    it->pos >= start - budget && next->pos <= end + budget &&
                     next->pos >= it->pos;
             const double stationary = it->jerk != 0.0 ? -it->acc / it->jerk : -1.0;
             if (stationary > 0.0 && stationary < next->timestamp - it->timestamp) {

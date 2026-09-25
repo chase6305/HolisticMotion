@@ -1,4 +1,4 @@
-"""A blended join must honor the velocity caps of both neighboring lines."""
+"""Blended paths must preserve limits and continuity at every geometric join."""
 
 import json
 from pathlib import Path
@@ -9,11 +9,15 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "fixture", ["trapezoidal_cap_rejection.json", "double_s_join_cap.json"]
+    "fixture",
+    [
+        "trapezoidal_cap_rejection.json",
+        "double_s_join_cap.json",
+    ],
 )
 @pytest.mark.parametrize("scale", [0.01, 1.0, 100.0])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_blend_velocity_respects_adjacent_lines(fixture, scale, reverse):
+def test_blended_joins_preserve_limits_and_continuity(fixture, scale, reverse):
     inputs = json.loads(
         (
             Path(__file__).resolve().parents[2] / "benchmarks/fixtures" / fixture
@@ -50,3 +54,25 @@ def test_blend_velocity_respects_adjacent_lines(fixture, scale, reverse):
     assert report["velocity_continuous"]
     if inputs["profile"] == "double_s":
         assert report["acceleration_continuous"]
+
+
+def test_final_jerk_phase_keeps_incoming_line_at_stop():
+    inputs = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "benchmarks/fixtures/double_s_linear_join_continuity.json"
+        ).read_text()
+    )
+    trajectory = hm.RnTrajectory(**inputs)
+    # The incoming final jerk phase travels less than one coordinate ulp.
+    # Its terminal state belongs to the next line, whose tangent is reversed.
+    report = trajectory.constraint_report(20001)
+    assert report["within_limits"]
+    assert report["velocity_continuous"]
+    assert report["acceleration_continuous"]
+    np.testing.assert_allclose(
+        trajectory.sample([0.0, trajectory.duration])[0],
+        np.asarray(inputs["waypoints"])[[0, -1]],
+        rtol=0.0,
+        atol=1e-12,
+    )
