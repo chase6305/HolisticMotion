@@ -4,6 +4,19 @@ namespace holistic_motion {
 namespace robotics {
 
 namespace {
+template <unsigned Power, typename Tangent>
+Tangent ScaleByPower(const Tangent &value, double speed, double speed_power) {
+    if (std::isnormal(speed_power) || speed == 0.0)
+        return value * speed_power;
+    // A speed power may overflow or underflow even when its product with a
+    // geometric derivative is representable. Starting from that derivative
+    // keeps every intermediate between it and the final result in magnitude.
+    Tangent result = value;
+    for (unsigned order = 0; order < Power; ++order)
+        result *= speed;
+    return result;
+}
+
 double SampleBeforeKnot(double start, double end) {
     // Step beyond PSpline's snapping tolerance using the local knot scale.
     // A long later phase must not move this sample into the interval interior.
@@ -125,7 +138,8 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetAcceleration(
     const auto curvature = segment->GetCurvature(jet[0]);
     // Scale stepwise to preserve representable derivatives at large scales.
     const double inverse_scale = 1.0 / time_scale_;
-    return (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
+    const double speed_squared = jet[1] * jet[1];
+    return (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
            inverse_scale * inverse_scale;
 }
 
@@ -139,7 +153,7 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetJerk(double t) const {
     const double inverse_scale = 1.0 / time_scale_;
     const double speed_squared = jet[1] * jet[1];
     return (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-            torsion * (speed_squared * jet[1])) *
+            ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
            inverse_scale * inverse_scale * inverse_scale;
 }
 
@@ -156,9 +170,10 @@ typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
 
     state.velocity = tangent * jet[1] * inverse_scale;
     state.acceleration =
-        (tangent * jet[2] + curvature * speed_squared) * inverse_scale * inverse_scale;
+        (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
+        inverse_scale * inverse_scale;
     state.jerk = (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-                  torsion * (speed_squared * jet[1])) *
+                  ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
                  inverse_scale * inverse_scale * inverse_scale;
     return state;
 }
@@ -261,6 +276,13 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
     double required_scale = 0.0;
     double maximum_acceleration_utilization = 0.0;
     double maximum_jerk_utilization = 0.0;
+    using LimitVector = Eigen::Matrix<double, LieGroup::DoF, 1>;
+    const LimitVector inverse_velocity_limits = velocity_limits.cwiseInverse();
+    const LimitVector inverse_acceleration_limits = acceleration_limits.cwiseInverse();
+    const LimitVector inverse_jerk_limits = jerk_limits.cwiseInverse();
+    const bool finite_reciprocals = inverse_velocity_limits.allFinite() &&
+                                    inverse_acceleration_limits.allFinite() &&
+                                    inverse_jerk_limits.allFinite();
     const auto evaluate = [&](double time) {
         State state;
         try {
@@ -278,6 +300,32 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             required_scale = std::numeric_limits<double>::quiet_NaN();
             return;
         }
+        if (finite_reciprocals) {
+            // Vectorize the common finite case and reduce before checking for
+            // overflow. Nonnegative ratios cannot hide infinity in a maximum.
+            const double velocity_utilization = (state.velocity.Coeffs().array().abs() *
+                                                 inverse_velocity_limits.array())
+                                                    .maxCoeff();
+            const double acceleration_utilization =
+                (state.acceleration.Coeffs().array().abs() *
+                 inverse_acceleration_limits.array())
+                    .maxCoeff();
+            const double jerk_utilization =
+                (state.jerk.Coeffs().array().abs() * inverse_jerk_limits.array())
+                    .maxCoeff();
+            if (std::isfinite(velocity_utilization) &&
+                std::isfinite(acceleration_utilization) &&
+                std::isfinite(jerk_utilization)) {
+                required_scale = std::max(required_scale, velocity_utilization);
+                maximum_acceleration_utilization = std::max(
+                    maximum_acceleration_utilization, acceleration_utilization);
+                maximum_jerk_utilization =
+                    std::max(maximum_jerk_utilization, jerk_utilization);
+                return;
+            }
+        }
+        // Keep direct division and root-before-ratio handling when a reciprocal
+        // or a product overflows, including a zero value with a tiny limit.
         for (Eigen::Index i = 0; i < velocity_limits.size(); ++i) {
             required_scale = std::max(
                     required_scale,

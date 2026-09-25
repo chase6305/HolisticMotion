@@ -57,6 +57,27 @@ def test_state_derivatives_match_finite_differences(trajectory):
             np.testing.assert_allclose(center[order], difference, rtol=2e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("dof", [1, 2, 7])
+def test_fast_linear_motion_does_not_multiply_zero_torsion_by_infinity(dof):
+    points = np.zeros((2, dof))
+    points[1, 0] = 1.0
+    trajectory = hm.RnTrajectory(
+        points,
+        np.full(dof, 1e150),
+        np.full(dof, 1e300),
+        np.full(dof, 1e300),
+        profile="trapezoidal",
+    )
+    assert 0.0 < trajectory.duration < 1e-140
+    times = np.linspace(0.0, trajectory.duration, 101)
+    q, dq, ddq, dddq = trajectory.sample(times)
+    assert all(np.isfinite(values).all() for values in (q, dq, ddq, dddq))
+    np.testing.assert_allclose(q[[0, -1]], points, rtol=0.0, atol=1e-12)
+    assert np.max(np.abs(dq)) <= 1e150
+    assert np.max(np.abs(ddq)) <= 1e300
+    np.testing.assert_array_equal(dddq, 0.0)
+
+
 @pytest.mark.parametrize("scale,order", [(1e105, 3), (1e155, 2)])
 def test_large_time_scaling_preserves_representable_derivatives(scale, order):
     waypoints = np.array([[0.0, 0.0], [0.2, -0.1], [0.4, 0.2], [0.6, 0.1]])

@@ -26,6 +26,10 @@ function(holistic_motion_register_tests)
         tests/cpp/trajectory/trajectory_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        chain_rule_smoke_test
+        tests/cpp/trajectory/chain_rule_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         path_bezier_smoke_test
         tests/cpp/trajectory/path_bezier_smoke.cpp
         holistic_motion)
