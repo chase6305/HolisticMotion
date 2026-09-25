@@ -439,9 +439,19 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
                 return false;
             const double acceleration = (end_velocity - current_segment.vel) / elapsed;
             constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
-            const double time_budget =
+            double time_budget =
                 roundoff * std::max(std::abs(planned_end_time),
                                     std::abs(current_segment.timestamp));
+            const double speed_change = std::abs(end_velocity - current_segment.vel);
+            if (speed_change <= speed_roundoff *
+                                    std::max(std::abs(end_velocity),
+                                             std::abs(current_segment.vel))) {
+                // Replacing a cruise by a ramp changes its average speed and
+                // therefore its duration, even when the speed change is only
+                // roundoff. Account for that expected shift separately from
+                // clock rounding; still check the integrated displacement.
+                time_budget += elapsed * (0.5 * speed_change / average_speed);
+            }
             const double distance_error =
                 std::abs(average_speed * elapsed - displacement);
             // The stored endpoints are absolute path coordinates. A short
