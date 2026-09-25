@@ -1,7 +1,10 @@
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "holistic_motion/trajectory/TrajectoryTrapezium.h"
 
@@ -63,8 +66,12 @@ struct QueryProbe : TrajectoryBase<Group> {
                double duration)
         : QueryProbe(segment, Eigen::Vector4d(0.0, speed, 0.0, 0.0), duration) {}
     QueryProbe(std::shared_ptr<PathSegmentBase<Group>> segment,
+               const Eigen::Vector4d &coefficients, double duration)
+        : QueryProbe(std::make_shared<SingleSegmentPath>(segment), coefficients,
+                     duration) {}
+    QueryProbe(std::shared_ptr<PathBase<Group>> path,
                const Eigen::Vector4d &coefficients, double duration) {
-        path_ = std::make_shared<SingleSegmentPath>(segment);
+        path_ = std::move(path);
         trajectory_pspline_ = std::make_shared<PSpline>();
         trajectory_pspline_->PushBack(std::make_shared<Polynomial>(coefficients),
                                       duration);
@@ -157,6 +164,52 @@ void CheckOverflowingUtilizationRoots() {
         CheckValue(trajectory.GetTimeScale() / (cubic ? 1e110 : 1e175), 1.01);
     }
 }
+void CheckShortCurvesWithNonlinearTimeLaws() {
+    std::vector<Group> points(4);
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 0.513, 0.0;
+    points[2].Coeffs() << 0.51305, 0.00005;
+    points[3].Coeffs() << 1.0, 1.0;
+    auto path = std::make_shared<PathBezierCurve<Group>>(points, 5, false, 1e-4);
+    if (!path->IsValid())
+        throw std::runtime_error("invalid short-curve fixture");
+    const auto segments = path->GetPathSegments();
+    if (std::none_of(segments.begin(), segments.end(), [](const auto &segment) {
+            return segment->GetPathSegType() == PathSegType::Bezier5thSeg;
+        }))
+        throw std::runtime_error("short-curve fixture lost its curves");
+    for (int power : {1, 2, 3}) {
+        // One monotone phase crosses two curves much shorter than its global
+        // sampling step. Quadratic/cubic laws require a nonlinear inverse.
+        Eigen::Vector4d coefficients = Eigen::Vector4d::Zero();
+        coefficients[power] = path->GetLength();
+        QueryProbe trajectory(path, coefficients, 1.0);
+        if (!trajectory.EnforceJointLimits(Eigen::Vector2d::Ones(),
+                                           Eigen::Vector2d::Ones(),
+                                           Eigen::Vector2d::Ones()))
+            throw std::runtime_error("nonlinear time-law limit enforcement failed");
+        // Sample independently in geometry and invert s=L*t^power directly;
+        // this grid cannot miss either short curve inside the shared phase.
+        for (const auto &segment : segments) {
+            for (int sample = 0; sample <= 1000; ++sample) {
+                const double position = segment->GetStartParameter() +
+                                        segment->GetLength() * (sample / 1000.0);
+                const double time =
+                    std::pow(position / path->GetLength(), 1.0 / power) *
+                    trajectory.GetDuration();
+                const auto state = trajectory.GetState(time);
+                for (const auto &derivative :
+                     {state.velocity.Coeffs(), state.acceleration.Coeffs(),
+                      state.jerk.Coeffs()}) {
+                    if (!derivative.allFinite() ||
+                        derivative.cwiseAbs().maxCoeff() > 1.0 + 1e-10)
+                        throw std::runtime_error(
+                            "shared nonlinear time phase missed a short-curve peak");
+                }
+            }
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -165,6 +218,7 @@ int main() {
         CheckFastLinearMotion();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();
+        CheckShortCurvesWithNonlinearTimeLaws();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
