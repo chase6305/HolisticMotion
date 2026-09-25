@@ -75,5 +75,7 @@ int main() {
     for (std::size_t count : {4, 64}) {
         Measure<2>(count);
         Measure<7>(count);
+        Measure<20>(count);
+        Measure<32>(count);
     }
 }

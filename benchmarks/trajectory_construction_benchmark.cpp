@@ -67,5 +67,7 @@ int main() {
             for (bool trapezoidal : {false, true}) {
                 Measure<2>(count, blend, trapezoidal);
                 Measure<7>(count, blend, trapezoidal);
+                Measure<20>(count, blend, trapezoidal);
+                Measure<32>(count, blend, trapezoidal);
             }
 }
