@@ -18,12 +18,8 @@ Tangent ScaleByPower(const Tangent &value, double speed, double speed_power) {
 }
 
 template <typename Tangent>
-Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double acceleration) {
-    if (speed == 0.0 || acceleration == 0.0)
-        return Tangent::ZeroHelper();
-    const double factor = 3.0 * speed * acceleration;
-    if (std::isnormal(factor))
-        return curvature * factor;
+Tangent ScaleMixedJerkExtreme(const Tangent &curvature, double speed,
+                             double acceleration, double factor) {
     if (!std::isfinite(speed) || !std::isfinite(acceleration) ||
         !curvature.Coeffs().allFinite())
         return curvature * factor;
@@ -44,6 +40,16 @@ Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double accelerati
             curvature_exponent + speed_exponent + acceleration_exponent);
     }
     return result;
+}
+
+template <typename Tangent>
+Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double acceleration) {
+    if (speed == 0.0 || acceleration == 0.0)
+        return Tangent::ZeroHelper();
+    const double factor = 3.0 * speed * acceleration;
+    if (std::isnormal(factor))
+        return curvature * factor;
+    return ScaleMixedJerkExtreme(curvature, speed, acceleration, factor);
 }
 
 double SampleBeforeKnot(double start, double end) {
