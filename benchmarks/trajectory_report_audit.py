@@ -12,7 +12,7 @@ import time
 
 import holistic_motion as hm
 import numpy as np
-from trajectory_audit import _stress_inputs
+from trajectory_audit import _rescaled_stress_inputs
 
 
 def main():
@@ -31,11 +31,7 @@ def main():
     started = time.perf_counter()
     trials = args.cases if args.case_index is None else args.case_index + 1
     for trial in range(trials):
-        inputs, scale = _stress_inputs(rng, trial)
-        factor = 10.0 ** rng.uniform(-2, 4)
-        for key in ("waypoints", "max_velocity", "max_acceleration", "max_jerk"):
-            inputs[key] = (np.asarray(inputs[key]) * factor).tolist()
-        inputs["blend_tolerance"] *= factor
+        inputs, scale = _rescaled_stress_inputs(rng, trial)
         if args.case_index is not None and trial != args.case_index:
             continue
         kind, details = "passed", {}
@@ -66,7 +62,7 @@ def main():
                 {
                     "case_index": trial,
                     "kind": kind,
-                    "scale": scale * factor,
+                    "scale": scale,
                     "input": inputs,
                     **details,
                 }

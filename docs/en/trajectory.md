@@ -402,6 +402,34 @@ construction rejections from sampled invariant failures;
 either makes the command exit with status 1. These checks are diagnostics, not
 a proof of continuous feasibility.
 
+`--check-continuity` also checks the native report's velocity-continuity flag
+and, for Double-S, its acceleration-continuity flag. Finite-offset comparisons
+use the actual elapsed floating-point time, which can differ from the requested
+offset on a long trajectory clock.
+
+To isolate native report diagnostics across wider coordinate scales, run:
+
+```bash
+PYTHONPATH=build/install python benchmarks/trajectory_report_audit.py \
+  --seed 20261015 --cases 100000
+```
+
+This tool rescales stress-distribution geometry, limits, and blend tolerance
+together by factors from `1e-2` to `1e4`. It requests only three uniform samples
+plus the report's phase endpoints; it is not a dense physical-feasibility audit.
+JSON distinguishes construction rejections, report errors, and continuity
+flags, includes the NumPy version, and retains the first ten full inputs of
+each failure kind. Any failure returns status 1. Replay with the same NumPy
+version, `--seed`, and `--case-index`.
+
+Use `trajectory_audit.py --distribution rescaled-stress` with the same seed and
+NumPy version to check these exact inputs with dense samples and continuity
+checks. For example, append `--samples 20001 --phase-samples 1001
+--check-continuity --case-index 82082 --seed 20261030` to replay the rounded-stop
+geometry regression. An incoming line keeps its phase when a rounded negative
+velocity minimum can travel backwards only within the existing geometric
+roundoff budget; larger reversals still require position-based geometry lookup.
+
 Nonzero C++ boundary speeds remain subject to profile feasibility. If the first
 segment requires reducing the requested initial speed, construction fails without
 attempting to backtrack beyond the beginning. A concave profile whose two endpoint

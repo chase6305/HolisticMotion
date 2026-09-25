@@ -284,6 +284,30 @@ PYTHONPATH=build/install python benchmarks/trajectory_audit.py \
 不变量失败分别计数；两者均使命令返回状态码 1。这些检查用于诊断，不构成连续
 可行性的数学证明。
 
+`--check-continuity` 还会检查原生报告的速度连续性标志，以及 Double-S 的加速度
+连续性标志。有限偏移比较使用实际浮点时间差；轨迹时钟较大时，它可能与请求的
+偏移量不同。
+
+若要单独检查更宽坐标尺度下的原生报告诊断，可执行：
+
+```bash
+PYTHONPATH=build/install python benchmarks/trajectory_report_audit.py \
+  --seed 20261015 --cases 100000
+```
+
+工具将压力分布的几何、限位和过渡容差同步乘以 `1e-2` 到 `1e4` 的尺度因子，
+只请求三个均匀采样点及报告自身的阶段端点，因此不是密集物理可行性审计。
+JSON 分别统计构造拒绝、报告错误和连续性告警，记录 NumPy 版本，并按失败类型
+保留前十例完整输入。存在失败时返回状态码 1；使用相同 NumPy 版本、`--seed`
+和 `--case-index` 重放。
+
+使用相同种子与 NumPy 版本，运行 `trajectory_audit.py --distribution rescaled-stress`
+即可对这些输入执行密集采样和连续性检查。例如追加 `--samples 20001
+--phase-samples 1001 --check-continuity --case-index 82082 --seed 20261030`
+可重放舍入停车阶段的几何归属回归。若速度最小值因舍入略小于零，但全部可能的
+回退位移仍在原有几何舍入预算内，阶段会保留进入直线的归属；更大的回退仍按位置
+查找几何段。
+
 C++ 的非零边界速度仍须满足剖面可行性。第一段若必须降低给定起始速度，
 构造会直接失败，不会越过起点回溯。两个端点速度都高于标量速度上限、
 且空间不足以降到该上限的短凹形剖面也会被拒绝，避免返回错误的末端状态。

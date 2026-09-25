@@ -66,6 +66,16 @@ def _stress_inputs(rng, trial):
     }, scale
 
 
+def _rescaled_stress_inputs(rng, trial):
+    """Apply the same unit change to geometry, limits, and blend tolerance."""
+    inputs, scale = _stress_inputs(rng, trial)
+    factor = 10.0 ** rng.uniform(-2, 4)
+    for key in ("waypoints", "max_velocity", "max_acceleration", "max_jerk"):
+        inputs[key] = (np.asarray(inputs[key]) * factor).tolist()
+    inputs["blend_tolerance"] *= factor
+    return inputs, scale * factor
+
+
 def _check(inputs, scale, sample_count, phase_samples=0, check_continuity=False):
     try:
         trajectory = hm.RnTrajectory(**inputs)
@@ -166,9 +176,9 @@ def main():
     parser.add_argument("--case-index", type=int)
     parser.add_argument(
         "--distribution",
-        choices=("standard", "stress"),
+        choices=("standard", "stress", "rescaled-stress"),
         default="standard",
-        help="stress also covers unequal legs, near-collinear paths, and wide limits",
+        help="stress covers unequal legs and wide limits; rescaled-stress also changes units",
     )
     parser.add_argument(
         "--phase-samples",
@@ -193,7 +203,11 @@ def main():
     counts, failures = {}, []
     started = time.perf_counter()
     count = args.cases if args.case_index is None else args.case_index + 1
-    generate = _stress_inputs if args.distribution == "stress" else _inputs
+    generate = {
+        "standard": _inputs,
+        "stress": _stress_inputs,
+        "rescaled-stress": _rescaled_stress_inputs,
+    }[args.distribution]
     for trial in range(count):
         inputs, scale = generate(rng, trial)
         if args.case_index is not None and trial != args.case_index:
