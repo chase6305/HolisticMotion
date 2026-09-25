@@ -80,3 +80,35 @@ def test_final_jerk_phase_keeps_incoming_line_at_stop(scale):
         rtol=0.0,
         atol=scale * 1e-12,
     )
+
+
+@pytest.mark.parametrize("profile", ["trapezoidal", "double_s"])
+@pytest.mark.parametrize("scale", [0.01, 1.0, 100.0])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_touching_blends_do_not_create_a_roundoff_line(profile, scale, reverse):
+    inputs = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "benchmarks/fixtures/blend_join_coordinate_cancellation.json"
+        ).read_text()
+    )
+    for name in ("waypoints", "max_velocity", "max_acceleration", "max_jerk"):
+        inputs[name] = np.asarray(inputs[name]) * scale
+    if reverse:
+        inputs["waypoints"] = inputs["waypoints"][::-1]
+    inputs["blend_tolerance"] *= scale
+    inputs["profile"] = profile
+    trajectory = hm.RnTrajectory(**inputs)
+    for slowdown in (1.0, 1.7):
+        trajectory.set_minimum_duration(slowdown * trajectory.duration)
+        report = trajectory.constraint_report(10001)
+        assert report["within_limits"]
+        assert report["velocity_continuous"]
+        if profile == "double_s":
+            assert report["acceleration_continuous"]
+        np.testing.assert_allclose(
+            trajectory.sample([0.0, trajectory.duration])[0],
+            inputs["waypoints"][[0, -1]],
+            rtol=1e-12,
+            atol=scale * 1e-10,
+        )

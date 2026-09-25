@@ -103,6 +103,12 @@ a derivative cutoff, preventing artificial acceleration/jerk speed restrictions
 on straight segments. Input/control-point rounding remains subject to ordinary
 floating-point precision.
 
+When adjacent blends meet, the test for a residual straight segment includes
+the original waypoint magnitudes as well as the trimmed controls. This accounts
+for cancellation near the origin, where a tiny coordinate residue can otherwise
+acquire an arbitrary tangent and create a spurious timing phase. A positive
+final leg is retained so the requested endpoint is still reached.
+
 For valid segments with very large lengths, quadratic curvature and fifth-degree
 third-derivative queries divide by the length in stages if its square or cube
 overflows. This preserves representable nonzero derivatives that would otherwise

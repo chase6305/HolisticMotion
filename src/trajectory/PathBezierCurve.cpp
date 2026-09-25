@@ -182,7 +182,8 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd(
         double len_path1 = path_seg->GetLength();
         const double join_roundoff =
             64.0 * std::numeric_limits<double>::epsilon() *
-            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm()});
+            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm(),
+                      waypoint0->Coeffs().norm(), waypoint1->Coeffs().norm()});
         if (len_path1 > join_roundoff) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);
@@ -359,9 +360,12 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
         // Neighboring blends can meet up to coordinate roundoff. Do not
         // introduce a microscopic timing phase for that numerical residue,
         // but always retain a real final leg to the requested endpoint.
+        // Include the source waypoints: trimmed controls near the origin can
+        // result from cancellation of much larger coordinates and offsets.
         const double join_roundoff =
             64.0 * std::numeric_limits<double>::epsilon() *
-            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm()});
+            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm(),
+                      waypoint0->Coeffs().norm(), waypoint1->Coeffs().norm()});
         if (len_path1 > join_roundoff || (last_loop && len_path1 > 0.0)) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);
