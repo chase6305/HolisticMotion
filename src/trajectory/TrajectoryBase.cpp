@@ -55,9 +55,9 @@ Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double accelerati
 }
 
 template <typename State, typename Tangent>
-void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
-                        const Tangent &tangent, const Tangent &curvature,
-                        const Tangent &torsion, double time_scale) {
+inline void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
+                               const Tangent &tangent, const Tangent &curvature,
+                               const Tangent &torsion, double time_scale) {
     const double inverse_scale = 1.0 / time_scale;
     const double speed_squared = jet[1] * jet[1];
 

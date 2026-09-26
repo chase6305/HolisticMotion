@@ -278,6 +278,33 @@ void CheckLimitSamplingRejectsNonfinitePosition() {
         throw std::runtime_error("finite derivatives hid a nonfinite position");
 }
 
+void CheckLimitSamplingValidatesGeometryBeforeCaching() {
+    std::array<Group, 3> points;
+    for (auto &point : points)
+        point.Coeffs().setZero();
+    auto invalid = std::make_shared<PathSegBezierCurve5th<Group>>(points, 0.0);
+    if (invalid->IsValid())
+        throw std::runtime_error("degenerate curve fixture unexpectedly valid");
+    struct InconsistentPath : SingleSegmentPath {
+        explicit InconsistentPath(std::shared_ptr<PathSegmentBase<Group>> segment)
+            : SingleSegmentPath(std::move(segment)) {
+            // Even a custom path claiming validity must not cause the sampler
+            // to read controls missing from a rejected native curve.
+            valid_ = true;
+            length_ = 1.0;
+        }
+    };
+    QueryProbe trajectory(std::make_shared<InconsistentPath>(invalid),
+                          Eigen::Vector4d(0.0, 1.0, 0.0, 0.0), 1.0);
+    try {
+        trajectory.EnforceJointLimits(Eigen::Vector2d::Ones(), Eigen::Vector2d::Ones(),
+                                      Eigen::Vector2d::Ones());
+    } catch (const std::logic_error &) {
+        return;
+    }
+    throw std::runtime_error("limit sampling accepted invalid curve geometry");
+}
+
 void CheckShortCurvesWithNonlinearTimeLaws() {
     std::vector<Group> points(4);
     points[0].Coeffs() << 0.0, 0.0;
@@ -336,6 +363,7 @@ int main() {
         CheckShortCurvesWithNonlinearTimeLaws();
         CheckCachedCurveLimitSampling();
         CheckLimitSamplingRejectsNonfinitePosition();
+        CheckLimitSamplingValidatesGeometryBeforeCaching();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
