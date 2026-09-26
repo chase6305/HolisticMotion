@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "holistic_motion/trajectory/TrajectoryTrapezium.h"
@@ -13,23 +14,34 @@ using namespace holistic_motion::robotics;
 
 // Expose only the preliminary sampler; full construction is timed separately.
 // Their ratio is diagnostic, not an instrumented share of the constructor.
-template <int N> struct Probe : TrajectoryTrapezium<Rn<double, N>> {
-    Probe() : TrajectoryTrapezium<Rn<double, N>>(nullptr, nullptr) { this->dof_ = N; }
-    using TrajectoryTrapezium<Rn<double, N>>::_ComputeSegmentMaxSVel;
+template <typename Group> struct Probe : TrajectoryTrapezium<Group> {
+    Probe() : TrajectoryTrapezium<Group>(nullptr, nullptr) { this->dof_ = Group::DoF; }
+    using TrajectoryTrapezium<Group>::_ComputeSegmentMaxSVel;
 };
-template <int N> void Measure(int count, double scale) {
-    using G = Rn<double, N>;
+template <typename G> void Measure(int count, double scale) {
+    constexpr int dof = G::DoF;
+    constexpr bool is_pose = std::is_same_v<G, SE3d>;
     std::vector<G> points(count);
     for (int i = 0; i < count; ++i) {
-        points[i].Coeffs()[0] = .1 * i * scale;
-        for (int j = 1; j < N; ++j)
-            points[i].Coeffs()[j] = .2 * std::sin(.7 * i + .3 * j) * scale;
+        if constexpr (is_pose) {
+            const Eigen::Vector3d translation(0.1 * i * scale,
+                                              0.2 * std::sin(0.7 * i + 0.3) * scale,
+                                              0.2 * std::sin(0.7 * i + 0.6) * scale);
+            // Keep rotations fixed while scaling translation, blend tolerance,
+            // and all six limits. This is a workload, not a pose unit conversion.
+            points[i] = SE3d(translation, SO3d(0.03 * std::sin(0.2 * i),
+                                               0.02 * std::cos(0.4 * i), 0.01 * i));
+        } else {
+            points[i].Coeffs()[0] = .1 * i * scale;
+            for (int j = 1; j < dof; ++j)
+                points[i].Coeffs()[j] = .2 * std::sin(.7 * i + .3 * j) * scale;
+        }
     }
     auto path = std::make_shared<PathBezierCurve<G>>(points, 5, false, .005 * scale);
     auto segments = path->GetPathSegments();
-    Eigen::VectorXd limits = Eigen::VectorXd::Ones(N) * scale;
+    Eigen::VectorXd limits = Eigen::VectorXd::Ones(dof) * scale;
     auto constraints = std::make_shared<TrajectoryConstraints>(limits, limits, limits);
-    Probe<N> probe;
+    Probe<G> probe;
     std::vector<double> cap, full;
     double checksum = 0., duration = 0.;
     int curves = 0;
@@ -65,21 +77,24 @@ template <int N> void Measure(int count, double scale) {
     }
     std::sort(cap.begin(), cap.end());
     std::sort(full.begin(), full.end());
-    std::cout << N << ',' << count << ',' << scale << ',' << curves << ',' << cap[10]
-              << ',' << full[10] << ',' << checksum << ',' << duration << '\n';
+    std::cout << (is_pose ? "SE3" : "Rn") << ',' << dof << ',' << count << ',' << scale
+              << ',' << curves << ',' << cap[10] << ',' << full[10] << ',' << checksum
+              << ',' << duration << '\n';
 }
 int main() {
     holistic_motion::utility::SetVerbosityLevel(
         holistic_motion::utility::VerbosityLevel::Error);
-    std::cout
-        << std::setprecision(17)
-        << "dof,waypoints,scale,curves,cap_us,construction_us,cap_checksum,duration\n";
-    Measure<2>(64, 1.);
-    Measure<7>(64, 1.);
-    Measure<20>(64, 1.);
-    Measure<32>(64, 1.);
-    Measure<2>(4, 1e4);
-    Measure<7>(4, 1e4);
-    Measure<20>(4, 1e4);
-    Measure<32>(4, 1e4);
+    std::cout << std::setprecision(17)
+              << "group,dof,waypoints,scale,curves,cap_us,construction_us,cap_checksum,"
+                 "duration\n";
+    Measure<Rn<double, 2>>(64, 1.);
+    Measure<Rn<double, 7>>(64, 1.);
+    Measure<Rn<double, 20>>(64, 1.);
+    Measure<Rn<double, 32>>(64, 1.);
+    Measure<Rn<double, 2>>(4, 1e4);
+    Measure<Rn<double, 7>>(4, 1e4);
+    Measure<Rn<double, 20>>(4, 1e4);
+    Measure<Rn<double, 32>>(4, 1e4);
+    Measure<SE3d>(64, 1.0);
+    Measure<SE3d>(4, 1e4);
 }
