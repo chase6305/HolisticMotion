@@ -244,7 +244,7 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
     const bool normalized_grid = length > 0.01 * maximum_intervals;
     const double start = s;
     int sample = 0;
-    detail::SegmentDerivativeSampler<LieGroup> derivatives(*segment);
+    detail::SegmentEvaluationSampler<LieGroup> derivatives(*segment);
 
     while (true) {
         typename LieGroup::Tangent tangent, curvature, torsion;

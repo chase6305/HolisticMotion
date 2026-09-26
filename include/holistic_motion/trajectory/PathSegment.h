@@ -5,10 +5,6 @@
 namespace holistic_motion {
 namespace robotics {
 
-namespace detail {
-template <typename LieGroup> class SegmentDerivativeSampler;
-}
-
 /// \brief Constructing the path segment of the linear
 ///
 /// \TODO:
@@ -68,7 +64,7 @@ class PathSegBezierCurve5th : public PathSegmentBase<LieGroup> {
 private:
     using Tangent = typename LieGroup::Tangent;
     friend class PathSegmentBase<LieGroup>;
-    friend class detail::SegmentDerivativeSampler<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
 
 public:
     PathSegBezierCurve5th(const std::array<LieGroup, 3>& waypoints,

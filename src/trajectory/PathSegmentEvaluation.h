@@ -100,14 +100,15 @@ struct CachedQuinticEvaluation : QuinticEvaluation<LieGroup> {
 };
 
 // A construction-local workspace. Only the exact built-in curve may reuse
-// controls: derived segments retain every virtual derivative call.
-template <typename LieGroup> class SegmentDerivativeSampler {
+// controls: derived segments retain every virtual scalar query.
+template <typename LieGroup> class SegmentEvaluationSampler {
 public:
     using Tangent = typename LieGroup::Tangent;
 
-    explicit SegmentDerivativeSampler(const PathSegmentBase<LieGroup> &segment)
+    explicit SegmentEvaluationSampler(const PathSegmentBase<LieGroup> &segment)
         : segment_(segment) {
-        if (typeid(segment) == typeid(PathSegBezierCurve5th<LieGroup>)) {
+        if (typeid(segment) == typeid(PathSegBezierCurve5th<LieGroup>) &&
+            segment.IsValid()) {
             const auto &curve =
                 static_cast<const PathSegBezierCurve5th<LieGroup> &>(segment);
             evaluation_.emplace(curve.control_points_, segment.GetLength());
@@ -118,9 +119,7 @@ public:
     // before constructing this workspace and guarantees forward progress.
     void Compute(double s, Tangent &tangent, Tangent &curvature, Tangent &torsion) {
         if (evaluation_) {
-            const double length = segment_.GetLength();
-            s = clamp(s - segment_.GetStartParameter(), 0.0, length);
-            evaluation_->SetParameter(length > Epsilon ? s / length : 0.0);
+            SetParameter(s);
             tangent = evaluation_->FirstDerivative();
             curvature = evaluation_->SecondDerivative();
             torsion = evaluation_->ThirdDerivative();
@@ -131,7 +130,27 @@ public:
         }
     }
 
+    void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
+                    Tangent &torsion) {
+        if (evaluation_) {
+            segment_.ValidateQuery(s);
+            SetParameter(s);
+            position = evaluation_->Position();
+            tangent = evaluation_->FirstDerivative();
+            curvature = evaluation_->SecondDerivative();
+            torsion = evaluation_->ThirdDerivative();
+        } else {
+            segment_.ComputeJet(s, position, tangent, curvature, torsion);
+        }
+    }
+
 private:
+    void SetParameter(double s) {
+        const double length = segment_.GetLength();
+        s = clamp(s - segment_.GetStartParameter(), 0.0, length);
+        evaluation_->SetParameter(length > Epsilon ? s / length : 0.0);
+    }
+
     const PathSegmentBase<LieGroup> &segment_;
     std::optional<CachedQuinticEvaluation<LieGroup>> evaluation_;
 };

@@ -1,5 +1,7 @@
 #include "holistic_motion/trajectory/TrajectoryBase.h"
 
+#include "PathSegmentEvaluation.h"
+
 namespace holistic_motion {
 namespace robotics {
 
@@ -50,6 +52,22 @@ Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double accelerati
     if (std::isnormal(factor))
         return curvature * factor;
     return ScaleMixedJerkExtreme(curvature, speed, acceleration, factor);
+}
+
+template <typename State, typename Tangent>
+void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
+                        const Tangent &tangent, const Tangent &curvature,
+                        const Tangent &torsion, double time_scale) {
+    const double inverse_scale = 1.0 / time_scale;
+    const double speed_squared = jet[1] * jet[1];
+
+    state.velocity = tangent * jet[1] * inverse_scale;
+    state.acceleration =
+        (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
+        inverse_scale * inverse_scale;
+    state.jerk = (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
+                  ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
+                 inverse_scale * inverse_scale * inverse_scale;
 }
 
 double SampleBeforeKnot(double start, double end) {
@@ -252,16 +270,7 @@ inline typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::Compos
     State state;
     typename LieGroup::Tangent tangent, curvature, torsion;
     segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-    const double inverse_scale = 1.0 / time_scale_;
-    const double speed_squared = jet[1] * jet[1];
-
-    state.velocity = tangent * jet[1] * inverse_scale;
-    state.acceleration =
-        (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
-        inverse_scale * inverse_scale;
-    state.jerk = (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
-                  ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
-                 inverse_scale * inverse_scale * inverse_scale;
+    ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
     return state;
 }
 
@@ -396,6 +405,10 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
                                     inverse_acceleration_limits.allFinite() &&
                                     inverse_jerk_limits.allFinite();
     std::size_t sampling_phase = 0;
+    // The evaluator borrows control points. Retain the geometry until after
+    // its evaluator is discarded, including when switching path segments.
+    std::shared_ptr<PathSegmentBase<LieGroup>> sampled_segment;
+    std::optional<detail::SegmentEvaluationSampler<LieGroup>> sampler;
     const auto evaluate = [&](double time) {
         State state;
         try {
@@ -411,7 +424,14 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
                     : path_->GetPathSegmentAtS(jet[0]);
             if (!geometry)
                 throw std::logic_error("cannot query an invalid path");
-            state = ComposeState(jet, geometry);
+            if (geometry != sampled_segment) {
+                sampler.reset();
+                sampled_segment = geometry;
+                sampler.emplace(*geometry);
+            }
+            typename LieGroup::Tangent tangent, curvature, torsion;
+            sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
+            ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
         } catch (const std::runtime_error&) {
             // Internal evaluation failure invalidates construction, just like
             // a returned nonfinite state. Public diagnostics keep the error.

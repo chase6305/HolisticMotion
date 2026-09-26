@@ -12,11 +12,13 @@
 
 using namespace holistic_motion::robotics;
 
-// Expose only the preliminary sampler; full construction is timed separately.
-// Their ratio is diagnostic, not an instrumented share of the constructor.
+// Time cap sampling, complete construction, and a repeated composed-limit check.
+// The repeated check must preserve duration; it is not constructor instrumentation.
 template <typename Group> struct Probe : TrajectoryTrapezium<Group> {
     Probe() : TrajectoryTrapezium<Group>(nullptr, nullptr) { this->dof_ = Group::DoF; }
+    using TrajectoryTrapezium<Group>::TrajectoryTrapezium;
     using TrajectoryTrapezium<Group>::_ComputeSegmentMaxSVel;
+    using TrajectoryTrapezium<Group>::EnforceJointLimits;
 };
 template <typename G> void Measure(int count, double scale) {
     constexpr int dof = G::DoF;
@@ -42,7 +44,7 @@ template <typename G> void Measure(int count, double scale) {
     Eigen::VectorXd limits = Eigen::VectorXd::Ones(dof) * scale;
     auto constraints = std::make_shared<TrajectoryConstraints>(limits, limits, limits);
     Probe<G> probe;
-    std::vector<double> cap, full;
+    std::vector<double> cap, full, enforcement;
     double checksum = 0., duration = 0.;
     int curves = 0;
     for (const auto &s : segments)
@@ -58,13 +60,20 @@ template <typename G> void Measure(int count, double scale) {
                             std::chrono::steady_clock::now() - start)
                             .count();
         start = std::chrono::steady_clock::now();
-        TrajectoryTrapezium<G> t(path, constraints);
+        Probe<G> t(path, constraints);
         double full_us = std::chrono::duration<double, std::micro>(
                              std::chrono::steady_clock::now() - start)
                              .count();
         if (!t.IsValid())
             throw std::runtime_error("invalid trajectory");
         duration = t.GetDuration();
+        start = std::chrono::steady_clock::now();
+        const bool checked = t.EnforceJointLimits(limits, limits, limits);
+        const double enforcement_us = std::chrono::duration<double, std::micro>(
+                                          std::chrono::steady_clock::now() - start)
+                                          .count();
+        if (!checked || t.GetDuration() != duration)
+            throw std::runtime_error("rechecking limits changed trajectory");
         if (!std::isfinite(checksum) || (repeat && (checksum != previous_checksum ||
                                                     duration != previous_duration)))
             throw std::runtime_error("unstable benchmark result");
@@ -72,20 +81,23 @@ template <typename G> void Measure(int count, double scale) {
         previous_duration = duration;
         if (repeat) {
             cap.push_back(cap_us);
+            enforcement.push_back(enforcement_us);
             full.push_back(full_us);
         }
     }
     std::sort(cap.begin(), cap.end());
+    std::sort(enforcement.begin(), enforcement.end());
     std::sort(full.begin(), full.end());
     std::cout << (is_pose ? "SE3" : "Rn") << ',' << dof << ',' << count << ',' << scale
-              << ',' << curves << ',' << cap[10] << ',' << full[10] << ',' << checksum
-              << ',' << duration << '\n';
+              << ',' << curves << ',' << cap[10] << ',' << enforcement[10] << ','
+              << full[10] << ',' << checksum << ',' << duration << '\n';
 }
 int main() {
     holistic_motion::utility::SetVerbosityLevel(
         holistic_motion::utility::VerbosityLevel::Error);
     std::cout << std::setprecision(17)
-              << "group,dof,waypoints,scale,curves,cap_us,construction_us,cap_checksum,"
+              << "group,dof,waypoints,scale,curves,cap_us,limit_us,construction_us,cap_"
+                 "checksum,"
                  "duration\n";
     Measure<Rn<double, 2>>(64, 1.);
     Measure<Rn<double, 7>>(64, 1.);

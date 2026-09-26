@@ -7,6 +7,10 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace detail {
+template <typename LieGroup> class SegmentEvaluationSampler;
+}
+
 template <typename LieGroup> class TrajectoryBase;
 template <typename LieGroup> class TrajectoryDoubleS;
 template <typename LieGroup> class TrajectoryTrapezium;
@@ -16,6 +20,7 @@ class PathSegmentBase : public std::enable_shared_from_this<PathSegmentBase<LieG
 private:
     using Tangent = typename LieGroup::Tangent;
     friend class TrajectoryBase<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
     friend class TrajectoryDoubleS<LieGroup>;
     friend class TrajectoryTrapezium<LieGroup>;
 
