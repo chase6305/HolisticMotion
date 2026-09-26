@@ -125,6 +125,14 @@ machine conditions; timing is not a CI threshold.
 combined state queries at the same dimensions and waypoint counts. Both emit CSV with timing,
 duration, and checksums; use paired runs on the same machine and build settings.
 
+`trajectory_cap_benchmark` isolates preliminary curve speed-cap sampling and
+compares it with complete trapezoidal construction. It covers 2/7/20/32 dimensions,
+64 ordinary-scale waypoints and 4 waypoints scaled by `1e4`, with geometry, limits,
+and blend tolerance scaled together. Each CSV row includes both median times,
+cap checksum, and duration from 21 measured calls after one warmup. The ratio
+is diagnostic: the two operations are timed separately, not instrumented inside
+the constructor. Geometry creation is excluded.
+
 `trajectory_report_benchmark` measures native Double-S constraint reports for 2/7/20/32
 dimensions, 4/64 waypoints, and 2/2001/20001 requested uniform samples. Reports
 also inspect phase endpoints. Its 24 workloads emit median microseconds from

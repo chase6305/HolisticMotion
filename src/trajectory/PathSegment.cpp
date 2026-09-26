@@ -1,61 +1,9 @@
 #include "holistic_motion/trajectory/PathSegment.h"
 
-#include <typeinfo>
+#include "PathSegmentEvaluation.h"
+
 namespace holistic_motion {
 namespace robotics {
-
-namespace {
-// Control differences are evaluated once for a complete state. Keep the same
-// Bernstein expressions and operation order as the individual derivative API.
-template <typename LieGroup> struct QuinticEvaluation {
-    using Tangent = typename LieGroup::Tangent;
-    const LieGroup &origin;
-    Tangent t0, t1, t2, t3, t4;
-    double s, length, s2, s3, s4, s5, u, u2;
-
-    QuinticEvaluation(const std::vector<LieGroup> &points, double parameter,
-                      double segment_length)
-        : origin(points[0]), t0(points[1] - points[0]), t1(points[2] - points[1]),
-          t2(points[3] - points[2]), t3(points[4] - points[3]),
-          t4(points[5] - points[4]), s(parameter), length(segment_length), s2(s * s),
-          s3(s * s2), s4(s2 * s2), s5(s2 * s3), u(1.0 - s), u2(u * u) {}
-
-    LieGroup Position() const {
-        return origin + (5.0 - 10.0 * s + 10.0 * s2 - 5.0 * s3 + s4) * s * t0 +
-               (10.0 - 20.0 * s + 15.0 * s2 - 4.0 * s3) * s2 * t1 +
-               (10.0 - 15.0 * s + 6.0 * s2) * s3 * t2 + (5.0 - 4.0 * s) * s4 * t3 +
-               s5 * t4;
-    }
-
-    Tangent FirstDerivative() const {
-        const auto ret = 5.0 * u2 * u2 * t0 + 20.0 * s * u2 * u * t1 +
-                         30.0 * s2 * u2 * t2 + 20.0 * s2 * s * u * t3 + 5.0 * s4 * t4;
-        return ret / length;
-    }
-
-    Tangent SecondDerivative() const {
-        // Difference the controls before evaluating the basis, so an exact
-        // line does not acquire curvature through basis cancellation.
-        const auto ret = 20.0 * u * u * u * (t1 - t0) + 60.0 * s * u * u * (t2 - t1) +
-                         60.0 * s2 * u * (t3 - t2) + 20.0 * s2 * s * (t4 - t3);
-        return ret / (length * length);
-    }
-
-    Tangent ThirdDerivative() const {
-        const auto d0 = t1 - t0;
-        const auto d1 = t2 - t1;
-        const auto d2 = t3 - t2;
-        const auto d3 = t4 - t3;
-        const auto ret = 60.0 * u * u * (d1 - d0) + 120.0 * s * u * (d2 - d1) +
-                         60.0 * s2 * (d3 - d2);
-        const double length_cubed = length * length * length;
-        if (std::isfinite(length_cubed))
-            return ret / length_cubed;
-        // A finite derivative can survive an overflowing length cubed.
-        return ((ret / length) / length) / length;
-    }
-};
-} // namespace
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathSegmentBase)
 
@@ -70,7 +18,8 @@ void PathSegmentBase<LieGroup>::ComputeDerivatives(double s, Tangent &tangent,
         const auto &curve = static_cast<const PathSegBezierCurve5th<LieGroup> &>(*this);
         s = clamp(s - sp_, 0.0, length_);
         s = length_ > Epsilon ? s / length_ : 0.0;
-        const QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s, length_);
+        const detail::QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s,
+                                                           length_);
         tangent = evaluation.FirstDerivative();
         curvature = evaluation.SecondDerivative();
         torsion = evaluation.ThirdDerivative();
@@ -103,7 +52,8 @@ void PathSegmentBase<LieGroup>::ComputeJet(double s, LieGroup &position,
         const auto &curve = static_cast<const PathSegBezierCurve5th<LieGroup> &>(*this);
         s = clamp(s - sp_, 0.0, length_);
         s = length_ > Epsilon ? s / length_ : 0.0;
-        const QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s, length_);
+        const detail::QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s,
+                                                           length_);
         position = evaluation.Position();
         tangent = evaluation.FirstDerivative();
         curvature = evaluation.SecondDerivative();
@@ -344,7 +294,7 @@ LieGroup PathSegBezierCurve5th<LieGroup>::GetConfig(double s) const {
     s = this->length_ > Epsilon ? (s / this->length_) : 0;
     holistic_motion::utility::LogDebug(
         "[PathSegBezierCurve5th<LieGroup>::GetConfig] s:{}, sp_:{}", s, this->sp_);
-    return QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
+    return detail::QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
         .Position();
 }
 
@@ -353,7 +303,7 @@ typename LieGroup::Tangent PathSegBezierCurve5th<LieGroup>::GetTangent(double s)
     this->ValidateQuery(s);
     s = clamp(s - this->sp_, 0.0, this->length_);
     s = this->length_ > Epsilon ? (s / this->length_) : 0;
-    return QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
+    return detail::QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
         .FirstDerivative();
 }
 
@@ -363,7 +313,7 @@ PathSegBezierCurve5th<LieGroup>::GetCurvature(double s) const {
     this->ValidateQuery(s);
     s = clamp(s - this->sp_, 0.0, this->length_);
     s = this->length_ > Epsilon ? (s / this->length_) : 0;
-    return QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
+    return detail::QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
         .SecondDerivative();
 }
 
@@ -372,7 +322,7 @@ typename LieGroup::Tangent PathSegBezierCurve5th<LieGroup>::GetTorsion(double s)
     this->ValidateQuery(s);
     s = clamp(s - this->sp_, 0.0, this->length_);
     s = this->length_ > Epsilon ? (s / this->length_) : 0;
-    return QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
+    return detail::QuinticEvaluation<LieGroup>(this->control_points_, s, this->length_)
         .ThirdDerivative();
 }
 

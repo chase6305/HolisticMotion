@@ -70,6 +70,34 @@ private:
 };
 
 template <typename Sample> void CheckSegmentSampling(Sample sample) {
+    // Compare cached speed caps against virtual scalar evaluation on the same
+    // grid. A derived curve intentionally takes the generic path.
+    {
+        using Curve = holistic_motion::robotics::PathSegBezierCurve5th<Group>;
+        struct VirtualCurve : Curve {
+            using Curve::Curve;
+        };
+        for (double scale : {1e-100, 0.001, 1.0, 1e4, 1e100, 1e110}) {
+            for (double start : {0.0, 3.0 * scale}) {
+                std::array<Group, 3> points;
+                points[0].Coeffs() << -0.2 * scale, 0.3 * scale;
+                points[1].Coeffs() << 0.7 * scale, -0.4 * scale;
+                points[2].Coeffs() << 1.1 * scale, 0.6 * scale;
+                auto cached = std::make_shared<Curve>(points, start);
+                auto reference = std::make_shared<VirtualCurve>(points, start);
+                for (int order : {0, 1, 2}) {
+                    Eigen::VectorXd v = Eigen::VectorXd::Constant(2, scale);
+                    Eigen::VectorXd a = 2.0 * v;
+                    Eigen::VectorXd j = 5.0 * v;
+                    // Exercise each derivative as the restrictive constraint.
+                    (order == 0 ? v : order == 1 ? a : j) *= 1e-6;
+                    if (sample(cached, v, a, j) != sample(reference, v, a, j))
+                        throw std::runtime_error(
+                            "cached curve speed differs from virtual queries");
+                }
+            }
+        }
+    }
     {
         using Curve = holistic_motion::robotics::PathSegBezierCurve5th<Group>;
         struct OverriddenCurve : Curve {

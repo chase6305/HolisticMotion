@@ -1,5 +1,6 @@
 #include "holistic_motion/trajectory/TrajectoryDoubleS.h"
 
+#include "PathSegmentEvaluation.h"
 #include "TrajectoryIntegration.h"
 #include "TrajectorySampling.h"
 
@@ -294,10 +295,11 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
     const bool normalized_grid = length > 0.01 * maximum_intervals;
     const double start = s;
     int sample = 0;
+    detail::SegmentDerivativeSampler<LieGroup> derivatives(*segment);
 
     while (true) {
         typename LieGroup::Tangent tangent, curvature, torsion;
-        segment->ComputeDerivatives(s, tangent, curvature, torsion);
+        derivatives.Compute(s, tangent, curvature, torsion);
         for (size_t i = 0; i < this->dof_; i++) {
             if (!std::isfinite(tangent[i]) || !std::isfinite(curvature[i]) ||
                 !std::isfinite(torsion[i])) {
