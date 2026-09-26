@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -71,13 +72,18 @@ class OptimizationContext {
     }
 
     double GeometryObjective(const std::vector<Eigen::VectorXd> &path) const {
+        if (options_.length_weight == 0.0 && options_.smoothness_weight == 0.0)
+            return 0.0;
         Eigen::VectorXd previous = Difference(path[0], path[1]);
-        double length = std::sqrt(SquaredNorm(previous));
+        double length =
+            options_.length_weight > 0.0 ? std::sqrt(SquaredNorm(previous)) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
             Eigen::VectorXd next = Difference(path[i], path[i + 1]);
-            length += std::sqrt(SquaredNorm(next));
-            smoothness += SquaredNorm(next - previous);
+            if (options_.length_weight > 0.0)
+                length += std::sqrt(SquaredNorm(next));
+            if (options_.smoothness_weight > 0.0)
+                smoothness += SquaredNorm(next - previous);
             previous = std::move(next);
         }
         return options_.length_weight * length +
@@ -86,7 +92,50 @@ class OptimizationContext {
 
     void PreconditionedDescent(const Eigen::VectorXd &gradient,
                                Eigen::VectorXd &direction) const {
+        if (!gradient.allFinite())
+            throw std::invalid_argument(
+                "combined path objective gradient must be finite");
         direction = (-gradient.array() * inverse_weights_.array()).matrix();
+        if (!direction.allFinite()) {
+            // Only the relative ratios matter after normalization. Form them
+            // as mantissa/exponent pairs so even a subnormal positive weight
+            // cannot overflow its reciprocal or the preconditioned gradient.
+            // This also works where long double has the range of double.
+            const auto ratio = [&](Eigen::Index i, int &exponent) {
+                int gradient_exponent, weight_exponent, ratio_exponent;
+                const double mantissa =
+                    std::frexp(std::frexp(std::abs(gradient[i]), &gradient_exponent) /
+                                   std::frexp(weights_[i], &weight_exponent),
+                               &ratio_exponent);
+                exponent = gradient_exponent - weight_exponent + ratio_exponent;
+                return mantissa;
+            };
+            int largest_exponent = std::numeric_limits<int>::min();
+            double largest_mantissa = 0.0;
+            for (Eigen::Index i = 0; i < gradient.size(); ++i) {
+                if (gradient[i] == 0.0)
+                    continue;
+                int exponent;
+                const double mantissa = ratio(i, exponent);
+                if (exponent > largest_exponent ||
+                    (exponent == largest_exponent && mantissa > largest_mantissa)) {
+                    largest_exponent = exponent;
+                    largest_mantissa = mantissa;
+                }
+            }
+            for (Eigen::Index i = 0; i < gradient.size(); ++i) {
+                if (gradient[i] == 0.0) {
+                    direction[i] = 0.0;
+                    continue;
+                }
+                int exponent;
+                const double mantissa = ratio(i, exponent);
+                direction[i] = -std::copysign(std::scalbn(mantissa / largest_mantissa,
+                                                          exponent - largest_exponent),
+                                              gradient[i]);
+            }
+            return;
+        }
         const double maximum = direction.cwiseAbs().maxCoeff();
         if (maximum > 1e-15)
             direction /= maximum;
@@ -451,7 +500,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "path objective is not finite");
     }
-    double objective = result.statistics.initial_objective;
     detail::PathGeometryWorkspace geometry(weights_, continuous_,
                                            options.length_weight,
                                            options.smoothness_weight);
@@ -487,7 +535,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
             if (direction.cwiseAbs().maxCoeff() <= 1e-15)
                 continue;
             previous = result.path[i];
-            const double previous_local_objective = geometry.LocalObjective();
+            const double previous_local_objective =
+                geometry.LocalObjective() +
+                options.state_cost_weight * current_state_cost;
             double step = options.step_size;
             bool accepted = false;
             for (std::size_t search = 0; search < options.line_search_steps;
@@ -500,18 +550,18 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                         .maxCoeff() <= 1e-15)
                     break;
                 result.path[i] = candidate;
-                const double candidate_objective_without_state_change =
-                    objective - previous_local_objective +
-                    geometry.CandidateObjective(result.path[i - 1], candidate,
-                                                result.path[i + 1]);
-                if (!std::isfinite(candidate_objective_without_state_change)) {
+                const double candidate_geometry = geometry.CandidateObjective(
+                    result.path[i - 1], candidate, result.path[i + 1]);
+                if (!std::isfinite(candidate_geometry)) {
                     result.path[i] = previous;
                     continue;
                 }
-                const double candidate_lower_bound =
-                    candidate_objective_without_state_change -
-                    options.state_cost_weight * current_state_cost;
-                if (objective - candidate_lower_bound <
+                // Other waypoints are unchanged. Comparing only the affected
+                // non-negative terms prevents unrelated large costs from
+                // hiding an improvement or accepting a locally worse trial.
+                // The candidate state cost is non-negative, so geometry alone
+                // is a lower bound before invoking that callback.
+                if (previous_local_objective - candidate_geometry <
                     options.minimum_improvement) {
                     result.path[i] = previous;
                     continue;
@@ -522,23 +572,16 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                     result.path[i] = previous;
                     break;
                 }
-                const double candidate_objective =
-                    candidate_objective_without_state_change +
-                    options.state_cost_weight *
-                        (candidate_state_cost - current_state_cost);
-                if (objective - candidate_objective >=
+                const double candidate_local_objective =
+                    candidate_geometry +
+                    options.state_cost_weight * candidate_state_cost;
+                if (previous_local_objective - candidate_local_objective >=
                         options.minimum_improvement &&
                     context.IsStateValid(candidate) &&
-                    context.IsMotionInteriorValid(result.path[i - 1],
-                                                  candidate) &&
-                    context.IsMotionInteriorValid(candidate,
-                                                  result.path[i + 1])) {
-                    objective = candidate_objective;
-                    if (options.state_cost_weight > 0.0) {
-                        total_state_cost +=
-                            candidate_state_cost - current_state_cost;
+                    context.IsMotionInteriorValid(result.path[i - 1], candidate) &&
+                    context.IsMotionInteriorValid(candidate, result.path[i + 1])) {
+                    if (options.state_cost_weight > 0.0)
                         state_costs[i] = candidate_state_cost;
-                    }
                     accepted = true;
                     break;
                 }
@@ -557,7 +600,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     }
     result.statistics.final_objective =
         context.GeometryObjective(result.path) +
-        options.state_cost_weight * total_state_cost;
+        options.state_cost_weight *
+            std::accumulate(state_costs.begin(), state_costs.end(), 0.0);
     result.statistics.final_path_length = context.PathLength(result.path);
     if (context.TimedOut())
         return finish(PathOptimizationStatus::TIMEOUT,

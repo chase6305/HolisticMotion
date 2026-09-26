@@ -101,6 +101,10 @@ class SphereCollisionModel::Impl {
                                             sphere.link_name);
             frame_ids.push_back(frame_id);
         }
+        used_frame_ids = frame_ids;
+        std::sort(used_frame_ids.begin(), used_frame_ids.end());
+        used_frame_ids.erase(std::unique(used_frame_ids.begin(), used_frame_ids.end()),
+                             used_frame_ids.end());
         world_spheres.resize(static_cast<Eigen::Index>(spheres.size()), 4);
         for (std::size_t i = 0; i < spheres.size(); ++i)
             world_spheres(static_cast<Eigen::Index>(i), 3) = spheres[i].radius;
@@ -121,18 +125,20 @@ class SphereCollisionModel::Impl {
     void Update(const Eigen::VectorXd &q) {
         ValidateConfiguration(q);
         pinocchio::forwardKinematics(model, *data, q);
-        pinocchio::updateFramePlacements(model, *data);
         UpdateWorldSpheres();
     }
 
     void UpdateWithJacobians(const Eigen::VectorXd &q) {
         ValidateConfiguration(q);
         pinocchio::computeJointJacobians(model, *data, q);
-        pinocchio::updateFramePlacements(model, *data);
         UpdateWorldSpheres();
     }
 
     void UpdateWorldSpheres() {
+        // Joint FK is complete, but only frames owning collision spheres need
+        // world placements. A frame shared by many spheres is updated once.
+        for (const auto frame_id : used_frame_ids)
+            pinocchio::updateFramePlacement(model, *data, frame_id);
         for (std::size_t i = 0; i < spheres.size(); ++i) {
             const auto &placement = data->oMf[frame_ids[i]];
             world_spheres.row(static_cast<Eigen::Index>(i)).head<3>() =
@@ -262,6 +268,7 @@ class SphereCollisionModel::Impl {
     std::unique_ptr<pinocchio::Data> data;
     std::vector<CollisionSphere> spheres;
     std::vector<pinocchio::FrameIndex> frame_ids;
+    std::vector<pinocchio::FrameIndex> used_frame_ids;
     std::vector<Pair> pairs;
     double minimum_radius{std::numeric_limits<double>::infinity()};
     double maximum_radius{0.0};

@@ -63,6 +63,8 @@ template <typename LieGroup>
 class PathSegBezierCurve5th : public PathSegmentBase<LieGroup> {
 private:
     using Tangent = typename LieGroup::Tangent;
+    friend class PathSegmentBase<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
 
 public:
     PathSegBezierCurve5th(const std::array<LieGroup, 3>& waypoints,

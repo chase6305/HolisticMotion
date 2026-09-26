@@ -106,6 +106,8 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 不会改变模型；使用新几何时需要重新构造模型。布尔碰撞查询每次仅检查一次
 固定半径的上下界，以选择常规平方距离循环；极端半径或安全间距仍使用扩展
 精度回退。
+每次查询完成关节运动学后，只更新球体所属的不同坐标系；多个球共享同一坐标系
+时复用一次变换，不再刷新无关的传感器或工具坐标系。切换碰撞组不会改变该规则。
 
 球模型属于近似几何，并且库不会隐式生成球。快速拒绝查询应使用保守膨胀且经过
 检查的球模型；除非已经单独证明球集合的覆盖性，否则最终轨迹仍应交给 Coal 做
@@ -117,7 +119,7 @@ Eigen 独立实现；HolisticMotion 不导入 Torch、Warp 或 cuRobo。
 ### 离线球化
 
 NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候选球；网格适配层使用
-可选 `trimesh` 进行体素化。`inscribed` 模式保留采样意义下的内接半径；可选的
+可选 `trimesh` 和 SciPy 进行体素化与填充。`inscribed` 模式保留采样意义下的内接半径；可选的
 `sampled_coverage` 模式会扩张选中的球，使所有输入样本被覆盖。后者仍是离散近似，
 不能当作连续三角网格覆盖的数学证明。
 
@@ -127,7 +129,7 @@ NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候�
 远离原点时的小间距。这一预处理只使用 NumPy，不需要启用原生碰撞组件。
 
 ```bash
-python -m pip install '.[examples]'
+python -m pip install '.[examples]' 'scipy>=1.10'
 ./scripts/run.sh python3 \
   examples/python/visualization/sphere_fit_viser.py \
   --mesh /absolute/path/to/link.stl \

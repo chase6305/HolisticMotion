@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "PathSegmentEvaluation.h"
 #include "TrajectoryIntegration.h"
 #include "TrajectorySampling.h"
 
@@ -133,6 +134,26 @@ TrajectoryTrapezium<LieGroup>::TrajectoryTrapezium(
             i++;
         }
 
+        if (is_next_bezier_segment) {
+            // The curve's endpoint tangent and its neighboring line can
+            // produce slightly different caps after coordinate rounding.
+            // Choose the shared join speed from both geometric segments
+            // before constructing either profile, preserving continuity
+            // without increasing a requested velocity limit.
+            if (is_cur_linear_segment)
+                end_vel = std::min(end_vel, max_vel);
+            if (i < num_of_segments) {
+                const auto next_line = this->path_->GetPathSegmentByIndex(i);
+                const auto tangent =
+                    next_line->GetTangent(next_line->GetStartParameter());
+                for (size_t joint = 0; joint < this->dof_; ++joint) {
+                    if (tangent[joint] != 0.0)
+                        end_vel = std::min(end_vel, velocity_limits[joint] /
+                                                       std::abs(tangent[joint]));
+                }
+            }
+        }
+
         if (is_cur_linear_segment) {
             holistic_motion::utility::LogDebug(
                 "Compute trapezium profile: pre_pos:{}, end_pos:{}, "
@@ -207,7 +228,7 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
     // selected to comply with dq, ddq limits
     if (!segment)
         return 0.0;
-    double m = std::numeric_limits<double>::max();
+    detail::PathSpeedLimit speed_limit;
     double s = segment->GetStartParameter();
     const double length = segment->GetLength();
     const double ep = s + length;
@@ -216,31 +237,37 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
         return 0.0;
     }
     const double step = std::min(0.01, length);
+    // Large coordinate units must not make preliminary cap sampling
+    // unbounded. Preserve the ordinary 0.01 grid; long intervals use 4096
+    // normalized steps before the separate composed-trajectory limit check.
+    constexpr int maximum_intervals = 4096;
+    const bool normalized_grid = length > 0.01 * maximum_intervals;
+    const double start = s;
+    int sample = 0;
+    detail::SegmentEvaluationSampler<LieGroup> derivatives(*segment);
 
     while (true) {
-        auto tangent = segment->GetTangent(s);
-        auto curvature = segment->GetCurvature(s);
-        auto torsion = segment->GetTorsion(s);
+        typename LieGroup::Tangent tangent, curvature, torsion;
+        derivatives.Compute(s, tangent, curvature, torsion);
         for (size_t i = 0; i < this->dof_; i++) {
             if (!std::isfinite(tangent[i]) || !std::isfinite(curvature[i]) ||
                 !std::isfinite(torsion[i])) {
                 return 0.0;
             }
-            if (tangent[i] != 0.0) {
-                m = std::min(m, velocity_limits[i] / std::abs(tangent[i]));
-            }
-            if (curvature[i] != 0.0) {
-                m = std::min(m, detail::SquareRootRatio(acceleration_limits[i],
-                                                        std::abs(curvature[i])));
-            }
-            if (torsion[i] != 0.0) {
-                m = std::min(
-                    m, detail::CubeRootRatio(jerk_limits[i], std::abs(torsion[i])));
-            }
+            speed_limit.AddVelocity(velocity_limits[i], tangent[i]);
+            speed_limit.AddAcceleration(acceleration_limits[i], curvature[i]);
+            speed_limit.AddJerk(jerk_limits[i], torsion[i]);
         }
         if (s == ep)
             break;
-        const double next = std::min(ep, s + step);
+        ++sample;
+        const double next =
+            normalized_grid
+                ? (sample == maximum_intervals
+                       ? ep
+                       : std::min(ep, start + length *
+                                                  (sample / double(maximum_intervals))))
+                : std::min(ep, s + step);
         // A fixed step may round back to the same large path parameter.
         // Reject the unsampleable interval instead of looping indefinitely.
         if (next <= s)
@@ -248,14 +275,15 @@ double TrajectoryTrapezium<LieGroup>::_ComputeSegmentMaxSVel(
         s = next;
     }
 
-    return m;
+    return speed_limit.Get();
 }
 
 template <typename LieGroup>
 bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
     const double &q0, const double &q1, double v0, double &v1,
-    const double &max_velocity, double max_acceleration, const double &t0,
+    const double &requested_max_velocity, double max_acceleration, const double &t0,
     std::list<TrajectorySeg> &traj_segs, const int &seg_no) {
+    double max_velocity = requested_max_velocity;
     holistic_motion::utility::LogDebug(
         "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
         "max_acceleration:{}, seg_no:{}",
@@ -275,6 +303,16 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
     }
     v0 = std::max(0.0, v0);
     v1 = std::max(0.0, v1);
+    // Curve and line tangents can disagree on the same speed cap by a few
+    // ulps. Retain roundoff-equivalent endpoints instead of creating a ramp
+    // too short to advance the timestamp. Always compare against the original
+    // cap so the allowance cannot accumulate between endpoints.
+    constexpr double speed_roundoff = 256.0 * std::numeric_limits<double>::epsilon();
+    for (double endpoint : {v0, v1}) {
+        if (endpoint > max_velocity &&
+            endpoint - requested_max_velocity <= speed_roundoff * endpoint)
+            max_velocity = endpoint;
+    }
     const double h = q1 - q0;
     if (!std::isfinite(h))
         return false;
@@ -428,15 +466,34 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
                 return false;
             const double acceleration = (end_velocity - current_segment.vel) / elapsed;
             constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
-            const double time_budget =
+            double time_budget =
                 roundoff * std::max(std::abs(planned_end_time),
                                     std::abs(current_segment.timestamp));
+            const double speed_change = std::abs(end_velocity - current_segment.vel);
+            // Replacing a cruise and a collapsed ramp by a single ramp
+            // changes their average speed. Its expected timing correction
+            // depends on that speed change, not on an arbitrary ulp cutoff.
+            // Bound the change using the longer of the planned and actual
+            // spans; displacement and acceleration remain checked below.
+            const double planned_elapsed =
+                std::abs(planned_end_time - current_segment.timestamp);
+            time_budget += std::max(elapsed, planned_elapsed) *
+                           (0.5 * speed_change / average_speed);
             const double distance_error =
                 std::abs(average_speed * elapsed - displacement);
+            // The stored endpoints are absolute path coordinates. A short
+            // interval far from zero also carries their rounding error; an
+            // h-only budget can reject motion accurate to one coordinate ulp.
+            // Do not scale this allowance by the absolute timestamp: a clock
+            // too coarse to reproduce the displacement must still be rejected.
+            const double coordinate_roundoff =
+                std::numeric_limits<double>::epsilon() *
+                std::max(std::abs(current_segment.pos), std::abs(end_position));
+            const double distance_budget = roundoff * h + coordinate_roundoff;
             if (!std::isfinite(acceleration) ||
                 std::abs(acceleration) > max_acceleration ||
                 std::abs(end_time - planned_end_time) > time_budget ||
-                !std::isfinite(distance_error) || distance_error > roundoff * h)
+                !std::isfinite(distance_error) || distance_error > distance_budget)
                 return false;
             current_segment.acc = acceleration;
             phases.push_back(current_segment);
@@ -450,13 +507,49 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
         const double last_acceleration =
             reaches_speed_cap ? std::copysign(max_acceleration, v1 - v_lim)
                               : -max_acceleration;
+        const auto retry_with_lower_peak = [&]() {
+            // A cap just above an endpoint can require a ramp shorter than
+            // one clock ulp. If merging cannot preserve its displacement,
+            // recompute with that endpoint as the peak instead. This lowers
+            // the requested cap and removes the unrepresentable excursion;
+            // it does not discard a boundary velocity or relax error budgets.
+            // The new cap equals an endpoint, so this retry cannot recurse.
+            const double endpoint_peak = std::max(v0, v1);
+            if (endpoint_peak <= 0.0 || endpoint_peak >= max_velocity)
+                return false;
+            std::list<TrajectorySeg> candidate;
+            double candidate_end_velocity = v1;
+            if (!_ComputeTrapeziumProfile(q0, q1, v0, candidate_end_velocity,
+                                          endpoint_peak, max_acceleration, t0,
+                                          candidate, seg_no) ||
+                candidate_end_velocity != v1 || candidate.size() < 2)
+                return false;
+            // Recheck every replacement phase using its stored timestamps.
+            // Replanning must not bypass the failed merge's distance budget.
+            for (auto it = candidate.begin(); std::next(it) != candidate.end(); ++it) {
+                const auto next = std::next(it);
+                const double elapsed = next->timestamp - it->timestamp;
+                const double displacement = next->pos - it->pos;
+                const double integrated =
+                    it->vel * elapsed + detail::QuadraticContribution(it->acc, elapsed);
+                const double budget =
+                    64.0 * std::numeric_limits<double>::epsilon() * h +
+                    std::numeric_limits<double>::epsilon() *
+                        std::max(std::abs(it->pos), std::abs(next->pos));
+                if (!std::isfinite(integrated) ||
+                    std::abs(integrated - displacement) > budget)
+                    return false;
+            }
+            traj_segs.swap(candidate);
+            return true;
+        };
         bool has_cruise_phase = false;
         if (!append_phase(ta, first_acceleration)) {
             if (!collapsed_phase || tc <= 0.0)
                 return false;
             const double last_distance = (0.5 * v_lim + 0.5 * v1) * td;
             if (!append_cruise_transition(q1 - last_distance, v_lim, t0 + ta + tc))
-                return false;
+                return retry_with_lower_peak();
             has_cruise_phase = true;
         } else {
             const auto prefix_size = phases.size();
@@ -471,7 +564,7 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
             current_segment = phases.back();
             phases.pop_back();
             if (!append_cruise_transition(q1, v1, planned_end_time))
-                return false;
+                return retry_with_lower_peak();
         }
         phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
         traj_segs.swap(phases);

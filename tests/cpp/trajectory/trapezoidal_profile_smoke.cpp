@@ -108,6 +108,85 @@ void CheckCollapsedRampBesideCruise() {
     }
 }
 
+void CheckCollapsedRampAtNonzeroPosition() {
+    // Recorded from a short interval late in a blended path. Its displacement
+    // error is below one coordinate ulp but exceeds an h-only relative budget.
+    constexpr double q0 = 51.523257784451715;
+    constexpr double q1 = 51.675437373741296;
+    constexpr double v0 = 0.8398822958553492;
+    constexpr double requested_v1 = 0.8398822958553513;
+    constexpr double vmax = 0.8398822958553549;
+    constexpr double amax = 0.9354261944068154;
+    constexpr double t0 = 74.28314124735722;
+    CheckProfile(q1 - q0, v0, requested_v1, vmax, amax, q0, t0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = requested_v1;
+    if (!probe._ComputeTrapeziumProfile(q0, q1, v0, v1, vmax, amax, t0, phases, 0))
+        throw std::runtime_error("coordinate roundoff rejected a merged cruise");
+    for (auto it = phases.begin(), next = std::next(it); next != phases.end();
+         ++it, ++next) {
+        const long double dt = next->timestamp - it->timestamp;
+        const long double position = static_cast<long double>(it->pos) +
+                                     it->vel * dt + 0.5L * it->acc * dt * dt;
+        const long double coordinate_ulp =
+            std::nextafter(next->pos, std::numeric_limits<double>::infinity()) -
+            next->pos;
+        if (std::abs(position - next->pos) > coordinate_ulp)
+            throw std::runtime_error("merged cruise exceeds coordinate precision");
+    }
+}
+
+void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
+    // A recorded rejected interval has a 2.18e-14 ramp on a 5.68e-14 clock.
+    // Reducing the peak to the faster endpoint removes that excursion while
+    // retaining both endpoint speeds and the existing acceleration limit.
+    constexpr double q0 = 14.159136934492288;
+    constexpr double q1 = 14.199071545761711;
+    constexpr double fast = 0.29546205743865284;
+    constexpr double slow = 0.03750188018187762;
+    constexpr double cap = 0.2954620574387062;
+    constexpr double acceleration = 2.443973585440111;
+    constexpr double start = 273.568908829043;
+    for (double clock : {0.0, start}) {
+        CheckProfile(q1 - q0, fast, slow, cap, acceleration, q0, clock);
+        ProfileProbe probe;
+        std::list<TrajectorySeg> phases;
+        double end_velocity = slow;
+        if (!probe._ComputeTrapeziumProfile(q0, q1, fast, end_velocity, cap,
+                                            acceleration, clock, phases, 0))
+            throw std::runtime_error("lower peak did not recover a feasible profile");
+        for (auto it = phases.begin(); it != phases.end(); ++it) {
+            if (it->vel > cap)
+                throw std::runtime_error("lower peak increased the speed cap");
+            const auto next = std::next(it);
+            if (next == phases.end())
+                break;
+            const long double dt = next->timestamp - it->timestamp;
+            const long double position = static_cast<long double>(it->pos) +
+                                         it->vel * dt + 0.5L * it->acc * dt * dt;
+            const double budget =
+                64.0 * std::numeric_limits<double>::epsilon() * (q1 - q0) +
+                std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->pos), std::abs(next->pos));
+            if (std::abs(position - next->pos) > budget)
+                throw std::runtime_error("lower peak bypassed displacement checks");
+        }
+    }
+    // A second recorded interval still cannot reproduce its displacement on
+    // the stored clock, even with the lower peak. The retry must fail cleanly.
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    constexpr double requested_end = 0.025525313930515454;
+    double end_velocity = requested_end;
+    if (probe._ComputeTrapeziumProfile(
+            5.816989524500355, 5.83685302311743, 0.003100713199719044,
+            end_velocity, 0.02552531393051614, 0.08426101559757797,
+            1569.5044297131274, phases, 0) ||
+        !phases.empty() || end_velocity != requested_end)
+        throw std::runtime_error("lower-peak retry bypassed its displacement budget");
+}
+
 void CheckShortTransition(double length, double v0, double requested_v1) {
     ProfileProbe probe;
     std::list<TrajectorySeg> phases;
@@ -194,10 +273,8 @@ void CheckNonzeroEndpointPeak(double length, double speed, double vmax, double a
 void CheckUnrepresentableGeneralPhasesAreRejected() {
     ProfileProbe probe;
     // All phases collapse in the first case; the short ramps in the second.
-    // The third fails only after accumulating a valid ramp and long cruise.
     for (const auto &input : {std::array<double, 3>{1e20, 1.0, 1.0},
-                              std::array<double, 3>{0x1p52, 2.01, 100.0},
-                              std::array<double, 3>{0.0, 1e20, 100.0}}) {
+                              std::array<double, 3>{0x1p52, 2.01, 100.0}}) {
         double v1 = 0.0;
         std::list<TrajectorySeg> phases;
         if (probe._ComputeTrapeziumProfile(0.0, input[1], 0.0, v1, 1.0, input[2],
@@ -206,6 +283,27 @@ void CheckUnrepresentableGeneralPhasesAreRejected() {
             throw std::runtime_error(
                 "collapsed moving phases must not return a valid prefix");
         }
+    }
+}
+
+void CheckMergedCruiseTimingCorrection() {
+    // A recorded short ramp changes the average speed by more than 256 ulps.
+    // Its corrected elapsed time is accurate in distance and acceleration.
+    CheckProfile(43.8266138539926 - 40.461565697748156, 0.001714266295441807,
+                  0.0014801148204472974, 0.0017142662954422409,
+                  0.022815250329534954, 40.461565697748156, 10728.812330648614);
+    // When the last deceleration collapses after a very long cruise, retain
+    // the complete stopping motion by spreading it across that cruise. The
+    // physical checks must validate every phase, not accept a valid prefix.
+    CheckProfile(1e20, 0.0, 0.0, 1.0, 100.0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = 0.0;
+    if (!probe._ComputeTrapeziumProfile(0.0, 1e20, 0.0, v1, 1.0, 100.0, 0.0,
+                                        phases, 0) ||
+        phases.size() != 3 || phases.back().timestamp != 2e20 ||
+        phases.back().vel != 0.0 || phases.back().pos != 1e20) {
+        throw std::runtime_error("long merged cruise must retain its stopping phase");
     }
 }
 
@@ -294,7 +392,9 @@ int main() {
           std::array<double, 5>{19.0, 0.0, 0.2678885027613014, 0.2678885027613005,
                                 0.2585985702225886},
           std::array<double, 5>{6.510572995333455, 0.0, 0.8072406861546729,
-                                0.8072406861546723, 0.827492861910945}}) {
+                                0.8072406861546723, 0.827492861910945},
+          std::array<double, 5>{0.2643455806903485, 0.0, 0.0037290323588947765,
+                                0.0037290323588949166, 0.02204043382988225}}) {
         try {
             CheckProfile(parameters[0], parameters[1], parameters[2], parameters[3],
                          parameters[4]);
@@ -337,7 +437,9 @@ int main() {
     for (const auto check :
          {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
-          CheckCollapsedRampBesideCruise}) {
+          CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
+          CheckLowerPeakPreservesBoundariesAtCoarseClock,
+          CheckMergedCruiseTimingCorrection}) {
         try {
             check();
         } catch (const std::exception &error) {

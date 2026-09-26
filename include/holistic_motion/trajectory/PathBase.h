@@ -7,10 +7,29 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace detail {
+template <typename LieGroup> class SegmentEvaluationSampler;
+}
+
+template <typename LieGroup> class TrajectoryBase;
+template <typename LieGroup> class TrajectoryDoubleS;
+template <typename LieGroup> class TrajectoryTrapezium;
+
 template <typename LieGroup>
 class PathSegmentBase : public std::enable_shared_from_this<PathSegmentBase<LieGroup>> {
 private:
     using Tangent = typename LieGroup::Tangent;
+    friend class TrajectoryBase<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
+    friend class TrajectoryDoubleS<LieGroup>;
+    friend class TrajectoryTrapezium<LieGroup>;
+
+    // Share geometry work for a complete trajectory state. Custom segments
+    // retain their virtual scalar-query behavior.
+    void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
+                    Tangent &torsion) const;
+    void ComputeDerivatives(double s, Tangent &tangent, Tangent &curvature,
+                            Tangent &torsion) const;
 
 public:
     virtual ~PathSegmentBase() {

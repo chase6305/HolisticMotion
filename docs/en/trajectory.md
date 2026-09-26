@@ -103,6 +103,12 @@ a derivative cutoff, preventing artificial acceleration/jerk speed restrictions
 on straight segments. Input/control-point rounding remains subject to ordinary
 floating-point precision.
 
+When adjacent blends meet, the test for a residual straight segment includes
+the original waypoint magnitudes as well as the trimmed controls. This accounts
+for cancellation near the origin, where a tiny coordinate residue can otherwise
+acquire an arbitrary tangent and create a spurious timing phase. A positive
+final leg is retained so the requested endpoint is still reached.
+
 For valid segments with very large lengths, quadratic curvature and fifth-degree
 third-derivative queries divide by the length in stages if its square or cube
 overflows. This preserves representable nonzero derivatives that would otherwise
@@ -127,12 +133,15 @@ remain unchanged; non-positive or non-finite lengths are still rejected.
 For native Double-S and trapezoidal trajectories, `state(t)` returns position,
 velocity, acceleration, and jerk together. It shares one time-spline lookup and
 one geometric-segment selection; batch sampling uses the same combined query.
+Built-in linear and fifth-degree segments also share geometric derivative
+evaluation. Custom segment subclasses retain their virtual scalar-query behavior.
 Scalar queries remain available and include the same time scaling.
 
 The C++ `PSpline` uses right-continuous internal knots and clamps finite queries
 outside its time range. Knot snapping uses the local timestamp and adjacent
 interval lengths, so a long trailing segment does not erase earlier short
-segments. Non-finite query times throw `std::invalid_argument`. `PushBack`
+segments. The tolerance scales with the actual timestamp, including clocks much
+smaller than one second, without a fixed one-second floor. Non-finite query times throw `std::invalid_argument`. `PushBack`
 returns false without changing the spline when the accumulated timestamp would
 overflow or fail to advance in floating-point arithmetic.
 
@@ -149,22 +158,33 @@ shorter than 10 microseconds. Dropping a short acceleration or jerk phase would
 change the final state and elapsed time. Large time-scale factors are applied
 stepwise to derivatives to preserve representable small values; a duration
 update that would overflow is rejected without changing the previous scale.
+The chain rule also uses stepwise products when squaring or cubing scalar speed
+would overflow or underflow, preserving finite geometric derivative products.
+The mixed jerk term combines its scalar factors once; products outside the
+normal range are evaluated with separate binary exponents, so a large curvature
+or tiny scalar product does not lose a representable result.
 
 Native constraint reports form sample times from normalized fractions, avoiding
 intermediate overflow for large finite durations. Construction-time limit
 sampling also normalizes interval lengths before choosing a sample count, so
-subnormal durations do not require a time step that rounds to zero. Samples on
-the left of a knot use its local timestamp and preceding interval: an unrelated
-long tail cannot create a false velocity or acceleration discontinuity. These
-reports summarize discrete samples and do not certify continuous-time bounds.
+subnormal durations do not require a time step that rounds to zero. Continuity
+diagnostics evaluate each adjacent phase at its exact local endpoint and use
+the geometric side approached by that phase. Normal derivative changes over a
+finite sampling offset therefore do not become reported jumps, even with high
+jerk or a large accumulated clock. Peak limits still summarize discrete samples
+and phase endpoints; they do not certify continuous-time bounds.
 
 Constraint reports reject sampled states containing non-finite positions or
 derivatives with `std::runtime_error` (`RuntimeError` in Python), so a NaN cannot
 be silently omitted from a peak calculation. If acceleration or jerk utilization
 overflows during construction-time limit enforcement, its square or cube root
 is computed by taking roots before dividing. A finite time-scale factor is not
-rejected merely because the unrooted ratio overflows. Finite ratios retain their
-existing calculation order.
+rejected merely because the unrooted ratio overflows. Finite acceleration and
+jerk ratios are reduced to their maxima before taking roots, avoiding repeated
+root evaluations at each sample. Finite reciprocal limits are reused in vector
+reductions; unrepresentable reciprocals or products retain division-based
+fallbacks. These arithmetic changes preserve the sampling grid, though rounding
+can change the last bits of the resulting scale.
 
 For paths consisting entirely of linear segments, trajectory queries retain
 the geometric segment that owns each time phase. Near a stopped corner, the
@@ -172,8 +192,14 @@ path position can round to the corner before the incoming phase has ended;
 velocity, acceleration, and jerk still use the incoming segment's direction.
 At the time knot, the spline's existing right-continuous rule selects the next
 phase. Scalar, combined, and batch queries use this same selection after time
-scaling. Blended paths continue to locate geometry by path position, since one
-time phase can span several blend segments. Corrected derivative peaks can
+scaling. Blended paths also retain the owner of a monotone linear phase when
+both endpoint states identify that line and fit its geometric span within
+coordinate roundoff bounded by the neighboring segment lengths. Ambiguous
+phases and phases spanning curves still locate geometry by path position.
+At a direct line-to-line stop, the final incoming phase retains its line even
+when its terminal state is also the next line's initial state. This prevents a
+rounded final displacement from switching the derivative direction early.
+Corrected derivative peaks can
 reduce the global slowdown previously caused by a mismatched segment direction.
 
 Trapezoidal profile generation also retains every positive acceleration,
@@ -208,12 +234,24 @@ decelerations retain their requested endpoint speed and use the required
 acceleration before global slowing. An unrepresentable end timestamp is
 rejected before publishing phase states or changing the requested end speed.
 
-When the peak speed stays below the speed cap, ramp durations use a rationalized
+For trapezoidal timing below the speed cap, ramp durations use a rationalized
 distance formula instead of subtracting nearly equal speeds. Nonzero endpoint
 speeds therefore do not erase travel time on a short interval. A peak exactly
 at the cap follows the capped calculation, retaining constant-speed travel.
 Peak-speed calculation uses a scaled norm when squared intermediates overflow
 or become subnormal.
+
+Convex Double-S profiles with no cruise use a closed form for rest-to-rest
+motion, or solve monotonically for the speed increment above the larger
+endpoint. This avoids fourth-power intermediates and repeated reductions of
+the acceleration limit. Root-before-ratio ramp calculations preserve finite
+durations across wide coordinate scales. If the peak rounds to an endpoint,
+the solver fits a one-sided transition while checking the achieved speed
+change and keeping acceleration and jerk within their configured limits.
+An equal-speed interval can instead remain a cruise. Endpoint speeds that
+cannot be reached within the available distance still require adjustment and,
+for an adjusted entry speed, upstream backtracking. Zero-length scalar
+profiles are rejected; above-cap concave profiles retain their separate logic.
 
 Trapezoidal phases are published only after the complete profile passes finite
 state and timestamp checks. If a positive phase cannot advance its timestamp
@@ -233,10 +271,18 @@ adjacent cruise as a constant-acceleration phase. Its duration follows distance
 divided by average endpoint speed, and acceleration uses the actual difference
 between the stored timestamps. This carries the velocity change without a jump
 at a duplicate timestamp. The replacement must meet the acceleration bound,
-reproduce displacement within the existing relative roundoff budget, and change
-the planned end time only within timestamp roundoff. Both boundary ramps can
-share one replacement. Missing cruise time, nonfinite states, or a replacement
-that materially changes timing or displacement still fail transactionally.
+reproduce displacement within the existing relative roundoff budget, and keep
+the time correction within timestamp roundoff plus the change implied by the
+actual average-speed difference. That correction need not be small relative
+to the original cruise duration. Both boundary ramps can share one replacement.
+Missing cruise time, nonfinite states, or a replacement exceeding these timing,
+displacement, or acceleration bounds still fail transactionally.
+
+If merging cannot meet the displacement budget and the planned peak exceeds
+both endpoint speeds, the solver can retry once with the faster endpoint as
+its peak. This removes the unrepresentable speed excursion while preserving
+boundary velocities and the original limits. Every replacement phase is checked
+against the same displacement budget using its stored timestamps.
 
 Double-S also validates all phase states before publishing a profile or adjusted
 endpoint speeds. A phase whose timestamp cannot advance must leave position,
@@ -280,10 +326,13 @@ existing formulas.
 
 Curve-speed sampling validates the parameter interval and sampled tangent,
 curvature, and torsion. Invalid intervals or nonfinite derivatives return zero
-admissible speed, causing trajectory construction to fail. A fixed sample step
-that rounds back to the same path parameter is also rejected, preventing a
-stalled loop at large parameter values. Ordinary sampling retains its 0.01 step
-(or the full length for shorter segments) and includes the exact endpoint.
+admissible speed, causing trajectory construction to fail. Segments longer than
+40.96 use at most 4096 normalized sampling intervals so changing coordinate
+units cannot create unbounded preliminary work. Shorter segments retain the
+0.01 step (or their full length if shorter), and both grids include the exact
+endpoint. A step that cannot advance the stored path parameter is rejected
+instead of looping indefinitely. The composed trajectory still receives its
+separate joint-limit check.
 
 Every finite nonzero derivative contributes to the sampled speed bound, even
 below the geometric tolerance: a small derivative can still matter for a tighter
@@ -291,3 +340,98 @@ joint limit. Curvature and torsion bounds take square or cube roots before
 division when the direct limit-to-derivative ratio overflows or underflows.
 Ordinary ratios retain the existing arithmetic. These remain sampled bounds;
 the subsequent global limit enforcement still applies.
+
+Near-duplicate filtering applies to interior waypoints. The requested final
+position is retained even when its last leg is shorter than the geometric
+tolerance; positive linear legs keep their normalized path tangent. The Python
+constructor also accepts distinct two-point motions below that tolerance;
+exactly repeated points still do not define a moving trajectory. Blends
+smaller than that tolerance are disabled before trimming either neighboring
+line, so suppressing a blend does not leave a positional gap.
+
+For time phases contained in one linear geometric segment, limit enforcement
+evaluates the endpoints and any interior zero of scalar acceleration. These
+are the possible extrema of the quadratic velocity, linear acceleration, and
+constant jerk, avoiding a dense uniform time grid. A monotonicity check also
+identifies these phases inside blended paths. A monotone time phase spanning
+several geometric segments is split at their boundaries by inverting the actual
+time spline. Each curved subinterval receives time-proportional sampling with
+at least 65 checks, exposing short-curve peaks even inside a long shared time
+phase. Linear subintervals retain the analytic extrema checks. Custom nonmonotone
+phases use the dense fallback. Curved-path checks remain sampled bounds rather
+than a proof of continuous constraint satisfaction.
+
+Before constructing either profile, a group of curves shares a join speed
+bounded by the velocity caps of both adjacent lines. This resolves rounded
+curve/line cap disagreements without increasing either cap.
+
+Double-S treats an endpoint speed above a neighboring segment cap by at most
+128 machine epsilons (relative to that speed) as the same numerical cap. It
+preserves that endpoint instead of backtracking through preceding segments;
+the comparison always uses the original cap, so the allowance cannot accumulate
+across endpoints. Larger differences still reduce the speed and backtrack,
+and global joint-limit enforcement still applies to the composed trajectory.
+
+Trapezoidal timing uses the same original-cap comparison with a relative budget
+of 256 machine epsilons. This preserves nearly equal curve/line endpoint speeds
+without creating unrepresentable acceleration ramps. The composed trajectory
+still receives the global joint-limit check.
+
+A reduced Double-S entry speed is propagated to preceding phases even for the
+final segment; otherwise the curve-to-line join would have a velocity jump.
+Backtracking uses the segment's configured acceleration capacity, including
+when the original profile was a pure cruise with zero observed acceleration.
+Roundoff-sized triangular acceleration plateaus are removed before integration,
+so rebasing them at a later timestamp cannot create state changes at zero time.
+
+For a reproducible numerical audit with dense local sampling and phase-join
+continuity checks, run:
+
+```bash
+PYTHONPATH=build/install python benchmarks/trajectory_audit.py \
+  --seed 20260925 --cases 3000 --samples 2001 \
+  --phase-samples 101 --check-continuity
+```
+
+Add `--distribution stress` for unequal segment lengths, nearly collinear
+points, near reversals, and wider per-joint limits, up to 32 dimensions. Each
+shape is exercised with both profiles. Replay a failure with the same
+`--distribution`, `--seed`, and `--case-index`. The JSON output includes complete
+inputs for the first ten examples of each failure kind and separates
+construction rejections from sampled invariant failures;
+either makes the command exit with status 1. These checks are diagnostics, not
+a proof of continuous feasibility.
+
+`--check-continuity` also checks the native report's velocity-continuity flag
+and, for Double-S, its acceleration-continuity flag. Finite-offset comparisons
+use the actual elapsed floating-point time, which can differ from the requested
+offset on a long trajectory clock.
+
+To isolate native report diagnostics across wider coordinate scales, run:
+
+```bash
+PYTHONPATH=build/install python benchmarks/trajectory_report_audit.py \
+  --seed 20261015 --cases 100000
+```
+
+This tool rescales stress-distribution geometry, limits, and blend tolerance
+together by factors from `1e-2` to `1e4`. It requests only three uniform samples
+plus the report's phase endpoints; it is not a dense physical-feasibility audit.
+JSON distinguishes construction rejections, report errors, and continuity
+flags, includes the NumPy version, and retains the first ten full inputs of
+each failure kind. Any failure returns status 1. Replay with the same NumPy
+version, `--seed`, and `--case-index`.
+
+Use `trajectory_audit.py --distribution rescaled-stress` with the same seed and
+NumPy version to check these exact inputs with dense samples and continuity
+checks. For example, append `--samples 20001 --phase-samples 1001
+--check-continuity --case-index 82082 --seed 20261030` to replay the rounded-stop
+geometry regression. An incoming line keeps its phase when a rounded negative
+velocity minimum can travel backwards only within the existing geometric
+roundoff budget; larger reversals still require position-based geometry lookup.
+
+Nonzero C++ boundary speeds remain subject to profile feasibility. If the first
+segment requires reducing the requested initial speed, construction fails without
+attempting to backtrack beyond the beginning. A concave profile whose two endpoint
+speeds exceed its scalar cap is also rejected when it lacks room to reach that
+cap; the unsupported short-valley case must not publish an incorrect end state.

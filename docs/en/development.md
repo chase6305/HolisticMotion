@@ -119,13 +119,41 @@ path construction and disabled debug formatting, excluding time parameterization
 Python bindings, and robot assets. Compare versions under the same build and
 machine conditions; timing is not a CI threshold.
 
+`<build-directory>/trajectory_construction_benchmark` covers 2/7/20/32 dimensions,
+4/64 waypoints, both timing profiles, and paths with and without blends.
+`trajectory_query_benchmark` compares separate position/derivative queries and
+combined state queries at the same dimensions and waypoint counts. Both emit CSV with timing,
+duration, and checksums; use paired runs on the same machine and build settings.
+
+`trajectory_cap_benchmark` isolates preliminary curve speed-cap sampling and
+compares it with complete trapezoidal construction and a subsequent composed-limit
+check. The repeated check must preserve the constructed duration. It covers 2/7/20/32 dimensions,
+64 ordinary-scale waypoints and 4 waypoints scaled by `1e4`, with geometry, limits,
+and blend tolerance scaled together. Two additional SE3 workloads keep rotation
+amplitudes fixed while scaling translation, blend tolerance, and all six limits;
+this defines a workload rather than a pose unit conversion. Each CSV row identifies
+the group and includes median `cap_us`, `limit_us`, and `construction_us`,
+cap checksum, and duration from 21 measured calls after one warmup. Timing ratios
+are diagnostic: the operations are measured separately, without instrumentation
+inside the constructor. Geometry creation is excluded.
+
+`trajectory_report_benchmark` measures native Double-S constraint reports for 2/7/20/32
+dimensions, 4/64 waypoints, and 2/2001/20001 requested uniform samples. Reports
+also inspect phase endpoints. Its 24 workloads emit median microseconds from
+21 measured calls after one warmup, plus checksums. It excludes construction
+and Python binding overhead; timing is not a CI threshold.
+
 `benchmarks/trajectory_audit.py` generates native trajectories with an explicit
 seed and checks finite samples, endpoints, and derivative limits at uniform
 times plus every breakpoint. For example, run
 `PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`.
 JSON reports rejected inputs separately from invariant failures and includes
 the first ten failures. Replay one with the same `--seed` and `--case-index`.
-Any failure returns status 1; construction success alone is insufficient.
+Use `--distribution stress` for unequal legs, near-collinear points, near
+reversals, and wider anisotropic limits up to 32 dimensions. Each shape covers
+both profiles. Include the same distribution when replaying a case.
+Any rejection or invariant failure returns status 1; construction success alone
+is insufficient.
 This diagnostic does not prove continuous collision freedom or derivative
 limits between samples, and its elapsed time is not an isolated benchmark.
 

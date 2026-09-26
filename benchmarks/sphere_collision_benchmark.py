@@ -2,6 +2,8 @@
 
 Run with scripts/run.sh and the Python interpreter used to build the extension.
 Times include the Python binding and use median wall time after warmup.
+Use --extra-fixed-frames to measure robots whose sensor/tool frames are not
+part of their collision-sphere representation.
 """
 
 import argparse
@@ -15,7 +17,7 @@ import holistic_motion as hm
 import numpy as np
 
 
-def make_model(directory, count):
+def make_model(directory, count, extra_fixed_frames=0):
     links = ['<link name="base"/>']
     parent = "base"
     for index in range(7):
@@ -29,6 +31,15 @@ def make_model(directory, count):
             "</joint>"
         )
         parent = name
+    for index in range(extra_fixed_frames):
+        name = f"sensor_{index}"
+        links.append(f'<link name="{name}"/>')
+        links.append(
+            f'<joint name="sensor_mount_{index}" type="fixed">'
+            f'<parent link="link_{index % 7}"/><child link="{name}"/>'
+            '<origin xyz="0.01 0.02 0.03" rpy="0.1 0.2 0.3"/>'
+            "</joint>"
+        )
     path = directory / "benchmark.urdf"
     path.write_text('<robot name="benchmark">' + "".join(links) + "</robot>")
     spheres = [
@@ -48,17 +59,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queries", type=int, default=100)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--extra-fixed-frames", type=int, default=0)
     args = parser.parse_args()
     if min(args.queries, args.repeats) < 1:
         parser.error("queries and repeats must be positive")
+    if args.extra_fixed_frames < 0:
+        parser.error("extra-fixed-frames must be non-negative")
     configurations = np.random.default_rng(20260922).uniform(
         -0.3, 0.3, (args.queries, 7)
     )
     results = []
     with tempfile.TemporaryDirectory(prefix="hm-sphere-benchmark-") as temporary:
         for count in (2, 8, 32):
-            model = make_model(Path(temporary), count)
+            model = make_model(Path(temporary), count, args.extra_fixed_frames)
             operations = {
+                "world_spheres": lambda q, model=model: float(
+                    np.sum(model.world_spheres(q))
+                ),
                 "minimum_distance": lambda q, model=model: (
                     model.minimum_distance(q).distance
                 ),
@@ -86,6 +103,7 @@ def main():
                     {
                         "spheres": model.sphere_count,
                         "pairs": model.pair_count,
+                        "extra_fixed_frames": args.extra_fixed_frames,
                         "query": name,
                         "median_us": statistics.median(elapsed),
                         "checksum": checksum,

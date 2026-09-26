@@ -1,18 +1,85 @@
 #include "holistic_motion/trajectory/TrajectoryBase.h"
 
+#include "PathSegmentEvaluation.h"
+
 namespace holistic_motion {
 namespace robotics {
 
 namespace {
+template <unsigned Power, typename Tangent>
+Tangent ScaleByPower(const Tangent &value, double speed, double speed_power) {
+    if (std::isnormal(speed_power) || speed == 0.0)
+        return value * speed_power;
+    // A speed power may overflow or underflow even when its product with a
+    // geometric derivative is representable. Starting from that derivative
+    // keeps every intermediate between it and the final result in magnitude.
+    Tangent result = value;
+    for (unsigned order = 0; order < Power; ++order)
+        result *= speed;
+    return result;
+}
+
+template <typename Tangent>
+Tangent ScaleMixedJerkExtreme(const Tangent &curvature, double speed,
+                             double acceleration, double factor) {
+    if (!std::isfinite(speed) || !std::isfinite(acceleration) ||
+        !curvature.Coeffs().allFinite())
+        return curvature * factor;
+    // Accumulate exponents separately when the scalar product is outside the
+    // normal range. The geometric coefficient can restore a finite result.
+    // Unlike extended precision, this also works when long double is double.
+    int speed_exponent = 0, acceleration_exponent = 0;
+    const double speed_mantissa = std::frexp(speed, &speed_exponent);
+    const double acceleration_mantissa =
+        std::frexp(acceleration, &acceleration_exponent);
+    Tangent result = curvature;
+    for (Eigen::Index index = 0; index < result.Coeffs().size(); ++index) {
+        int curvature_exponent = 0;
+        const double curvature_mantissa =
+            std::frexp(curvature.Coeffs()[index], &curvature_exponent);
+        result.Coeffs()[index] = std::scalbn(
+            3.0 * curvature_mantissa * speed_mantissa * acceleration_mantissa,
+            curvature_exponent + speed_exponent + acceleration_exponent);
+    }
+    return result;
+}
+
+template <typename Tangent>
+Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double acceleration) {
+    if (speed == 0.0 || acceleration == 0.0)
+        return Tangent::ZeroHelper();
+    const double factor = 3.0 * speed * acceleration;
+    if (std::isnormal(factor))
+        return curvature * factor;
+    return ScaleMixedJerkExtreme(curvature, speed, acceleration, factor);
+}
+
+template <typename State, typename Tangent>
+inline void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
+                               const Tangent &tangent, const Tangent &curvature,
+                               const Tangent &torsion, double time_scale) {
+    const double inverse_scale = 1.0 / time_scale;
+    const double speed_squared = jet[1] * jet[1];
+
+    state.velocity = tangent * jet[1] * inverse_scale;
+    state.acceleration =
+        (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
+        inverse_scale * inverse_scale;
+    state.jerk = (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
+                  ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
+                 inverse_scale * inverse_scale * inverse_scale;
+}
+
 double SampleBeforeKnot(double start, double end) {
     // Step beyond PSpline's snapping tolerance using the local knot scale.
     // A long later phase must not move this sample into the interval interior.
     const double span = end - start;
     const double floating_offset =
-        256.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, end);
+        256.0 * std::numeric_limits<double>::epsilon() * std::abs(end);
     const double offset =
         std::min(0.5 * span, std::max(floating_offset, 1e-9 * span));
-    return end - offset;
+    const double before = end - offset;
+    return before < end ? before : std::nextafter(end, start);
 }
 }  // namespace
 
@@ -47,12 +114,10 @@ template <typename LieGroup>
 bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
     phase_path_segments_.clear();
     const auto segments = path_->GetPathSegments();
-    // Blended time phases can span several geometric segments. Keep their
-    // position-based lookup; an all-linear path has one owner per phase.
-    if (std::any_of(segments.begin(), segments.end(), [](const auto& segment) {
-            return segment->GetPathSegType() != PathSegType::LinearSeg;
-        }))
-        return true;
+    const bool all_linear =
+        std::all_of(segments.begin(), segments.end(), [](const auto &segment) {
+            return segment->GetPathSegType() == PathSegType::LinearSeg;
+        });
     phase_path_segments_.reserve(trajectory_pspline_->GetKnots().size() - 1);
     for (auto it = trajectory_segments_.begin();
          it != trajectory_segments_.end(); ++it) {
@@ -61,15 +126,61 @@ bool TrajectoryBase<LieGroup>::InitializePhasePathSegments() {
         if (next->timestamp <= it->timestamp) continue;
         if (it->seg_no < 0 ||
             static_cast<std::size_t>(it->seg_no) >= segments.size()) {
-            phase_path_segments_.clear();
-            return false;
+            if (all_linear) {
+                phase_path_segments_.clear();
+                return false;
+            }
+            phase_path_segments_.push_back(nullptr);
+            continue;
         }
-        phase_path_segments_.push_back(segments[it->seg_no]);
+        const auto &geometry = segments[it->seg_no];
+        bool owned = all_linear;
+        if (!owned && geometry->GetPathSegType() == PathSegType::LinearSeg &&
+            it->vel >= 0.0 && next->vel >= 0.0) {
+            // A blend phase starts with the preceding line's terminal state,
+            // but ends at a different segment number. Only pin phases whose
+            // two states identify the same line and fit its geometric span.
+            // At a direct line-to-line stop, the terminal state is replaced
+            // by the next line's initial state. The incoming final phase
+            // still belongs to this line, even if its position rounds ahead.
+            const double start = geometry->GetStartParameter();
+            const double end = start + geometry->GetLength();
+            double budget = 64.0 * std::numeric_limits<double>::epsilon() *
+                            std::max(std::abs(start), std::abs(end));
+            budget = std::min(budget, 0.25 * geometry->GetLength());
+            if (it->seg_no > 0)
+                budget = std::min(budget, 0.25 * segments[it->seg_no - 1]->GetLength());
+            if (std::size_t(it->seg_no + 1) < segments.size())
+                budget = std::min(budget, 0.25 * segments[it->seg_no + 1]->GetLength());
+            const bool next_line_boundary =
+                next->seg_no == it->seg_no + 1 &&
+                std::size_t(next->seg_no) < segments.size() &&
+                segments[next->seg_no]->GetPathSegType() == PathSegType::LinearSeg &&
+                std::abs(next->pos - end) <= budget;
+            owned = (it->seg_no == next->seg_no || next_line_boundary) &&
+                    it->pos >= start - budget && next->pos <= end + budget &&
+                    next->pos >= it->pos;
+            const double stationary = it->jerk != 0.0 ? -it->acc / it->jerk : -1.0;
+            if (stationary > 0.0 && stationary < next->timestamp - it->timestamp) {
+                const double minimum_velocity =
+                    it->vel + stationary * (it->acc + 0.5 * stationary * it->jerk);
+                // A nominal stop can have a tiny negative quadratic minimum
+                // after clock/state rounding. Bound its entire possible
+                // backwards travel by the same geometric roundoff budget;
+                // otherwise it can lose its owner and take the next line's
+                // reversed tangent while acceleration is still nonzero.
+                const double span = next->timestamp - it->timestamp;
+                owned = owned &&
+                        (minimum_velocity >= 0.0 ||
+                         -minimum_velocity <= budget / span);
+            }
+        }
+        phase_path_segments_.push_back(owned ? geometry : nullptr);
     }
     if (phase_path_segments_.size() + 1 !=
         trajectory_pspline_->GetKnots().size()) {
         phase_path_segments_.clear();
-        return false;
+        return !all_linear;
     }
     return true;
 }
@@ -94,9 +205,9 @@ TrajectoryBase<LieGroup>::EvaluatePathJet(double time,
     // At a stop, the path position can round to the next segment while time
     // still belongs to the incoming phase. Its derivatives need that phase's
     // geometry, including at right-continuous time knots and after rescaling.
-    const auto segment = phase_path_segments_.empty()
-                             ? path_->GetPathSegmentAtS(jet[0])
-                             : phase_path_segments_[phase];
+    const auto segment = !phase_path_segments_.empty() && phase_path_segments_[phase]
+                             ? phase_path_segments_[phase]
+                             : path_->GetPathSegmentAtS(jet[0]);
     if (!segment) throw std::logic_error("cannot query an invalid path");
     return segment;
 }
@@ -125,7 +236,8 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetAcceleration(
     const auto curvature = segment->GetCurvature(jet[0]);
     // Scale stepwise to preserve representable derivatives at large scales.
     const double inverse_scale = 1.0 / time_scale_;
-    return (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
+    const double speed_squared = jet[1] * jet[1];
+    return (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
            inverse_scale * inverse_scale;
 }
 
@@ -137,8 +249,9 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetJerk(double t) const {
     const auto curvature = segment->GetCurvature(jet[0]);
     const auto torsion = segment->GetTorsion(jet[0]);
     const double inverse_scale = 1.0 / time_scale_;
-    return (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-            torsion * std::pow(jet[1], 3)) *
+    const double speed_squared = jet[1] * jet[1];
+    return (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
+            ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
            inverse_scale * inverse_scale * inverse_scale;
 }
 
@@ -147,20 +260,46 @@ typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::GetState(
     double t) const {
     std::array<double, 4> jet;
     const auto segment = EvaluatePathJet(t, jet);
-    const auto tangent = segment->GetTangent(jet[0]);
-    const auto curvature = segment->GetCurvature(jet[0]);
-    const auto torsion = segment->GetTorsion(jet[0]);
-    const double inverse_scale = 1.0 / time_scale_;
+    return ComposeState(jet, segment);
+}
 
+template <typename LieGroup>
+inline typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::ComposeState(
+    const std::array<double, 4> &jet,
+    const std::shared_ptr<PathSegmentBase<LieGroup>> &segment) const {
     State state;
-    state.position = segment->GetConfig(jet[0]);
-    state.velocity = tangent * jet[1] * inverse_scale;
-    state.acceleration = (tangent * jet[2] + curvature * std::pow(jet[1], 2)) *
-                         inverse_scale * inverse_scale;
-    state.jerk = (tangent * jet[3] + 3.0 * curvature * jet[1] * jet[2] +
-                  torsion * std::pow(jet[1], 3)) *
-                 inverse_scale * inverse_scale * inverse_scale;
+    typename LieGroup::Tangent tangent, curvature, torsion;
+    segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
+    ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
     return state;
+}
+
+template <typename LieGroup>
+typename TrajectoryBase<LieGroup>::State
+TrajectoryBase<LieGroup>::GetPhaseEndpoint(std::size_t phase, bool at_end) const {
+    const auto jet = trajectory_pspline_->ComputePhaseEndpoint(phase, at_end);
+    if (!std::isfinite(jet[0])) {
+        throw std::runtime_error("trajectory evaluated a non-finite path parameter");
+    }
+    auto segment = !phase_path_segments_.empty() && phase_path_segments_[phase]
+                       ? phase_path_segments_[phase]
+                       : path_->GetPathSegmentAtS(jet[0]);
+    if (!segment)
+        throw std::logic_error("cannot query an invalid path");
+    if (phase_path_segments_.empty() || !phase_path_segments_[phase]) {
+        // At a geometric boundary, choose the side approached from inside this
+        // phase. The first nonzero Taylor term determines that side, including
+        // reversed motion, a turning point, and a stationary phase.
+        const double direction = at_end ? -1.0 : 1.0;
+        const double approach = jet[1] != 0.0   ? direction * jet[1]
+                                : jet[2] != 0.0 ? jet[2]
+                                                : direction * jet[3];
+        if (approach < 0.0 && jet[0] == segment->GetStartParameter()) {
+            segment = path_->GetPathSegmentAtS(
+                std::nextafter(jet[0], -std::numeric_limits<double>::infinity()));
+        }
+    }
+    return ComposeState(jet, segment);
 }
 
 template <typename LieGroup>
@@ -207,13 +346,10 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             static_cast<double>(sample) / static_cast<double>(samples - 1);
         accumulate(duration * fraction);
     }
-    const auto breakpoints = GetBreakpoints();
+    const auto &breakpoints = trajectory_pspline_->GetKnots();
     for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
-        const double breakpoint = breakpoints[index];
-        const double previous = breakpoints[index - 1];
-        const auto left_state =
-            GetState(SampleBeforeKnot(previous, breakpoint));
-        const auto right_state = GetState(breakpoint);
+        const auto left_state = GetPhaseEndpoint(index - 1, true);
+        const auto right_state = GetPhaseEndpoint(index, false);
         accumulate_state(left_state);
         accumulate_state(right_state);
         report.maximum_velocity_jump = report.maximum_velocity_jump.cwiseMax(
@@ -255,14 +391,47 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
         const Eigen::VectorXd& acceleration_limits,
         const Eigen::VectorXd& jerk_limits) {
     constexpr int target_samples = 2001;
-    constexpr int minimum_samples_per_segment = 9;
+    constexpr int minimum_samples_per_segment = 65;
     time_scale_ = 1.0;
     const double duration = trajectory_pspline_->GetLastTimeStamp();
     double required_scale = 0.0;
+    double maximum_acceleration_utilization = 0.0;
+    double maximum_jerk_utilization = 0.0;
+    using LimitVector = Eigen::Matrix<double, LieGroup::DoF, 1>;
+    const LimitVector inverse_velocity_limits = velocity_limits.cwiseInverse();
+    const LimitVector inverse_acceleration_limits = acceleration_limits.cwiseInverse();
+    const LimitVector inverse_jerk_limits = jerk_limits.cwiseInverse();
+    const bool finite_reciprocals = inverse_velocity_limits.allFinite() &&
+                                    inverse_acceleration_limits.allFinite() &&
+                                    inverse_jerk_limits.allFinite();
+    std::size_t sampling_phase = 0;
+    // The evaluator borrows control points. Retain the geometry until after
+    // its evaluator is discarded, including when switching path segments.
+    std::shared_ptr<PathSegmentBase<LieGroup>> sampled_segment;
+    std::optional<detail::SegmentEvaluationSampler<LieGroup>> sampler;
     const auto evaluate = [&](double time) {
         State state;
         try {
-            state = GetState(time);
+            std::size_t phase;
+            const auto jet =
+                trajectory_pspline_->ComputeJetInPhase(time, sampling_phase, phase);
+            if (!std::isfinite(jet[0]))
+                throw std::runtime_error(
+                    "trajectory evaluated a non-finite path parameter");
+            const auto geometry =
+                !phase_path_segments_.empty() && phase_path_segments_[phase]
+                    ? phase_path_segments_[phase]
+                    : path_->GetPathSegmentAtS(jet[0]);
+            if (!geometry)
+                throw std::logic_error("cannot query an invalid path");
+            if (geometry != sampled_segment) {
+                sampler.reset();
+                sampled_segment = geometry;
+                sampler.emplace(*geometry);
+            }
+            typename LieGroup::Tangent tangent, curvature, torsion;
+            sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
+            ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
         } catch (const std::runtime_error&) {
             // Internal evaluation failure invalidates construction, just like
             // a returned nonfinite state. Public diagnostics keep the error.
@@ -276,6 +445,32 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             required_scale = std::numeric_limits<double>::quiet_NaN();
             return;
         }
+        if (finite_reciprocals) {
+            // Vectorize the common finite case and reduce before checking for
+            // overflow. Nonnegative ratios cannot hide infinity in a maximum.
+            const double velocity_utilization = (state.velocity.Coeffs().array().abs() *
+                                                 inverse_velocity_limits.array())
+                                                    .maxCoeff();
+            const double acceleration_utilization =
+                (state.acceleration.Coeffs().array().abs() *
+                 inverse_acceleration_limits.array())
+                    .maxCoeff();
+            const double jerk_utilization =
+                (state.jerk.Coeffs().array().abs() * inverse_jerk_limits.array())
+                    .maxCoeff();
+            if (std::isfinite(velocity_utilization) &&
+                std::isfinite(acceleration_utilization) &&
+                std::isfinite(jerk_utilization)) {
+                required_scale = std::max(required_scale, velocity_utilization);
+                maximum_acceleration_utilization = std::max(
+                    maximum_acceleration_utilization, acceleration_utilization);
+                maximum_jerk_utilization =
+                    std::max(maximum_jerk_utilization, jerk_utilization);
+                return;
+            }
+        }
+        // Keep direct division and root-before-ratio handling when a reciprocal
+        // or a product overflows, including a zero value with a tiny limit.
         for (Eigen::Index i = 0; i < velocity_limits.size(); ++i) {
             required_scale = std::max(
                     required_scale,
@@ -285,47 +480,175 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             const double acceleration_utilization =
                 acceleration / acceleration_limits[i];
             const double jerk_utilization = jerk / jerk_limits[i];
-            // Preserve ordinary rounding. If a ratio overflows, its root can
-            // still be finite: take roots before dividing in that case.
-            required_scale = std::max(
-                required_scale, std::isfinite(acceleration_utilization)
-                                    ? std::sqrt(acceleration_utilization)
-                                    : std::sqrt(acceleration) /
-                                          std::sqrt(acceleration_limits[i]));
-            required_scale =
-                std::max(required_scale,
-                         std::isfinite(jerk_utilization)
-                             ? std::cbrt(jerk_utilization)
-                             : std::cbrt(jerk) / std::cbrt(jerk_limits[i]));
+            // Positive roots preserve ordering, so reduce finite ratios
+            // before taking roots once after all samples. An overflowing
+            // ratio can still have a finite root; retain that fallback.
+            if (std::isfinite(acceleration_utilization))
+                maximum_acceleration_utilization = std::max(
+                    maximum_acceleration_utilization, acceleration_utilization);
+            else
+                required_scale =
+                    std::max(required_scale, std::sqrt(acceleration) /
+                                                 std::sqrt(acceleration_limits[i]));
+            if (std::isfinite(jerk_utilization))
+                maximum_jerk_utilization =
+                    std::max(maximum_jerk_utilization, jerk_utilization);
+            else
+                required_scale = std::max(required_scale,
+                                          std::cbrt(jerk) / std::cbrt(jerk_limits[i]));
         }
     };
     const auto& knots = trajectory_pspline_->GetKnots();
+    std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> geometric_segments;
+    if (phase_path_segments_.empty() ||
+        std::any_of(phase_path_segments_.begin(), phase_path_segments_.end(),
+                    [](const auto &owner) { return !owner; }))
+        geometric_segments = path_->GetPathSegments();
     for (std::size_t segment = 1; segment < knots.size(); ++segment) {
+        sampling_phase = segment - 1;
         const double start = knots[segment - 1];
         const double end = knots[segment];
-        // Normalize first: a time step can underflow for subnormal durations,
-        // and multiplying a long interval by a sample index can overflow.
-        const int samples =
-            std::max(minimum_samples_per_segment,
-                     static_cast<int>(std::ceil((end - start) / duration *
-                                                (target_samples - 1.0))) +
-                         1);
-        for (int sample = 0; sample < samples; ++sample) {
-            const double fraction = sample / (samples - 1.0);
-            double time =
-                sample == samples - 1 ? end : start + (end - start) * fraction;
-            // Internal knots are right-continuous. Sample immediately before
-            // the knot as well, so a jerk change cannot hide the left limit.
-            if (sample == samples - 1 && segment + 1 < knots.size()) {
-                time = SampleBeforeKnot(start, end);
+        const double left_end =
+            segment + 1 < knots.size() ? SampleBeforeKnot(start, end) : end;
+        const auto initial_jet = trajectory_pspline_->ComputeJetAtS(start);
+        const double stationary =
+            initial_jet[3] != 0.0 ? -initial_jet[2] / initial_jet[3] : -1.0;
+        const double stationary_time = start + stationary;
+        bool linear_phase =
+            !phase_path_segments_.empty() && bool(phase_path_segments_[segment - 1]);
+        bool monotone = false;
+        std::array<double, 4> final_jet{};
+        if (!linear_phase) {
+            final_jet = trajectory_pspline_->ComputeJetAtS(left_end);
+            // A cubic time law is monotone iff its quadratic velocity is
+            // nonnegative at both ends and any interior minimum.
+            double minimum_velocity = std::min(initial_jet[1], final_jet[1]);
+            if (stationary > 0.0 && stationary < end - start) {
+                const double velocity =
+                    initial_jet[1] +
+                    stationary * (initial_jet[2] + 0.5 * stationary * initial_jet[3]);
+                minimum_velocity = std::min(minimum_velocity, velocity);
             }
-            evaluate(time);
-            if (!std::isfinite(required_scale)) {
-                valid_ = false;
-                return false;
+            monotone = minimum_velocity >= 0.0 && std::isfinite(initial_jet[0]) &&
+                       std::isfinite(final_jet[0]);
+            if (monotone) {
+                const auto first = path_->GetPathSegmentAtS(initial_jet[0]);
+                linear_phase = first &&
+                               first->GetPathSegType() == PathSegType::LinearSeg &&
+                               first == path_->GetPathSegmentAtS(final_jet[0]);
             }
         }
+        const auto sample_interval = [&](double interval_start, double interval_end,
+                                         double sample_end, bool linear) {
+            if (linear) {
+                // On a line, joint velocity is quadratic, acceleration linear,
+                // and jerk constant. Endpoints and a zero of acceleration
+                // contain every derivative maximum.
+                evaluate(interval_start);
+                evaluate(sample_end);
+                if (stationary > 0.0 && stationary_time > interval_start &&
+                    stationary_time < interval_end)
+                    evaluate(stationary_time);
+                return std::isfinite(required_scale);
+            }
+            // Normalize first to avoid overflowing the numerator or losing
+            // a subnormal time step. Retain at least 65 checks per interval.
+            const int samples = std::max(
+                minimum_samples_per_segment,
+                static_cast<int>(std::ceil((interval_end - interval_start) / duration *
+                                           (target_samples - 1.0))) +
+                    1);
+            for (int sample = 0; sample < samples; ++sample) {
+                const double fraction = sample / (samples - 1.0);
+                const double time =
+                    sample == samples - 1
+                        ? sample_end
+                        : interval_start + (interval_end - interval_start) * fraction;
+                evaluate(time);
+                if (!std::isfinite(required_scale))
+                    return false;
+            }
+            return true;
+        };
+        const auto interval_is_linear = [&](double interval_start, double sample_end) {
+            const auto first_jet = trajectory_pspline_->ComputeJetAtS(interval_start);
+            const auto last_jet = trajectory_pspline_->ComputeJetAtS(sample_end);
+            if (!std::isfinite(first_jet[0]) || !std::isfinite(last_jet[0]))
+                return false;
+            const auto first = path_->GetPathSegmentAtS(first_jet[0]);
+            return first && first->GetPathSegType() == PathSegType::LinearSeg &&
+                   first == path_->GetPathSegmentAtS(last_jet[0]);
+        };
+        double interval_start = start;
+        if (monotone && !linear_phase) {
+            // One time phase can cross several geometric segments of very
+            // different lengths. A grid over the complete phase can miss a
+            // short curve entirely. Split at each interior geometric boundary
+            // before applying the same local sampling density.
+            auto boundary = std::upper_bound(
+                geometric_segments.begin(), geometric_segments.end(), initial_jet[0],
+                [](double position, const auto &geometry) {
+                    return position < geometry->GetStartParameter();
+                });
+            for (; boundary != geometric_segments.end() &&
+                   (*boundary)->GetStartParameter() < final_jet[0];
+                 ++boundary) {
+                const double position = (*boundary)->GetStartParameter();
+                double low = interval_start, high = left_end;
+                double middle = low + 0.5 * (high - low);
+                if (initial_jet[2] == 0.0 && initial_jet[3] == 0.0 &&
+                    initial_jet[1] > 0.0) {
+                    // Most curves are traversed at constant path speed. Start
+                    // from its inverse, then verify against actual evaluation.
+                    const double candidate =
+                        start + (position - initial_jet[0]) / initial_jet[1];
+                    if (candidate > low && candidate < high)
+                        middle = candidate;
+                }
+                // Bisect the actual spline evaluation, preserving its rounding
+                // and knot behavior. Stop at the boundary or adjacent timestamps,
+                // not an absolute tolerance that could erase a short curve.
+                while (true) {
+                    if (middle <= low || middle >= high)
+                        break;
+                    const double middle_position =
+                        trajectory_pspline_->ComputeJetAtS(middle)[0];
+                    if (!std::isfinite(middle_position)) {
+                        valid_ = false;
+                        return false;
+                    }
+                    if (middle_position == position) {
+                        high = middle;
+                        break;
+                    }
+                    if (middle_position < position)
+                        low = middle;
+                    else
+                        high = middle;
+                    middle = low + 0.5 * (high - low);
+                }
+                if (high <= interval_start || high >= left_end)
+                    continue;
+                const double sample_end = SampleBeforeKnot(interval_start, high);
+                if (!sample_interval(interval_start, high, sample_end,
+                                     interval_is_linear(interval_start, sample_end))) {
+                    valid_ = false;
+                    return false;
+                }
+                interval_start = high;
+            }
+        }
+        const bool remaining_linear =
+            linear_phase || (monotone && interval_start > start &&
+                             interval_is_linear(interval_start, left_end));
+        if (!sample_interval(interval_start, end, left_end, remaining_linear)) {
+            valid_ = false;
+            return false;
+        }
     }
+    required_scale =
+        std::max({required_scale, std::sqrt(maximum_acceleration_utilization),
+                  std::cbrt(maximum_jerk_utilization)});
     // Leave a margin only when sampled utilization approaches a constraint;
     // trajectories already comfortably below every limit are not slowed.
     time_scale_ = std::max(1.0, required_scale * 1.01);
@@ -338,7 +661,7 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
 
 template <typename LieGroup>
 std::shared_ptr<PSpline> TrajectoryBase<LieGroup>::InterpolateToPSpline(
-        const std::list<TrajectorySeg>& traj_segs) const {
+    const std::list<TrajectorySeg> &traj_segs) const {
     std::shared_ptr<PSpline> psline = std::make_shared<PSpline>();
     Eigen::Vector4d data;
     holistic_motion::utility::LogDebug("InterpolateToPSpline Begin!");
@@ -359,7 +682,7 @@ std::shared_ptr<PSpline> TrajectoryBase<LieGroup>::InterpolateToPSpline(
         auto T = t1 - t0;
         const double timestamp_tolerance =
                 64.0 * std::numeric_limits<double>::epsilon() *
-                std::max({1.0, std::abs(t0), std::abs(t1)});
+                std::max(std::abs(t0), std::abs(t1));
         if (!std::isfinite(t0) || !std::isfinite(t1) ||
             !std::isfinite(T) || T < -timestamp_tolerance) {
             holistic_motion::utility::LogWarning(
