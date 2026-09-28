@@ -163,7 +163,7 @@ bool FitRoundedProfile(const std::array<double, 7> &durations, double q0, double
         std::array<TrajectorySeg, 8> candidate;
         for (int i = 0; i < 8; ++i)
             candidate[i] = TrajectorySeg(
-                seg_no, times[i], static_cast<double>(position[i]),
+                seg_no, times[i], std::clamp(static_cast<double>(position[i]), q0, q1),
                 static_cast<double>(velocity[i]), static_cast<double>(acc[i]), jerk[i]);
         // The terminal position is prescribed. Carry it through absent
         // trailing phases, then validate the preceding positive phase against
@@ -182,8 +182,8 @@ bool FitRoundedProfile(const std::array<double, 7> &durations, double q0, double
             const Wide predicted_v = p->vel + t * (2 * c2 + t * 3 * c3);
             const Wide predicted_a = 2 * c2 + t * 6 * c3;
             valid &= std::isfinite(n->pos) && std::isfinite(n->vel) &&
-                     std::isfinite(n->acc) && n->vel >= 0 && n->vel <= vmax &&
-                     std::abs(n->acc) <= amax &&
+                     std::isfinite(n->acc) && n->pos >= p->pos && n->vel >= 0 &&
+                     n->vel <= vmax && std::abs(n->acc) <= amax &&
                      std::abs(predicted_q - n->pos) <= position_budget &&
                      std::abs(predicted_v - n->vel) <= 64 * eps * vmax &&
                      std::abs(predicted_a - n->acc) <= 64 * eps * amax;

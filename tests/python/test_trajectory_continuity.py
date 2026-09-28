@@ -50,7 +50,9 @@ def test_short_jerk_ramps_after_long_cruise(length, jerk, direction):
         assert np.max(report["maximum_acceleration_jump"]) < 1e-12
         assert np.max(report["maximum_velocity_jump"]) < 1e-12
         q, v, a, _ = trajectory.sample([0.0, trajectory.duration])
-        np.testing.assert_allclose(q[:, 0], [0.0, direction * length], atol=1e-10, rtol=0)
+        np.testing.assert_allclose(
+            q[:, 0], [0.0, direction * length], atol=1e-10, rtol=0
+        )
         np.testing.assert_allclose(v, 0.0, atol=1e-12, rtol=0)
         np.testing.assert_allclose(a, 0.0, atol=1e-12, rtol=0)
 
@@ -75,5 +77,53 @@ def test_short_acceleration_ramps_after_long_cruise(length, acceleration, direct
         assert report["velocity_continuous"]
         assert np.max(report["maximum_velocity_jump"]) < 1e-12
         q, v, _, _ = trajectory.sample([0.0, trajectory.duration])
-        np.testing.assert_allclose(q[:, 0], [0.0, direction * length], atol=1e-10, rtol=0)
+        np.testing.assert_allclose(
+            q[:, 0], [0.0, direction * length], atol=1e-10, rtol=0
+        )
         np.testing.assert_allclose(v, 0.0, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize("slowdown", [1.0, 1.7])
+def test_rounded_reversal_keeps_incoming_geometry_until_the_stop(slowdown):
+    # The final jerk ramp's position used to round above its prescribed end.
+    # That backwards state change discarded the incoming line's ownership
+    # and selected the reversed tangent while acceleration was still nonzero.
+    points = [
+        [-0.012830227537131972, -0.0008199357936686536, -0.0026794418462452456],
+        [-0.030407691545095896, -0.0019436288461013383, -0.006349077257330209],
+        [-0.020714944055530322, -0.0013245030152944034, -0.004326544377877539],
+        [-0.02415063183443394, -0.0015439108018388721, -0.0050434293883954975],
+        [-0.029161170967618315, -0.0018632600007437664, -0.006089416874305451],
+        [-0.02333757878383428, -0.0014920276539523757, -0.0048736393299556955],
+        [-0.005334087734338719, -0.0003419606392368393, -0.0011162732379817078],
+        [-0.021969036630447254, -0.0014054178649529382, -0.004590564278935549],
+        [-0.03982887213459477, -0.0025480029727611743, -0.00832112615863753],
+    ]
+    velocity = [8.715212169968956, 0.028442530100144324, 2.5778565454627453e-05]
+    acceleration = [1.8094572902058323e-05, 0.8912446705003166, 3.257446352174526]
+    jerk = [9.347087455382233, 1.4906924637918515, 3.0515284602807538]
+    trajectory = hm.RnTrajectory(
+        points,
+        velocity,
+        acceleration,
+        jerk,
+        profile="double_s",
+        blend_tolerance=0.0002853926670601288,
+    )
+    trajectory.set_minimum_duration(slowdown * trajectory.duration)
+    report = trajectory.constraint_report(2)
+    assert report["within_limits"]
+    assert report["velocity_continuous"]
+    assert report["acceleration_continuous"]
+    knots = np.asarray(trajectory.breakpoints)
+    spans = np.diff(knots)[:-1]
+    offset = np.minimum(
+        0.5 * spans,
+        np.maximum(1e-8 * spans, 256 * np.finfo(float).eps * np.abs(knots[1:-1])),
+    )
+    left_times = knots[1:-1] - offset
+    left = trajectory.sample(left_times)[2]
+    right = trajectory.sample(knots[1:-1])[2]
+    elapsed = knots[1:-1] - left_times
+    budget = np.outer(elapsed, jerk) + 1e-7 * np.maximum(1.0, acceleration)
+    assert np.all(np.abs(right - left) <= budget)

@@ -199,6 +199,8 @@ bool FitRoundedRamps(double q0, double q1, double v0, double v1, double velocity
         const Wide second_position = first_position + peak * dt[1];
         std::array<double, 4> positions{q0, static_cast<double>(first_position),
                                         static_cast<double>(second_position), q1};
+        for (double &position : positions)
+            position = std::clamp(position, q0, q1);
         if (dt[2] == 0)
             positions[2] = q1;
         if (dt[1] == 0)
@@ -211,6 +213,7 @@ bool FitRoundedRamps(double q0, double q1, double v0, double v1, double velocity
             const Wide q = positions[i] + dt[i] * (velocities[i] + dt[i] * coefficient);
             const Wide v = velocities[i] + dt[i] * 2 * coefficient;
             valid &= std::isfinite(positions[i + 1]) &&
+                     positions[i + 1] >= positions[i] &&
                      std::abs(q - positions[i + 1]) <= position_budget &&
                      std::abs(v - velocities[i + 1]) <= 64 * eps * speed_cap;
             if (dt[i] == 0)
