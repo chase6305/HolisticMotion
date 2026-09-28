@@ -222,15 +222,23 @@ bool FitRoundedRamps(double q0, double q1, double v0, double v1, double velocity
         }
         if (!valid)
             continue;
-        std::list<TrajectorySeg> candidate;
+        std::array<TrajectorySeg, 4> states;
+        std::size_t count = 0;
         for (int i = 0; i < 3; ++i)
             if (dt[i] > 0)
-                candidate.emplace_back(segment, times[i], positions[i], velocities[i],
-                                       accelerations[i], 0.0);
-        candidate.emplace_back(segment, times[3], q1, v1, 0.0, 0.0);
-        if (candidate.size() < 2)
+                states[count++] = TrajectorySeg(segment, times[i], positions[i],
+                                                velocities[i], accelerations[i], 0.0);
+        states[count++] = TrajectorySeg(segment, times[3], q1, v1, 0.0, 0.0);
+        if (count < 2)
             continue;
-        output.swap(candidate);
+        // Commit only after every numeric check. Equal phase counts can reuse
+        // the accepted profile's nodes; otherwise retain allocation rollback.
+        if (output.size() == count) {
+            std::copy_n(states.begin(), count, output.begin());
+        } else {
+            std::list<TrajectorySeg> candidate(states.begin(), states.begin() + count);
+            output.swap(candidate);
+        }
         return true;
     }
     return false;
