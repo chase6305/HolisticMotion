@@ -204,6 +204,30 @@ void CheckUniformTranslations() {
         }
     }
 }
+
+void CheckClosedFormQuadratic() {
+    // Rotate around x, then translate along local y. In normalized parameter x,
+    // Q = RotX(x(2-x)) * TransY(x^2), so the body linear velocity is
+    // (0, 2x, 2x^2(1-x)) and angular velocity is (2(1-x), 0, 0).
+    const SE3d origin(Eigen::Vector3d::Zero(), SO3d(0, 0, 0));
+    const SE3d rotation(Eigen::Vector3d::Zero(), SO3d(1, 0, 0));
+    const SE3d translation(Eigen::Vector3d(0, 1, 0), SO3d(0, 0, 0));
+    const PathSegBezierCurve2nd<SE3d> curve(
+        {origin, rotation, rotation.Compose(translation)}, 0.0);
+    const double length = curve.GetLength();
+    for (double x : {0.0, 0.17, 0.5, 0.81, 1.0}) {
+        Vector6 velocity, acceleration, jerk;
+        velocity << 0, 2 * x, 2 * x * x * (1 - x), 2 * (1 - x), 0, 0;
+        acceleration << 0, 2, 4 * x - 6 * x * x, -2, 0, 0;
+        jerk << 0, 0, 4 - 12 * x, 0, 0, 0;
+        Check(curve.GetTangent(x * length).Coeffs(), velocity / length, 1e-12,
+              "closed-form body velocity");
+        Check(curve.GetCurvature(x * length).Coeffs(), acceleration / length / length,
+              1e-12, "closed-form body acceleration");
+        Check(curve.GetTorsion(x * length).Coeffs(), jerk / length / length / length,
+              1e-12, "closed-form body jerk");
+    }
+}
 } // namespace
 
 int main() {
@@ -211,6 +235,7 @@ int main() {
         holistic_motion::utility::SetVerbosityLevel(
             holistic_motion::utility::VerbosityLevel::Error);
         CheckUniformTranslations();
+        CheckClosedFormQuadratic();
         std::mt19937_64 generator(20260928);
         std::uniform_real_distribution<double> random(-0.5, 0.5);
         for (int sample = 0; sample < 48; ++sample) {
