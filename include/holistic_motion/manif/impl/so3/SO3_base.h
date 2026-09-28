@@ -205,8 +205,9 @@ inline typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
 
         log_coeff = two_angle / sin_angle;
     } else {
-        // small-angle approximation
-        log_coeff = Scalar(2.0);
+        // Keep the same principal rotation for the equivalent quaternions
+        // q and -q, including the small-angle approximation near -identity.
+        log_coeff = W() < Scalar(0.0) ? Scalar(-2.0) : Scalar(2.0);
     }
 
     tan = Tangent(Coeffs().template head<3>() * log_coeff);

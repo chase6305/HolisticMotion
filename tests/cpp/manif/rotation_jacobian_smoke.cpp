@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -49,10 +50,43 @@ template <typename Scalar> void CheckHalfTurns() {
     }
 }
 
+template <typename Scalar> void CheckAntipodalSmallRotations() {
+    using Vector = Eigen::Matrix<Scalar, 3, 1>;
+    using Matrix = Eigen::Matrix<Scalar, 3, 3>;
+    const Vector axis = Vector(1, -2, 3).normalized();
+    const Scalar boundary = Scalar(2) * std::sqrt(Constants<Scalar>::eps);
+    const Scalar tolerance = Scalar(64) * std::numeric_limits<Scalar>::epsilon();
+    for (Scalar factor : {Scalar(0), Scalar(0.001), Scalar(0.5), Scalar(0.99),
+                          Scalar(1.01), Scalar(2)}) {
+        const SO3Tangent<Scalar> tangent(axis * (boundary * factor));
+        const auto rotation = tangent.Exp();
+        auto antipodal = rotation;
+        antipodal.Coeffs() *= Scalar(-1);
+        Matrix positive_jacobian, negative_jacobian;
+        const auto positive = rotation.Log(positive_jacobian);
+        const auto negative = antipodal.Log(negative_jacobian);
+        if (!negative.Coeffs().allFinite() || !negative_jacobian.allFinite() ||
+            (positive.Coeffs() - negative.Coeffs()).norm() >
+                tolerance * std::max(Scalar(1), tangent.Coeffs().norm()) ||
+            (positive_jacobian - negative_jacobian).norm() > tolerance)
+            throw std::runtime_error("quaternion sign changed the rotation logarithm");
+        const SE3<Scalar> pose(Vector(2, -3, 4), antipodal);
+        const SE3<Scalar> equivalent(Vector(2, -3, 4), rotation);
+        const auto pose_log = pose.Log();
+        const auto equivalent_log = equivalent.Log();
+        if (!pose_log.Coeffs().allFinite() ||
+            (pose_log.Coeffs() - equivalent_log.Coeffs()).norm() >
+                tolerance * std::max(Scalar(1), equivalent_log.Coeffs().norm()))
+            throw std::runtime_error("quaternion sign changed the SE3 logarithm");
+    }
+}
+
 int main() {
     try {
         CheckHalfTurns<double>();
         CheckHalfTurns<float>();
+        CheckAntipodalSmallRotations<double>();
+        CheckAntipodalSmallRotations<float>();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
