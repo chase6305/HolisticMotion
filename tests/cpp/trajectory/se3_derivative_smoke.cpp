@@ -205,6 +205,45 @@ void CheckUniformTranslations() {
     }
 }
 
+template <int Degree> void CheckSmallAngleTransforms() {
+    const double threshold = Constants<double>::eps_sqrt;
+    for (double angle : {0.25 * threshold, std::nextafter(threshold, 0.0), threshold,
+                         std::nextafter(threshold, INFINITY), 4.0 * threshold, 1e-4}) {
+        for (double scale : {1e-6, 1.0, 1e6, 1e100}) {
+            std::vector<SE3d> points{
+                SE3d(scale * Eigen::Vector3d(1, -2, 3), SO3d(0.2, -0.4, 0.1))};
+            for (int i = 0; i < Degree; ++i) {
+                Vector6 increment = Vector6::Zero();
+                increment.head<3>() =
+                    scale * Eigen::Vector3d(0.1 * (i + 1), i % 2 ? -0.2 : 0.3, 0.4);
+                increment[3 + i % 3] = angle;
+                points.push_back(points.back().Compose(SE3Tangentd(increment).Exp()));
+            }
+            for (double x : {0.0, 0.17, 0.43, 0.81, 1.0}) {
+                detail::SE3BezierEvaluation<Degree> curve(points, x, scale);
+                SE3d position;
+                SE3Tangentd velocity, acceleration, jerk, v, a, j;
+                // The complete jet retains the original group exponential;
+                // derivative-only queries apply its Jacobian via cross products.
+                curve.ComputeJet(position, velocity, acceleration, jerk);
+                curve.ComputeDerivatives(v, a, j);
+                Check(v.Coeffs(), velocity.Coeffs(), 1e-11, "small-angle velocity");
+                Check(a.Coeffs(), acceleration.Coeffs(), 1e-11,
+                      "small-angle acceleration");
+                Check(j.Coeffs(), jerk.Coeffs(), 1e-11, "small-angle jerk");
+                Check(curve.FirstDerivative().Coeffs(), velocity.Coeffs(), 1e-11,
+                      "small-angle scalar velocity");
+                Check(curve.SecondDerivative().Coeffs(), acceleration.Coeffs(), 1e-11,
+                      "small-angle scalar acceleration");
+                Check(curve.ThirdDerivative().Coeffs(), jerk.Coeffs(), 1e-11,
+                      "small-angle scalar jerk");
+                if (!position.Coeffs().allFinite())
+                    throw std::runtime_error("nonfinite small-angle position");
+            }
+        }
+    }
+}
+
 void CheckClosedFormQuadratic() {
     // Rotate around x, then translate along local y. In normalized parameter x,
     // Q = RotX(x(2-x)) * TransY(x^2), so the body linear velocity is
@@ -236,6 +275,8 @@ int main() {
             holistic_motion::utility::VerbosityLevel::Error);
         CheckUniformTranslations();
         CheckClosedFormQuadratic();
+        CheckSmallAngleTransforms<2>();
+        CheckSmallAngleTransforms<5>();
         std::mt19937_64 generator(20260928);
         std::uniform_real_distribution<double> random(-0.5, 0.5);
         for (int sample = 0; sample < 48; ++sample) {
