@@ -80,6 +80,10 @@ private:
                           ((theta - std::sin(theta)) / (theta_squared * theta)) *
                               angular.cross(cross);
         }
+        // Cross products may overflow before their bounded coefficients apply.
+        // Preserve the exponential's finite result at those extreme scales.
+        if (!translation.allFinite())
+            translation = SO3Tangentd(angular).Ljac() * linear;
     }
 
     template <int Order, bool WithPosition = false>

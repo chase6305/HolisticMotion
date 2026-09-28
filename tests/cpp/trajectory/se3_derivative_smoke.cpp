@@ -14,10 +14,69 @@ using Vector6 = Eigen::Matrix<double, 6, 1>;
 namespace {
 void Check(const Vector6 &actual, const Vector6 &expected, double tolerance,
            const char *message) {
-    const double error = (actual - expected).norm() / std::max(1.0, expected.norm());
-    if (!actual.allFinite() || !expected.allFinite() || error > tolerance) {
+    const double scale = std::max(1.0, expected.cwiseAbs().maxCoeff());
+    const Vector6 reference = expected / scale;
+    const double error = (actual / scale - reference).stableNorm() /
+                         std::max(1.0 / scale, reference.stableNorm());
+    if (!actual.allFinite() || !expected.allFinite() || !std::isfinite(error) ||
+        error > tolerance) {
         std::cerr << message << ": " << error << '\n';
         throw std::runtime_error(message);
+    }
+}
+
+void CheckLargeControlTranslations() {
+    const std::array<SE3d, 3> points{
+        SE3d(), SE3d(Eigen::Vector3d(4.9831115139982955, 0, 0), SO3d()),
+        SE3d(
+            Eigen::Vector3d(8.3653743729700611, 4.4263123788072862, 1.6144543975355821),
+            Eigen::Quaterniond(0.31508300812828299, 0.66751211376112418,
+                               0.328994343833241, -0.58899320683410572))};
+    // Large endpoint curvature can create finite, very distant controls even
+    // when the waypoints and segment length have ordinary magnitudes.
+    const PathSegBezierCurve5th<SE3d> curve(points, 0.0, 1.0, 1.5019037051941191e307,
+                                            1.0, 0.0);
+    if (!curve.IsValid())
+        throw std::runtime_error("invalid large-control fixture");
+    detail::SegmentEvaluationSampler<SE3d> sampler(curve);
+    for (double fraction : {0.9375, 0.96875, 1.0}) {
+        const double s = fraction * curve.GetLength();
+        SE3d position;
+        SE3Tangentd tangent, curvature, torsion;
+        // Full jets retain the matrix exponential's transform. Higher
+        // derivatives need not be representable for this first-derivative test.
+        sampler.ComputeJet(s, position, tangent, curvature, torsion);
+        Check(curve.GetTangent(s).Coeffs(), tangent.Coeffs(), 1e-12,
+              "finite tangent with large control translations");
+    }
+    const auto end = points[2] - points[1];
+    Check(curve.GetTangent(curve.GetLength()).Coeffs(),
+          end.Coeffs() / end.Coeffs().norm(), 1e-12,
+          "large controls preserve the prescribed endpoint tangent");
+}
+
+void CheckShortQuadraticSampling() {
+    for (double scale : {1e-20, 1e-100}) {
+        const PathSegBezierCurve2nd<SE3d> curve(
+            {SE3d(), SE3d(Eigen::Vector3d(scale, 0, 0), SO3d()),
+             SE3d(Eigen::Vector3d(2 * scale, scale, 0), SO3d())},
+            0.0);
+        if (!curve.IsValid())
+            throw std::runtime_error("invalid short quadratic fixture");
+        detail::SegmentEvaluationSampler<SE3d> sampler(curve);
+        for (double fraction : {0.17, 0.43, 0.81}) {
+            const double s = fraction * curve.GetLength();
+            SE3d position;
+            SE3Tangentd tangent, curvature, torsion;
+            sampler.ComputeJet(s, position, tangent, curvature, torsion);
+            Check((position - curve.GetConfig(s)).Coeffs() / scale, Vector6::Zero(),
+                  1e-12, "short quadratic position");
+            Check(tangent.Coeffs(), curve.GetTangent(s).Coeffs(), 1e-12,
+                  "short quadratic tangent");
+            Check(curvature.Coeffs(), curve.GetCurvature(s).Coeffs(), 1e-12,
+                  "short quadratic curvature");
+            Check(torsion.Coeffs(), Vector6::Zero(), 0.0, "short quadratic torsion");
+        }
     }
 }
 
@@ -277,6 +336,8 @@ int main() {
         CheckClosedFormQuadratic();
         CheckSmallAngleTransforms<2>();
         CheckSmallAngleTransforms<5>();
+        CheckLargeControlTranslations();
+        CheckShortQuadraticSampling();
         std::mt19937_64 generator(20260928);
         std::uniform_real_distribution<double> random(-0.5, 0.5);
         for (int sample = 0; sample < 48; ++sample) {
