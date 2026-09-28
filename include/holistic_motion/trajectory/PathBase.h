@@ -63,6 +63,9 @@ public:
     /// \return Eigen::VectorXd
     virtual LieGroup GetConfig(double s) const = 0;
 
+    /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
+    /// [linear, angular]. Curvature and torsion are its first and second
+    /// coordinate derivatives with respect to s.
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter
@@ -183,6 +186,9 @@ public:
     /// \return Eigen::VectorXd
     LieGroup GetConfig(double s) const;
 
+    /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
+    /// [linear, angular]. Curvature and torsion are its first and second
+    /// coordinate derivatives with respect to s.
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter

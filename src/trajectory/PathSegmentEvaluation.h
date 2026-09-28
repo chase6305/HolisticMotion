@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SE3BezierEvaluation.h"
 #include "holistic_motion/trajectory/PathSegment.h"
 
 #include <optional>
@@ -36,6 +37,19 @@ template <typename LieGroup> struct QuinticEvaluation {
                (10.0 - 20.0 * s + 15.0 * s2 - 4.0 * s3) * s2 * t1 +
                (10.0 - 15.0 * s + 6.0 * s2) * s3 * t2 + (5.0 - 4.0 * s) * s4 * t3 +
                s5 * t4;
+    }
+
+    void ComputeDerivatives(Tangent &tangent, Tangent &curvature,
+                            Tangent &torsion) const {
+        tangent = FirstDerivative();
+        curvature = SecondDerivative();
+        torsion = ThirdDerivative();
+    }
+
+    void ComputeJet(LieGroup &position, Tangent &tangent, Tangent &curvature,
+                    Tangent &torsion) const {
+        position = Position();
+        ComputeDerivatives(tangent, curvature, torsion);
     }
 
     Tangent FirstDerivative() const {
@@ -77,6 +91,10 @@ template <typename LieGroup> struct QuinticEvaluation {
     }
 };
 
+template <> struct QuinticEvaluation<SE3d> : SE3BezierEvaluation<5> {
+    using SE3BezierEvaluation<5>::SE3BezierEvaluation;
+};
+
 // Additional differences pay off only across repeated samples. Scalar queries
 // keep their smaller evaluator and do not store this repeated-sampling cache.
 template <typename LieGroup>
@@ -90,6 +108,19 @@ struct CachedQuinticEvaluation : QuinticEvaluation<LieGroup> {
           d2(this->t3 - this->t2), d3(this->t4 - this->t3), e0(d1 - d0), e1(d2 - d1),
           e2(d3 - d2) {}
 
+    void ComputeDerivatives(Tangent &tangent, Tangent &curvature,
+                            Tangent &torsion) const {
+        tangent = this->FirstDerivative();
+        curvature = SecondDerivative();
+        torsion = ThirdDerivative();
+    }
+
+    void ComputeJet(LieGroup &position, Tangent &tangent, Tangent &curvature,
+                    Tangent &torsion) const {
+        position = this->Position();
+        ComputeDerivatives(tangent, curvature, torsion);
+    }
+
     Tangent SecondDerivative() const {
         return this->SecondDerivativeFromDifferences(d0, d1, d2, d3);
     }
@@ -97,6 +128,11 @@ struct CachedQuinticEvaluation : QuinticEvaluation<LieGroup> {
     Tangent ThirdDerivative() const {
         return this->ThirdDerivativeFromDifferences(e0, e1, e2);
     }
+};
+
+template <> struct CachedQuinticEvaluation<SE3d> : QuinticEvaluation<SE3d> {
+    CachedQuinticEvaluation(const std::vector<SE3d> &points, double length)
+        : QuinticEvaluation<SE3d>(points, 0.0, length) {}
 };
 
 // A workspace for one construction or constraint report. Only the exact
@@ -120,9 +156,9 @@ public:
     void Compute(double s, Tangent &tangent, Tangent &curvature, Tangent &torsion) {
         if (evaluation_) {
             SetParameter(s);
-            tangent = evaluation_->FirstDerivative();
-            curvature = evaluation_->SecondDerivative();
-            torsion = evaluation_->ThirdDerivative();
+            evaluation_->ComputeDerivatives(tangent, curvature, torsion);
+        } else if constexpr (std::is_same_v<LieGroup, SE3d>) {
+            segment_.ComputeDerivatives(s, tangent, curvature, torsion);
         } else {
             tangent = segment_.GetTangent(s);
             curvature = segment_.GetCurvature(s);
@@ -135,10 +171,7 @@ public:
         if (evaluation_) {
             segment_.ValidateQuery(s);
             SetParameter(s);
-            position = evaluation_->Position();
-            tangent = evaluation_->FirstDerivative();
-            curvature = evaluation_->SecondDerivative();
-            torsion = evaluation_->ThirdDerivative();
+            evaluation_->ComputeJet(position, tangent, curvature, torsion);
         } else {
             segment_.ComputeJet(s, position, tangent, curvature, torsion);
         }

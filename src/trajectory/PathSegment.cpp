@@ -20,10 +20,17 @@ void PathSegmentBase<LieGroup>::ComputeDerivatives(double s, Tangent &tangent,
         s = length_ > Epsilon ? s / length_ : 0.0;
         const detail::QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s,
                                                            length_);
-        tangent = evaluation.FirstDerivative();
-        curvature = evaluation.SecondDerivative();
-        torsion = evaluation.ThirdDerivative();
+        evaluation.ComputeDerivatives(tangent, curvature, torsion);
         return;
+    }
+    if constexpr (std::is_same_v<LieGroup, SE3d>) {
+        if (typeid(*this) == typeid(PathSegBezierCurve2nd<LieGroup>)) {
+            ValidateQuery(s);
+            s = clamp(s - sp_, 0.0, length_) / length_;
+            detail::SE3BezierEvaluation<2>(waypoints_, s, length_)
+                .ComputeDerivatives(tangent, curvature, torsion);
+            return;
+        }
     }
     tangent = GetTangent(s);
     curvature = GetCurvature(s);
@@ -54,11 +61,17 @@ void PathSegmentBase<LieGroup>::ComputeJet(double s, LieGroup &position,
         s = length_ > Epsilon ? s / length_ : 0.0;
         const detail::QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s,
                                                            length_);
-        position = evaluation.Position();
-        tangent = evaluation.FirstDerivative();
-        curvature = evaluation.SecondDerivative();
-        torsion = evaluation.ThirdDerivative();
+        evaluation.ComputeJet(position, tangent, curvature, torsion);
         return;
+    }
+    if constexpr (std::is_same_v<LieGroup, SE3d>) {
+        if (type == typeid(PathSegBezierCurve2nd<LieGroup>)) {
+            ValidateQuery(s);
+            s = clamp(s - sp_, 0.0, length_) / length_;
+            detail::SE3BezierEvaluation<2>(waypoints_, s, length_)
+                .ComputeJet(position, tangent, curvature, torsion);
+            return;
+        }
     }
     position = GetConfig(s);
     tangent = GetTangent(s);
@@ -146,6 +159,10 @@ typename LieGroup::Tangent PathSegBezierCurve2nd<LieGroup>::GetTangent(double s)
     s = clamp(s - this->sp_, 0.0, this->length_);
     s /= this->length_;
 
+    if constexpr (std::is_same_v<LieGroup, SE3d>)
+        return detail::SE3BezierEvaluation<2>(this->control_points_, s, this->length_)
+            .FirstDerivative();
+
     // Ps' = [(1-t)^2P0 + 2(1-t)tP1 + t^2P2]'
     auto ret = (2 - 2 * s) * (this->control_points_[1] - this->control_points_[0]) +
                2 * s * (this->control_points_[2] - this->control_points_[1]);
@@ -156,6 +173,11 @@ template <typename LieGroup>
 typename LieGroup::Tangent
 PathSegBezierCurve2nd<LieGroup>::GetCurvature(double s) const {
     this->ValidateQuery(s);
+    if constexpr (std::is_same_v<LieGroup, SE3d>) {
+        s = clamp(s - this->sp_, 0.0, this->length_) / this->length_;
+        return detail::SE3BezierEvaluation<2>(this->control_points_, s, this->length_)
+            .SecondDerivative();
+    }
     // (Ps')' = [[(1-t)^2P0 + 2(1-t)tP1 + t^2P2]']'
     auto ret = 2.0 * ((this->control_points_[2] - this->control_points_[1]) -
                       (this->control_points_[1] - this->control_points_[0]));
@@ -164,6 +186,17 @@ PathSegBezierCurve2nd<LieGroup>::GetCurvature(double s) const {
         return ret / length_squared;
     // The derivative can remain representable when the denominator overflows.
     return (ret / this->length_) / this->length_;
+}
+
+template <typename LieGroup>
+typename LieGroup::Tangent PathSegBezierCurve2nd<LieGroup>::GetTorsion(double s) const {
+    this->ValidateQuery(s);
+    if constexpr (std::is_same_v<LieGroup, SE3d>) {
+        s = clamp(s - this->sp_, 0.0, this->length_) / this->length_;
+        return detail::SE3BezierEvaluation<2>(this->control_points_, s, this->length_)
+            .ThirdDerivative();
+    }
+    return LieGroup::Tangent::ZeroHelper();
 }
 
 template <typename LieGroup>

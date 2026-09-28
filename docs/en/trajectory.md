@@ -94,7 +94,7 @@ Cartesian flag does not truncate tangent vectors to three entries. One- and
 two-dimensional Rn segments therefore remain valid with that flag, and a straight
 pure-rotation segment has the same path-length convention as a linear segment.
 
-Fifth-degree Bezier tangent, curvature, and torsion queries evaluate Bernstein
+Fifth-degree Rn Bezier tangent, curvature, and torsion queries evaluate Bernstein
 basis functions on successive control-point differences. This avoids the
 cancellation introduced by expanded power-basis coefficients, especially after
 division by a short segment's squared or cubed length. Exactly uniform control
@@ -102,6 +102,21 @@ increments therefore retain zero second and third derivatives without applying
 a derivative cutoff, preventing artificial acceleration/jerk speed restrictions
 on straight segments. Input/control-point rounding remains subject to ordinary
 floating-point precision.
+
+SE3 quadratic and fifth-degree curves compose exponential increments. Their
+first derivative is the body twist `vee(Q.inverse() * dQ/ds)`, with linear
+coordinates followed by angular coordinates. Curvature and torsion are the
+first and second derivatives of that coordinate vector. Evaluation transports
+earlier increments through subsequent factors and includes Lie-bracket terms
+in the higher derivatives. Even a quadratic SE3 curve can have nonzero torsion.
+
+The same convention applies to time derivatives: `GetVelocity` returns the body
+twist, while `GetAcceleration` and `GetJerk` differentiate its coordinates.
+Limits, state queries, and constraint reports use those quantities consistently.
+These are not world-frame position derivatives; for example, world translation
+velocity is `R * v`, and its acceleration is `R * (a + omega.cross(v))`.
+Native curve limits remain sampled bounds, rather than analytic guarantees
+between samples.
 
 When adjacent blends meet, the test for a residual straight segment includes
 the original waypoint magnitudes as well as the trimmed controls. This accounts

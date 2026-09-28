@@ -74,6 +74,9 @@ public:
     /// \brief get the position of the trajectory
     LieGroup GetPosition(double t) const;
 
+    /// For SE3, velocity is the body twist vee(Q^-1 dQ/dt), ordered
+    /// [linear, angular]; acceleration and jerk differentiate these coordinates.
+    /// Constraints and reports use these same body-coordinate quantities.
     /// \brief get the velocity of the trajectory
     Tangent GetVelocity(double t) const;
 

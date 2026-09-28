@@ -50,6 +50,7 @@ public:
     virtual LieGroup GetConfig(double s) const override;
     virtual Tangent GetTangent(double s) const override;
     virtual Tangent GetCurvature(double s) const override;
+    virtual Tangent GetTorsion(double s) const override;
 
 protected:
     std::vector<LieGroup>

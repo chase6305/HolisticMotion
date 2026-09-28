@@ -30,6 +30,10 @@ function(holistic_motion_register_tests)
         tests/cpp/trajectory/trajectory_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        se3_derivative_smoke_test
+        tests/cpp/trajectory/se3_derivative_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         se3_blend_smoke_test
         tests/cpp/trajectory/se3_blend_smoke.cpp
         holistic_motion)
