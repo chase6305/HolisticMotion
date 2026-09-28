@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -194,6 +195,75 @@ void CheckDerivedLinearQueries() {
                        trajectory.GetAcceleration(time).Coeffs()[coordinate]);
             CheckValue(state.jerk.Coeffs()[coordinate],
                        trajectory.GetJerk(time).Coeffs()[coordinate]);
+        }
+    }
+}
+
+void CheckCustomQueryRetainsGeometry() {
+    struct OwningProbe : QueryProbe {
+        using QueryProbe::QueryProbe;
+        void Pin(const std::shared_ptr<PathSegmentBase<Group>> &segment) {
+            phase_path_segments_.assign(1, segment);
+        }
+        void ReleaseGeometry() {
+            phase_path_segments_.clear();
+            path_.reset();
+        }
+    };
+    struct RemovingLine : PathSegLinear<Group> {
+        RemovingLine(const std::array<Group, 2> &points,
+                     std::array<unsigned, 4> &observations, bool &deleted)
+            : PathSegLinear(points), calls(observations), destroyed(deleted) {}
+        ~RemovingLine() { destroyed = true; }
+        Group GetConfig(double s) const override {
+            ++calls[0];
+            const auto result = PathSegLinear::GetConfig(s);
+            release();
+            return result;
+        }
+        Group::Tangent GetTangent(double s) const override {
+            ++calls[1];
+            return PathSegLinear::GetTangent(s);
+        }
+        Group::Tangent GetCurvature(double s) const override {
+            ++calls[2];
+            return PathSegLinear::GetCurvature(s);
+        }
+        Group::Tangent GetTorsion(double s) const override {
+            ++calls[3];
+            return PathSegLinear::GetTorsion(s);
+        }
+        std::array<unsigned, 4> &calls;
+        bool &destroyed;
+        std::function<void()> release;
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    for (bool pinned : {false, true}) {
+        for (double duration : {1.0, 1.7}) {
+            std::array<unsigned, 4> calls{};
+            bool destroyed = false;
+            auto segment = std::make_shared<RemovingLine>(points, calls, destroyed);
+            std::weak_ptr<RemovingLine> lifetime = segment;
+            OwningProbe trajectory(segment, 1.0, 1.0);
+            if (pinned)
+                trajectory.Pin(segment);
+            if (!trajectory.SetMinimumDuration(duration))
+                throw std::runtime_error("could not scale lifetime fixture");
+            segment->release = [&] { trajectory.ReleaseGeometry(); };
+            segment.reset();
+            // The first virtual query removes every stored owner. The local
+            // query must keep this derived line alive through all derivatives.
+            const auto state = trajectory.GetState(0.5 * duration);
+            CheckValue(state.position.Coeffs()[0], 0.5);
+            CheckValue(state.velocity.Coeffs()[0], 1.0 / duration);
+            CheckValue(state.acceleration.Coeffs()[0], 0.0);
+            CheckValue(state.jerk.Coeffs()[0], 0.0);
+            if (!destroyed || !lifetime.expired() ||
+                calls != std::array<unsigned, 4>{1, 1, 1, 1})
+                throw std::runtime_error(
+                    "query did not retain custom geometry locally");
         }
     }
 }
@@ -401,6 +471,7 @@ int main() {
         CheckMixedJerkProduct();
         CheckFastLinearMotion();
         CheckDerivedLinearQueries();
+        CheckCustomQueryRetainsGeometry();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();
         CheckShortCurvesWithNonlinearTimeLaws();
