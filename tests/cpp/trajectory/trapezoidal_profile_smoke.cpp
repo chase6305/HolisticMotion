@@ -98,14 +98,6 @@ void CheckCollapsedRampBesideCruise() {
     }
     CheckProfile(30.0, 0.3, 0.3 + 1e-14, 0.3 + 2e-14, 1.0, 10.0, 1000.0);
 
-    // A merged phase whose rounded duration cannot reproduce its displacement
-    // must still fail transactionally, even when its speeds are close.
-    end_velocity = 0.5 + 1e-12;
-    if (probe._ComputeTrapeziumProfile(10.0, 12.0, 0.5, end_velocity, 0.5 + 2e-12, 1.0,
-                                       1e6, phases, 0) ||
-        !phases.empty() || end_velocity != 0.5 + 1e-12) {
-        throw std::runtime_error("merged cruise bypassed displacement checks");
-    }
 }
 
 void CheckCollapsedRampAtNonzeroPosition() {
@@ -173,18 +165,61 @@ void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
                 throw std::runtime_error("lower peak bypassed displacement checks");
         }
     }
-    // A second recorded interval still cannot reproduce its displacement on
-    // the stored clock, even with the lower peak. The retry must fail cleanly.
+}
+
+void CheckRoundedClockFit() {
+    // Three recorded full-trajectory failures and two former negative scalar
+    // fixtures. One merged ramp cannot meet the displacement budget, but two
+    // ramps on neighbouring represented timestamps can retain both endpoints.
+    const std::array<std::array<double, 7>, 5> inputs{
+        {{{1.8204173188188741, 1.83399587590423, .028033825130007003,
+           .028033825130007014, .028033825130007052, .0028784577709359935,
+           794.6624654987332}},
+         {{311900.22733229684, 313588.5600603964, 8.040548112497278, 40.51872461374804,
+           40.51872461375368, 189.83539938175724, 35669.47765191242}},
+         {{73.71215874788807, 74.08711204459368, .022165972824328826,
+           .002935538692301296, .02216597282432996, .02424343149406329,
+           19212.37973062739}},
+         {{10., 12., .5, .5 + 1e-12, .5 + 2e-12, 1., 1e6}},
+         {{5.816989524500355, 5.83685302311743, .003100713199719044,
+           .025525313930515454, .02552531393051614, .08426101559757797,
+           1569.5044297131274}}}};
     ProfileProbe probe;
-    std::list<TrajectorySeg> phases;
-    constexpr double requested_end = 0.025525313930515454;
-    double end_velocity = requested_end;
-    if (probe._ComputeTrapeziumProfile(
-            5.816989524500355, 5.83685302311743, 0.003100713199719044,
-            end_velocity, 0.02552531393051614, 0.08426101559757797,
-            1569.5044297131274, phases, 0) ||
-        !phases.empty() || end_velocity != requested_end)
-        throw std::runtime_error("lower-peak retry bypassed its displacement budget");
+    for (const auto &p : inputs) {
+        std::list<TrajectorySeg> phases;
+        double end_velocity = p[3];
+        if (!probe._ComputeTrapeziumProfile(p[0], p[1], p[2], end_velocity, p[4], p[5],
+                                            p[6], phases, 7) ||
+            phases.size() < 2 || phases.front().pos != p[0] ||
+            phases.back().pos != p[1] || phases.front().vel != p[2] ||
+            phases.back().vel != p[3] || end_velocity != p[3] ||
+            phases.front().timestamp != p[6])
+            throw std::runtime_error("rounded-clock fit lost a boundary");
+        for (auto it = phases.begin(); std::next(it) != phases.end(); ++it) {
+            const auto next = std::next(it);
+            const long double dt = next->timestamp - it->timestamp;
+            // Independently integrate the actual quadratic spline coefficient
+            // in extended precision, not the helper's double arithmetic.
+            const long double coefficient = it->acc / 2.0;
+            const long double distance = it->vel * dt + coefficient * dt * dt;
+            const long double displacement =
+                static_cast<long double>(next->pos) - it->pos;
+            const double budget =
+                64.0 * std::numeric_limits<double>::epsilon() * (p[1] - p[0]) +
+                std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->pos), std::abs(next->pos));
+            const long double speed = it->vel + 2.0L * coefficient * dt;
+            const double speed_budget =
+                64.0 * std::numeric_limits<double>::epsilon() * p[4];
+            if (dt <= 0.0L || !std::isfinite(distance) ||
+                std::abs(distance - displacement) > budget ||
+                std::abs(speed - next->vel) > speed_budget ||
+                std::min<long double>(it->vel, speed) < 0.0L ||
+                std::max<long double>(it->vel, speed) > p[4] + speed_budget ||
+                !std::isfinite(it->acc) || std::abs(it->acc) > p[5])
+                throw std::runtime_error("rounded-clock fit bypassed motion bounds");
+        }
+    }
 }
 
 void CheckShortTransition(double length, double v0, double requested_v1) {
@@ -438,7 +473,7 @@ int main() {
          {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
           CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
-          CheckLowerPeakPreservesBoundariesAtCoarseClock,
+          CheckLowerPeakPreservesBoundariesAtCoarseClock, CheckRoundedClockFit,
           CheckMergedCruiseTimingCorrection}) {
         try {
             check();

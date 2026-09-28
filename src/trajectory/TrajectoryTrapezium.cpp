@@ -1,6 +1,7 @@
 #include "holistic_motion/trajectory/TrajectoryTrapezium.h"
 
 #include <algorithm>
+#include <array>
 
 #include "PathSegmentEvaluation.h"
 #include "TrajectoryIntegration.h"
@@ -8,6 +9,115 @@
 
 namespace holistic_motion {
 namespace robotics {
+
+namespace {
+// Try a pair of constant-acceleration phases on the represented clock only
+// after the ordinary collapsed-ramp repairs fail. Their shared velocity is
+// free; both requested endpoint velocities and positions remain fixed.
+bool FitRoundedClockProfile(double q0, double q1, double v0, double v1,
+                            double velocity_cap, double acceleration_cap, double start,
+                            double ta, double tc, double td, int segment,
+                            std::list<TrajectorySeg> &output) {
+    const double length = q1 - q0;
+    const double ramp_end = start + ta;
+    const double cruise_end = ramp_end + tc;
+    const double planned_end = cruise_end + td;
+    const bool first_collapsed = ta > 0.0 && ramp_end == start;
+    const bool last_collapsed = td > 0.0 && planned_end == cruise_end;
+    if ((!first_collapsed && !last_collapsed) || tc <= 0.0 || !std::isfinite(length) ||
+        length <= 0.0 || !std::isfinite(planned_end) || planned_end <= start)
+        return false;
+
+    double planned_middle = first_collapsed ? cruise_end : ramp_end;
+    if (planned_middle <= start || planned_middle >= planned_end)
+        planned_middle = start + 0.5 * (planned_end - start);
+    const auto neighbours = [](double value) {
+        const double up =
+            std::nextafter(value, std::numeric_limits<double>::infinity());
+        const double down =
+            std::nextafter(value, -std::numeric_limits<double>::infinity());
+        return std::array<double, 5>{
+            value, up, down,
+            std::nextafter(up, std::numeric_limits<double>::infinity()),
+            std::nextafter(down, -std::numeric_limits<double>::infinity())};
+    };
+    constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
+    const double time_budget =
+        roundoff * std::max(std::abs(start), std::abs(planned_end));
+    const double maximum_speed = std::max({velocity_cap, v0, v1});
+    const double velocity_budget = roundoff * maximum_speed;
+    for (double end : neighbours(planned_end)) {
+        if (!std::isfinite(end) || std::abs(end - planned_end) > time_budget)
+            continue;
+        for (double middle : neighbours(planned_middle)) {
+            const double first = middle - start;
+            const double second = end - middle;
+            const double total = end - start;
+            if (!std::isfinite(first) || !std::isfinite(second) ||
+                !std::isfinite(total) || first <= 0.0 || second <= 0.0)
+                continue;
+            // h = (v0 + vm) * first / 2 + (vm + v1) * second / 2.
+            // Normalize durations before weighting endpoint speeds, and avoid
+            // doubling a potentially large mean speed before cancellation.
+            const double mean = length / total;
+            const double weighted_ends = v0 * (first / total) + v1 * (second / total);
+            const double fitted = mean + (mean - weighted_ends);
+            const std::array<double, 3> speeds{
+                fitted, std::nextafter(fitted, std::numeric_limits<double>::infinity()),
+                std::nextafter(fitted, -std::numeric_limits<double>::infinity())};
+            for (double speed : speeds) {
+                if (!std::isfinite(speed) || speed < 0.0 || speed > maximum_speed)
+                    continue;
+                const double first_acceleration = (speed - v0) / first;
+                const double second_acceleration = (v1 - speed) / second;
+                if (!std::isfinite(first_acceleration) ||
+                    !std::isfinite(second_acceleration) ||
+                    std::abs(first_acceleration) > acceleration_cap ||
+                    std::abs(second_acceleration) > acceleration_cap ||
+                    2.0 * (first_acceleration / 2.0) != first_acceleration ||
+                    2.0 * (second_acceleration / 2.0) != second_acceleration)
+                    continue;
+                // The spline stores acceleration / 2. Reject a lossy
+                // subnormal coefficient instead of validating another motion.
+                const double first_distance =
+                    v0 * first +
+                    detail::QuadraticContribution(first_acceleration, first);
+                const double position = q0 + first_distance;
+                const double second_distance =
+                    speed * second +
+                    detail::QuadraticContribution(second_acceleration, second);
+                const double first_speed = v0 + first_acceleration * first;
+                const double last_speed = speed + second_acceleration * second;
+                if (!std::isfinite(position) || !std::isfinite(first_distance) ||
+                    !std::isfinite(second_distance) || !std::isfinite(first_speed) ||
+                    !std::isfinite(last_speed) || position < q0 || position > q1 ||
+                    first_speed < 0.0 || last_speed < 0.0 ||
+                    first_speed > maximum_speed || last_speed > maximum_speed ||
+                    std::abs(first_speed - speed) > velocity_budget ||
+                    std::abs(last_speed - v1) > velocity_budget)
+                    continue;
+                const double first_budget =
+                    roundoff * length + std::numeric_limits<double>::epsilon() *
+                                            std::max(std::abs(q0), std::abs(position));
+                const double second_budget =
+                    roundoff * length + std::numeric_limits<double>::epsilon() *
+                                            std::max(std::abs(position), std::abs(q1));
+                if (std::abs(first_distance - (position - q0)) > first_budget ||
+                    std::abs(second_distance - (q1 - position)) > second_budget)
+                    continue;
+                std::list<TrajectorySeg> candidate;
+                candidate.emplace_back(segment, start, q0, v0, first_acceleration, 0.0);
+                candidate.emplace_back(segment, middle, position, speed,
+                                       second_acceleration, 0.0);
+                candidate.emplace_back(segment, end, q1, v1, 0.0, 0.0);
+                output.swap(candidate);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // namespace
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(TrajectoryTrapezium)
 
@@ -543,13 +653,20 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
             traj_segs.swap(candidate);
             return true;
         };
+        const auto recover_collapsed_ramp = [&]() {
+            if (retry_with_lower_peak())
+                return true;
+            return FitRoundedClockProfile(q0, q1, v0, v1, max_velocity,
+                                          max_acceleration, t0, ta, tc, td,
+                                          seg_no, traj_segs);
+        };
         bool has_cruise_phase = false;
         if (!append_phase(ta, first_acceleration)) {
             if (!collapsed_phase || tc <= 0.0)
                 return false;
             const double last_distance = (0.5 * v_lim + 0.5 * v1) * td;
             if (!append_cruise_transition(q1 - last_distance, v_lim, t0 + ta + tc))
-                return retry_with_lower_peak();
+                return recover_collapsed_ramp();
             has_cruise_phase = true;
         } else {
             const auto prefix_size = phases.size();
@@ -564,7 +681,7 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
             current_segment = phases.back();
             phases.pop_back();
             if (!append_cruise_transition(q1, v1, planned_end_time))
-                return retry_with_lower_peak();
+                return recover_collapsed_ramp();
         }
         phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
         traj_segs.swap(phases);
