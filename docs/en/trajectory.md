@@ -296,7 +296,7 @@ fit two constant-acceleration phases on neighbouring representable timestamps.
 It retains the requested endpoint positions and velocities, solves their shared
 velocity from the represented durations, and accepts only candidates meeting
 the original displacement, speed, acceleration, and timing budgets. The bounded
-search changes either candidate timestamp by at most two floating-point steps;
+search changes either candidate timestamp by at most four floating-point steps;
 unrepresentable motion still fails without publishing a partial result.
 
 Double-S also validates all phase states before publishing a profile or adjusted

@@ -168,22 +168,28 @@ void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
 }
 
 void CheckRoundedClockFit() {
-    // Three recorded full-trajectory failures and two former negative scalar
+    // Four recorded full-trajectory failures and two former negative scalar
     // fixtures. One merged ramp cannot meet the displacement budget, but two
     // ramps on neighbouring represented timestamps can retain both endpoints.
-    const std::array<std::array<double, 7>, 5> inputs{
-        {{{1.8204173188188741, 1.83399587590423, .028033825130007003,
-           .028033825130007014, .028033825130007052, .0028784577709359935,
-           794.6624654987332}},
-         {{311900.22733229684, 313588.5600603964, 8.040548112497278, 40.51872461374804,
-           40.51872461375368, 189.83539938175724, 35669.47765191242}},
-         {{73.71215874788807, 74.08711204459368, .022165972824328826,
-           .002935538692301296, .02216597282432996, .02424343149406329,
-           19212.37973062739}},
-         {{10., 12., .5, .5 + 1e-12, .5 + 2e-12, 1., 1e6}},
-         {{5.816989524500355, 5.83685302311743, .003100713199719044,
-           .025525313930515454, .02552531393051614, .08426101559757797,
-           1569.5044297131274}}}};
+    // The first interval requires a three-ulp shift of its end timestamp.
+    const std::array<std::array<double, 7>, 7> inputs{{
+        {{71193.63054299432, 71975.38890371427, 69.72179117751263, 17.82468315001617,
+          69.72179117755307, 660.711226238045, 11270.305902407998}},
+        {{1.8204173188188741, 1.83399587590423, 0.028033825130007003,
+          0.028033825130007014, 0.028033825130007052, 0.0028784577709359935,
+          794.6624654987332}},
+        {{311900.22733229684, 313588.5600603964, 8.040548112497278, 40.51872461374804,
+          40.51872461375368, 189.83539938175724, 35669.47765191242}},
+        {{73.71215874788807, 74.08711204459368, 0.022165972824328826,
+          0.002935538692301296, 0.02216597282432996, 0.02424343149406329,
+          19212.37973062739}},
+        {{10.0, 12.0, 0.5, 0.500000000001, 0.500000000002, 1.0, 1000000.0}},
+        {{5.816989524500355, 5.83685302311743, 0.003100713199719044,
+          0.025525313930515454, 0.02552531393051614, 0.08426101559757797,
+          1569.5044297131274}},
+        // A one-second clock needs a longer, bounded two-ramp motion.
+        {{0.0, 2.01, 0.0, 0.0, 1.0, 100.0, 0x1p52}},
+    }};
     ProfileProbe probe;
     for (const auto &p : inputs) {
         std::list<TrajectorySeg> phases;
@@ -307,17 +313,15 @@ void CheckNonzeroEndpointPeak(double length, double speed, double vmax, double a
 
 void CheckUnrepresentableGeneralPhasesAreRejected() {
     ProfileProbe probe;
-    // All phases collapse in the first case; the short ramps in the second.
-    for (const auto &input : {std::array<double, 3>{1e20, 1.0, 1.0},
-                              std::array<double, 3>{0x1p52, 2.01, 100.0}}) {
-        double v1 = 0.0;
-        std::list<TrajectorySeg> phases;
-        if (probe._ComputeTrapeziumProfile(0.0, input[1], 0.0, v1, 1.0, input[2],
-                                           input[0], phases, 0) ||
-            !phases.empty()) {
-            throw std::runtime_error(
-                "collapsed moving phases must not return a valid prefix");
-        }
+    // The whole requested interval cannot advance this absolute clock.
+    // No partial prefix or endpoint-velocity change may escape on failure.
+    double v1 = 0.0;
+    std::list<TrajectorySeg> phases;
+    if (probe._ComputeTrapeziumProfile(0.0, 1.0, 0.0, v1, 1.0, 1.0,
+                                       1e20, phases, 0) ||
+        !phases.empty() || v1 != 0.0) {
+        throw std::runtime_error(
+            "collapsed moving phases must not return a valid prefix");
     }
 }
 

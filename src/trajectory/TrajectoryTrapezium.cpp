@@ -36,82 +36,106 @@ bool FitRoundedClockProfile(double q0, double q1, double v0, double v1,
             std::nextafter(value, std::numeric_limits<double>::infinity());
         const double down =
             std::nextafter(value, -std::numeric_limits<double>::infinity());
-        return std::array<double, 5>{
-            value, up, down,
-            std::nextafter(up, std::numeric_limits<double>::infinity()),
-            std::nextafter(down, -std::numeric_limits<double>::infinity())};
+        std::array<double, 9> result{value, up, down};
+        for (std::size_t step = 2; step <= 4; ++step) {
+            result[2 * step - 1] = std::nextafter(
+                result[2 * step - 3], std::numeric_limits<double>::infinity());
+            result[2 * step] = std::nextafter(result[2 * step - 2],
+                                              -std::numeric_limits<double>::infinity());
+        }
+        return result;
     };
     constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
     const double time_budget =
         roundoff * std::max(std::abs(start), std::abs(planned_end));
     const double maximum_speed = std::max({velocity_cap, v0, v1});
     const double velocity_budget = roundoff * maximum_speed;
-    for (double end : neighbours(planned_end)) {
-        if (!std::isfinite(end) || std::abs(end - planned_end) > time_budget)
-            continue;
-        for (double middle : neighbours(planned_middle)) {
-            const double first = middle - start;
-            const double second = end - middle;
-            const double total = end - start;
-            if (!std::isfinite(first) || !std::isfinite(second) ||
-                !std::isfinite(total) || first <= 0.0 || second <= 0.0)
+    const auto ends = neighbours(planned_end);
+    const auto middles = neighbours(planned_middle);
+    // Preserve the two-step search's first successful result. Only if it
+    // fails, inspect the remaining pairs within four floating-point steps.
+    // An endpoint-peak retry must retain the old search, so it cannot
+    // preempt a successful two-step fit of the original cap excursion.
+    const unsigned passes = velocity_cap > std::max(v0, v1) ? 2 : 1;
+    for (unsigned pass = 0; pass < passes; ++pass) {
+        const std::size_t count = pass == 0 ? 5 : 9;
+        for (std::size_t end_index = 0; end_index < count; ++end_index) {
+            const double end = ends[end_index];
+            if (!std::isfinite(end) || std::abs(end - planned_end) > time_budget)
                 continue;
-            // h = (v0 + vm) * first / 2 + (vm + v1) * second / 2.
-            // Normalize durations before weighting endpoint speeds, and avoid
-            // doubling a potentially large mean speed before cancellation.
-            const double mean = length / total;
-            const double weighted_ends = v0 * (first / total) + v1 * (second / total);
-            const double fitted = mean + (mean - weighted_ends);
-            const std::array<double, 3> speeds{
-                fitted, std::nextafter(fitted, std::numeric_limits<double>::infinity()),
-                std::nextafter(fitted, -std::numeric_limits<double>::infinity())};
-            for (double speed : speeds) {
-                if (!std::isfinite(speed) || speed < 0.0 || speed > maximum_speed)
+            for (std::size_t middle_index = 0; middle_index < count; ++middle_index) {
+                if (count == 9 && end_index < 5 && middle_index < 5)
                     continue;
-                const double first_acceleration = (speed - v0) / first;
-                const double second_acceleration = (v1 - speed) / second;
-                if (!std::isfinite(first_acceleration) ||
-                    !std::isfinite(second_acceleration) ||
-                    std::abs(first_acceleration) > acceleration_cap ||
-                    std::abs(second_acceleration) > acceleration_cap ||
-                    2.0 * (first_acceleration / 2.0) != first_acceleration ||
-                    2.0 * (second_acceleration / 2.0) != second_acceleration)
+                const double middle = middles[middle_index];
+                const double first = middle - start;
+                const double second = end - middle;
+                const double total = end - start;
+                if (!std::isfinite(first) || !std::isfinite(second) ||
+                    !std::isfinite(total) || first <= 0.0 || second <= 0.0)
                     continue;
-                // The spline stores acceleration / 2. Reject a lossy
-                // subnormal coefficient instead of validating another motion.
-                const double first_distance =
-                    v0 * first +
-                    detail::QuadraticContribution(first_acceleration, first);
-                const double position = q0 + first_distance;
-                const double second_distance =
-                    speed * second +
-                    detail::QuadraticContribution(second_acceleration, second);
-                const double first_speed = v0 + first_acceleration * first;
-                const double last_speed = speed + second_acceleration * second;
-                if (!std::isfinite(position) || !std::isfinite(first_distance) ||
-                    !std::isfinite(second_distance) || !std::isfinite(first_speed) ||
-                    !std::isfinite(last_speed) || position < q0 || position > q1 ||
-                    first_speed < 0.0 || last_speed < 0.0 ||
-                    first_speed > maximum_speed || last_speed > maximum_speed ||
-                    std::abs(first_speed - speed) > velocity_budget ||
-                    std::abs(last_speed - v1) > velocity_budget)
-                    continue;
-                const double first_budget =
-                    roundoff * length + std::numeric_limits<double>::epsilon() *
-                                            std::max(std::abs(q0), std::abs(position));
-                const double second_budget =
-                    roundoff * length + std::numeric_limits<double>::epsilon() *
-                                            std::max(std::abs(position), std::abs(q1));
-                if (std::abs(first_distance - (position - q0)) > first_budget ||
-                    std::abs(second_distance - (q1 - position)) > second_budget)
-                    continue;
-                std::list<TrajectorySeg> candidate;
-                candidate.emplace_back(segment, start, q0, v0, first_acceleration, 0.0);
-                candidate.emplace_back(segment, middle, position, speed,
-                                       second_acceleration, 0.0);
-                candidate.emplace_back(segment, end, q1, v1, 0.0, 0.0);
-                output.swap(candidate);
-                return true;
+                // h = (v0 + vm) * first / 2 + (vm + v1) * second / 2.
+                // Normalize durations before weighting endpoint speeds, and avoid
+                // doubling a potentially large mean speed before cancellation.
+                const double mean = length / total;
+                const double weighted_ends =
+                    v0 * (first / total) + v1 * (second / total);
+                const double fitted = mean + (mean - weighted_ends);
+                const std::array<double, 3> speeds{
+                    fitted,
+                    std::nextafter(fitted, std::numeric_limits<double>::infinity()),
+                    std::nextafter(fitted, -std::numeric_limits<double>::infinity())};
+                for (double speed : speeds) {
+                    if (!std::isfinite(speed) || speed < 0.0 || speed > maximum_speed)
+                        continue;
+                    const double first_acceleration = (speed - v0) / first;
+                    const double second_acceleration = (v1 - speed) / second;
+                    if (!std::isfinite(first_acceleration) ||
+                        !std::isfinite(second_acceleration) ||
+                        std::abs(first_acceleration) > acceleration_cap ||
+                        std::abs(second_acceleration) > acceleration_cap ||
+                        2.0 * (first_acceleration / 2.0) != first_acceleration ||
+                        2.0 * (second_acceleration / 2.0) != second_acceleration)
+                        continue;
+                    // The spline stores acceleration / 2. Reject a lossy
+                    // subnormal coefficient instead of validating another motion.
+                    const double first_distance =
+                        v0 * first +
+                        detail::QuadraticContribution(first_acceleration, first);
+                    const double position = q0 + first_distance;
+                    const double second_distance =
+                        speed * second +
+                        detail::QuadraticContribution(second_acceleration, second);
+                    const double first_speed = v0 + first_acceleration * first;
+                    const double last_speed = speed + second_acceleration * second;
+                    if (!std::isfinite(position) || !std::isfinite(first_distance) ||
+                        !std::isfinite(second_distance) ||
+                        !std::isfinite(first_speed) || !std::isfinite(last_speed) ||
+                        position < q0 || position > q1 || first_speed < 0.0 ||
+                        last_speed < 0.0 || first_speed > maximum_speed ||
+                        last_speed > maximum_speed ||
+                        std::abs(first_speed - speed) > velocity_budget ||
+                        std::abs(last_speed - v1) > velocity_budget)
+                        continue;
+                    const double first_budget =
+                        roundoff * length +
+                        std::numeric_limits<double>::epsilon() *
+                            std::max(std::abs(q0), std::abs(position));
+                    const double second_budget =
+                        roundoff * length +
+                        std::numeric_limits<double>::epsilon() *
+                            std::max(std::abs(position), std::abs(q1));
+                    if (std::abs(first_distance - (position - q0)) > first_budget ||
+                        std::abs(second_distance - (q1 - position)) > second_budget)
+                        continue;
+                    std::list<TrajectorySeg> candidate;
+                    candidate.emplace_back(segment, start, q0, v0, first_acceleration,
+                                           0.0);
+                    candidate.emplace_back(segment, middle, position, speed,
+                                           second_acceleration, 0.0);
+                    candidate.emplace_back(segment, end, q1, v1, 0.0, 0.0);
+                    output.swap(candidate);
+                    return true;
+                }
             }
         }
     }
