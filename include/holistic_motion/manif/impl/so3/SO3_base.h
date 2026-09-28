@@ -226,16 +226,7 @@ inline typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
     //  tan = Tangent(axis*angle);
 
     if (J_t_m) {
-        J_t_m->setIdentity();
-        J_t_m->noalias() += Scalar(0.5) * tan.Hat();
-        Scalar theta2 = tan.Coeffs().squaredNorm();
-        if (theta2 > Constants<Scalar>::eps) {
-            Scalar theta = sqrt(theta2);  // rotation angle
-            J_t_m->noalias() += (Scalar(1) / theta2 -
-                                 (Scalar(1) + cos(theta)) /
-                                         (Scalar(2) * theta * sin(theta))) *
-                                tan.Hat() * tan.Hat();
-        }
+        (*J_t_m) = tan.Rjacinv();
     }
 
     return tan;

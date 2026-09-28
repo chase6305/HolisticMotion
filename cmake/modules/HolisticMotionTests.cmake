@@ -22,8 +22,16 @@ function(holistic_motion_register_tests)
         holistic_motion)
     set_tests_properties(robot_model_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
+        rotation_jacobian_smoke_test
+        tests/cpp/manif/rotation_jacobian_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        se3_blend_smoke_test
+        tests/cpp/trajectory/se3_blend_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
         chain_rule_smoke_test
