@@ -205,6 +205,24 @@ inline typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::Compos
     const std::array<double, 4> &jet,
     const std::shared_ptr<PathSegmentBase<LieGroup>> &segment) const {
     State state;
+    if constexpr (!std::is_same_v<LieGroup, SE3d>) {
+        // Expose the built-in line's zero higher derivatives to the compiler.
+        // Derived segments must still use their public virtual geometry queries.
+        // Pointer identity is sufficient for the fast path. Separate RTTI
+        // instances of the same type safely use the ordinary implementation.
+        if (&typeid(*segment) == &typeid(PathSegLinear<LieGroup>)) {
+            segment->ValidateQuery(jet[0]);
+            const double length = segment->length_;
+            const double local = clamp(jet[0] - segment->sp_, 0.0, length);
+            const double parameter = length > 0.0 ? local / length : 0.0;
+            state.position = segment->waypoints_[0] + parameter * segment->tangent_;
+            const auto tangent =
+                length > 0.0 ? segment->tangent_ / length : segment->tangent_;
+            const auto zero = LieGroup::Tangent::ZeroHelper();
+            ComposeDerivatives(state, jet, tangent, zero, zero, time_scale_);
+            return state;
+        }
+    }
     typename LieGroup::Tangent tangent, curvature, torsion;
     segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
     ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);

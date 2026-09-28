@@ -156,6 +156,48 @@ void CheckFastLinearMotion() {
     CheckValue(trajectory.GetPosition(trajectory.GetDuration()).Coeffs()[0], 1.0);
 }
 
+void CheckDerivedLinearQueries() {
+    struct CustomLinear : PathSegLinear<Group> {
+        using PathSegLinear::PathSegLinear;
+        Group GetConfig(double s) const override {
+            auto result = PathSegLinear::GetConfig(s);
+            result.Coeffs()[1] += 7.0;
+            return result;
+        }
+        Group::Tangent GetTangent(double s) const override {
+            return 2.0 * PathSegLinear::GetTangent(s);
+        }
+        Group::Tangent GetCurvature(double) const override {
+            return Group::Tangent(Eigen::Vector2d(3.0, 4.0));
+        }
+        Group::Tangent GetTorsion(double) const override {
+            return Group::Tangent(Eigen::Vector2d(5.0, 6.0));
+        }
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 5.0, 0.0;
+    QueryProbe trajectory(std::make_shared<CustomLinear>(points),
+                          Eigen::Vector4d(0.0, 1.0, 0.1, 0.01), 1.0);
+    if (!trajectory.SetMinimumDuration(1.7))
+        throw std::runtime_error("could not slow custom linear fixture");
+    // A linear base class does not imply zero higher derivatives when its
+    // public geometry queries are overridden by a caller.
+    for (double time : {-1.0, 0.0, 0.1, 0.5, 1.0, 1.7, 2.0}) {
+        const auto state = trajectory.GetState(time);
+        for (int coordinate = 0; coordinate < 2; ++coordinate) {
+            CheckValue(state.position.Coeffs()[coordinate],
+                       trajectory.GetPosition(time).Coeffs()[coordinate]);
+            CheckValue(state.velocity.Coeffs()[coordinate],
+                       trajectory.GetVelocity(time).Coeffs()[coordinate]);
+            CheckValue(state.acceleration.Coeffs()[coordinate],
+                       trajectory.GetAcceleration(time).Coeffs()[coordinate]);
+            CheckValue(state.jerk.Coeffs()[coordinate],
+                       trajectory.GetJerk(time).Coeffs()[coordinate]);
+        }
+    }
+}
+
 void CheckTinyLimitReciprocal() {
     std::array<Group, 2> points;
     points[0].Coeffs() << 0.0, 0.0;
@@ -358,6 +400,7 @@ int main() {
         CheckSmallSpeedPowers();
         CheckMixedJerkProduct();
         CheckFastLinearMotion();
+        CheckDerivedLinearQueries();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();
         CheckShortCurvesWithNonlinearTimeLaws();
