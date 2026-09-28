@@ -141,6 +141,97 @@ bool FitRoundedClockProfile(double q0, double q1, double v0, double v1,
     }
     return false;
 }
+// Reconstruct an accepted profile whose ramps used ideal durations instead
+// of the differences between their rounded absolute timestamps.
+bool FitRoundedRamps(double q0, double q1, double v0, double v1, double velocity_cap,
+                     double acceleration_cap, double start, double ta, double tc,
+                     double td, int segment, std::list<TrajectorySeg> &output) {
+    using Wide = long double;
+    constexpr double eps = std::numeric_limits<double>::epsilon();
+    const Wide length = static_cast<Wide>(q1) - q0;
+    const Wide position_budget =
+        64 * eps * length + eps * std::max(std::abs(q0), std::abs(q1));
+    const double speed_cap = std::max({velocity_cap, v0, v1});
+    const std::array<double, 3> durations{ta, tc, td};
+    const double planned_end = ((start + ta) + tc) + td;
+    const Wide time_budget =
+        64 * eps * std::max(std::abs(start), std::abs(planned_end));
+    const int extension_phase = tc > 0 ? 1 : td > 0 ? 2 : 0;
+    for (int extra = 0; extra < 8; ++extra) {
+        std::array<double, 4> times{start};
+        std::array<Wide, 3> dt{};
+        bool valid = true;
+        for (int i = 0; i < 3; ++i) {
+            times[i + 1] = times[i] + durations[i];
+            if (times[i + 1] - times[i] < durations[i])
+                times[i + 1] = std::nextafter(times[i + 1],
+                                              std::numeric_limits<double>::infinity());
+            if (i == extension_phase && durations[i] > 0)
+                for (int k = 0; k < extra; ++k)
+                    times[i + 1] = std::nextafter(
+                        times[i + 1], std::numeric_limits<double>::infinity());
+            dt[i] = times[i + 1] - times[i];
+            valid &= std::isfinite(times[i + 1]) &&
+                     (durations[i] == 0 ? dt[i] == 0 : dt[i] > 0);
+        }
+        if (!valid ||
+            std::abs(static_cast<Wide>(times.back()) - planned_end) > time_budget)
+            continue;
+        const Wide fitted = dt[0] == 0   ? static_cast<Wide>(v0)
+                            : dt[2] == 0 ? static_cast<Wide>(v1)
+                                         : (length - v0 * dt[0] / 2 - v1 * dt[2] / 2) /
+                                               (dt[0] / 2 + dt[1] + dt[2] / 2);
+        const Wide first_change = static_cast<Wide>(acceleration_cap) * dt[0];
+        const Wide last_change = static_cast<Wide>(acceleration_cap) * dt[2];
+        const Wide minimum_speed =
+            std::max({Wide(0), v0 - first_change, v1 - last_change});
+        const Wide maximum_speed =
+            std::min({Wide(speed_cap), v0 + first_change, v1 + last_change});
+        if (!std::isfinite(fitted) || minimum_speed > maximum_speed)
+            continue;
+        const Wide peak = std::clamp(fitted, minimum_speed, maximum_speed);
+        const double up = dt[0] == 0 ? 0 : static_cast<double>((peak - v0) / dt[0]);
+        const double down = dt[2] == 0 ? 0 : static_cast<double>((v1 - peak) / dt[2]);
+        if (!std::isfinite(up) || !std::isfinite(down) ||
+            std::abs(up) > acceleration_cap || std::abs(down) > acceleration_cap)
+            continue;
+        const Wide first_position = q0 + (v0 / 2 + peak / 2) * dt[0];
+        const Wide second_position = first_position + peak * dt[1];
+        std::array<double, 4> positions{q0, static_cast<double>(first_position),
+                                        static_cast<double>(second_position), q1};
+        if (dt[2] == 0)
+            positions[2] = q1;
+        if (dt[1] == 0)
+            positions[1] = positions[2];
+        const std::array<double, 4> velocities{v0, static_cast<double>(peak),
+                                               static_cast<double>(peak), v1};
+        const std::array<double, 3> accelerations{up, 0, down};
+        for (int i = 0; i < 3; ++i) {
+            const Wide coefficient = accelerations[i] / 2.0;
+            const Wide q = positions[i] + dt[i] * (velocities[i] + dt[i] * coefficient);
+            const Wide v = velocities[i] + dt[i] * 2 * coefficient;
+            valid &= std::isfinite(positions[i + 1]) &&
+                     std::abs(q - positions[i + 1]) <= position_budget &&
+                     std::abs(v - velocities[i + 1]) <= 64 * eps * speed_cap;
+            if (dt[i] == 0)
+                valid &= positions[i] == positions[i + 1] &&
+                         velocities[i] == velocities[i + 1];
+        }
+        if (!valid)
+            continue;
+        std::list<TrajectorySeg> candidate;
+        for (int i = 0; i < 3; ++i)
+            if (dt[i] > 0)
+                candidate.emplace_back(segment, times[i], positions[i], velocities[i],
+                                       accelerations[i], 0.0);
+        candidate.emplace_back(segment, times[3], q1, v1, 0.0, 0.0);
+        if (candidate.size() < 2)
+            continue;
+        output.swap(candidate);
+        return true;
+    }
+    return false;
+}
 } // namespace
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(TrajectoryTrapezium)
@@ -482,6 +573,16 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
             if (!std::isfinite(acceleration))
                 return false;
         }
+        const double clock_error = (end_time - t0) - duration;
+        const double velocity_budget = 64.0 * std::numeric_limits<double>::epsilon() *
+                                       std::max({max_velocity, v0, end_velocity});
+        if (std::abs(acceleration * clock_error) > velocity_budget &&
+            FitRoundedRamps(q0, q1, v0, end_velocity, max_velocity,
+                            std::abs(acceleration), t0, duration, 0.0, 0.0,
+                            seg_no, traj_segs)) {
+            v1 = end_velocity;
+            return true;
+        }
         v1 = end_velocity;
         traj_segs.emplace_back(seg_no, t0, q0, v0, acceleration, 0.0);
         traj_segs.emplace_back(seg_no, end_time, q1, v1, 0.0, 0.0);
@@ -552,6 +653,7 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
 
         std::list<TrajectorySeg> phases;
         bool collapsed_phase = false;
+        bool rounded_ramp = false;
         const auto append_phase = [&](double duration, double acceleration) {
             collapsed_phase = false;
             if (duration == 0.0)
@@ -578,6 +680,11 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
                 return std::abs(next.pos - current_segment.pos) <= position_roundoff &&
                        std::abs(next.vel - current_segment.vel) <= speed_roundoff;
             }
+            const double clock_error =
+                (next.timestamp - current_segment.timestamp) - duration;
+            rounded_ramp |= std::abs(acceleration * clock_error) >
+                            64.0 * std::numeric_limits<double>::epsilon() *
+                                std::max({max_velocity, v0, v1});
             phases.push_back(current_segment);
             current_segment = next;
             return true;
@@ -708,6 +815,10 @@ bool TrajectoryTrapezium<LieGroup>::_ComputeTrapeziumProfile(
                 return recover_collapsed_ramp();
         }
         phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
+        if (rounded_ramp) {
+            FitRoundedRamps(q0, q1, v0, v1, max_velocity, max_acceleration, t0,
+                            ta, tc, td, seg_no, phases);
+        }
         traj_segs.swap(phases);
         return true;
     }

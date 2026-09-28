@@ -420,6 +420,73 @@ void CheckCurveSampling() {
 }
 } // namespace
 
+void CheckRoundedRampsAfterCruise() {
+    ProfileProbe probe;
+    constexpr long double roundoff = 64 * std::numeric_limits<double>::epsilon();
+    for (double scale : {1e-200, 1.0, 1e200}) {
+        for (double start : {0.0, 1e5}) {
+            for (double acceleration : {1e4, 1e5, 1e6}) {
+                for (bool moving : {false, true}) {
+                    const double q0 = -200.0 * scale, q1 = 9800.0 * scale;
+                    const double v0 = (moving ? 0.02 : 0.0) * scale;
+                    double v1 = (moving ? 0.06 : 0.0) * scale;
+                    std::list<TrajectorySeg> phases;
+                    if (!probe._ComputeTrapeziumProfile(q0, q1, v0, v1, 0.1 * scale,
+                                                        acceleration * scale, start,
+                                                        phases, 0) ||
+                        phases.size() != 4 || phases.front().timestamp != start ||
+                        phases.front().pos != q0 || phases.front().vel != v0 ||
+                        phases.back().pos != q1 || phases.back().vel != v1)
+                        throw std::runtime_error(
+                            "rounded trapezoid lost its endpoints");
+                    for (auto p = phases.begin(), n = std::next(p); n != phases.end();
+                         ++p, ++n) {
+                        const long double t = n->timestamp - p->timestamp;
+                        const long double q = static_cast<long double>(p->pos) / scale;
+                        const long double v = static_cast<long double>(p->vel) / scale;
+                        const long double c2 =
+                            static_cast<long double>(p->acc / 2) / scale;
+                        const long double end_v = v + t * 2 * c2;
+                        if (t <= 0 ||
+                            std::abs(q + t * (v + t * c2) -
+                                     static_cast<long double>(n->pos) / scale) >
+                                roundoff * 10000 ||
+                            std::abs(end_v - static_cast<long double>(n->vel) / scale) >
+                                roundoff * 0.1L ||
+                            std::min(v, end_v) < -roundoff * 0.1L ||
+                            std::max(v, end_v) > 0.1L * (1 + roundoff) ||
+                            std::abs(2 * c2) > acceleration * (1 + roundoff))
+                            throw std::runtime_error(
+                                "rounded trapezoid violates its motion");
+                    }
+                }
+            }
+        }
+    }
+}
+void CheckRoundedShortTransition() {
+    ProfileProbe probe;
+    for (double requested_end : {0.5, 2.0}) {
+        std::list<TrajectorySeg> phases;
+        double end = requested_end;
+        constexpr double q0 = 100000.0, q1 = q0 + 1e-6;
+        if (!probe._ComputeTrapeziumProfile(q0, q1, 1.0, end, 2.0, 1e5, 100000.0,
+                                            phases, 0) ||
+            phases.size() != 2 || phases.front().pos != q0 || phases.back().pos != q1 ||
+            phases.front().vel != 1.0 || phases.back().vel != end)
+            throw std::runtime_error("rounded short transition lost its boundary");
+        const auto &first = phases.front();
+        const long double dt = phases.back().timestamp - first.timestamp;
+        const long double acceleration = 2 * static_cast<long double>(first.acc / 2);
+        const long double displacement = dt * (first.vel + acceleration * dt / 2);
+        constexpr long double eps = std::numeric_limits<double>::epsilon();
+        if (dt <= 0 || std::abs(first.vel + acceleration * dt - end) > 128 * eps ||
+            std::abs(displacement - (q1 - q0)) > 64 * eps * (q1 - q0) + eps * q1 ||
+            (requested_end < 1.0 && end != requested_end) ||
+            (requested_end > 1.0 && (end <= 1.0 || end >= requested_end)))
+            throw std::runtime_error("rounded short transition is inconsistent");
+    }
+}
 int main() {
     int failures = 0;
     for (const auto &parameters :
@@ -474,7 +541,8 @@ int main() {
         }
     }
     for (const auto check :
-         {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
+         {CheckRoundedShortTransition, CheckRoundedRampsAfterCruise,
+          CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
           CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
           CheckLowerPeakPreservesBoundariesAtCoarseClock, CheckRoundedClockFit,

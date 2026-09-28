@@ -640,8 +640,142 @@ void CheckUnsupportedOverspeedValleyIsNotPublished() {
         throw std::runtime_error("feasible overspeed valley must remain supported");
 }
 
+void CheckRoundedJerkRampsAfterCruise() {
+    // The absolute clock has only about five significant digits left for
+    // these microsecond ramps after a 100,000-second cruise. Integrate the
+    // stored polynomial coefficients against the actual knot differences;
+    // the clock error must not be added to the continuity tolerance.
+    constexpr long double roundoff = 64 * std::numeric_limits<double>::epsilon();
+    for (double scale : {1e-200, 1.0, 1e200}) {
+        for (double start_time : {0.0, 1e5}) {
+            for (double jerk : {1e4, 1e5, 1e6}) {
+                for (bool moving : {false, true}) {
+                    const double q0 = -200.0 * scale, q1 = 9800.0 * scale;
+                    double v0 = (moving ? 0.02 : 0.0) * scale;
+                    double v1 = (moving ? 0.06 : 0.0) * scale;
+                    std::list<TrajectorySeg> phases;
+                    if (!ProfileProbe::_ComputeDoubleSProfile(
+                            q0, q1, v0, v1, 0.1 * scale, scale, jerk * scale,
+                            start_time, phases, 0, false) ||
+                        phases.size() != 8 || phases.front().pos != q0 ||
+                        phases.front().timestamp != start_time ||
+                        phases.front().vel != v0 || phases.back().pos != q1 ||
+                        phases.back().vel != v1 || phases.back().acc != 0.0)
+                        throw std::runtime_error(
+                            "rounded cruise lost its boundary state");
+                    for (auto p = phases.begin(), n = std::next(p); n != phases.end();
+                         ++p, ++n) {
+                        const long double t = n->timestamp - p->timestamp;
+                        const long double q = static_cast<long double>(p->pos) / scale;
+                        const long double v = static_cast<long double>(p->vel) / scale;
+                        const long double c2 =
+                            static_cast<long double>(p->acc / 2) / scale;
+                        const long double c3 =
+                            static_cast<long double>(p->jerk / 6) / scale;
+                        if (t <= 0 ||
+                            std::abs(q + t * (v + t * (c2 + t * c3)) -
+                                     static_cast<long double>(n->pos) / scale) >
+                                roundoff * 10000 ||
+                            std::abs(v + t * (2 * c2 + t * 3 * c3) -
+                                     static_cast<long double>(n->vel) / scale) >
+                                roundoff * 0.1L ||
+                            std::abs(2 * c2 + t * 6 * c3 -
+                                     static_cast<long double>(n->acc) / scale) >
+                                roundoff)
+                            throw std::runtime_error(
+                                "rounded cruise polynomial is discontinuous");
+                        for (int sample = 0; sample <= 16; ++sample) {
+                            const long double at = t * sample / 16;
+                            const long double speed = v + at * (2 * c2 + at * 3 * c3);
+                            if (speed < -roundoff * 0.1L ||
+                                speed > 0.1L * (1 + roundoff) ||
+                                std::abs(2 * c2 + at * 6 * c3) > 1 + roundoff ||
+                                std::abs(6 * c3) > jerk * (1 + roundoff))
+                                throw std::runtime_error(
+                                    "rounded cruise exceeds a derivative limit");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void CheckRebasedRoundedJerkRamps() {
+    double v0 = 0.0, v1 = 0.0;
+    std::list<TrajectorySeg> phases;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 10000.0, v0, v1, 0.1, 1.0, 1e6, 0.0,
+                                              phases, 0, false) ||
+        !ProfileProbe::_AlignProfileAfter(
+            TrajectorySeg(0, 12345.6789, 0.0, 0.0, 0.0, 0.0), phases) ||
+        phases.front().timestamp != 12345.6789 || phases.size() != 8)
+        throw std::runtime_error("rebased rounded profile lost its clock");
+    constexpr long double budget = 64 * std::numeric_limits<double>::epsilon();
+    for (auto p = phases.begin(), n = std::next(p); n != phases.end(); ++p, ++n) {
+        const long double dt = n->timestamp - p->timestamp;
+        const long double c2 = p->acc / 2.0, c3 = p->jerk / 6.0;
+        if (dt <= 0 ||
+            std::abs(p->pos + dt * (p->vel + dt * (c2 + dt * c3)) - n->pos) >
+                budget * 10000 ||
+            std::abs(p->vel + dt * (2 * c2 + dt * 3 * c3) - n->vel) > budget * 0.1L ||
+            std::abs(2 * c2 + dt * 6 * c3 - n->acc) > budget ||
+            std::abs(p->acc) > 1.0 || std::abs(p->jerk) > 1e6 || p->vel < 0.0 ||
+            p->vel > 0.1)
+            throw std::runtime_error("rebased rounded profile lost phase continuity");
+    }
+}
+void CheckRoundedEndpointSpeedIntervals() {
+    // Near-cap endpoint differences, absent end ramps, and a cruise whose
+    // nearest valid endpoint lies below the initially rounded timestamp.
+    const std::array<std::array<double, 8>, 4> inputs{
+        {{{2168.5897502833095, 2553.8221104654517, 2.0504773656651034,
+           3.343309287459106, 3.343309287459111, 0.6513108750964135, 255523.56579450276,
+           1060.168985516096}},
+         {{29134.124903429205, 29315.626934124975, 2.559011966406329, 2.067594418125017,
+           2.559011966406329, 0.4985217279999209, 195581.02656541753,
+           10173.58713334678}},
+         {{153468.46323557975, 164242.1536526951, 6.360459494575331, 6.336864591289503,
+           6.360459494575359, 1.8308870559706565, 815517.1551238695,
+           15755.707412009162}},
+         {{192352.41665556014, 192473.43308859994, 6.354084023747126, 9.690906553075225,
+           9.690906553075259, 2.789571316943238, 500322.69658618263,
+           21073.935488310166}}}};
+    constexpr long double eps = std::numeric_limits<double>::epsilon();
+    for (const auto &x : inputs) {
+        double v0 = x[2], v1 = x[3];
+        std::list<TrajectorySeg> phases;
+        if (!ProfileProbe::_ComputeDoubleSProfile(x[0], x[1], v0, v1, x[4], x[5], x[6],
+                                                  x[7], phases, 0, false) ||
+            phases.size() != 8 || v0 != x[2] || v1 != x[3] ||
+            phases.front().pos != x[0] || phases.back().pos != x[1] ||
+            phases.front().vel != v0 || phases.back().vel != v1)
+            throw std::runtime_error("rounded speed interval changed its endpoints");
+        for (auto p = phases.begin(), n = std::next(p); n != phases.end(); ++p, ++n) {
+            const long double t = n->timestamp - p->timestamp;
+            const long double c2 = p->acc / 2.0, c3 = p->jerk / 6.0;
+            const long double displacement = t * (p->vel + t * (c2 + t * c3));
+            const long double position_budget =
+                64 * eps * (x[1] - x[0]) +
+                eps * std::max(std::abs(p->pos), std::abs(n->pos));
+            if (t < 0 ||
+                std::abs(displacement - (static_cast<long double>(n->pos) - p->pos)) >
+                    position_budget ||
+                std::abs(p->vel + t * (2 * c2 + t * 3 * c3) - n->vel) >
+                    64 * eps * x[4] ||
+                std::abs(2 * c2 + t * 6 * c3 - n->acc) > 64 * eps * x[5] ||
+                std::abs(p->acc) > x[5] || std::abs(p->jerk) > x[6] || p->vel < 0 ||
+                p->vel > x[4] ||
+                (t == 0 && (p->pos != n->pos || p->vel != n->vel || p->acc != n->acc)))
+                throw std::runtime_error(
+                    "rounded speed interval violates phase integration");
+        }
+    }
+}
 int main() {
     try {
+        CheckRoundedEndpointSpeedIntervals();
+        CheckRebasedRoundedJerkRamps();
+        CheckRoundedJerkRampsAfterCruise();
         CheckUnsupportedOverspeedValleyIsNotPublished();
         CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking();
         CheckBacktrackingCanAccelerateAnEarlierCruise();
