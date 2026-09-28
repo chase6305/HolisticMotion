@@ -139,22 +139,23 @@ private:
                     return result;
                 };
                 const Vector velocity = transport(jet[0]);
-                const Vector factor_velocity = first[i] * increments_[i].Coeffs();
+                const Vector &increment = increments_[i].Coeffs();
                 if constexpr (Order > 1) {
                     const Vector acceleration = transport(jet[1]);
-                    const Vector factor_acceleration =
-                        second[i] * increments_[i].Coeffs();
-                    const Vector commutator = Bracket(factor_velocity, velocity);
+                    // Every derivative of this factor is a scalar multiple of
+                    // the same twist. Reuse its bracket with the transported
+                    // velocity instead of evaluating that bracket twice.
+                    const Vector commutator = Bracket(increment, velocity);
                     if constexpr (Order > 2) {
                         jet[2] = transport(jet[2]) -
-                                 2 * Bracket(factor_velocity, acceleration) +
-                                 Bracket(factor_velocity, commutator) -
-                                 Bracket(factor_acceleration, velocity) +
-                                 third[i] * increments_[i].Coeffs();
+                                 2 * first[i] * Bracket(increment, acceleration) +
+                                 first[i] * first[i] * Bracket(increment, commutator) -
+                                 second[i] * commutator + third[i] * increment;
                     }
-                    jet[1] = acceleration - commutator + factor_acceleration;
+                    jet[1] =
+                        acceleration - first[i] * commutator + second[i] * increment;
                 }
-                jet[0] = velocity + factor_velocity;
+                jet[0] = velocity + first[i] * increment;
             }
         }
         return Normalize(jet);
