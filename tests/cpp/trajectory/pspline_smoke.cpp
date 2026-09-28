@@ -21,6 +21,17 @@ std::shared_ptr<Polynomial> Constant(double value) {
 }
 
 void CheckLocalBoundaries() {
+    for (double duration : {1e-100, 1.0, 1e100}) {
+        PSpline scaled;
+        Require(scaled.PushBack(std::make_shared<Polynomial>(
+                                   Eigen::Vector4d(0.0, 1.0 / duration, 0.0, 0.0)),
+                               duration),
+                "append scaled linear time law");
+        for (double fraction : {0.01, 0.1, 0.2, 0.5, 0.8, 0.9, 0.99})
+            Require(std::abs(scaled.ComputeValueAtS(fraction * duration) - fraction) <
+                        1e-14,
+                    "knot snapping must not depend on the time unit");
+    }
     PSpline spline;
     Require(spline.PushBack(Constant(1.0), 0.001), "first segment");
     Require(spline.PushBack(Constant(2.0), 0.001), "second segment");
@@ -100,10 +111,57 @@ void CheckJetAndInvalidTimes() {
     }
 }
 
+void CheckJetExtremeCoefficients() {
+    const double tiny = std::numeric_limits<double>::denorm_min();
+    const double huge = std::numeric_limits<double>::max();
+    const std::vector<Eigen::Vector4d> coefficients{
+        Eigen::Vector4d(-0.0, -0.0, -0.0, -0.0),
+        Eigen::Vector4d(tiny, -tiny, 3 * tiny, -7 * tiny),
+        Eigen::Vector4d(huge / 8, -huge / 16, huge / 32, -huge / 64),
+        Eigen::Vector4d(1.0, -1e100, 1e200, -1e300),
+        Eigen::Vector4d(huge, huge, huge, huge)};
+    for (const auto &data : coefficients) {
+        PSpline spline;
+        Require(spline.PushBack(std::make_shared<Polynomial>(data), 2.0),
+                "append extreme coefficients");
+        for (double time : {0.0, tiny, 0.125, 0.5, 1.0, 1.5, 2.0}) {
+            const auto jet = spline.ComputeJetAtS(time);
+            for (unsigned order = 0; order < 4; ++order) {
+                const double expected = spline.ComputeValueAtS(time, order);
+                Require((std::isnan(jet[order]) && std::isnan(expected)) ||
+                            (jet[order] == expected &&
+                             std::signbit(jet[order]) == std::signbit(expected)),
+                        "fused jet must preserve scalar rounding and zero signs");
+            }
+        }
+    }
+    PSpline empty_polynomial;
+    Require(empty_polynomial.PushBack(std::make_shared<Polynomial>()),
+            "append default polynomial");
+    Require(empty_polynomial.ComputeJetAtS(0.5) == std::array<double, 4>{},
+            "default polynomial jet must remain zero");
+}
+
 void CheckInvalidProfilesAreNotTruncated() {
     struct Builder : TrajectoryBase<Rn<double, 2>> {
         using TrajectoryBase<Rn<double, 2>>::InterpolateToPSpline;
     } builder;
+    for (double scale : {1e-100, 0.1, 1.0}) {
+        const std::list<TrajectorySeg> backwards{
+            TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 0.5 * scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 2.0 * scale, 2.0, 0.0, 0.0, 0.0)};
+        Require(builder.InterpolateToPSpline(backwards)->GetKnots().size() == 1,
+                "a backwards phase must not become roundoff in smaller time units");
+        const std::list<TrajectorySeg> rounded{
+            TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, scale, 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, std::nextafter(scale, 0.0), 1.0, 0.0, 0.0, 0.0),
+            TrajectorySeg(0, 2.0 * scale, 2.0, 0.0, 0.0, 0.0)};
+        Require(builder.InterpolateToPSpline(rounded)->GetKnots().size() == 3,
+                "one-ulp backwards rounding must remain accepted in any time unit");
+    }
     const std::list<TrajectorySeg> rounded_profile{
         TrajectorySeg(0, 0.0, 0.0, 0.0, 0.0, 0.0),
         TrajectorySeg(0, 1.0, 1.0, 0.0, 0.0, 0.0),
@@ -270,6 +328,82 @@ void CheckContinuityUsesLocalTimeScale() {
     }
 }
 
+void CheckContinuityUsesExactPhaseEndpoints() {
+    for (double lead : {0.0, 1e6}) {
+        for (unsigned jump_order : {0u, 1u, 2u}) {
+            auto spline = std::make_shared<PSpline>();
+            if (lead > 0.0)
+                Require(spline->PushBack(Constant(0.25), lead),
+                        "append long stationary lead");
+            const auto ramp = std::make_shared<Polynomial>(
+                Eigen::Vector4d(0.25, 0.0, 0.0, 1e4 / 3.0));
+            Require(spline->PushBack(ramp, 1e-4), "append high-jerk ramp");
+            const double span = spline->GetLastTimeStamp() - lead;
+            Eigen::Vector4d next(ramp->ComputePolyValueAtS(span),
+                                 ramp->ComputePolyValueAtS(span, 1),
+                                 0.5 * ramp->ComputePolyValueAtS(span, 2), 0.0);
+            if (jump_order != 0)
+                next[jump_order] += jump_order == 1 ? 1e-4 : 0.5e-4;
+            Require(spline->PushBack(std::make_shared<Polynomial>(next), 1e-4),
+                    "append matching or discontinuous phase");
+            SplineTrajectory trajectory(spline);
+            // A large next-derivative limit must not mask a genuine jump.
+            trajectory.SetDerivativeLimit(3, 1e30);
+            for (double scale : {1.0, 1.7}) {
+                Require(trajectory.SetMinimumDuration(scale * trajectory.GetDuration()),
+                        "rescale endpoint diagnostic");
+                const auto report = trajectory.GetConstraintReport(3);
+                Require(report.velocity_continuous == (jump_order != 1) &&
+                            report.acceleration_continuous == (jump_order != 2),
+                        "endpoint diagnostics must separate high jerk from jumps");
+                if (jump_order == 0)
+                    Require(report.maximum_velocity_jump.isZero() &&
+                                report.maximum_acceleration_jump.isZero(),
+                            "identical endpoint derivatives have zero jump");
+            }
+        }
+    }
+}
+
+void CheckContinuityUsesOneSidedGeometry() {
+    struct CornerTrajectory : SplineTrajectory {
+        explicit CornerTrajectory(const std::shared_ptr<PSpline> &spline)
+            : SplineTrajectory(spline) {
+            std::vector<Rn<double, 2>> points(3);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            points[2].Coeffs() << 1.0, 1.0;
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.0);
+        }
+    };
+    for (double direction : {-1.0, 1.0}) {
+        for (unsigned order : {1u, 2u, 3u}) {
+            auto spline = std::make_shared<PSpline>();
+            // p=1+direction*(t-1)^order reaches the corner at t=1.
+            const Eigen::Vector4d incoming =
+                order == 1 ? Eigen::Vector4d(1.0 - direction, direction, 0.0, 0.0)
+                : order == 2
+                    ? Eigen::Vector4d(1.0 + direction, -2.0 * direction, direction, 0.0)
+                    : Eigen::Vector4d(1.0 - direction, 3.0 * direction,
+                                      -3.0 * direction, direction);
+            Eigen::Vector4d outgoing = Eigen::Vector4d::Zero();
+            outgoing[0] = 1.0;
+            outgoing[order] = direction;
+            Require(spline->PushBack(std::make_shared<Polynomial>(incoming), 1.0) &&
+                        spline->PushBack(std::make_shared<Polynomial>(outgoing), 1.0),
+                    "append corner diagnostic phases");
+            const auto report = CornerTrajectory(spline).GetConstraintReport(3);
+            Require(report.velocity_continuous == (order != 1) &&
+                        report.acceleration_continuous,
+                    "corner diagnostics must use the geometric one-sided limits");
+            if (order == 1)
+                Require(report.maximum_velocity_jump.isApprox(Eigen::Vector2d::Ones()),
+                        "a moving sharp corner has a velocity jump in both joints");
+        }
+    }
+}
+
 void CheckLimitSamplingSupportsExtremeDurations() {
     for (double duration : {std::numeric_limits<double>::denorm_min(), 1e308}) {
         auto spline = std::make_shared<PSpline>();
@@ -384,18 +518,79 @@ void CheckLinearPathPhaseOwnership() {
     CheckCornerPhaseOwnership<TrajectoryDoubleS>();
     CheckCornerPhaseOwnership<TrajectoryTrapezium>();
 }
+void CheckLinearPhaseVelocityExtremum() {
+    struct LinearPhase : TrajectoryBase<Rn<double, 2>> {
+        explicit LinearPhase(bool cache_owner) {
+            std::vector<Rn<double, 2>> points(2);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.0);
+            constexpr double acceleration = 0.742468;
+            trajectory_segments_ = {
+                TrajectorySeg(0, 0.0, 0.0, 0.7, acceleration, -2.0),
+                TrajectorySeg(0, 1.0, 0.7 + acceleration / 2.0 - 1.0 / 3.0,
+                              0.7 + acceleration - 1.0, acceleration - 2.0, -2.0)};
+            trajectory_pspline_ = InterpolateToPSpline(trajectory_segments_);
+            dof_ = 2;
+            max_velocity_ = Eigen::VectorXd::Constant(2, 0.5);
+            max_acceleration_ = max_jerk_ = Eigen::VectorXd::Constant(2, 100.0);
+            valid_ = InitializePhasePathSegments();
+            if (!cache_owner)
+                phase_path_segments_.clear();
+            valid_ = valid_ &&
+                     EnforceJointLimits(max_velocity_, max_acceleration_, max_jerk_);
+        }
+    };
+    constexpr double stationary = 0.742468 / 2.0;
+    const double expected = 1.01 * (0.7 + stationary * stationary) / 0.5;
+    for (bool cache_owner : {false, true}) {
+        const LinearPhase trajectory(cache_owner);
+        Require(trajectory.IsValid() &&
+                    std::abs(trajectory.GetTimeScale() - expected) < 2e-14,
+                "linear phase must include the interior velocity extremum");
+    }
+}
+
+void CheckReturningPhaseStillSamplesCurvedExcursion() {
+    struct ReturningPhase : SplineTrajectory {
+        explicit ReturningPhase(const std::shared_ptr<PSpline> &spline)
+            : SplineTrajectory(spline) {
+            std::vector<Rn<double, 2>> points(3);
+            points[0].Coeffs() << 0.0, 0.0;
+            points[1].Coeffs() << 1.0, 0.0;
+            points[2].Coeffs() << 1.0, 1.0;
+            path_ =
+                std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5, false, 0.1);
+        }
+    };
+    auto spline = std::make_shared<PSpline>();
+    // Both endpoints lie on the first line, but the interior reaches the
+    // curve and returns. Equal owners alone do not establish a linear phase.
+    Require(
+        spline->PushBack(
+            std::make_shared<Polynomial>(Eigen::Vector4d(0.25, 4.0, -4.0, 0.0)), 1.0),
+        "append returning phase");
+    ReturningPhase trajectory(spline);
+    Require(!trajectory.GetConstraintReport(10001).within_limits,
+            "curved excursion should exceed the original limits");
+    Require(trajectory.Enforce() && trajectory.GetConstraintReport(10001).within_limits,
+            "nonmonotone phase must retain curved-path limit checks");
+}
+
 }  // namespace
 
 int main() {
     int failures = 0;
     for (const auto check :
-         {CheckLocalBoundaries, CheckAppendValidation, CheckJetAndInvalidTimes,
-          CheckInvalidProfilesAreNotTruncated,
-          CheckAllPhaseStatesAreFinite,
+         {CheckContinuityUsesExactPhaseEndpoints, CheckContinuityUsesOneSidedGeometry,
+          CheckLinearPhaseVelocityExtremum,
+          CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
+          CheckAppendValidation, CheckJetAndInvalidTimes, CheckJetExtremeCoefficients,
+          CheckInvalidProfilesAreNotTruncated, CheckAllPhaseStatesAreFinite,
           CheckShortPositivePhasesArePreserved,
           CheckTimeScalingRejectsOverflowWithoutMutation,
-          CheckContinuityUsesLocalTimeScale,
-          CheckLimitSamplingSupportsExtremeDurations,
+          CheckContinuityUsesLocalTimeScale, CheckLimitSamplingSupportsExtremeDurations,
           CheckReportRejectsNonFiniteStates,
           CheckSmallLimitsAllowRepresentableTimeScaling,
           CheckLinearPathPhaseOwnership}) {

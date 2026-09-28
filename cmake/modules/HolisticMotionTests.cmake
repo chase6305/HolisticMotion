@@ -22,8 +22,28 @@ function(holistic_motion_register_tests)
         holistic_motion)
     set_tests_properties(robot_model_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
+        rotation_jacobian_smoke_test
+        tests/cpp/manif/rotation_jacobian_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        se3_derivative_smoke_test
+        tests/cpp/trajectory/se3_derivative_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        se3_blend_smoke_test
+        tests/cpp/trajectory/se3_blend_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        chain_rule_smoke_test
+        tests/cpp/trajectory/chain_rule_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        report_sampling_smoke_test
+        tests/cpp/trajectory/report_sampling_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
         path_bezier_smoke_test
@@ -58,6 +78,10 @@ function(holistic_motion_register_tests)
     holistic_motion_add_smoke_test(
         kinematic_model_smoke_test
         tests/cpp/kinematics/kinematic_model_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        srs_null_space_smoke_test
+        tests/cpp/kinematics/srs_null_space_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
         damped_ik_workspace_smoke_test

@@ -112,7 +112,7 @@ public:
 };
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::LieGroup SO3TangentBase<_Derived>::Exp(
+inline typename SO3TangentBase<_Derived>::LieGroup SO3TangentBase<_Derived>::Exp(
         OptJacobianRef J_m_t) const {
     using std::cos;
     using std::sin;
@@ -158,7 +158,7 @@ typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Rjac()
 }
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljac()
+inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljac()
         const {
     using std::cos;
     using std::sin;
@@ -185,7 +185,7 @@ typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Rjacinv()
 }
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljacinv()
+inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljacinv()
         const {
     using std::cos;
     using std::sin;
@@ -199,11 +199,14 @@ typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljacinv()
         return Jacobian::Identity() - Scalar(0.5) * W;
 
     const Scalar theta = sqrt(theta_sq);  // rotation angle
-
+    const Scalar cos_theta = cos(theta);
+    // Near a half turn, 1 + cos(theta) loses the small term that cancels
+    // sin(theta). The half-angle identity keeps that ratio well conditioned.
+    const Scalar correction = cos_theta < Scalar(0)
+            ? cos(theta / Scalar(2)) / (Scalar(2) * theta * sin(theta / Scalar(2)))
+            : (Scalar(1) + cos_theta) / (Scalar(2) * theta * sin(theta));
     return Jacobian::Identity() - Scalar(0.5) * W +
-           (Scalar(1) / theta_sq -
-            (Scalar(1) + cos(theta)) / (Scalar(2) * theta * sin(theta))) *
-                   W * W;
+           (Scalar(1) / theta_sq - correction) * W * W;
 }
 
 template <typename _Derived>

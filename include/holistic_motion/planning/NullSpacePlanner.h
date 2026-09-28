@@ -11,6 +11,8 @@ namespace holistic_motion::robotics::planning {
 
 // Builds a discrete redundant-motion path while keeping the initial TCP pose.
 // Collision checking and time parameterization are deliberately separate.
+// The start must satisfy both hardware and user joint limits. Failure clears
+// the output path; finite preferred directions are normalized without overflow.
 class NullSpacePlanner {
 public:
     explicit NullSpacePlanner(std::shared_ptr<SRSKinematics> kinematics);

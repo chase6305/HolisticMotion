@@ -98,13 +98,133 @@ void CheckCollapsedRampBesideCruise() {
     }
     CheckProfile(30.0, 0.3, 0.3 + 1e-14, 0.3 + 2e-14, 1.0, 10.0, 1000.0);
 
-    // A merged phase whose rounded duration cannot reproduce its displacement
-    // must still fail transactionally, even when its speeds are close.
-    end_velocity = 0.5 + 1e-12;
-    if (probe._ComputeTrapeziumProfile(10.0, 12.0, 0.5, end_velocity, 0.5 + 2e-12, 1.0,
-                                       1e6, phases, 0) ||
-        !phases.empty() || end_velocity != 0.5 + 1e-12) {
-        throw std::runtime_error("merged cruise bypassed displacement checks");
+}
+
+void CheckCollapsedRampAtNonzeroPosition() {
+    // Recorded from a short interval late in a blended path. Its displacement
+    // error is below one coordinate ulp but exceeds an h-only relative budget.
+    constexpr double q0 = 51.523257784451715;
+    constexpr double q1 = 51.675437373741296;
+    constexpr double v0 = 0.8398822958553492;
+    constexpr double requested_v1 = 0.8398822958553513;
+    constexpr double vmax = 0.8398822958553549;
+    constexpr double amax = 0.9354261944068154;
+    constexpr double t0 = 74.28314124735722;
+    CheckProfile(q1 - q0, v0, requested_v1, vmax, amax, q0, t0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = requested_v1;
+    if (!probe._ComputeTrapeziumProfile(q0, q1, v0, v1, vmax, amax, t0, phases, 0))
+        throw std::runtime_error("coordinate roundoff rejected a merged cruise");
+    for (auto it = phases.begin(), next = std::next(it); next != phases.end();
+         ++it, ++next) {
+        const long double dt = next->timestamp - it->timestamp;
+        const long double position = static_cast<long double>(it->pos) +
+                                     it->vel * dt + 0.5L * it->acc * dt * dt;
+        const long double coordinate_ulp =
+            std::nextafter(next->pos, std::numeric_limits<double>::infinity()) -
+            next->pos;
+        if (std::abs(position - next->pos) > coordinate_ulp)
+            throw std::runtime_error("merged cruise exceeds coordinate precision");
+    }
+}
+
+void CheckLowerPeakPreservesBoundariesAtCoarseClock() {
+    // A recorded rejected interval has a 2.18e-14 ramp on a 5.68e-14 clock.
+    // Reducing the peak to the faster endpoint removes that excursion while
+    // retaining both endpoint speeds and the existing acceleration limit.
+    constexpr double q0 = 14.159136934492288;
+    constexpr double q1 = 14.199071545761711;
+    constexpr double fast = 0.29546205743865284;
+    constexpr double slow = 0.03750188018187762;
+    constexpr double cap = 0.2954620574387062;
+    constexpr double acceleration = 2.443973585440111;
+    constexpr double start = 273.568908829043;
+    for (double clock : {0.0, start}) {
+        CheckProfile(q1 - q0, fast, slow, cap, acceleration, q0, clock);
+        ProfileProbe probe;
+        std::list<TrajectorySeg> phases;
+        double end_velocity = slow;
+        if (!probe._ComputeTrapeziumProfile(q0, q1, fast, end_velocity, cap,
+                                            acceleration, clock, phases, 0))
+            throw std::runtime_error("lower peak did not recover a feasible profile");
+        for (auto it = phases.begin(); it != phases.end(); ++it) {
+            if (it->vel > cap)
+                throw std::runtime_error("lower peak increased the speed cap");
+            const auto next = std::next(it);
+            if (next == phases.end())
+                break;
+            const long double dt = next->timestamp - it->timestamp;
+            const long double position = static_cast<long double>(it->pos) +
+                                         it->vel * dt + 0.5L * it->acc * dt * dt;
+            const double budget =
+                64.0 * std::numeric_limits<double>::epsilon() * (q1 - q0) +
+                std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->pos), std::abs(next->pos));
+            if (std::abs(position - next->pos) > budget)
+                throw std::runtime_error("lower peak bypassed displacement checks");
+        }
+    }
+}
+
+void CheckRoundedClockFit() {
+    // Four recorded full-trajectory failures and two former negative scalar
+    // fixtures. One merged ramp cannot meet the displacement budget, but two
+    // ramps on neighbouring represented timestamps can retain both endpoints.
+    // The first interval requires a three-ulp shift of its end timestamp.
+    const std::array<std::array<double, 7>, 7> inputs{{
+        {{71193.63054299432, 71975.38890371427, 69.72179117751263, 17.82468315001617,
+          69.72179117755307, 660.711226238045, 11270.305902407998}},
+        {{1.8204173188188741, 1.83399587590423, 0.028033825130007003,
+          0.028033825130007014, 0.028033825130007052, 0.0028784577709359935,
+          794.6624654987332}},
+        {{311900.22733229684, 313588.5600603964, 8.040548112497278, 40.51872461374804,
+          40.51872461375368, 189.83539938175724, 35669.47765191242}},
+        {{73.71215874788807, 74.08711204459368, 0.022165972824328826,
+          0.002935538692301296, 0.02216597282432996, 0.02424343149406329,
+          19212.37973062739}},
+        {{10.0, 12.0, 0.5, 0.500000000001, 0.500000000002, 1.0, 1000000.0}},
+        {{5.816989524500355, 5.83685302311743, 0.003100713199719044,
+          0.025525313930515454, 0.02552531393051614, 0.08426101559757797,
+          1569.5044297131274}},
+        // A one-second clock needs a longer, bounded two-ramp motion.
+        {{0.0, 2.01, 0.0, 0.0, 1.0, 100.0, 0x1p52}},
+    }};
+    ProfileProbe probe;
+    for (const auto &p : inputs) {
+        std::list<TrajectorySeg> phases;
+        double end_velocity = p[3];
+        if (!probe._ComputeTrapeziumProfile(p[0], p[1], p[2], end_velocity, p[4], p[5],
+                                            p[6], phases, 7) ||
+            phases.size() < 2 || phases.front().pos != p[0] ||
+            phases.back().pos != p[1] || phases.front().vel != p[2] ||
+            phases.back().vel != p[3] || end_velocity != p[3] ||
+            phases.front().timestamp != p[6])
+            throw std::runtime_error("rounded-clock fit lost a boundary");
+        for (auto it = phases.begin(); std::next(it) != phases.end(); ++it) {
+            const auto next = std::next(it);
+            const long double dt = next->timestamp - it->timestamp;
+            // Independently integrate the actual quadratic spline coefficient
+            // in extended precision, not the helper's double arithmetic.
+            const long double coefficient = it->acc / 2.0;
+            const long double distance = it->vel * dt + coefficient * dt * dt;
+            const long double displacement =
+                static_cast<long double>(next->pos) - it->pos;
+            const double budget =
+                64.0 * std::numeric_limits<double>::epsilon() * (p[1] - p[0]) +
+                std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->pos), std::abs(next->pos));
+            const long double speed = it->vel + 2.0L * coefficient * dt;
+            const double speed_budget =
+                64.0 * std::numeric_limits<double>::epsilon() * p[4];
+            if (dt <= 0.0L || !std::isfinite(distance) ||
+                std::abs(distance - displacement) > budget ||
+                std::abs(speed - next->vel) > speed_budget ||
+                std::min<long double>(it->vel, speed) < 0.0L ||
+                std::max<long double>(it->vel, speed) > p[4] + speed_budget ||
+                !std::isfinite(it->acc) || std::abs(it->acc) > p[5])
+                throw std::runtime_error("rounded-clock fit bypassed motion bounds");
+        }
     }
 }
 
@@ -193,19 +313,36 @@ void CheckNonzeroEndpointPeak(double length, double speed, double vmax, double a
 
 void CheckUnrepresentableGeneralPhasesAreRejected() {
     ProfileProbe probe;
-    // All phases collapse in the first case; the short ramps in the second.
-    // The third fails only after accumulating a valid ramp and long cruise.
-    for (const auto &input : {std::array<double, 3>{1e20, 1.0, 1.0},
-                              std::array<double, 3>{0x1p52, 2.01, 100.0},
-                              std::array<double, 3>{0.0, 1e20, 100.0}}) {
-        double v1 = 0.0;
-        std::list<TrajectorySeg> phases;
-        if (probe._ComputeTrapeziumProfile(0.0, input[1], 0.0, v1, 1.0, input[2],
-                                           input[0], phases, 0) ||
-            !phases.empty()) {
-            throw std::runtime_error(
-                "collapsed moving phases must not return a valid prefix");
-        }
+    // The whole requested interval cannot advance this absolute clock.
+    // No partial prefix or endpoint-velocity change may escape on failure.
+    double v1 = 0.0;
+    std::list<TrajectorySeg> phases;
+    if (probe._ComputeTrapeziumProfile(0.0, 1.0, 0.0, v1, 1.0, 1.0,
+                                       1e20, phases, 0) ||
+        !phases.empty() || v1 != 0.0) {
+        throw std::runtime_error(
+            "collapsed moving phases must not return a valid prefix");
+    }
+}
+
+void CheckMergedCruiseTimingCorrection() {
+    // A recorded short ramp changes the average speed by more than 256 ulps.
+    // Its corrected elapsed time is accurate in distance and acceleration.
+    CheckProfile(43.8266138539926 - 40.461565697748156, 0.001714266295441807,
+                  0.0014801148204472974, 0.0017142662954422409,
+                  0.022815250329534954, 40.461565697748156, 10728.812330648614);
+    // When the last deceleration collapses after a very long cruise, retain
+    // the complete stopping motion by spreading it across that cruise. The
+    // physical checks must validate every phase, not accept a valid prefix.
+    CheckProfile(1e20, 0.0, 0.0, 1.0, 100.0);
+    ProfileProbe probe;
+    std::list<TrajectorySeg> phases;
+    double v1 = 0.0;
+    if (!probe._ComputeTrapeziumProfile(0.0, 1e20, 0.0, v1, 1.0, 100.0, 0.0,
+                                        phases, 0) ||
+        phases.size() != 3 || phases.back().timestamp != 2e20 ||
+        phases.back().vel != 0.0 || phases.back().pos != 1e20) {
+        throw std::runtime_error("long merged cruise must retain its stopping phase");
     }
 }
 
@@ -283,6 +420,73 @@ void CheckCurveSampling() {
 }
 } // namespace
 
+void CheckRoundedRampsAfterCruise() {
+    ProfileProbe probe;
+    constexpr long double roundoff = 64 * std::numeric_limits<double>::epsilon();
+    for (double scale : {1e-200, 1.0, 1e200}) {
+        for (double start : {0.0, 1e5}) {
+            for (double acceleration : {1e4, 1e5, 1e6}) {
+                for (bool moving : {false, true}) {
+                    const double q0 = -200.0 * scale, q1 = 9800.0 * scale;
+                    const double v0 = (moving ? 0.02 : 0.0) * scale;
+                    double v1 = (moving ? 0.06 : 0.0) * scale;
+                    std::list<TrajectorySeg> phases;
+                    if (!probe._ComputeTrapeziumProfile(q0, q1, v0, v1, 0.1 * scale,
+                                                        acceleration * scale, start,
+                                                        phases, 0) ||
+                        phases.size() != 4 || phases.front().timestamp != start ||
+                        phases.front().pos != q0 || phases.front().vel != v0 ||
+                        phases.back().pos != q1 || phases.back().vel != v1)
+                        throw std::runtime_error(
+                            "rounded trapezoid lost its endpoints");
+                    for (auto p = phases.begin(), n = std::next(p); n != phases.end();
+                         ++p, ++n) {
+                        const long double t = n->timestamp - p->timestamp;
+                        const long double q = static_cast<long double>(p->pos) / scale;
+                        const long double v = static_cast<long double>(p->vel) / scale;
+                        const long double c2 =
+                            static_cast<long double>(p->acc / 2) / scale;
+                        const long double end_v = v + t * 2 * c2;
+                        if (t <= 0 ||
+                            std::abs(q + t * (v + t * c2) -
+                                     static_cast<long double>(n->pos) / scale) >
+                                roundoff * 10000 ||
+                            std::abs(end_v - static_cast<long double>(n->vel) / scale) >
+                                roundoff * 0.1L ||
+                            std::min(v, end_v) < -roundoff * 0.1L ||
+                            std::max(v, end_v) > 0.1L * (1 + roundoff) ||
+                            std::abs(2 * c2) > acceleration * (1 + roundoff))
+                            throw std::runtime_error(
+                                "rounded trapezoid violates its motion");
+                    }
+                }
+            }
+        }
+    }
+}
+void CheckRoundedShortTransition() {
+    ProfileProbe probe;
+    for (double requested_end : {0.5, 2.0}) {
+        std::list<TrajectorySeg> phases;
+        double end = requested_end;
+        constexpr double q0 = 100000.0, q1 = q0 + 1e-6;
+        if (!probe._ComputeTrapeziumProfile(q0, q1, 1.0, end, 2.0, 1e5, 100000.0,
+                                            phases, 0) ||
+            phases.size() != 2 || phases.front().pos != q0 || phases.back().pos != q1 ||
+            phases.front().vel != 1.0 || phases.back().vel != end)
+            throw std::runtime_error("rounded short transition lost its boundary");
+        const auto &first = phases.front();
+        const long double dt = phases.back().timestamp - first.timestamp;
+        const long double acceleration = 2 * static_cast<long double>(first.acc / 2);
+        const long double displacement = dt * (first.vel + acceleration * dt / 2);
+        constexpr long double eps = std::numeric_limits<double>::epsilon();
+        if (dt <= 0 || std::abs(first.vel + acceleration * dt - end) > 128 * eps ||
+            std::abs(displacement - (q1 - q0)) > 64 * eps * (q1 - q0) + eps * q1 ||
+            (requested_end < 1.0 && end != requested_end) ||
+            (requested_end > 1.0 && (end <= 1.0 || end >= requested_end)))
+            throw std::runtime_error("rounded short transition is inconsistent");
+    }
+}
 int main() {
     int failures = 0;
     for (const auto &parameters :
@@ -294,7 +498,9 @@ int main() {
           std::array<double, 5>{19.0, 0.0, 0.2678885027613014, 0.2678885027613005,
                                 0.2585985702225886},
           std::array<double, 5>{6.510572995333455, 0.0, 0.8072406861546729,
-                                0.8072406861546723, 0.827492861910945}}) {
+                                0.8072406861546723, 0.827492861910945},
+          std::array<double, 5>{0.2643455806903485, 0.0, 0.0037290323588947765,
+                                0.0037290323588949166, 0.02204043382988225}}) {
         try {
             CheckProfile(parameters[0], parameters[1], parameters[2], parameters[3],
                          parameters[4]);
@@ -335,9 +541,12 @@ int main() {
         }
     }
     for (const auto check :
-         {CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
+         {CheckRoundedShortTransition, CheckRoundedRampsAfterCruise,
+          CheckUnrepresentableGeneralPhasesAreRejected, CheckLongZeroJerkStep,
           CheckJerkRange, CheckCurveSampling, CheckRoundedCapTransitions,
-          CheckCollapsedRampBesideCruise}) {
+          CheckCollapsedRampBesideCruise, CheckCollapsedRampAtNonzeroPosition,
+          CheckLowerPeakPreservesBoundariesAtCoarseClock, CheckRoundedClockFit,
+          CheckMergedCruiseTimingCorrection}) {
         try {
             check();
         } catch (const std::exception &error) {

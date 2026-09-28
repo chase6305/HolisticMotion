@@ -3,6 +3,8 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "holistic_motion/planning/SamplingPlanner.h"
@@ -11,8 +13,24 @@ using namespace holistic_motion::robotics::planning;
 
 // Synthetic joint-space wall: no external robot assets or collision dependency.
 // Fix the iteration budget and seed so faster builds perform the same search.
-int main() {
-    std::cout << "dof,continuous,median_ms,success,iterations,nodes,checks,"
+int main(int argc, char **argv) {
+    double goal_bias = 0.05;
+    try {
+        if (argc > 2)
+            throw std::invalid_argument("too many arguments");
+        if (argc == 2) {
+            const std::string argument(argv[1]);
+            std::size_t consumed;
+            goal_bias = std::stod(argument, &consumed);
+            if (consumed != argument.size() || !std::isfinite(goal_bias) ||
+                goal_bias < 0.0 || goal_bias > 1.0)
+                throw std::invalid_argument("goal bias must be between zero and one");
+        }
+    } catch (const std::exception &) {
+        std::cerr << "usage: sampling_planner_benchmark [goal_bias in [0, 1]]\n";
+        return 2;
+    }
+    std::cout << "dof,continuous,goal_bias,median_ms,success,iterations,nodes,checks,"
                  "path_length\n";
     for (const Eigen::Index dof : {2, 7, 14}) {
         for (const bool continuous : {false, true}) {
@@ -44,6 +62,7 @@ int main() {
             options.edge_resolution = 0.02;
             options.shortcut_attempts = 0;
             options.random_seed = 7;
+            options.goal_bias = goal_bias;
 
             std::vector<double> elapsed;
             PlanningStatistics statistics;
@@ -68,13 +87,12 @@ int main() {
                 success = result.Success();
             }
             std::sort(elapsed.begin(), elapsed.end());
-            std::cout << dof << ',' << continuous << ',' << std::fixed
-                      << std::setprecision(3) << elapsed[elapsed.size() / 2]
-                      << ',' << success << ',' << statistics.iterations << ','
-                      << statistics.tree_nodes << ','
-                      << statistics.collision_checks << ','
-                      << std::setprecision(12) << statistics.final_path_length
-                      << '\n';
+            std::cout << dof << ',' << continuous << ',' << goal_bias << ','
+                      << std::fixed << std::setprecision(3)
+                      << elapsed[elapsed.size() / 2] << ',' << success << ','
+                      << statistics.iterations << ',' << statistics.tree_nodes << ','
+                      << statistics.collision_checks << ',' << std::setprecision(12)
+                      << statistics.final_path_length << '\n';
         }
     }
 }

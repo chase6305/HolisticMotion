@@ -29,6 +29,61 @@ def _outside_wall(q):
         hm.SamplingAlgorithm.INFORMED_RRT_STAR,
     ],
 )
+@pytest.mark.parametrize("weight", [1e-18, 1e-30, 1e-320])
+def test_small_metric_weights_cannot_connect_across_an_impassable_wall(
+    algorithm, weight
+):
+    planner = hm.SamplingPlanner([-1.0], [1.0], lambda q: not (-0.25 <= q[0] <= -0.15))
+    planner.set_joint_weights([weight])
+    options = _options(algorithm)
+    options.extension_range = 0.3 * np.sqrt(weight)
+    options.edge_resolution = 0.01
+    options.goal_bias = 1.0
+    options.max_iterations = 10
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    result = planner.plan([-0.9], [0.9], options)
+    assert result.status == hm.PlanningStatus.NO_SOLUTION
+    assert not result.success
+    assert len(result.path) == 0
+
+
+@pytest.mark.parametrize("weight", [1e-30, 1e-320])
+def test_small_metric_weights_preserve_distinct_unobstructed_endpoints(weight):
+    planner = hm.SamplingPlanner([-1.0], [1.0])
+    planner.set_joint_weights([weight])
+    result = planner.plan([-0.9], [0.9], _options())
+    assert result.success
+    np.testing.assert_array_equal(result.path, [[-0.9], [0.9]])
+
+
+@pytest.mark.parametrize("weight", [1.0, 1e-18, 1e-30])
+def test_rrt_connect_validates_every_edge_under_metric_rescaling(weight):
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
+    planner.set_joint_weights([weight, weight])
+    options = _options()
+    options.extension_range = 0.15 * np.sqrt(weight)
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success, result.message
+    np.testing.assert_array_equal(result.path[0], [-0.8, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [0.8, 0.0])
+    for first, second in zip(result.path[:-1], result.path[1:]):
+        segments = max(
+            1, int(np.ceil(np.max(np.abs(second - first)) / options.edge_resolution))
+        )
+        assert all(_outside_wall(q) for q in np.linspace(first, second, segments + 1))
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    [
+        hm.SamplingAlgorithm.RRT_CONNECT,
+        hm.SamplingAlgorithm.RRT_STAR,
+        hm.SamplingAlgorithm.INFORMED_RRT_STAR,
+    ],
+)
 def test_sampling_planner_routes_around_obstacle(algorithm):
     planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
     result = planner.plan([-0.8, 0.0], [0.8, 0.0], _options(algorithm))
@@ -70,6 +125,53 @@ def test_rrt_star_keeps_a_goal_improved_by_rewiring():
         later.statistics.final_path_length
         <= earlier.statistics.final_path_length + 1e-12
     )
+
+
+@pytest.mark.parametrize("dof,goal_bias", [(2, 0.95), (7, 0.05)])
+def test_rrt_star_reuses_goal_samples_without_losing_parent_improvements(
+    dof, goal_bias
+):
+    lower, upper = -np.ones(dof), np.ones(dof)
+    lower[0], upper[0] = -np.pi, np.pi
+    planner = hm.SamplingPlanner(lower, upper, _outside_wall)
+    planner.set_joint_weights([0.25 * (1 + i % 3) for i in range(dof)])
+    planner.set_continuous_joints([0])
+    start, goal = np.zeros(dof), np.zeros(dof)
+    start[0], goal[0] = -0.8, 0.8
+    options = _options(hm.SamplingAlgorithm.RRT_STAR)
+    options.extension_range = 0.25 * np.sqrt(dof / 2.0)
+    options.goal_bias = goal_bias
+    options.max_iterations = 4000
+    options.timeout_seconds = 10.0
+    options.simplify_path = False
+    result = planner.plan(start, goal, options)
+    assert result.success, result.message
+    assert result.statistics.iterations == options.max_iterations
+    if dof == 2:
+        # Goal-biased iterations must not fill the tree with identical states.
+        assert result.statistics.tree_nodes < options.max_iterations // 4
+        assert result.statistics.final_path_length < 2.72
+    else:
+        # Simply discarding repeated samples loses an existing goal's parent
+        # improvement here (4.488... instead of the retained 4.477... path).
+        assert result.statistics.final_path_length < 4.48
+
+
+def test_rrt_star_goal_rewiring_does_not_return_duplicate_waypoints():
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
+    planner.set_joint_weights([0.25, 0.5])
+    options = _options(hm.SamplingAlgorithm.RRT_STAR)
+    options.extension_range = 0.25
+    options.goal_bias = 0.5
+    options.max_iterations = 400
+    options.random_seed = 1000
+    options.timeout_seconds = 5.0
+    options.simplify_path = False
+    result = planner.plan([-0.8, 0.0], [0.8, 0.15], options)
+    assert result.success, result.message
+    differences = np.diff(result.path, axis=0)
+    assert np.all(np.max(np.abs(differences), axis=1) > 0.0)
+    assert result.statistics.final_path_length < 1.46
 
 
 def test_sampling_planner_is_deterministic_and_interpolates():
@@ -345,3 +447,24 @@ def test_sampling_planner_uses_shortest_direct_path(algorithm):
     assert len(result.path) == 2
     np.testing.assert_allclose(result.path, [[-0.8, -0.4], [0.8, 0.4]])
     assert len(checked) == result.statistics.collision_checks
+
+
+def test_shortcut_preserves_exact_endpoints_with_small_metric_weights():
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], _outside_wall)
+    planner.set_joint_weights([1e-18, 1e-18])
+    options = _options()
+    options.random_seed = 4333
+    options.max_iterations = 4000
+    options.timeout_seconds = 3.0
+    options.extension_range = 0.15e-9
+    options.edge_resolution = 0.01
+    options.shortcut_attempts = 1000
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success, result.message
+    np.testing.assert_array_equal(result.path[0], [-0.8, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [0.8, 0.0])
+    for first, second in zip(result.path[:-1], result.path[1:]):
+        segments = max(
+            1, int(np.ceil(np.max(np.abs(second - first)) / options.edge_resolution))
+        )
+        assert all(_outside_wall(q) for q in np.linspace(first, second, segments + 1))

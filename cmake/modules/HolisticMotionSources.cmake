@@ -20,6 +20,7 @@ set(HOLISTICMOTION_CORE_SOURCES
     src/trajectory/PathBezierCurve.cpp
     src/trajectory/PathSegment.cpp
     src/trajectory/TrajectoryBase.cpp
+    src/trajectory/TrajectoryReport.cpp
     src/trajectory/TrajectoryDoubleS.cpp
     src/trajectory/TrajectoryTrapezium.cpp
     src/trajectory/Types.cpp)

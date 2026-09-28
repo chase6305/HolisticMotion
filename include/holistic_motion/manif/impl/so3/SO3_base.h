@@ -174,7 +174,7 @@ typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Inverse(
 }
 
 template <typename _Derived>
-typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
+inline typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
         OptJacobianRef J_t_m) const {
     using std::atan2;
     using std::sqrt;
@@ -205,8 +205,9 @@ typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
 
         log_coeff = two_angle / sin_angle;
     } else {
-        // small-angle approximation
-        log_coeff = Scalar(2.0);
+        // Keep the same principal rotation for the equivalent quaternions
+        // q and -q, including the small-angle approximation near -identity.
+        log_coeff = W() < Scalar(0.0) ? Scalar(-2.0) : Scalar(2.0);
     }
 
     tan = Tangent(Coeffs().template head<3>() * log_coeff);
@@ -226,16 +227,7 @@ typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
     //  tan = Tangent(axis*angle);
 
     if (J_t_m) {
-        J_t_m->setIdentity();
-        J_t_m->noalias() += Scalar(0.5) * tan.Hat();
-        Scalar theta2 = tan.Coeffs().squaredNorm();
-        if (theta2 > Constants<Scalar>::eps) {
-            Scalar theta = sqrt(theta2);  // rotation angle
-            J_t_m->noalias() += (Scalar(1) / theta2 -
-                                 (Scalar(1) + cos(theta)) /
-                                         (Scalar(2) * theta * sin(theta))) *
-                                tan.Hat() * tan.Hat();
-        }
+        (*J_t_m) = tan.Rjacinv();
     }
 
     return tan;
@@ -249,7 +241,7 @@ typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Lift(
 
 template <typename _Derived>
 template <typename _DerivedOther>
-typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Compose(
+inline typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Compose(
         const LieGroupBase<_DerivedOther>& m,
         OptJacobianRef J_mc_ma,
         OptJacobianRef J_mc_mb) const {

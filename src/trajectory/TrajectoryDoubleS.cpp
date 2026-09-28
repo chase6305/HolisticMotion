@@ -1,10 +1,217 @@
 #include "holistic_motion/trajectory/TrajectoryDoubleS.h"
 
+#include "PathSegmentEvaluation.h"
 #include "TrajectoryIntegration.h"
 #include "TrajectorySampling.h"
 
 namespace holistic_motion {
 namespace robotics {
+
+namespace {
+constexpr int maximum_speed_iterations = std::numeric_limits<double>::max_exponent -
+                                         std::numeric_limits<double>::min_exponent +
+                                         std::numeric_limits<double>::digits;
+
+std::array<double, 2> JerkRampTimes(double velocity_change, double acceleration,
+                                    double jerk) {
+    const double triangular = detail::SquareRootRatio(velocity_change, jerk);
+    const double saturated = acceleration / jerk;
+    return triangular < saturated
+               ? std::array<double, 2>{triangular, 2.0 * triangular}
+               : std::array<double, 2>{saturated,
+                                       saturated + velocity_change / acceleration};
+}
+
+// Refit the two jerk-limited ramps on represented absolute timestamps.
+// Rounded-up phase durations leave room under the derivative limits. Solve
+// their shared peak speed from the requested displacement, then validate the
+// actual stored cubic coefficients before publishing all eight states.
+bool FitRoundedProfile(const std::array<double, 7> &durations, double q0, double q1,
+                       double v0, double v1, double vmax, double amax, double jmax,
+                       double t0, int seg_no, std::list<TrajectorySeg> &result) {
+    if (result.size() != 8 || v0 > vmax || v1 > vmax)
+        return false;
+    using Wide = long double;
+    constexpr double eps = std::numeric_limits<double>::epsilon();
+    const Wide h = static_cast<Wide>(q1) - q0;
+    const Wide position_budget =
+        64 * eps * h + eps * std::max(std::abs(q0), std::abs(q1));
+    double planned_end = t0;
+    for (double duration : durations)
+        planned_end += duration;
+    const Wide time_budget = 64 * eps * std::max(std::abs(t0), std::abs(planned_end));
+    int extension_phase = 3;
+    if (durations[3] == 0.0) {
+        extension_phase = 6;
+        while (extension_phase > 0 && durations[extension_phase] == 0.0)
+            --extension_phase;
+    }
+    for (int attempt = 0; attempt < 12; ++attempt) {
+        const int extra = attempt < 8 ? attempt : 7 - attempt;
+        if (extra < 0 && extension_phase != 3)
+            continue;
+        std::array<double, 8> times{};
+        std::array<Wide, 7> dt{};
+        times[0] = t0;
+        bool valid = true;
+        for (int i = 0; i < 7; ++i) {
+            times[i + 1] = times[i] + durations[i];
+            if (times[i + 1] - times[i] < durations[i])
+                times[i + 1] = std::nextafter(times[i + 1],
+                                              std::numeric_limits<double>::infinity());
+            if (i == extension_phase && durations[i] > 0)
+                for (int k = 0; k < std::abs(extra); ++k)
+                    times[i + 1] = std::nextafter(
+                        times[i + 1], extra > 0
+                                          ? std::numeric_limits<double>::infinity()
+                                          : -std::numeric_limits<double>::infinity());
+            dt[i] = times[i + 1] - times[i];
+            valid &= std::isfinite(times[i + 1]) &&
+                     (durations[i] == 0 ? dt[i] == 0 : dt[i] > 0);
+        }
+        if (!valid ||
+            std::abs(static_cast<Wide>(times.back()) - planned_end) > time_budget)
+            continue;
+        struct RampWeights {
+            Wide duration, effective_acceleration_time, velocity_weight;
+        };
+        const auto weights = [&](int i) {
+            const Wide x = dt[i], y = dt[i + 1], z = dt[i + 2];
+            const Wide effective = x / 2 + y + z / 2;
+            const Wide weight = effective == 0 ? 0
+                                               : (x * x / 6 + x * y / 2 + y * y / 2 +
+                                                  (x / 2 + y) * z + z * z / 3) /
+                                                     effective;
+            return RampWeights{x + y + z, effective, weight};
+        };
+        const auto first = weights(0), last = weights(4);
+        // A ramp's displacement is v_start * (duration - weight) +
+        // v_end * weight. Solve the sum of both ramps and the cruise for
+        // their shared speed, retaining either fixed speed if a ramp is absent.
+        const Wide fitted = first.effective_acceleration_time == 0
+                                ? static_cast<Wide>(v0)
+                            : last.effective_acceleration_time == 0
+                                ? static_cast<Wide>(v1)
+                                : (h - v0 * (first.duration - first.velocity_weight) -
+                                   v1 * last.velocity_weight) /
+                                      (first.velocity_weight + dt[3] + last.duration -
+                                       last.velocity_weight);
+        // Tiny endpoint speed differences can be narrower than one clock
+        // ulp permits. Project the fitted speed onto the derivative-feasible
+        // interval, then independently check the resulting displacement.
+        const auto change_limit = [&](int phase, const RampWeights &ramp) {
+            return ramp.effective_acceleration_time *
+                   std::min(static_cast<Wide>(amax),
+                            static_cast<Wide>(jmax) *
+                                std::min(dt[phase], dt[phase + 2]));
+        };
+        const auto speed_interval = [](Wide endpoint, Wide change) {
+            Wide low = endpoint - change, high = endpoint + change;
+            // Round inward before subtracting a large endpoint again to
+            // recover a tiny speed change. Otherwise that cancellation can
+            // put a nominal interval endpoint beyond the jerk cap.
+            if (low < endpoint)
+                low = std::nextafter(low, endpoint);
+            if (high > endpoint)
+                high = std::nextafter(high, endpoint);
+            return std::array<Wide, 2>{low, high};
+        };
+        const auto first_interval = speed_interval(v0, change_limit(0, first));
+        const auto last_interval = speed_interval(v1, change_limit(4, last));
+        const Wide minimum_speed =
+            std::max({Wide(0), first_interval[0], last_interval[0]});
+        const Wide maximum_speed =
+            std::min({Wide(vmax), first_interval[1], last_interval[1]});
+        if (!std::isfinite(fitted) || minimum_speed > maximum_speed)
+            continue;
+        const Wide peak = std::clamp(fitted, minimum_speed, maximum_speed);
+        const Wide up = first.effective_acceleration_time == 0
+                            ? 0
+                            : (peak - v0) / first.effective_acceleration_time;
+        const Wide down = last.effective_acceleration_time == 0
+                              ? 0
+                              : (v1 - peak) / last.effective_acceleration_time;
+        if (std::abs(up) > amax || std::abs(down) > amax)
+            continue;
+        std::array<Wide, 8> acc{0, up, up, 0, 0, down, down, 0};
+        std::array<double, 8> jerk{};
+        for (int i = 0; i < 7; ++i) {
+            if (dt[i] == 0) {
+                if (acc[i] != acc[i + 1])
+                    valid = false;
+                continue;
+            }
+            jerk[i] = static_cast<double>((acc[i + 1] - acc[i]) / dt[i]);
+            if (!std::isfinite(jerk[i]) || std::abs(jerk[i]) > jmax)
+                valid = false;
+        }
+        if (!valid)
+            continue;
+        std::array<Wide, 8> velocity{}, position{};
+        velocity[0] = v0;
+        position[0] = q0;
+        for (int i = 0; i < 7; ++i) {
+            velocity[i + 1] =
+                velocity[i] + acc[i] * dt[i] + (acc[i + 1] - acc[i]) * dt[i] / 2;
+            position[i + 1] = position[i] + velocity[i] * dt[i] +
+                              acc[i] * dt[i] * dt[i] / 2 +
+                              (acc[i + 1] - acc[i]) * dt[i] * dt[i] / 6;
+        }
+        velocity[3] = velocity[4] = peak;
+        velocity[7] = v1;
+        position[7] = q1;
+        std::array<TrajectorySeg, 8> candidate;
+        for (int i = 0; i < 8; ++i)
+            candidate[i] = TrajectorySeg(
+                seg_no, times[i], std::clamp(static_cast<double>(position[i]), q0, q1),
+                static_cast<double>(velocity[i]), static_cast<double>(acc[i]), jerk[i]);
+        // The terminal position is prescribed. Carry it through absent
+        // trailing phases, then validate the preceding positive phase against
+        // that same endpoint. A zero-duration jerk switch must change no state.
+        for (int i = 6; i >= 0; --i) {
+            if (dt[i] == 0) {
+                candidate[i].pos = candidate[i + 1].pos;
+                candidate[i].vel = candidate[i + 1].vel;
+                candidate[i].acc = candidate[i + 1].acc;
+            }
+        }
+        auto p = candidate.begin(), n = std::next(p);
+        for (int i = 0; i < 7; ++i, ++p, ++n) {
+            const Wide c2 = p->acc / 2.0, c3 = p->jerk / 6.0, t = dt[i];
+            const Wide predicted_q = p->pos + t * (p->vel + t * (c2 + t * c3));
+            const Wide predicted_v = p->vel + t * (2 * c2 + t * 3 * c3);
+            const Wide predicted_a = 2 * c2 + t * 6 * c3;
+            valid &= std::isfinite(n->pos) && std::isfinite(n->vel) &&
+                     std::isfinite(n->acc) && n->pos >= p->pos && n->vel >= 0 &&
+                     n->vel <= vmax && std::abs(n->acc) <= amax &&
+                     std::abs(predicted_q - n->pos) <= position_budget &&
+                     std::abs(predicted_v - n->vel) <= 64 * eps * vmax &&
+                     std::abs(predicted_a - n->acc) <= 64 * eps * amax;
+            const Wide velocity_budget = 64 * eps * vmax;
+            valid &= predicted_v >= -velocity_budget &&
+                     predicted_v <= vmax + velocity_budget &&
+                     std::abs(predicted_a) <= amax * (1 + 64 * eps);
+            if (c3 != 0) {
+                const Wide stationary = -c2 / (3 * c3);
+                if (stationary > 0 && stationary < t) {
+                    const Wide speed =
+                        p->vel + stationary * (2 * c2 + 3 * c3 * stationary);
+                    valid &=
+                        speed >= -velocity_budget && speed <= vmax + velocity_budget;
+                }
+            }
+            if (dt[i] == 0)
+                valid &= p->pos == n->pos && p->vel == n->vel && p->acc == n->acc;
+        }
+        if (valid) {
+            // All states are validated; reuse the existing eight list nodes.
+            std::copy(candidate.begin(), candidate.end(), result.begin());
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(TrajectoryDoubleS)
 
@@ -142,6 +349,26 @@ TrajectoryDoubleS<LieGroup>::TrajectoryDoubleS(
             i++;
         }
 
+        if (is_next_bezier_segment) {
+            // The curve's endpoint tangent and its neighboring line can
+            // produce slightly different caps after coordinate rounding.
+            // Choose the shared join speed from both geometric segments
+            // before constructing either profile, preserving continuity
+            // without increasing a requested velocity limit.
+            if (is_cur_linear_segment)
+                end_vel = std::min(end_vel, max_vel);
+            if (i < num_of_segments) {
+                const auto next_line = this->path_->GetPathSegmentByIndex(i);
+                const auto tangent =
+                    next_line->GetTangent(next_line->GetStartParameter());
+                for (size_t joint = 0; joint < this->dof_; ++joint) {
+                    if (tangent[joint] != 0.0)
+                        end_vel = std::min(end_vel, velocity_limits[joint] /
+                                                       std::abs(tangent[joint]));
+                }
+            }
+        }
+
         if (is_cur_linear_segment) {
             holistic_motion::utility::LogDebug(
                     "DoubleS profile:[ pre_pos:{}, end_pos:{}, "
@@ -179,6 +406,12 @@ TrajectoryDoubleS<LieGroup>::TrajectoryDoubleS(
             traj_segs.pop_back();
 
             if (!res) {
+                if (traj_segs.empty()) {
+                    holistic_motion::utility::LogWarning(
+                        "Initial velocity cannot be reached without an earlier "
+                        "segment");
+                    return;
+                }
                 traj_segs.back().vel = pre_vel;
                 holistic_motion::utility::LogDebug(
                         "Compute doubleS profile with reverse max jerk");
@@ -236,7 +469,7 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
     // tangent/curvature is hard to calculated analytically) use s(t) = kt, k is
     // selected to comply with dq, ddq limits
     if (!segment) return 0.0;
-    double m = std::numeric_limits<double>::max();
+    detail::PathSpeedLimit speed_limit;
     double s = segment->GetStartParameter();
     const double length = segment->GetLength();
     const double ep = s + length;
@@ -245,50 +478,55 @@ double TrajectoryDoubleS<LieGroup>::_ComputeSegmentMaxSVel(
         return 0.0;
     }
     const double step = std::min(0.01, length);
+    // Large coordinate units must not make preliminary cap sampling
+    // unbounded. Preserve the ordinary 0.01 grid; long intervals use 4096
+    // normalized steps before the separate composed-trajectory limit check.
+    constexpr int maximum_intervals = 4096;
+    const bool normalized_grid = length > 0.01 * maximum_intervals;
+    const double start = s;
+    int sample = 0;
+    detail::SegmentEvaluationSampler<LieGroup> derivatives(*segment);
 
     while (true) {
-        auto tangent = segment->GetTangent(s);
-        auto curvature = segment->GetCurvature(s);
-        auto torsion = segment->GetTorsion(s);
+        typename LieGroup::Tangent tangent, curvature, torsion;
+        derivatives.Compute(s, tangent, curvature, torsion);
         for (size_t i = 0; i < this->dof_; i++) {
             if (!std::isfinite(tangent[i]) || !std::isfinite(curvature[i]) ||
                 !std::isfinite(torsion[i])) {
                 return 0.0;
             }
-            if (tangent[i] != 0.0) {
-                m = std::min(m, velocity_limits[i] / std::abs(tangent[i]));
-            }
-            if (curvature[i] != 0.0) {
-                m = std::min(m,
-                             detail::SquareRootRatio(acceleration_limits[i],
-                                                     std::abs(curvature[i])));
-            }
-            if (torsion[i] != 0.0) {
-                m = std::min(m, detail::CubeRootRatio(jerk_limits[i],
-                                                      std::abs(torsion[i])));
-            }
+            speed_limit.AddVelocity(velocity_limits[i], tangent[i]);
+            speed_limit.AddAcceleration(acceleration_limits[i], curvature[i]);
+            speed_limit.AddJerk(jerk_limits[i], torsion[i]);
         }
         if (s == ep) break;
-        const double next = std::min(ep, s + step);
+        ++sample;
+        const double next =
+            normalized_grid
+                ? (sample == maximum_intervals
+                       ? ep
+                       : std::min(ep, start + length *
+                                                  (sample / double(maximum_intervals))))
+                : std::min(ep, s + step);
         // A fixed step may round back to the same large path parameter.
         // Reject the unsampleable interval instead of looping indefinitely.
         if (next <= s) return 0.0;
         s = next;
     }
 
-    return m;
+    return speed_limit.Get();
 }
 
 template <typename LieGroup>
 bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
-    const double &q0, const double &q1, double &start_velocity,
-    double &end_velocity, const double &max_velocity, double max_acceleration,
-    const double &max_jerk, const double &t0,
-    std::list<TrajectorySeg> &traj_seg, const int &seg_no,
-    const bool &allow_concave) {
+    const double &q0, const double &q1, double &start_velocity, double &end_velocity,
+    const double &requested_max_velocity, double max_acceleration,
+    const double &max_jerk, const double &t0, std::list<TrajectorySeg> &traj_seg,
+    const int &seg_no, const bool &allow_concave) {
     // Publish adjusted endpoint speeds only with a complete usable profile.
     double v0 = start_velocity;
     double v1 = end_velocity;
+    double max_velocity = requested_max_velocity;
     holistic_motion::utility::LogDebug(
         "Compute q0:{}, q1:{}, v0:{}, v1:{}, max_velocity:{} "
         "max_acceleration:{}, max_jerk:{}, seg_no:{}, allow_concave:{}",
@@ -299,7 +537,7 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     if (!std::isfinite(q0) || !std::isfinite(q1) || !std::isfinite(v0) ||
         !std::isfinite(v1) || !std::isfinite(max_velocity) ||
         !std::isfinite(max_acceleration) || !std::isfinite(max_jerk) ||
-        !std::isfinite(t0) || q1 < q0 || v0 < -Epsilon || v1 < -Epsilon ||
+        !std::isfinite(t0) || q1 <= q0 || v0 < -Epsilon || v1 < -Epsilon ||
         max_velocity <= 0.0 || max_acceleration <= 0.0 || max_jerk <= 0.0) {
         holistic_motion::utility::LogWarning(
                 "Invalid Double-S inputs: q0={}, q1={}, v0={}, v1={}, "
@@ -309,7 +547,18 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     }
     v0 = std::max(0.0, v0);
     v1 = std::max(0.0, v1);
+    // Adjacent curve and line tangents can compute the same speed cap a few
+    // ulps apart. Preserve the endpoint speed within a relative roundoff
+    // budget instead of needlessly rebuilding the entire preceding profile.
+    // The composed trajectory still receives the global joint-limit check.
+    constexpr double speed_roundoff = 128.0 * std::numeric_limits<double>::epsilon();
+    for (double endpoint : {v0, v1}) {
+        if (endpoint > max_velocity &&
+            endpoint - requested_max_velocity <= speed_roundoff * endpoint)
+            max_velocity = endpoint;
+    }
     double acc_init = .0;
+    double profile_jerk = max_jerk;
 
     // duration
     ///< jerk_accel_time constant duration of the jerk in the acceleration phase
@@ -320,7 +569,9 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     ///< delta to compute
     double jerk_accel_time{0.0}, ta{0.0}, tv{0.0};
     double jerk_decel_time{0.0}, td{0.0}, delta{0.0}, jerk_time{0.0};
-    bool need_reduce_v0 = v0 > max_velocity ? true : false;
+    // A concave phase can retain an above-cap endpoint, but reducing an
+    // infeasible start speed below still requires upstream backtracking.
+    bool need_reduce_v0 = !allow_concave && v0 > max_velocity;
     // const double v0_init = v0;
 
     // const double max_acceleration_const = max_acceleration;
@@ -339,20 +590,16 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
     const auto reachable = [&](double first, double second) {
         if (first == second) return true;
         const double difference = std::abs(second - first);
-        const double triangular_time = std::sqrt(difference / max_jerk);
-        const double saturated_time = max_acceleration / max_jerk;
         const double duration =
-                triangular_time < saturated_time
-                        ? 2.0 * triangular_time
-                        : saturated_time + difference / max_acceleration;
-        return 0.5 * (first + second) * duration <= q1 - q0;
+            JerkRampTimes(difference, max_acceleration, max_jerk)[1];
+        return (0.5 * first + 0.5 * second) * duration <= q1 - q0;
     };
     if (!reachable(v0, v1)) {
         const bool reduce_start = v0 > v1;
         const double fixed = std::min(v0, v1);
         double feasible_speed = fixed;
         double infeasible_speed = std::max(v0, v1);
-        for (int iteration = 0; iteration < 64; ++iteration) {
+        for (int iteration = 0; iteration < maximum_speed_iterations; ++iteration) {
             const double middle =
                     feasible_speed + 0.5 * (infeasible_speed - feasible_speed);
             if (middle == feasible_speed || middle == infeasible_speed) break;
@@ -374,36 +621,130 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
                 "Need to reduce {}th segment V0( init speed )!", seg_no);
     }
 
-    // compute acceleration period jerk_accel_time
-    if (std::abs(max_velocity - v0) * max_jerk <
-        max_acceleration * max_acceleration) {
-        // if max_acceleration is not reach
-        jerk_accel_time = std::sqrt(std::abs(max_velocity - v0) / max_jerk);
-        ta = 2 * jerk_accel_time;
-    } else {
-        jerk_accel_time = max_acceleration / max_jerk;
-        ta = jerk_accel_time + std::abs(max_velocity - v0) / max_acceleration;
-    }
-
-    // compute deceleration period jerk_decel_time
-    if (std::abs(max_velocity - v1) * max_jerk <
-        max_acceleration * max_acceleration) {
-        // if min_acceleration is not reach
-        jerk_decel_time = std::sqrt(std::abs(max_velocity - v1) / max_jerk);
-        td = 2 * jerk_decel_time;
-    } else {
-        jerk_decel_time = max_acceleration / max_jerk;
-        td = jerk_decel_time + std::abs(max_velocity - v1) / max_acceleration;
-    }
+    const auto initial_ramp =
+        JerkRampTimes(std::abs(max_velocity - v0), max_acceleration, max_jerk);
+    jerk_accel_time = initial_ramp[0];
+    ta = initial_ramp[1];
+    const auto final_ramp =
+        JerkRampTimes(std::abs(max_velocity - v1), max_acceleration, max_jerk);
+    jerk_decel_time = final_ramp[0];
+    td = final_ramp[1];
 
     // compute constant speed period
     tv = (q1 - q0) / max_velocity - 0.5 * ta * (1 + v0 / max_velocity) -
          0.5 * td * (1 + v1 / max_velocity);
 
+    // The no-cruise formulas below describe a convex speed peak. They do
+    // not represent a valley between two above-cap endpoints when there is
+    // too little distance to reach the cap. Reject that unsupported boundary
+    // condition instead of integrating toward the wrong terminal speed.
+    if (allow_concave && v0 > max_velocity && v1 > max_velocity && tv <= 0.0) {
+        holistic_motion::utility::LogWarning(
+            "Double-S cannot reach the speed cap between above-cap endpoints");
+        return false;
+    }
+
     /// < 2.the second case, if tv <= 0.0, there is no constant speed period
     constexpr int maximum_acceleration_reductions = 1000;
     int acceleration_reductions = 0;
-    while (tv <= 0.0) {
+    bool solved_convex_peak = false;
+    if (tv <= 0.0 && v0 == 0.0 && v1 == 0.0) {
+        // Rest-to-rest motion has a closed form. Taking roots before dividing
+        // retains finite durations even when the squared/fourth-power
+        // intermediates of the expanded formula are not representable.
+        const double triangular =
+            detail::CubeRootRatio(q1 - q0, max_jerk) / std::cbrt(2.0);
+        const double saturated = max_acceleration / max_jerk;
+        jerk_accel_time = jerk_decel_time = std::min(triangular, saturated);
+        ta = td =
+            triangular <= saturated
+                ? 2.0 * triangular
+                : 0.5 * saturated +
+                      std::hypot(0.5 * saturated,
+                                 detail::SquareRootRatio(q1 - q0, max_acceleration));
+        tv = 0.0;
+        solved_convex_peak = true;
+    }
+    if (tv <= 0.0 && !solved_convex_peak && v0 <= max_velocity && v1 <= max_velocity) {
+        // Ramp distance increases monotonically with its peak speed. Solve
+        // that bounded scalar problem directly, without fourth powers or
+        // repeatedly reducing the available acceleration.
+        const double base_velocity = std::max(v0, v1);
+        const auto ramp = [&](double endpoint, double increment) {
+            const double difference = (base_velocity - endpoint) + increment;
+            return JerkRampTimes(difference, max_acceleration, max_jerk);
+        };
+        const auto distance = [&](double increment) {
+            return (0.5 * v0 + 0.5 * base_velocity + 0.5 * increment) *
+                       ramp(v0, increment)[1] +
+                   (0.5 * v1 + 0.5 * base_velocity + 0.5 * increment) *
+                       ramp(v1, increment)[1];
+        };
+        // Solve the increment, not the absolute peak. A short moving
+        // interval may need a positive jerk time even when adding its speed
+        // increment to an endpoint rounds back to that endpoint.
+        double low = 0.0, high = max_velocity - base_velocity;
+        const double length = q1 - q0;
+        for (int iteration = 0; iteration < maximum_speed_iterations; ++iteration) {
+            const double middle = low + 0.5 * (high - low);
+            if (middle == low || middle == high)
+                break;
+            if (distance(middle) <= length)
+                low = middle;
+            else
+                high = middle;
+        }
+        const auto first = ramp(v0, low), last = ramp(v1, low);
+        jerk_accel_time = first[0];
+        ta = first[1];
+        jerk_decel_time = last[0];
+        td = last[1];
+        const double remaining = length - distance(low);
+        tv = remaining > 64.0 * std::numeric_limits<double>::epsilon() * length
+                 ? remaining / (base_velocity + low)
+                 : 0.0;
+        if (base_velocity + low == base_velocity) {
+            // The speed peak itself is indistinguishable from an endpoint.
+            // Fit the endpoint transition across the available distance,
+            // reducing jerk if necessary instead of introducing a vanishing
+            // opposite ramp and an unrepresentable residual cruise.
+            const double duration = length / (0.5 * v0 + 0.5 * v1);
+            const double change = std::abs(v1 - v0);
+            if (change == 0.0) {
+                ta = td = jerk_accel_time = jerk_decel_time = 0.0;
+                tv = duration;
+            } else {
+                const double average_acceleration = change / duration;
+                const bool triangular = average_acceleration <= 0.5 * max_acceleration;
+                const double jerk_duration =
+                    triangular
+                        ? 0.5 * duration
+                        : std::min(0.5 * duration,
+                                   std::max(max_acceleration / max_jerk,
+                                            duration - change / max_acceleration));
+                const double acceleration =
+                    std::min(max_acceleration, change / (duration - jerk_duration));
+                const double jerk = std::min(max_jerk, acceleration / jerk_duration);
+                const double achieved_change =
+                    (jerk * jerk_duration) * (duration - jerk_duration);
+                constexpr double roundoff =
+                    64.0 * std::numeric_limits<double>::epsilon();
+                if (std::isfinite(duration) && duration > 0.0 && jerk_duration > 0.0 &&
+                    std::isfinite(jerk) && jerk > 0.0 &&
+                    std::isfinite(achieved_change) &&
+                    std::abs(achieved_change - change) <= roundoff * change) {
+                    profile_jerk = jerk;
+                    ta = v1 > v0 ? duration : 0.0;
+                    td = v1 < v0 ? duration : 0.0;
+                    jerk_accel_time = v1 > v0 ? jerk_duration : 0.0;
+                    jerk_decel_time = v1 < v0 ? jerk_duration : 0.0;
+                    tv = 0.0;
+                }
+            }
+        }
+        solved_convex_peak = true;
+    }
+    while (tv <= 0.0 && !solved_convex_peak) {
         jerk_accel_time = jerk_decel_time = jerk_time =
                 max_acceleration / max_jerk;
         delta = std::sqrt(
@@ -503,13 +844,23 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
         // plateau a few ulps negative. Do not create backwards timestamps.
         duration = std::max(0.0, duration);
     }
-    const double acceleration_jerk = v0 > max_velocity ? -max_jerk : max_jerk;
-    const double deceleration_jerk = v1 > max_velocity ? max_jerk : -max_jerk;
+    // Subtracting twice the jerk-ramp time from a triangular phase can
+    // leave a positive residue as well as a negative one. Normalize both
+    // signs before integration: a representable residue here can collapse
+    // when backtracking rebases the profile at a larger timestamp.
+    constexpr double plateau_roundoff = 64.0 * std::numeric_limits<double>::epsilon();
+    if (durations[1] <= plateau_roundoff * std::abs(ta))
+        durations[1] = 0.0;
+    if (durations[5] <= plateau_roundoff * std::abs(td))
+        durations[5] = 0.0;
+    const double acceleration_jerk = v0 > max_velocity ? -profile_jerk : profile_jerk;
+    const double deceleration_jerk = v1 > max_velocity ? profile_jerk : -profile_jerk;
     const std::array<double, 7> next_jerks{
         0.0, -acceleration_jerk, 0.0, deceleration_jerk,
         0.0, -deceleration_jerk, 0.0};
     std::list<TrajectorySeg> phases;
     phases.emplace_back(seg_no, t0, q0, v0, acc_init, acceleration_jerk);
+    bool rounded_jerk_phase = false;
     for (std::size_t phase = 0; phase < durations.size(); ++phase) {
         const auto &previous = phases.back();
         auto next = _ComputeNextTrajStep(previous, durations[phase],
@@ -550,18 +901,30 @@ bool TrajectoryDoubleS<LieGroup>::_ComputeDoubleSProfile(
             next.pos = previous.pos;
             next.vel = previous.vel;
         }
+        // A long elapsed time can quantize a short jerk ramp enough to
+        // invalidate its stored acceleration transition. Fit against the
+        // actual clock only when that error exceeds the arithmetic budget.
+        const double clock_error =
+            (next.timestamp - previous.timestamp) - durations[phase];
+        rounded_jerk_phase |=
+            std::abs(previous.jerk * clock_error) >
+            64.0 * std::numeric_limits<double>::epsilon() * max_acceleration;
         // Keep all eight states, including zero-duration jerk transitions:
         // backtracking uses this fixed layout to recover each linear segment.
         phases.push_back(next);
     }
     if (q1 > q0 && phases.back().timestamp <= t0) return false;
+    if (rounded_jerk_phase) {
+        FitRoundedProfile(durations, q0, q1, v0, v1, max_velocity,
+                                max_acceleration, max_jerk, t0, seg_no, phases);
+    }
     traj_seg.swap(phases);
     start_velocity = v0;
     end_velocity = v1;
 
     holistic_motion::utility::LogDebug("Finsh to Add trajectory seg!");
 
-    return !need_reduce_v0 || allow_concave;
+    return !need_reduce_v0;
 }
 
 template <typename LieGroup>
@@ -631,8 +994,34 @@ bool TrajectoryDoubleS<LieGroup>::_AlignProfileAfter(
     if (profile.back().timestamp > first.timestamp &&
         timestamps.back() <= start)
         return false;
+    std::array<double, 7> durations{};
+    double velocity_cap = 0.0, acceleration_cap = 0.0, jerk_cap = 0.0;
+    bool rounded_ramp = false;
+    if (profile.size() == 8) {
+        std::size_t index = 0;
+        for (auto it = profile.begin(); it != profile.end(); ++it, ++index) {
+            velocity_cap = std::max(velocity_cap, it->vel);
+            acceleration_cap = std::max(acceleration_cap, std::abs(it->acc));
+            jerk_cap = std::max(jerk_cap, std::abs(it->jerk));
+            const auto next = std::next(it);
+            if (next == profile.end()) break;
+            durations[index] = next->timestamp - it->timestamp;
+            const double represented = timestamps[index + 1] - timestamps[index];
+            rounded_ramp |= std::abs(it->jerk * (represented - durations[index])) >
+                64.0 * std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(it->acc), std::abs(next->acc));
+        }
+    }
     auto timestamp = timestamps.begin();
     for (auto &step : profile) step.timestamp = *timestamp++;
+    // Backtracking can move an already fitted ramp onto a coarser clock.
+    // Retain its attained derivative caps while fitting the new knot grid.
+    if (rounded_ramp && velocity_cap > 0.0 && acceleration_cap > 0.0 && jerk_cap > 0.0) {
+        FitRoundedProfile(durations, profile.front().pos, profile.back().pos,
+                          profile.front().vel, profile.back().vel, velocity_cap,
+                          acceleration_cap, jerk_cap, start, profile.front().seg_no,
+                          profile);
+    }
     return true;
 }
 
@@ -667,6 +1056,24 @@ bool TrajectoryDoubleS<LieGroup>::_ReverseWithMaxJerk(
         amax = std::max(std::abs(step->acc), amax);
         jmax = std::max(std::abs(step->jerk), jmax);
         traj_seg.pop_back();
+    }
+    // An earlier profile may never have reached its acceleration limit;
+    // a pure cruise records only zero acceleration. Recover the configured
+    // capacity from its linear geometry instead of treating that observed
+    // peak as a new constraint during backtracking.
+    if (this->path_ && seg_no >= 0 && seg_no < this->path_->GetNumOfPathSegments() &&
+        this->max_acceleration_.size() == static_cast<Eigen::Index>(this->dof_)) {
+        const auto segment = this->path_->GetPathSegmentByIndex(seg_no);
+        if (segment && segment->GetPathSegType() == PathSegType::LinearSeg) {
+            const auto tangent = segment->GetTangent(segment->GetStartParameter());
+            double allowed = std::numeric_limits<double>::max();
+            for (std::size_t joint = 0; joint < this->dof_; ++joint)
+                if (tangent[joint] != 0.0)
+                    allowed = std::min(allowed, this->max_acceleration_[joint] /
+                                                    std::abs(tangent[joint]));
+            if (std::isfinite(allowed) && allowed > 0.0)
+                amax = allowed;
+        }
     }
     std::list<TrajectorySeg> seg_traj_seg;
     if (_ComputeDoubleSProfile(q0, q1, v0, v1, vmax, amax, jmax, t0,

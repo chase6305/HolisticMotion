@@ -67,16 +67,30 @@ class PlanningContext {
         return std::sqrt(metric_.SquaredDistance(first, second));
     }
 
+    bool SameState(const Eigen::VectorXd &first, const Eigen::VectorXd &second) const {
+        for (Eigen::Index i = 0; i < first.size(); ++i) {
+            const double delta = second[i] - first[i];
+            if ((continuous_[static_cast<std::size_t>(i)]
+                     ? detail::WrappedDifference(delta)
+                     : delta) != 0.0)
+                return false;
+        }
+        return true;
+    }
+
     Eigen::VectorXd Interpolate(const Eigen::VectorXd &from,
                                 const Eigen::VectorXd &to, double ratio) const {
         return Normalize(from + ratio * Difference(from, to));
     }
 
-    Eigen::VectorXd Steer(const Eigen::VectorXd &from,
-                          const Eigen::VectorXd &to) const {
+    Eigen::VectorXd Steer(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                          bool *target_reached = nullptr) const {
         const double distance = Distance(from, to);
-        if (distance <= options_.extension_range)
-            return Normalize(to);
+        const bool reached = distance <= options_.extension_range;
+        if (target_reached)
+            *target_reached = reached;
+        if (reached)
+            return to;
         return Interpolate(from, to, options_.extension_range / distance);
     }
 
@@ -177,9 +191,14 @@ class PlanningContext {
     ExtendStatus Extend(Tree &tree, const Eigen::VectorXd &target,
                         std::size_t &new_index) {
         const std::size_t nearest = Nearest(tree, target);
-        Eigen::VectorXd candidate = Steer(tree.nodes[nearest].state, target);
-        if (Distance(tree.nodes[nearest].state, candidate) < 1e-12 ||
-            !IsMotionValid(tree.nodes[nearest].state, candidate)) {
+        bool target_reached;
+        Eigen::VectorXd candidate =
+            Steer(tree.nodes[nearest].state, target, &target_reached);
+        if (SameState(tree.nodes[nearest].state, candidate)) {
+            new_index = nearest;
+            return target_reached ? ExtendStatus::REACHED : ExtendStatus::TRAPPED;
+        }
+        if (!IsMotionValid(tree.nodes[nearest].state, candidate)) {
             return ExtendStatus::TRAPPED;
         }
         new_index = tree.nodes.size();
@@ -190,8 +209,9 @@ class PlanningContext {
                  Distance(tree.nodes[nearest].state, candidate),
              {}});
         tree.nodes[nearest].children.push_back(new_index);
-        return Distance(candidate, target) < 1e-9 ? ExtendStatus::REACHED
-                                                  : ExtendStatus::ADVANCED;
+        // A small weighted distance is not evidence of a validated connection:
+        // small weights can hide a large, obstructed gap in joint coordinates.
+        return target_reached ? ExtendStatus::REACHED : ExtendStatus::ADVANCED;
     }
 
     std::vector<Eigen::VectorXd> Trace(const Tree &tree,
@@ -285,9 +305,11 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
 
         std::vector<Eigen::VectorXd> shortened;
         shortened.reserve(path.size() + 2);
+        // Remove only exactly repeated coordinates. A small metric distance
+        // can hide a meaningful corner or even the requested final endpoint.
         const auto append = [&](const Eigen::VectorXd &state) {
             if (shortened.empty() ||
-                context.Distance(shortened.back(), state) > 1e-12) {
+                (shortened.back().array() != state.array()).any()) {
                 shortened.push_back(state);
             }
         };
@@ -357,7 +379,7 @@ ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
     // The goal-rooted trace runs goal -> connection after reversal.
     std::reverse(second_path.begin(), second_path.end());
     if (!first_path.empty() && !second_path.empty() &&
-        context.Distance(first_path.back(), second_path.front()) < 1e-9) {
+        context.SameState(first_path.back(), second_path.front())) {
         second_path.erase(second_path.begin());
     }
     first_path.insert(first_path.end(), second_path.begin(), second_path.end());
@@ -409,6 +431,10 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             const std::chrono::steady_clock::time_point &deadline,
             bool informed) {
     Tree tree{{Node{start, 0, 0.0, {}}}, true, {}};
+    // Keep the neighborhood schedule based on admitted samples, including
+    // repeated states that need not be stored. Removing duplicate goal nodes
+    // should not otherwise change the seeded search's rewiring radii.
+    std::size_t radius_sample_count = tree.nodes.size();
     std::size_t best_goal = std::numeric_limits<std::size_t>::max();
     double best_cost = std::numeric_limits<double>::infinity();
     std::uniform_real_distribution<double> unit(0.0, 1.0);
@@ -421,6 +447,16 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             pending.insert(pending.end(), tree.nodes[index].children.begin(),
                            tree.nodes[index].children.end());
         }
+    };
+    const auto reparent = [&](std::size_t index, std::size_t parent, double cost) {
+        const double delta = cost - tree.nodes[index].cost;
+        auto &old_children = tree.nodes[tree.nodes[index].parent].children;
+        old_children.erase(std::remove(old_children.begin(), old_children.end(), index),
+                           old_children.end());
+        tree.nodes[index].parent = parent;
+        tree.nodes[index].cost = cost;
+        tree.nodes[parent].children.push_back(index);
+        update_descendant_costs(index, delta);
     };
     for (; statistics.iterations < options.max_iterations &&
            std::chrono::steady_clock::now() < deadline;
@@ -443,14 +479,18 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         const std::size_t nearest = context.Nearest(tree, sample);
         Eigen::VectorXd candidate =
             context.Steer(tree.nodes[nearest].state, sample);
-        if (!context.IsMotionValid(tree.nodes[nearest].state, candidate))
+        // A repeated goal sample can still improve its parent or nearby nodes.
+        // Reuse the existing state while retaining those rewiring
+        // opportunities.
+        const bool existing = context.SameState(tree.nodes[nearest].state, candidate);
+        if (!existing && !context.IsMotionValid(tree.nodes[nearest].state, candidate))
             continue;
         const double dimension = static_cast<double>(start.size());
         const double radius = std::min(
             options.extension_range * 4.0,
             options.extension_range * 2.0 *
-                std::pow(std::log(static_cast<double>(tree.nodes.size() + 1)) /
-                             static_cast<double>(tree.nodes.size() + 1),
+                std::pow(std::log(static_cast<double>(radius_sample_count + 1)) /
+                             static_cast<double>(radius_sample_count + 1),
                          1.0 / dimension));
         auto near = context.Near(tree, candidate,
                                  std::max(radius, options.extension_range));
@@ -467,24 +507,21 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
                 cost = candidate_cost;
             }
         }
-        const std::size_t inserted = tree.nodes.size();
-        tree.nodes.push_back({candidate, parent, cost, {}});
-        tree.nodes[parent].children.push_back(inserted);
+        const std::size_t inserted = existing ? nearest : tree.nodes.size();
+        if (existing) {
+            if (parent != nearest)
+                reparent(nearest, parent, cost);
+        } else {
+            tree.nodes.push_back({candidate, parent, cost, {}});
+            tree.nodes[parent].children.push_back(inserted);
+        }
+        ++radius_sample_count;
         for (std::size_t index : near) {
             const double rewired =
                 cost + context.Distance(candidate, tree.nodes[index].state);
             if (rewired < tree.nodes[index].cost &&
                 context.IsMotionValid(candidate, tree.nodes[index].state)) {
-                const double delta = rewired - tree.nodes[index].cost;
-                auto &old_children =
-                    tree.nodes[tree.nodes[index].parent].children;
-                old_children.erase(std::remove(old_children.begin(),
-                                               old_children.end(), index),
-                                   old_children.end());
-                tree.nodes[index].parent = inserted;
-                tree.nodes[index].cost = rewired;
-                tree.nodes[inserted].children.push_back(index);
-                update_descendant_costs(index, delta);
+                reparent(index, inserted, rewired);
             }
         }
         // Rewiring can improve the incumbent through any of its ancestors.
@@ -496,10 +533,15 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         if (remaining <= options.extension_range &&
             cost + remaining < best_cost &&
             context.IsMotionValid(candidate, goal)) {
-            best_goal = tree.nodes.size();
             best_cost = cost + remaining;
-            tree.nodes.push_back({goal, inserted, best_cost, {}});
-            tree.nodes[inserted].children.push_back(best_goal);
+            if (context.SameState(candidate, goal)) {
+                best_goal = inserted;
+            } else {
+                best_goal = tree.nodes.size();
+                tree.nodes.push_back({goal, inserted, best_cost, {}});
+                tree.nodes[inserted].children.push_back(best_goal);
+            }
+            ++radius_sample_count;
         }
     }
     statistics.tree_nodes = tree.nodes.size();
@@ -621,7 +663,7 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
     if (!goal_valid) {
         return finish(PlanningStatus::INVALID_GOAL, "goal state is invalid");
     }
-    if (context.Distance(start, goal) < 1e-12) {
+    if (context.SameState(start, goal)) {
         result.path = {start};
         result.statistics.tree_nodes = 1;
         return finish(PlanningStatus::EXACT_SOLUTION,

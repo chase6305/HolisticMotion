@@ -452,7 +452,7 @@ typename LieGroupBase<_Derived>::LieGroup LieGroupBase<_Derived>::Inverse(
 
 template <typename _Derived>
 template <typename _DerivedOther>
-typename LieGroupBase<_Derived>::LieGroup LieGroupBase<_Derived>::Rplus(
+inline typename LieGroupBase<_Derived>::LieGroup LieGroupBase<_Derived>::Rplus(
         const TangentBase<_DerivedOther>& t,
         OptJacobianRef J_mout_m,
         OptJacobianRef J_mout_t) const {

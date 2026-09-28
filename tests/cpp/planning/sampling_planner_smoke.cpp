@@ -21,6 +21,25 @@ bool OutsideObstacle(const Eigen::VectorXd &q) {
 } // namespace
 
 int main() {
+    for (double weight : {1e-18, 1e-30}) {
+        SamplingPlanner blocked(
+            Eigen::VectorXd::Constant(1, -1.0), Eigen::VectorXd::Constant(1, 1.0),
+            [](const Eigen::VectorXd &q) { return q[0] < -0.25 || q[0] > -0.15; });
+        blocked.SetJointWeights(Eigen::VectorXd::Constant(1, weight));
+        PlanningOptions scaled;
+        scaled.extension_range = 0.3 * std::sqrt(weight);
+        scaled.edge_resolution = 0.01;
+        scaled.goal_bias = 1.0;
+        scaled.max_iterations = 10;
+        scaled.simplify_path = false;
+        const auto result = blocked.Plan(Eigen::VectorXd::Constant(1, -0.9),
+                                         Eigen::VectorXd::Constant(1, 0.9), scaled);
+        if (result.Success() || !result.path.empty()) {
+            std::cerr << "small metric weights bypassed an impassable wall\n";
+            return 8;
+        }
+    }
+
   auto incompatible =
       std::make_shared<holistic_motion::robotics::SRSKinematics>(
           std::vector<holistic_motion::robotics::JointNode>(1));
@@ -61,6 +80,36 @@ int main() {
       std::cerr << "invalid exact endpoint escaped path validation\n";
       return 7;
     }
+  }
+
+  // Unchanged costs elsewhere on the path must not hide local progress or
+  // allow a locally worse trial from an inaccurate gradient callback.
+  for (double sign : {-1.0, 1.0}) {
+      PathOptimizer local_optimizer(Eigen::VectorXd::Constant(1, -1.0),
+                                    Eigen::VectorXd::Constant(1, 1.0));
+      local_optimizer.SetStateCost(
+          [](const Eigen::VectorXd &q) { return q[0] < -0.5 ? 1e100 : q[0] * q[0]; });
+      local_optimizer.SetStateCostGradient([sign](const Eigen::VectorXd &q) {
+          return Eigen::VectorXd::Constant(1, q[0] < -0.5 ? 0.0 : sign * 2.0 * q[0]);
+      });
+      holistic_motion::robotics::planning::PathOptimizationOptions local_options;
+      local_options.length_weight = 0.0;
+      local_options.smoothness_weight = 0.0;
+      local_options.state_cost_weight = 1.0;
+      local_options.state_cost_step_size = 1.0;
+      local_options.step_size = 0.1;
+      local_options.minimum_improvement = sign > 0.0 ? 1e-8 : 0.0;
+      local_options.max_iterations = 1;
+      local_options.line_search_steps = 1;
+      const auto local = local_optimizer.Optimize(
+          {Eigen::VectorXd::Zero(1), Eigen::VectorXd::Constant(1, -0.8),
+           Eigen::VectorXd::Constant(1, 0.7), Eigen::VectorXd::Zero(1)},
+          local_options);
+      if (!local.Success() ||
+          std::abs(local.path[2][0] - (sign > 0.0 ? 0.6 : 0.7)) > 1e-14) {
+          std::cerr << "unrelated cost masked a local objective change\n";
+          return 9;
+      }
   }
 
   std::size_t direct_checks = 0;

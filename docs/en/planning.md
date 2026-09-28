@@ -29,6 +29,11 @@ interpolation remains inside its limits and continuous joints wrap normally.
 `edge_resolution` then has no validation work to control, and `collision_checks`
 remains zero. Configure a validator to check obstacles or additional constraints.
 
+Joint weights control search distances, not a goal tolerance. A direct solution
+preserves distinct endpoints even with very small weights. RRT-Connect joins
+its trees only after a validated extension actually reaches the target state;
+a small weighted gap cannot substitute for checking the connecting motion.
+
 For mixed bounded/continuous spaces with up to eight coordinates, trees of at
 least 128 states use an internal balanced spatial index. It splits only bounded
 coordinates and evaluates candidates with the original weighted, wrapped
@@ -36,6 +41,11 @@ metric. Recent insertions are scanned until the next rebuild; ties and radius
 results retain insertion order. Small trees, fully bounded or fully continuous
 spaces, and higher dimensions retain linear searches. No external indexing
 dependency or public configuration option is required.
+
+RRT* and Informed RRT* reuse an existing nearest state when it is sampled again,
+while still reconsidering its parent and rewiring its neighbors. This avoids
+storing duplicate goal samples. The neighborhood radius follows the admitted
+sample count; `tree_nodes` reports the nodes actually stored in the tree.
 
 ## Python example
 
@@ -144,6 +154,11 @@ derivative to the samples' midpoint. A nearly collapsed side is omitted using
 a relative offset comparison. Continuous-joint steps are capped at `pi/2`
 to keep the samples on opposite sides of the waypoint; unrepresentable
 numerical gradients raise `ValueError`.
+Preconditioning preserves relative descent directions even when the reciprocal
+of a finite positive joint weight would overflow. Large geometric gradients use
+an extended-precision fallback when intermediate arithmetic is non-finite;
+a combined objective gradient that still cannot be represented raises
+`ValueError` before candidate callbacks run.
 
 A timeout still returns the best feasible path found so far. Invalid input
 paths are rejected rather than repaired, so sampling remains responsible for
@@ -163,8 +178,11 @@ because a complete objective was never evaluated.
 Waypoint updates use an incremental objective: moving one interior waypoint
 recomputes only its two adjacent length terms and the at most three affected
 second-difference terms. Full passes compute the initial and final reported
-objectives; accepted updates maintain the running objective by local deltas.
-Geometric bookkeeping therefore scales linearly with waypoint count per sweep
+objectives. Acceptance compares the affected local terms directly, so unchanged
+large costs elsewhere cannot hide a local improvement or permit an uphill trial.
+Final state-cost statistics are summed from cached accepted values without new
+callbacks, avoiding drift from repeated subtraction. Geometric bookkeeping
+therefore scales linearly with waypoint count per sweep
 for a fixed line-search budget. Collision and state-cost callbacks add their own
 costs.
 
@@ -174,6 +192,10 @@ during one waypoint's backtracking search and refresh before the next waypoint,
 including reverse sweeps. Local geometry and gradient evaluation allocate no
 Eigen heap storage after workspace/output initialization. The complete optimizer
 still allocates its path, validation samples, and optional state-cost buffers.
+
+Terms whose objective weight is zero are skipped in both cost and gradient
+evaluation. This avoids unnecessary geometry work and prevents an overflowing
+disabled term from contaminating an otherwise finite objective.
 
 Each waypoint update uses bounded backtracking. `line_search_steps` controls
 how many step sizes are attempted, while `line_search_decay` scales each

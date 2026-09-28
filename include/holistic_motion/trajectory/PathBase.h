@@ -7,10 +7,29 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace detail {
+template <typename LieGroup> class SegmentEvaluationSampler;
+}
+
+template <typename LieGroup> class TrajectoryBase;
+template <typename LieGroup> class TrajectoryDoubleS;
+template <typename LieGroup> class TrajectoryTrapezium;
+
 template <typename LieGroup>
 class PathSegmentBase : public std::enable_shared_from_this<PathSegmentBase<LieGroup>> {
 private:
     using Tangent = typename LieGroup::Tangent;
+    friend class TrajectoryBase<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
+    friend class TrajectoryDoubleS<LieGroup>;
+    friend class TrajectoryTrapezium<LieGroup>;
+
+    // Share geometry work for a complete trajectory state. Custom segments
+    // retain their virtual scalar-query behavior.
+    void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
+                    Tangent &torsion) const;
+    void ComputeDerivatives(double s, Tangent &tangent, Tangent &curvature,
+                            Tangent &torsion) const;
 
 public:
     virtual ~PathSegmentBase() {
@@ -44,6 +63,9 @@ public:
     /// \return Eigen::VectorXd
     virtual LieGroup GetConfig(double s) const = 0;
 
+    /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
+    /// [linear, angular]. Curvature and torsion are its first and second
+    /// coordinate derivatives with respect to s.
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter
@@ -164,6 +186,9 @@ public:
     /// \return Eigen::VectorXd
     LieGroup GetConfig(double s) const;
 
+    /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
+    /// [linear, angular]. Curvature and torsion are its first and second
+    /// coordinate derivatives with respect to s.
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter
