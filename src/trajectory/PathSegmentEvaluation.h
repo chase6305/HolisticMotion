@@ -135,9 +135,16 @@ template <> struct CachedQuinticEvaluation<SE3d> : QuinticEvaluation<SE3d> {
         : QuinticEvaluation<SE3d>(points, 0.0, length) {}
 };
 
-// A workspace for one construction or constraint report. Only the exact
-// built-in curve may reuse controls; derived segments retain every virtual query.
-template <typename LieGroup> class SegmentEvaluationSampler {
+// Empty for Rn so its workspace does not reserve an unused SE3 evaluator.
+template <typename LieGroup> struct QuadraticSamplingCache {};
+template <> struct QuadraticSamplingCache<SE3d> {
+    std::optional<SE3BezierEvaluation<2>> quadratic;
+};
+
+// A workspace for one construction or constraint report. Only exact built-in
+// segments may reuse geometry; derived segments retain every virtual query.
+template <typename LieGroup>
+class SegmentEvaluationSampler : private QuadraticSamplingCache<LieGroup> {
 public:
     using Tangent = typename LieGroup::Tangent;
 
@@ -148,6 +155,19 @@ public:
             const auto &curve =
                 static_cast<const PathSegBezierCurve5th<LieGroup> &>(segment);
             evaluation_.emplace(curve.control_points_, segment.GetLength());
+        } else if (typeid(segment) == typeid(PathSegLinear<LieGroup>) &&
+                   segment.IsValid()) {
+            const double length = segment.GetLength();
+            linear_tangent_.emplace(length > 0.0 ? segment.tangent_ / length
+                                                 : segment.tangent_);
+        } else if constexpr (std::is_same_v<LieGroup, SE3d>) {
+            if (typeid(segment) == typeid(PathSegBezierCurve2nd<SE3d>) &&
+                segment.IsValid()) {
+                const auto &curve =
+                    static_cast<const PathSegBezierCurve2nd<SE3d> &>(segment);
+                this->quadratic.emplace(curve.control_points_, 0.0,
+                                        segment.GetLength());
+            }
         }
     }
 
@@ -158,7 +178,12 @@ public:
             SetParameter(s);
             evaluation_->ComputeDerivatives(tangent, curvature, torsion);
         } else if constexpr (std::is_same_v<LieGroup, SE3d>) {
-            segment_.ComputeDerivatives(s, tangent, curvature, torsion);
+            if (this->quadratic) {
+                SetQuadraticParameter(s);
+                this->quadratic->ComputeDerivatives(tangent, curvature, torsion);
+            } else {
+                segment_.ComputeDerivatives(s, tangent, curvature, torsion);
+            }
         } else {
             tangent = segment_.GetTangent(s);
             curvature = segment_.GetCurvature(s);
@@ -172,12 +197,38 @@ public:
             segment_.ValidateQuery(s);
             SetParameter(s);
             evaluation_->ComputeJet(position, tangent, curvature, torsion);
+        } else if (linear_tangent_) {
+            // Match the native line's clamp and division order, including zero
+            // length. Only the constant normalized tangent is cached.
+            segment_.ValidateQuery(s);
+            const double length = segment_.GetLength();
+            const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
+            const double parameter = length > 0.0 ? local / length : 0.0;
+            position = segment_.waypoints_[0] + parameter * segment_.tangent_;
+            tangent = *linear_tangent_;
+            curvature = Tangent::ZeroHelper();
+            torsion = Tangent::ZeroHelper();
         } else {
+            if constexpr (std::is_same_v<LieGroup, SE3d>) {
+                if (this->quadratic) {
+                    segment_.ValidateQuery(s);
+                    SetQuadraticParameter(s);
+                    this->quadratic->ComputeJet(position, tangent, curvature, torsion);
+                    return;
+                }
+            }
             segment_.ComputeJet(s, position, tangent, curvature, torsion);
         }
     }
 
 private:
+    void SetQuadraticParameter(double s) {
+        const double length = segment_.GetLength();
+        const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
+        // Unlike native quintics, a valid quadratic may be shorter than Epsilon.
+        this->quadratic->SetParameter(local / length);
+    }
+
     void SetParameter(double s) {
         const double length = segment_.GetLength();
         s = clamp(s - segment_.GetStartParameter(), 0.0, length);
@@ -186,5 +237,6 @@ private:
 
     const PathSegmentBase<LieGroup> &segment_;
     std::optional<CachedQuinticEvaluation<LieGroup>> evaluation_;
+    std::optional<Tangent> linear_tangent_;
 };
 } // namespace holistic_motion::robotics::detail

@@ -13,8 +13,8 @@
 using namespace holistic_motion::robotics;
 
 namespace {
-template <typename Group> struct ScalarCurve : PathSegBezierCurve5th<Group> {
-    using Curve = PathSegBezierCurve5th<Group>;
+template <typename Group, typename Curve = PathSegBezierCurve5th<Group>>
+struct ScalarCurve : Curve {
     using Tangent = typename Group::Tangent;
     explicit ScalarCurve(const Curve &curve) : Curve(curve) {}
     Group GetConfig(double s) const override {
@@ -36,15 +36,20 @@ template <typename Group> struct ScalarCurve : PathSegBezierCurve5th<Group> {
     mutable std::array<unsigned, 4> calls{};
 };
 
-template <typename Group> struct ScalarPath : PathBase<Group> {
-    std::vector<std::shared_ptr<ScalarCurve<Group>>> curves;
+template <typename Group, typename Curve = PathSegBezierCurve5th<Group>>
+struct ScalarPath : PathBase<Group> {
+    std::vector<std::shared_ptr<ScalarCurve<Group, Curve>>> curves;
     explicit ScalarPath(const PathBase<Group> &path) {
         for (const auto &segment : path.GetPathSegments()) {
-            if (typeid(*segment) == typeid(PathSegBezierCurve5th<Group>)) {
-                auto curve = std::make_shared<ScalarCurve<Group>>(
-                    static_cast<const PathSegBezierCurve5th<Group> &>(*segment));
+            if (typeid(*segment) == typeid(Curve)) {
+                auto curve = std::make_shared<ScalarCurve<Group, Curve>>(
+                    static_cast<const Curve &>(*segment));
                 curves.push_back(curve);
                 this->path_segments_.push_back(curve);
+            } else if (typeid(*segment) == typeid(PathSegLinear<Group>)) {
+                this->path_segments_.push_back(
+                    std::make_shared<ScalarCurve<Group, PathSegLinear<Group>>>(
+                        static_cast<const PathSegLinear<Group> &>(*segment)));
             } else {
                 this->path_segments_.push_back(segment);
             }
@@ -86,7 +91,9 @@ template <typename Group> struct CustomClockProbe : TrajectoryBase<Group> {
     }
 };
 
-template <typename Group> void CheckMultiSegmentReports() {
+template <typename Group, int Degree = 5> void CheckMultiSegmentReports() {
+    using Curve = std::conditional_t<Degree == 2, PathSegBezierCurve2nd<Group>,
+                                     PathSegBezierCurve5th<Group>>;
     for (double scale : {1e-2, 1.0, 1e4}) {
         std::vector<Group> points(8);
         for (std::size_t i = 0; i < points.size(); ++i) {
@@ -100,9 +107,9 @@ template <typename Group> void CheckMultiSegmentReports() {
                     points[i].Coeffs()[j] = scale * std::sin(0.7 * i + 0.3 * j);
             }
         }
-        auto native =
-            std::make_shared<PathBezierCurve<Group>>(points, 5, false, 0.005 * scale);
-        auto scalar = std::make_shared<ScalarPath<Group>>(*native);
+        auto native = std::make_shared<PathBezierCurve<Group>>(points, Degree, false,
+                                                               0.005 * scale);
+        auto scalar = std::make_shared<ScalarPath<Group, Curve>>(*native);
         if (!native->IsValid() || scalar->curves.empty()) {
             std::cerr << "DoF=" << Group::DoF
                       << " pose=" << std::is_same_v<Group, SE3d> << " scale=" << scale
@@ -110,37 +117,42 @@ template <typename Group> void CheckMultiSegmentReports() {
                       << " curves=" << scalar->curves.size() << "\n";
             throw std::runtime_error("report fixture must contain valid curves");
         }
-        const Eigen::VectorXd limit = Eigen::VectorXd::Constant(Group::DoF, scale);
-        auto limits =
-            std::make_shared<TrajectoryConstraints>(limit, 2.0 * limit, 5.0 * limit);
-        TrajectoryDoubleS<Group> cached(native, limits), reference(scalar, limits);
-        if (!cached.IsValid() || !reference.IsValid() ||
-            cached.GetDuration() != reference.GetDuration()) {
-            std::cerr << "trajectory DoF=" << Group::DoF << " scale=" << scale
-                      << " native=" << cached.IsValid() << "," << cached.GetDuration()
-                      << " virtual=" << reference.IsValid() << ","
-                      << reference.GetDuration() << "\n";
-            throw std::runtime_error("report fixture trajectories differ");
-        }
-        for (double slowdown : {1.0, 1.7}) {
-            const double duration = slowdown * cached.GetDuration();
-            if (!cached.SetMinimumDuration(duration) ||
-                !reference.SetMinimumDuration(duration))
-                throw std::runtime_error("report fixture cannot slow down");
-            for (std::size_t samples : {2, 3, 65, 257}) {
-                for (const auto &curve : scalar->curves)
-                    curve->calls.fill(0);
-                EqualReports(cached.GetConstraintReport(samples),
-                             reference.GetConstraintReport(samples));
-                unsigned total = 0;
-                for (const auto &curve : scalar->curves) {
-                    total += curve->calls[0];
-                    for (unsigned calls : curve->calls)
-                        if (calls != curve->calls[0])
-                            throw std::runtime_error("report bypassed virtual query");
+        // Exercise automatically fitted clocks where these fixtures support
+        // them; explicit clocks below also cover quadratic geometry directly.
+        if constexpr (Degree == 5) {
+            const Eigen::VectorXd limit = Eigen::VectorXd::Constant(Group::DoF, scale);
+            auto limits = std::make_shared<TrajectoryConstraints>(limit, 2.0 * limit,
+                                                                  5.0 * limit);
+            TrajectoryDoubleS<Group> cached(native, limits), reference(scalar, limits);
+            if (!cached.IsValid() || !reference.IsValid() ||
+                cached.GetDuration() != reference.GetDuration()) {
+                std::cerr << "trajectory DoF=" << Group::DoF << " scale=" << scale
+                          << " native=" << cached.IsValid() << ","
+                          << cached.GetDuration() << " virtual=" << reference.IsValid()
+                          << "," << reference.GetDuration() << "\n";
+                throw std::runtime_error("report fixture trajectories differ");
+            }
+            for (double slowdown : {1.0, 1.7}) {
+                const double duration = slowdown * cached.GetDuration();
+                if (!cached.SetMinimumDuration(duration) ||
+                    !reference.SetMinimumDuration(duration))
+                    throw std::runtime_error("report fixture cannot slow down");
+                for (std::size_t samples : {2, 3, 65, 257}) {
+                    for (const auto &curve : scalar->curves)
+                        curve->calls.fill(0);
+                    EqualReports(cached.GetConstraintReport(samples),
+                                 reference.GetConstraintReport(samples));
+                    unsigned total = 0;
+                    for (const auto &curve : scalar->curves) {
+                        total += curve->calls[0];
+                        for (unsigned calls : curve->calls)
+                            if (calls != curve->calls[0])
+                                throw std::runtime_error(
+                                    "report bypassed virtual query");
+                    }
+                    if (samples == 257 && total == 0)
+                        throw std::runtime_error("report fixture missed every curve");
                 }
-                if (samples == 257 && total == 0)
-                    throw std::runtime_error("report fixture missed every curve");
             }
         }
         const double length = native->GetLength();
@@ -185,6 +197,60 @@ struct ReportProbe : TrajectoryBase<Group> {
         valid_ = true;
     }
 };
+
+void CheckLinearReportQueries() {
+    struct ChangingLine : PathSegLinear<Group> {
+        using PathSegLinear<Group>::PathSegLinear;
+        mutable unsigned calls{0};
+        bool nonfinite_position{false};
+        Group GetConfig(double s) const override {
+            if (nonfinite_position) {
+                Group result;
+                result.Coeffs().setConstant(std::numeric_limits<double>::infinity());
+                return result;
+            }
+            return PathSegLinear<Group>::GetConfig(s);
+        }
+        Group::Tangent GetTangent(double) const override {
+            return Group::Tangent(Eigen::Vector2d::Constant(++calls));
+        }
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    auto custom = std::make_shared<ChangingLine>(points);
+    ReportProbe custom_probe(custom);
+    if (custom_probe.GetConstraintReport(65).peak_velocity[0] != 65.0 ||
+        custom->calls != 65 ||
+        custom_probe.GetConstraintReport(3).peak_velocity[0] != 68.0 ||
+        custom->calls != 68)
+        throw std::runtime_error("report cached a custom line's changing derivative");
+    custom->nonfinite_position = true;
+    bool rejected = false;
+    try {
+        custom_probe.GetConstraintReport(3);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    if (!rejected)
+        throw std::runtime_error("report accepted a nonfinite custom line position");
+
+    auto native = std::make_shared<PathSegLinear<Group>>(points);
+    ReportProbe native_probe(native);
+    if (native_probe.GetConstraintReport(65).peak_velocity != Eigen::Vector2d(1, 0))
+        throw std::runtime_error("incorrect native linear report");
+    // A workspace may cache a line only for the duration of one report.
+    points[1].Coeffs() << 0.0, 1.0;
+    *native = PathSegLinear<Group>(points);
+    if (native_probe.GetConstraintReport(65).peak_velocity != Eigen::Vector2d(0, 1))
+        throw std::runtime_error("report reused a stale native linear tangent");
+    points[1] = points[0];
+    *native = PathSegLinear<Group>(points);
+    const auto constant = native_probe.GetConstraintReport(65);
+    if (!constant.within_limits || !constant.peak_velocity.isZero(0.0) ||
+        !constant.peak_acceleration.isZero(0.0) || !constant.peak_jerk.isZero(0.0))
+        throw std::runtime_error("report divided by a zero-length line");
+}
 
 void CheckCustomQueriesAndFailures() {
     struct ChangingCurve : PathSegBezierCurve5th<Group> {
@@ -241,6 +307,8 @@ int main() {
         CheckMultiSegmentReports<Rn<double, 7>>();
         CheckMultiSegmentReports<Rn<double, 32>>();
         CheckMultiSegmentReports<SE3d>();
+        CheckMultiSegmentReports<SE3d, 2>();
+        CheckLinearReportQueries();
         CheckCustomQueriesAndFailures();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
