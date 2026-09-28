@@ -55,6 +55,49 @@ void CheckLocalBoundaries() {
             "tolerance must not consume narrow segment interior");
 }
 
+void CheckToleranceEdges() {
+    const auto check_knot = [](const PSpline &spline, std::size_t knot_index,
+                               double radius) {
+        const double knot = spline.GetKnots()[knot_index];
+        std::size_t phase;
+        spline.ComputeJetAtS(knot - radius, phase);
+        Require(phase == knot_index, "closed left tolerance boundary snaps right");
+        spline.ComputeJetAtS(std::nextafter(knot - radius, -INFINITY), phase);
+        Require(phase == knot_index - 1, "outside left tolerance stays in phase");
+        auto jet = spline.ComputeJetAtS(knot + radius, phase);
+        Require(phase == knot_index && jet[0] == 0.0,
+                "closed right tolerance boundary uses exact knot");
+        jet = spline.ComputeJetAtS(std::nextafter(knot + radius, INFINITY), phase);
+        Require(phase == knot_index && jet[0] > 0.0,
+                "outside right tolerance retains local time");
+    };
+    // Power-of-two scales make each boundary exactly representable, including
+    // a zero rounding allowance at subnormal time scales.
+    for (int exponent : {-1050, -1000, -500, 0, 500, 1000}) {
+        const double span = std::ldexp(1.0, exponent);
+        PSpline spline;
+        for (int i = 0; i < 3; ++i)
+            Require(
+                spline.PushBack(
+                    std::make_shared<Polynomial>(Eigen::Vector4d(0, 1, 0, 0)), span),
+                "append tolerance fixture");
+        check_knot(spline, 1, 64 * std::numeric_limits<double>::epsilon() * span);
+    }
+    // Both sides of a short phase cap the adjacent knot's allowance at two
+    // ULPs, even though the scale-based allowance is much larger.
+    for (double start : {1.0, 1e8, 1e100}) {
+        const double ulp = std::nextafter(start, INFINITY) - start;
+        PSpline spline;
+        for (double span : {start, 8 * ulp, start})
+            Require(
+                spline.PushBack(
+                    std::make_shared<Polynomial>(Eigen::Vector4d(0, 1, 0, 0)), span),
+                "append short-phase tolerance fixture");
+        check_knot(spline, 1, 2 * ulp);
+        check_knot(spline, 2, 2 * ulp);
+    }
+}
+
 void CheckAppendValidation() {
     PSpline spline;
     Require(spline.PushBack(Constant(1.0), 1e308), "large finite duration");
@@ -586,9 +629,9 @@ int main() {
          {CheckContinuityUsesExactPhaseEndpoints, CheckContinuityUsesOneSidedGeometry,
           CheckLinearPhaseVelocityExtremum,
           CheckReturningPhaseStillSamplesCurvedExcursion, CheckLocalBoundaries,
-          CheckAppendValidation, CheckJetAndInvalidTimes, CheckJetExtremeCoefficients,
-          CheckInvalidProfilesAreNotTruncated, CheckAllPhaseStatesAreFinite,
-          CheckShortPositivePhasesArePreserved,
+          CheckToleranceEdges, CheckAppendValidation, CheckJetAndInvalidTimes,
+          CheckJetExtremeCoefficients, CheckInvalidProfilesAreNotTruncated,
+          CheckAllPhaseStatesAreFinite, CheckShortPositivePhasesArePreserved,
           CheckTimeScalingRejectsOverflowWithoutMutation,
           CheckContinuityUsesLocalTimeScale, CheckLimitSamplingSupportsExtremeDurations,
           CheckReportRejectsNonFiniteStates,

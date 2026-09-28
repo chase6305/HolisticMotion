@@ -115,17 +115,19 @@ class PSpline {
             at_end ? knots_[phase + 1] - knots_[phase] : 0.0);
     }
 
-    double KnotTolerance(std::size_t index) const {
-        // An unrelated long tail must not move earlier queries. Cap snapping
-        // so short phases remain queryable, without a floor on the time unit.
-        double span = std::numeric_limits<double>::infinity();
-        if (index > 0)
-            span = knots_[index] - knots_[index - 1];
-        if (index + 1 < knots_.size())
-            span = std::min(span, knots_[index + 1] - knots_[index]);
-        return std::min(64.0 * std::numeric_limits<double>::epsilon() *
-                            std::abs(knots_[index]),
-                        0.25 * span);
+    bool WithinKnotTolerance(double distance, std::size_t index) const {
+        // Interior queries usually exceed the scale-based bound already. Only
+        // near a knot do we need the adjacent spans that protect short phases.
+        // Comparing each bound preserves distance <= min(scale, quarter span).
+        if (distance > 64.0 * std::numeric_limits<double>::epsilon() *
+                           std::abs(knots_[index]))
+            return false;
+        if (index > 0 && distance > 0.25 * (knots_[index] - knots_[index - 1]))
+            return false;
+        if (index + 1 < knots_.size() &&
+            distance > 0.25 * (knots_[index + 1] - knots_[index]))
+            return false;
+        return true;
     }
 
     std::array<double, 4> ComputeJetInPhase(double s, std::size_t phase,
@@ -139,12 +141,12 @@ class PSpline {
         if (s == start) {
             index = phase;
             s = 0.0;
-        } else if (end - s <= KnotTolerance(phase + 1)) {
+        } else if (WithinKnotTolerance(end - s, phase + 1)) {
             index = std::min(phase + 1, polynomials_.size() - 1);
             s = end - knots_[index];
         } else {
             index = phase;
-            s = s - start <= KnotTolerance(phase) ? 0.0 : s - start;
+            s = WithinKnotTolerance(s - start, phase) ? 0.0 : s - start;
         }
         holistic_motion::utility::LogDebug(
             "[PSpline] index:{}, knots_[index]:{}, local time:{}", index,
@@ -166,14 +168,14 @@ class PSpline {
         const auto right =
             static_cast<std::size_t>(nearest_right - knots_.begin());
         std::size_t index;
-        if (*nearest_right - s <= KnotTolerance(right)) {
+        if (WithinKnotTolerance(*nearest_right - s, right)) {
             s = *nearest_right;
             index = std::min(right, polynomials_.size() - 1);
         } else {
             // A finite, clamped query has a right knot. If it is not snapped
             // to that knot, lower_bound also identifies its containing segment.
             index = right - 1;
-            if (s - knots_[index] <= KnotTolerance(index)) {
+            if (WithinKnotTolerance(s - knots_[index], index)) {
                 s = knots_[index];
             }
         }
