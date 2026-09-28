@@ -263,7 +263,7 @@ void SE3Base<_Derived>::SetTranslation(const Translation& translation) {
 }
 
 template <typename _Derived>
-typename SE3Base<_Derived>::LieGroup SE3Base<_Derived>::Inverse(
+inline typename SE3Base<_Derived>::LieGroup SE3Base<_Derived>::Inverse(
         OptJacobianRef J_minv_m) const {
     if (J_minv_m) {
         (*J_minv_m) = -Adj();
@@ -275,7 +275,7 @@ typename SE3Base<_Derived>::LieGroup SE3Base<_Derived>::Inverse(
 }
 
 template <typename _Derived>
-typename SE3Base<_Derived>::Tangent SE3Base<_Derived>::Log(
+inline typename SE3Base<_Derived>::Tangent SE3Base<_Derived>::Log(
         OptJacobianRef J_t_m) const {
     using std::abs;
     using std::sqrt;
@@ -303,7 +303,7 @@ typename SE3Base<_Derived>::Tangent SE3Base<_Derived>::Lift(
 
 template <typename _Derived>
 template <typename _DerivedOther>
-typename SE3Base<_Derived>::LieGroup SE3Base<_Derived>::Compose(
+inline typename SE3Base<_Derived>::LieGroup SE3Base<_Derived>::Compose(
         const LieGroupBase<_DerivedOther>& m,
         OptJacobianRef J_mc_ma,
         OptJacobianRef J_mc_mb) const {

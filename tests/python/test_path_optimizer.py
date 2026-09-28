@@ -263,8 +263,10 @@ def test_path_optimizer_rejects_unrepresentable_objective():
 def test_path_optimizer_prunes_unrepresentable_candidate_before_callbacks():
     optimizer = hm.PathOptimizer([-1.0], [1.0])
     optimizer.set_joint_weights([np.finfo(float).max])
-    optimizer.set_state_cost(lambda q: q[0] + 1.0)
-    optimizer.set_state_cost_gradient(lambda _q: [1.0])
+    # Keep the preconditioned direction appreciable despite the large metric
+    # weight, so this tests a real trial rather than an overflowing gradient.
+    optimizer.set_state_cost(lambda q: 1e308 * (q[0] + 1.0))
+    optimizer.set_state_cost_gradient(lambda _q: [1e308])
     options = _options(
         max_iterations=1,
         step_size=1.0,

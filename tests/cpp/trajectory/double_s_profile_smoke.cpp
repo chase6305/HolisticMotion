@@ -19,6 +19,13 @@ struct ProfileProbe : TrajectoryDoubleS<Rn<double, 2>> {
     using TrajectoryDoubleS<Rn<double, 2>>::_ComputeNextTrajStep;
     using TrajectoryDoubleS<Rn<double, 2>>::_AlignProfileAfter;
     using TrajectoryDoubleS<Rn<double, 2>>::_ReverseWithMaxJerk;
+    void ConfigureStraightPath() {
+        std::vector<Rn<double, 2>> points(2);
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << 2.0, 0.0;
+        path_ = std::make_shared<PathBezierCurve<Rn<double, 2>>>(points, 5);
+        max_acceleration_ = Eigen::Vector2d::Ones();
+    }
 };
 
 void CheckProfileAlignment() {
@@ -79,7 +86,8 @@ void CheckFailedAlignmentPreservesTimestamps() {
 }
 
 void CheckFailedProfilesAreEmpty() {
-    for (const auto &input : {std::pair<double, double>{1e20, 1.0},
+    for (const auto &input : {std::pair<double, double>{0.0, 0.0},
+                              {1e20, 1.0},
                               {0.0, 1e20},
                               {std::numeric_limits<double>::max(), 1e308}}) {
         double start_velocity = 2.0;
@@ -257,6 +265,116 @@ void CheckLongZeroJerkStep() {
     }
 }
 
+void CheckShortOneSidedProfile() {
+    // The feasible end speed leaves a sub-ulp opposite peak. A fitted
+    // one-sided transition must preserve distance without a collapsed ramp.
+    for (double scale : {1e-100, 1.0, 1e100}) {
+        for (double start_time : {0.0, 15.817517866570055, 1000.0}) {
+            constexpr double start = 0.108909003150786;
+            constexpr double end = 0.12356415609575787;
+            constexpr double acceleration = 0.00373477602911192;
+            constexpr double jerk = 35.32750676996459;
+            double v0 = 0.0, v1 = 0.8348661838669967 * scale;
+            std::list<TrajectorySeg> phases;
+            if (!ProfileProbe::_ComputeDoubleSProfile(
+                    start * scale, end * scale, v0, v1, 2.8945292478592495 * scale,
+                    acceleration * scale, jerk * scale, start_time, phases, 0, false) ||
+                phases.size() != 8 || v0 != 0.0 || v1 <= 0.0 ||
+                std::abs(phases.back().pos / scale - end) > 1e-13 ||
+                std::abs((phases.back().vel - v1) / scale) > 1e-13) {
+                throw std::runtime_error("short one-sided profile was lost");
+            }
+            for (auto previous = phases.begin(), next = std::next(previous);
+                 next != phases.end(); ++previous, ++next) {
+                const long double dt = next->timestamp - previous->timestamp;
+                const long double q = previous->pos / scale;
+                const long double v = previous->vel / scale;
+                const long double a = previous->acc / scale;
+                const long double j = previous->jerk / scale;
+                const long double clock_error =
+                    4 * std::numeric_limits<double>::epsilon() *
+                    std::max(std::abs(previous->timestamp), std::abs(next->timestamp));
+                if (dt < 0 || !std::isfinite(dt) ||
+                    std::abs(q + v * dt + a * dt * dt / 2 + j * dt * dt * dt / 6 -
+                             next->pos / scale) > 1e-13 ||
+                    std::abs(v + a * dt + j * dt * dt / 2 - next->vel / scale) >
+                        1e-13 + acceleration * clock_error ||
+                    std::abs(a + j * dt - next->acc / scale) >
+                        1e-13 + jerk * clock_error ||
+                    std::abs(a) > acceleration * (1 + 1e-12) ||
+                    std::abs(j) > jerk * (1 + 1e-12)) {
+                    throw std::runtime_error(
+                        "one-sided phase violates physical motion");
+                }
+                if (dt == 0 &&
+                    (previous->pos != next->pos || previous->vel != next->vel ||
+                     previous->acc != next->acc)) {
+                    throw std::runtime_error("collapsed one-sided phase changes state");
+                }
+            }
+        }
+    }
+}
+
+void CheckScaledProfiles() {
+    for (double scale : {1e-200, 1e-100, 1.0, 1e100, 1e200}) {
+        for (double acceleration : {0.1, 2.0}) {
+            for (double length : {1e-12, 0.1, 1.0, 10.0}) {
+                double v0 = 0.0, v1 = 0.0;
+                std::list<TrajectorySeg> phases;
+                if (!ProfileProbe::_ComputeDoubleSProfile(
+                        0.0, length * scale, v0, v1, scale, acceleration * scale,
+                        3.0 * scale, 0.0, phases, 0, false) ||
+                    phases.size() != 8) {
+                    throw std::runtime_error("scaled rest profile was rejected");
+                }
+                // Independent dimensionless long-double reference. Scaling
+                // every coordinate and derivative limit leaves time unchanged.
+                const long double a = acceleration, j = 3.0L, h = length;
+                const long double tj = std::min(std::sqrt(1.0L / j), a / j);
+                const long double ramp = tj < a / j ? 2 * tj : tj + 1 / a;
+                long double expected;
+                if (h >= ramp) {
+                    expected = h + ramp;
+                } else {
+                    const long double triangle = std::cbrt(h / (2 * j));
+                    expected = triangle <= a / j
+                                   ? 4 * triangle
+                                   : a / j + std::sqrt(a * a / (j * j) + 4 * h / a);
+                }
+                if (std::abs(phases.back().timestamp / expected - 1.0L) > 1e-12L)
+                    throw std::runtime_error(
+                        "scaled rest timing disagrees with reference");
+                for (auto previous = phases.begin(), next = std::next(previous);
+                     next != phases.end(); ++previous, ++next) {
+                    const long double dt = next->timestamp - previous->timestamp;
+                    const long double q = previous->pos / scale;
+                    const long double v = previous->vel / scale;
+                    const long double acc = previous->acc / scale;
+                    const long double jerk = previous->jerk / scale;
+                    if (!std::isfinite(dt) || dt < 0 ||
+                        std::abs(q + v * dt + acc * dt * dt / 2 +
+                                 jerk * dt * dt * dt / 6 - next->pos / scale) >
+                            1e-12L * h ||
+                        std::abs(v + acc * dt + jerk * dt * dt / 2 -
+                                 next->vel / scale) > 1e-12L ||
+                        std::abs(acc + jerk * dt - next->acc / scale) > 1e-12L ||
+                        std::abs(acc) > a * (1 + 1e-12L) ||
+                        std::abs(jerk) > j * (1 + 1e-12L)) {
+                        throw std::runtime_error(
+                            "scaled phase violates physical integration");
+                    }
+                }
+                if (std::abs(phases.back().pos / scale - length) > 1e-12 * length ||
+                    std::abs(phases.back().vel / scale) > 1e-12 ||
+                    std::abs(phases.back().acc / scale) > 1e-12) {
+                    throw std::runtime_error("scaled profile misses its endpoint");
+                }
+            }
+        }
+    }
+}
+
 void CheckProfile(double length, double start_velocity, double end_velocity) {
     constexpr double max_velocity = 1.0;
     constexpr double max_acceleration = 2.0;
@@ -376,8 +494,294 @@ void CheckRecordedTrajectory() {
         throw std::runtime_error("recorded trajectory misses its final waypoint");
 }
 
+void CheckRoundoffEquivalentSpeedCaps() {
+    for (double scale : {1e-8, 1.0, 1e8}) {
+        {
+            const double eps = std::numeric_limits<double>::epsilon();
+            double initial = scale * (1.0 + 64.0 * eps);
+            const double retained = initial;
+            double terminal = scale * (1.0 + 192.0 * eps);
+            std::list<TrajectorySeg> phases;
+            if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0 * scale, initial,
+                                                      terminal, scale, scale, scale,
+                                                      0.0, phases, 1, false) ||
+                initial != retained || terminal != retained)
+                throw std::runtime_error(
+                    "speed-cap budget accumulated across endpoints");
+        }
+        for (double ulps : {64.0, 512.0}) {
+            const double original =
+                scale * (1.0 + ulps * std::numeric_limits<double>::epsilon());
+            double initial = original;
+            double terminal = 0.4 * scale;
+            std::list<TrajectorySeg> phases;
+            const bool success = ProfileProbe::_ComputeDoubleSProfile(
+                0.0, 3.0 * scale, initial, terminal, scale, scale, scale, 0.0, phases,
+                1, false);
+            if (phases.size() != 8 || success != (ulps == 64.0) ||
+                initial != (success ? original : scale) || terminal != 0.4 * scale)
+                throw std::runtime_error(
+                    "speed-cap roundoff changed endpoint semantics");
+            auto previous = phases.begin();
+            for (auto next = std::next(previous); next != phases.end();
+                 ++previous, ++next) {
+                if (next->timestamp < previous->timestamp ||
+                    !std::isfinite(next->pos) || !std::isfinite(next->vel) ||
+                    !std::isfinite(next->acc))
+                    throw std::runtime_error(
+                        "speed-cap adjustment produced invalid phases");
+            }
+            if (std::abs(phases.back().pos / scale - 3.0) > 1e-12 ||
+                std::abs(phases.back().vel / scale - 0.4) > 1e-13)
+                throw std::runtime_error(
+                    "speed-cap adjustment lost integrated endpoints");
+        }
+    }
+}
+
+void CheckTriangularPlateauCanBeRebased() {
+    double start_velocity = 0.010460993369887253;
+    double end_velocity = 0.0005738784102910987;
+    std::list<TrajectorySeg> phases;
+    // A triangular deceleration needs start-speed backtracking. Cancellation
+    // used to leave a one-ulp plateau that collapsed after timestamp rebasing.
+    ProfileProbe::_ComputeDoubleSProfile(
+        0.004866954021559577, 0.006014272160646773, start_velocity, end_velocity,
+        0.13629581798020268, 1.519583360954827, 0.20274587983978792, 0.6899296743090442,
+        phases, 2, false);
+    if (phases.size() != 8)
+        throw std::runtime_error("triangular deceleration profile missing");
+    const TrajectorySeg previous(0, 0.74964750099387845, 0.0023503957270758049,
+                                 0.0062706691450572782, 0.0, 0.0);
+    if (!ProfileProbe::_AlignProfileAfter(previous, phases))
+        throw std::runtime_error("roundoff plateau must not prevent rebasing");
+    auto first = phases.begin();
+    for (auto next = std::next(first); next != phases.end(); ++first, ++next) {
+        if (next->timestamp < first->timestamp ||
+            (next->timestamp == first->timestamp &&
+             (next->pos != first->pos || next->vel != first->vel ||
+              next->acc != first->acc)))
+            throw std::runtime_error("rebased plateau changed state at zero time");
+    }
+}
+
+void CheckConcaveProfilePropagatesInfeasibleStartSpeed() {
+    double start = 1.1798009563230965;
+    double end = 0.0;
+    std::list<TrajectorySeg> phases;
+    const bool complete = ProfileProbe::_ComputeDoubleSProfile(
+        1.1555194425820554, 1.361950310411495, start, end, 1.3662218246634337,
+        1.6326396524052214, 2.981372779263992, 1.6089231672976763, phases, 2, true);
+    if (complete || phases.size() != 8 || start >= 1.1798009563230965 ||
+        phases.front().vel != start)
+        throw std::runtime_error("reduced final entry speed needs backtracking");
+    // Concave profiles may preserve an above-cap endpoint when distance is
+    // sufficient. That case does not need an upstream speed adjustment.
+    start = 1.01;
+    end = 0.0;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0, 2.0, 5.0, 0.0,
+                                              phases, 2, true) ||
+        start != 1.01 || phases.front().vel != start)
+        throw std::runtime_error("feasible concave entry speed must be retained");
+}
+
+void CheckBacktrackingCanAccelerateAnEarlierCruise() {
+    double start = 1.0;
+    double end = 1.0;
+    std::list<TrajectorySeg> phases;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 2.0, start, end, 1.0, 1.0, 1.0, 0.0,
+                                              phases, 0))
+        throw std::runtime_error("constant-speed profile must be feasible");
+    for (const auto &phase : phases)
+        if (phase.acc != 0.0)
+            throw std::runtime_error("cruise must have zero observed acceleration");
+    phases.back().vel = 0.5;
+    ProfileProbe probe;
+    probe.ConfigureStraightPath();
+    if (!probe._ReverseWithMaxJerk(phases) || phases.size() != 8 ||
+        std::abs(phases.front().vel - 1.0) > 1e-12 ||
+        std::abs(phases.back().vel - 0.5) > 1e-12 ||
+        std::abs(phases.back().pos - 2.0) > 1e-12)
+        throw std::runtime_error("backtracking must use available acceleration");
+    for (const auto &phase : phases)
+        if (std::abs(phase.acc) > 1.0 + 1e-12)
+            throw std::runtime_error("backtracking exceeded configured acceleration");
+}
+
+void CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking() {
+    using Group = Rn<double, 2>;
+    std::vector<Group> points(2);
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1e-7, 0.0;
+    auto path = std::make_shared<PathBezierCurve<Group>>(points, 5);
+    auto limits = std::make_shared<TrajectoryConstraints>(
+        Eigen::Vector2d::Constant(1e-4), Eigen::Vector2d::Constant(1e-6),
+        Eigen::Vector2d::Constant(1e-6));
+    const TrajectoryDoubleS<Group> trajectory(path, limits, 5e-6, 0.0);
+    if (trajectory.IsValid())
+        throw std::runtime_error("infeasible requested initial speed must be rejected");
+}
+
+void CheckUnsupportedOverspeedValleyIsNotPublished() {
+    double start = 1.206062857577002;
+    double end = 1.5934050386482168;
+    std::list<TrajectorySeg> phases;
+    if (ProfileProbe::_ComputeDoubleSProfile(
+            0.0, 0.00932899000310764, start, end, 1.0862777391213074,
+            0.41177555071752814, 1.6054309265298157, 0.0, phases, 0, true) ||
+        !phases.empty() || start != 1.206062857577002 || end != 1.5934050386482168)
+        throw std::runtime_error("unsupported valley must preserve inputs and fail");
+    start = 1.2;
+    end = 1.3;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 3.0, start, end, 1.0, 2.0, 5.0, 0.0,
+                                              phases, 0, true) ||
+        phases.size() != 8 || std::abs(phases.back().pos - 3.0) > 1e-12 ||
+        std::abs(phases.back().vel - 1.3) > 1e-12)
+        throw std::runtime_error("feasible overspeed valley must remain supported");
+}
+
+void CheckRoundedJerkRampsAfterCruise() {
+    // The absolute clock has only about five significant digits left for
+    // these microsecond ramps after a 100,000-second cruise. Integrate the
+    // stored polynomial coefficients against the actual knot differences;
+    // the clock error must not be added to the continuity tolerance.
+    constexpr long double roundoff = 64 * std::numeric_limits<double>::epsilon();
+    for (double scale : {1e-200, 1.0, 1e200}) {
+        for (double start_time : {0.0, 1e5}) {
+            for (double jerk : {1e4, 1e5, 1e6}) {
+                for (bool moving : {false, true}) {
+                    const double q0 = -200.0 * scale, q1 = 9800.0 * scale;
+                    double v0 = (moving ? 0.02 : 0.0) * scale;
+                    double v1 = (moving ? 0.06 : 0.0) * scale;
+                    std::list<TrajectorySeg> phases;
+                    if (!ProfileProbe::_ComputeDoubleSProfile(
+                            q0, q1, v0, v1, 0.1 * scale, scale, jerk * scale,
+                            start_time, phases, 0, false) ||
+                        phases.size() != 8 || phases.front().pos != q0 ||
+                        phases.front().timestamp != start_time ||
+                        phases.front().vel != v0 || phases.back().pos != q1 ||
+                        phases.back().vel != v1 || phases.back().acc != 0.0)
+                        throw std::runtime_error(
+                            "rounded cruise lost its boundary state");
+                    for (auto p = phases.begin(), n = std::next(p); n != phases.end();
+                         ++p, ++n) {
+                        const long double t = n->timestamp - p->timestamp;
+                        const long double q = static_cast<long double>(p->pos) / scale;
+                        const long double v = static_cast<long double>(p->vel) / scale;
+                        const long double c2 =
+                            static_cast<long double>(p->acc / 2) / scale;
+                        const long double c3 =
+                            static_cast<long double>(p->jerk / 6) / scale;
+                        if (t <= 0 ||
+                            std::abs(q + t * (v + t * (c2 + t * c3)) -
+                                     static_cast<long double>(n->pos) / scale) >
+                                roundoff * 10000 ||
+                            std::abs(v + t * (2 * c2 + t * 3 * c3) -
+                                     static_cast<long double>(n->vel) / scale) >
+                                roundoff * 0.1L ||
+                            std::abs(2 * c2 + t * 6 * c3 -
+                                     static_cast<long double>(n->acc) / scale) >
+                                roundoff)
+                            throw std::runtime_error(
+                                "rounded cruise polynomial is discontinuous");
+                        for (int sample = 0; sample <= 16; ++sample) {
+                            const long double at = t * sample / 16;
+                            const long double speed = v + at * (2 * c2 + at * 3 * c3);
+                            if (speed < -roundoff * 0.1L ||
+                                speed > 0.1L * (1 + roundoff) ||
+                                std::abs(2 * c2 + at * 6 * c3) > 1 + roundoff ||
+                                std::abs(6 * c3) > jerk * (1 + roundoff))
+                                throw std::runtime_error(
+                                    "rounded cruise exceeds a derivative limit");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void CheckRebasedRoundedJerkRamps() {
+    double v0 = 0.0, v1 = 0.0;
+    std::list<TrajectorySeg> phases;
+    if (!ProfileProbe::_ComputeDoubleSProfile(0.0, 10000.0, v0, v1, 0.1, 1.0, 1e6, 0.0,
+                                              phases, 0, false) ||
+        !ProfileProbe::_AlignProfileAfter(
+            TrajectorySeg(0, 12345.6789, 0.0, 0.0, 0.0, 0.0), phases) ||
+        phases.front().timestamp != 12345.6789 || phases.size() != 8)
+        throw std::runtime_error("rebased rounded profile lost its clock");
+    constexpr long double budget = 64 * std::numeric_limits<double>::epsilon();
+    for (auto p = phases.begin(), n = std::next(p); n != phases.end(); ++p, ++n) {
+        const long double dt = n->timestamp - p->timestamp;
+        const long double c2 = p->acc / 2.0, c3 = p->jerk / 6.0;
+        if (dt <= 0 ||
+            std::abs(p->pos + dt * (p->vel + dt * (c2 + dt * c3)) - n->pos) >
+                budget * 10000 ||
+            std::abs(p->vel + dt * (2 * c2 + dt * 3 * c3) - n->vel) > budget * 0.1L ||
+            std::abs(2 * c2 + dt * 6 * c3 - n->acc) > budget ||
+            std::abs(p->acc) > 1.0 || std::abs(p->jerk) > 1e6 || p->vel < 0.0 ||
+            p->vel > 0.1)
+            throw std::runtime_error("rebased rounded profile lost phase continuity");
+    }
+}
+void CheckRoundedEndpointSpeedIntervals() {
+    // Near-cap endpoint differences, absent end ramps, and a cruise whose
+    // nearest valid endpoint lies below the initially rounded timestamp.
+    const std::array<std::array<double, 8>, 4> inputs{
+        {{{2168.5897502833095, 2553.8221104654517, 2.0504773656651034,
+           3.343309287459106, 3.343309287459111, 0.6513108750964135, 255523.56579450276,
+           1060.168985516096}},
+         {{29134.124903429205, 29315.626934124975, 2.559011966406329, 2.067594418125017,
+           2.559011966406329, 0.4985217279999209, 195581.02656541753,
+           10173.58713334678}},
+         {{153468.46323557975, 164242.1536526951, 6.360459494575331, 6.336864591289503,
+           6.360459494575359, 1.8308870559706565, 815517.1551238695,
+           15755.707412009162}},
+         {{192352.41665556014, 192473.43308859994, 6.354084023747126, 9.690906553075225,
+           9.690906553075259, 2.789571316943238, 500322.69658618263,
+           21073.935488310166}}}};
+    constexpr long double eps = std::numeric_limits<double>::epsilon();
+    for (const auto &x : inputs) {
+        double v0 = x[2], v1 = x[3];
+        std::list<TrajectorySeg> phases;
+        if (!ProfileProbe::_ComputeDoubleSProfile(x[0], x[1], v0, v1, x[4], x[5], x[6],
+                                                  x[7], phases, 0, false) ||
+            phases.size() != 8 || v0 != x[2] || v1 != x[3] ||
+            phases.front().pos != x[0] || phases.back().pos != x[1] ||
+            phases.front().vel != v0 || phases.back().vel != v1)
+            throw std::runtime_error("rounded speed interval changed its endpoints");
+        for (auto p = phases.begin(), n = std::next(p); n != phases.end(); ++p, ++n) {
+            const long double t = n->timestamp - p->timestamp;
+            const long double c2 = p->acc / 2.0, c3 = p->jerk / 6.0;
+            const long double displacement = t * (p->vel + t * (c2 + t * c3));
+            const long double position_budget =
+                64 * eps * (x[1] - x[0]) +
+                eps * std::max(std::abs(p->pos), std::abs(n->pos));
+            if (t < 0 ||
+                std::abs(displacement - (static_cast<long double>(n->pos) - p->pos)) >
+                    position_budget ||
+                std::abs(p->vel + t * (2 * c2 + t * 3 * c3) - n->vel) >
+                    64 * eps * x[4] ||
+                std::abs(2 * c2 + t * 6 * c3 - n->acc) > 64 * eps * x[5] ||
+                std::abs(p->acc) > x[5] || std::abs(p->jerk) > x[6] || p->vel < 0 ||
+                p->vel > x[4] ||
+                (t == 0 && (p->pos != n->pos || p->vel != n->vel || p->acc != n->acc)))
+                throw std::runtime_error(
+                    "rounded speed interval violates phase integration");
+        }
+    }
+}
 int main() {
     try {
+        CheckRoundedEndpointSpeedIntervals();
+        CheckRebasedRoundedJerkRamps();
+        CheckRoundedJerkRampsAfterCruise();
+        CheckUnsupportedOverspeedValleyIsNotPublished();
+        CheckInfeasibleSmallInitialSpeedFailsWithoutBacktracking();
+        CheckBacktrackingCanAccelerateAnEarlierCruise();
+        CheckConcaveProfilePropagatesInfeasibleStartSpeed();
+        CheckRoundoffEquivalentSpeedCaps();
+        CheckTriangularPlateauCanBeRebased();
         ProfileProbe probe;
         sampling_checks::CheckSegmentSampling(
             [&](const auto &segment, const auto &v, const auto &a, const auto &j) {
@@ -396,6 +800,8 @@ int main() {
         CheckRecursiveProfileAlignment();
         CheckLongZeroJerkStep();
         CheckRecordedTrajectory();
+        CheckScaledProfiles();
+        CheckShortOneSidedProfile();
         for (double length : {1e-5, 1e-7, 1e-9, 0.01, 1.0}) {
             CheckProfile(length, 0.03, 0.04);
             CheckProfile(length, 0.04, 0.03);

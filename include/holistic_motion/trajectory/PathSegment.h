@@ -50,6 +50,7 @@ public:
     virtual LieGroup GetConfig(double s) const override;
     virtual Tangent GetTangent(double s) const override;
     virtual Tangent GetCurvature(double s) const override;
+    virtual Tangent GetTorsion(double s) const override;
 
 protected:
     std::vector<LieGroup>
@@ -63,6 +64,8 @@ template <typename LieGroup>
 class PathSegBezierCurve5th : public PathSegmentBase<LieGroup> {
 private:
     using Tangent = typename LieGroup::Tangent;
+    friend class PathSegmentBase<LieGroup>;
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
 
 public:
     PathSegBezierCurve5th(const std::array<LieGroup, 3>& waypoints,

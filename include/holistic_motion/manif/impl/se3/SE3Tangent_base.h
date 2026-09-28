@@ -136,7 +136,7 @@ public:  /// @todo make protected
 };
 
 template <typename _Derived>
-typename SE3TangentBase<_Derived>::LieGroup SE3TangentBase<_Derived>::Exp(
+inline typename SE3TangentBase<_Derived>::LieGroup SE3TangentBase<_Derived>::Exp(
         OptJacobianRef J_m_t) const {
     using std::cos;
     using std::sin;

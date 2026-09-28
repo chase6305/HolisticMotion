@@ -53,7 +53,11 @@ runtime worker when parallel queries are required.
 `SRSKinematics` is selected for compatible seven-revolute spherical
 shoulder/wrist chains. Its null-space projection rejects non-finite inputs and
 uses a relative singular-value cutoff so near-singular configurations do not
-amplify numerical noise. Ideal SRS models retain the direct closed-form result;
+amplify numerical noise. Projection uses the retained right singular vectors
+directly, without forming a pseudoinverse. `NullSpacePlanner` requires its start
+to satisfy both hardware and user limits and safely normalizes large finite
+preferred directions before taking a step.
+Ideal SRS models retain the direct closed-form result;
 small URDF link offsets use that result as a branch-preserving seed for a
 strict local correction. Equivalent revolute angles are selected directly
 from the declared joint-limit interval rather than from a fixed wrap count.

@@ -74,6 +74,9 @@ public:
     /// \brief get the position of the trajectory
     LieGroup GetPosition(double t) const;
 
+    /// For SE3, velocity is the body twist vee(Q^-1 dQ/dt), ordered
+    /// [linear, angular]; acceleration and jerk differentiate these coordinates.
+    /// Constraints and reports use these same body-coordinate quantities.
     /// \brief get the velocity of the trajectory
     Tangent GetVelocity(double t) const;
 
@@ -87,12 +90,18 @@ public:
     State GetState(double t) const;
 
     /// Sample the complete trajectory, including both sides of internal
-    /// breakpoints, and summarize derivative-limit utilization.
+    /// breakpoints, and summarize derivative-limit utilization. Continuity uses
+    /// the one-sided phase endpoints rather than nearby time samples.
     /// Throws std::runtime_error if a sampled state contains non-finite values.
     ConstraintReport GetConstraintReport(std::size_t samples = 2001) const;
 
+private:
+    State ComposeState(const std::array<double, 4> &jet,
+                       const std::shared_ptr<PathSegmentBase<LieGroup>> &segment) const;
+    State GetPhaseEndpoint(std::size_t phase, bool at_end) const;
+
 protected:
-    /// Associate phases with their owning segments for entirely linear paths.
+    /// Associate unambiguous linear phases with their owning geometry.
     bool InitializePhasePathSegments();
 
     /// Evaluate the time law and select geometry using the same active phase.
