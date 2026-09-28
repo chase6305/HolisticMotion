@@ -1,75 +1,12 @@
 #include "holistic_motion/trajectory/TrajectoryBase.h"
 
 #include "PathSegmentEvaluation.h"
+#include "TrajectoryStateEvaluation.h"
 
 namespace holistic_motion {
 namespace robotics {
 
 namespace {
-template <unsigned Power, typename Tangent>
-Tangent ScaleByPower(const Tangent &value, double speed, double speed_power) {
-    if (std::isnormal(speed_power) || speed == 0.0)
-        return value * speed_power;
-    // A speed power may overflow or underflow even when its product with a
-    // geometric derivative is representable. Starting from that derivative
-    // keeps every intermediate between it and the final result in magnitude.
-    Tangent result = value;
-    for (unsigned order = 0; order < Power; ++order)
-        result *= speed;
-    return result;
-}
-
-template <typename Tangent>
-Tangent ScaleMixedJerkExtreme(const Tangent &curvature, double speed,
-                             double acceleration, double factor) {
-    if (!std::isfinite(speed) || !std::isfinite(acceleration) ||
-        !curvature.Coeffs().allFinite())
-        return curvature * factor;
-    // Accumulate exponents separately when the scalar product is outside the
-    // normal range. The geometric coefficient can restore a finite result.
-    // Unlike extended precision, this also works when long double is double.
-    int speed_exponent = 0, acceleration_exponent = 0;
-    const double speed_mantissa = std::frexp(speed, &speed_exponent);
-    const double acceleration_mantissa =
-        std::frexp(acceleration, &acceleration_exponent);
-    Tangent result = curvature;
-    for (Eigen::Index index = 0; index < result.Coeffs().size(); ++index) {
-        int curvature_exponent = 0;
-        const double curvature_mantissa =
-            std::frexp(curvature.Coeffs()[index], &curvature_exponent);
-        result.Coeffs()[index] = std::scalbn(
-            3.0 * curvature_mantissa * speed_mantissa * acceleration_mantissa,
-            curvature_exponent + speed_exponent + acceleration_exponent);
-    }
-    return result;
-}
-
-template <typename Tangent>
-Tangent ScaleMixedJerk(const Tangent &curvature, double speed, double acceleration) {
-    if (speed == 0.0 || acceleration == 0.0)
-        return Tangent::ZeroHelper();
-    const double factor = 3.0 * speed * acceleration;
-    if (std::isnormal(factor))
-        return curvature * factor;
-    return ScaleMixedJerkExtreme(curvature, speed, acceleration, factor);
-}
-
-template <typename State, typename Tangent>
-inline void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
-                               const Tangent &tangent, const Tangent &curvature,
-                               const Tangent &torsion, double time_scale) {
-    const double inverse_scale = 1.0 / time_scale;
-    const double speed_squared = jet[1] * jet[1];
-
-    state.velocity = tangent * jet[1] * inverse_scale;
-    state.acceleration =
-        (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
-        inverse_scale * inverse_scale;
-    state.jerk = (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
-                  ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
-                 inverse_scale * inverse_scale * inverse_scale;
-}
-
 double SampleBeforeKnot(double start, double end) {
     // Step beyond PSpline's snapping tolerance using the local knot scale.
     // A long later phase must not move this sample into the interval interior.
@@ -300,89 +237,6 @@ TrajectoryBase<LieGroup>::GetPhaseEndpoint(std::size_t phase, bool at_end) const
         }
     }
     return ComposeState(jet, segment);
-}
-
-template <typename LieGroup>
-typename TrajectoryBase<LieGroup>::ConstraintReport
-TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
-    if (!valid_ || !trajectory_pspline_ || !path_) {
-        throw std::logic_error("cannot inspect an invalid trajectory");
-    }
-    if (samples < 2) {
-        throw std::invalid_argument(
-            "constraint report requires at least 2 samples");
-    }
-
-    ConstraintReport report;
-    report.peak_velocity = Eigen::VectorXd::Zero(dof_);
-    report.peak_acceleration = Eigen::VectorXd::Zero(dof_);
-    report.peak_jerk = Eigen::VectorXd::Zero(dof_);
-    report.maximum_velocity_jump = Eigen::VectorXd::Zero(dof_);
-    report.maximum_acceleration_jump = Eigen::VectorXd::Zero(dof_);
-    const auto accumulate_state = [&](const State& state) {
-        // A maximum reduction can discard NaNs and leave a plausible zero peak.
-        // Validate all state components before accumulating any diagnostics.
-        if (!state.position.Coeffs().allFinite() ||
-            !state.velocity.Coeffs().allFinite() ||
-            !state.acceleration.Coeffs().allFinite() ||
-            !state.jerk.Coeffs().allFinite()) {
-            throw std::runtime_error(
-                "constraint report encountered a non-finite trajectory state");
-        }
-        report.peak_velocity =
-            report.peak_velocity.cwiseMax(state.velocity.Coeffs().cwiseAbs());
-        report.peak_acceleration = report.peak_acceleration.cwiseMax(
-                state.acceleration.Coeffs().cwiseAbs());
-        report.peak_jerk = report.peak_jerk.cwiseMax(
-                state.jerk.Coeffs().cwiseAbs());
-    };
-    const auto accumulate = [&](double time) {
-        accumulate_state(GetState(time));
-    };
-
-    const double duration = GetDuration();
-    for (std::size_t sample = 0; sample < samples; ++sample) {
-        const double fraction =
-            static_cast<double>(sample) / static_cast<double>(samples - 1);
-        accumulate(duration * fraction);
-    }
-    const auto &breakpoints = trajectory_pspline_->GetKnots();
-    for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
-        const auto left_state = GetPhaseEndpoint(index - 1, true);
-        const auto right_state = GetPhaseEndpoint(index, false);
-        accumulate_state(left_state);
-        accumulate_state(right_state);
-        report.maximum_velocity_jump = report.maximum_velocity_jump.cwiseMax(
-                (right_state.velocity.Coeffs() -
-                 left_state.velocity.Coeffs()).cwiseAbs());
-        report.maximum_acceleration_jump =
-                report.maximum_acceleration_jump.cwiseMax(
-                        (right_state.acceleration.Coeffs() -
-                         left_state.acceleration.Coeffs()).cwiseAbs());
-    }
-
-    report.velocity_utilization =
-            report.peak_velocity.cwiseQuotient(max_velocity_);
-    report.acceleration_utilization =
-            report.peak_acceleration.cwiseQuotient(max_acceleration_);
-    report.jerk_utilization = report.peak_jerk.cwiseQuotient(max_jerk_);
-    report.maximum_utilization = std::max({
-            report.velocity_utilization.maxCoeff(),
-            report.acceleration_utilization.maxCoeff(),
-            report.jerk_utilization.maxCoeff()});
-    report.within_limits = std::isfinite(report.maximum_utilization) &&
-                           report.maximum_utilization <= 1.0 + 1e-12;
-    const Eigen::VectorXd velocity_tolerance =
-            max_velocity_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    const Eigen::VectorXd acceleration_tolerance =
-            max_acceleration_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    report.velocity_continuous =
-            (report.maximum_velocity_jump.array() <=
-             velocity_tolerance.array()).all();
-    report.acceleration_continuous =
-            (report.maximum_acceleration_jump.array() <=
-             acceleration_tolerance.array()).all();
-    return report;
 }
 
 template <typename LieGroup>

@@ -6,7 +6,7 @@
 #include <typeinfo>
 
 namespace holistic_motion::robotics::detail {
-// Control differences are shared by a complete state or a construction-local
+// Control differences are shared by a complete state or a local
 // sampling loop. Preserve the scalar API's Bernstein expressions and rounding.
 template <typename LieGroup> struct QuinticEvaluation {
     using Tangent = typename LieGroup::Tangent;
@@ -78,7 +78,7 @@ template <typename LieGroup> struct QuinticEvaluation {
 };
 
 // Additional differences pay off only across repeated samples. Scalar queries
-// keep their smaller evaluator and do not store this construction-only cache.
+// keep their smaller evaluator and do not store this repeated-sampling cache.
 template <typename LieGroup>
 struct CachedQuinticEvaluation : QuinticEvaluation<LieGroup> {
     using Base = QuinticEvaluation<LieGroup>;
@@ -99,8 +99,8 @@ struct CachedQuinticEvaluation : QuinticEvaluation<LieGroup> {
     }
 };
 
-// A construction-local workspace. Only the exact built-in curve may reuse
-// controls: derived segments retain every virtual scalar query.
+// A workspace for one construction or constraint report. Only the exact
+// built-in curve may reuse controls; derived segments retain every virtual query.
 template <typename LieGroup> class SegmentEvaluationSampler {
 public:
     using Tangent = typename LieGroup::Tangent;

@@ -112,7 +112,7 @@ public:
 };
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::LieGroup SO3TangentBase<_Derived>::Exp(
+inline typename SO3TangentBase<_Derived>::LieGroup SO3TangentBase<_Derived>::Exp(
         OptJacobianRef J_m_t) const {
     using std::cos;
     using std::sin;
@@ -158,7 +158,7 @@ typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Rjac()
 }
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljac()
+inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljac()
         const {
     using std::cos;
     using std::sin;
@@ -185,7 +185,7 @@ typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Rjacinv()
 }
 
 template <typename _Derived>
-typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljacinv()
+inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Ljacinv()
         const {
     using std::cos;
     using std::sin;

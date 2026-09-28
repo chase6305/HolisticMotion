@@ -174,7 +174,7 @@ typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Inverse(
 }
 
 template <typename _Derived>
-typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
+inline typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Log(
         OptJacobianRef J_t_m) const {
     using std::atan2;
     using std::sqrt;
@@ -249,7 +249,7 @@ typename SO3Base<_Derived>::Tangent SO3Base<_Derived>::Lift(
 
 template <typename _Derived>
 template <typename _DerivedOther>
-typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Compose(
+inline typename SO3Base<_Derived>::LieGroup SO3Base<_Derived>::Compose(
         const LieGroupBase<_DerivedOther>& m,
         OptJacobianRef J_mc_ma,
         OptJacobianRef J_mc_mb) const {
