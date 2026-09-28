@@ -137,6 +137,13 @@ Built-in linear and fifth-degree segments also share geometric derivative
 evaluation. Custom segment subclasses retain their virtual scalar-query behavior.
 Scalar queries remain available and include the same time scaling.
 
+Python uniform sampling requires at least two samples and rejects counts whose
+output array dimensions or byte sizes cannot be represented. Joint and Cartesian
+batch sampling release the GIL during the C++ evaluation loop, allowing other
+Python threads to run. Batch results are filled directly in independent, writable
+NumPy buffers without copying an intermediate result matrix. Result allocation
+and Python conversion still hold the GIL.
+
 The C++ `PSpline` uses right-continuous internal knots and clamps finite queries
 outside its time range. Knot snapping uses the local timestamp and adjacent
 interval lengths, so a long trailing segment does not erase earlier short
@@ -283,6 +290,14 @@ both endpoint speeds, the solver can retry once with the faster endpoint as
 its peak. This removes the unrepresentable speed excursion while preserving
 boundary velocities and the original limits. Every replacement phase is checked
 against the same displacement budget using its stored timestamps.
+
+When these repairs fail for a collapsed ramp beside a cruise, the solver can
+fit two constant-acceleration phases on neighbouring representable timestamps.
+It retains the requested endpoint positions and velocities, solves their shared
+velocity from the represented durations, and accepts only candidates meeting
+the original displacement, speed, acceleration, and timing budgets. The bounded
+search changes either candidate timestamp by at most two floating-point steps;
+unrepresentable motion still fails without publishing a partial result.
 
 Double-S also validates all phase states before publishing a profile or adjusted
 endpoint speeds. A phase whose timestamp cannot advance must leave position,

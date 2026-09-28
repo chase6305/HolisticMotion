@@ -42,6 +42,21 @@ void RequireRigidTransform(const Eigen::Matrix4d& transform,
     }
 }
 
+void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
+    if (samples < 2) {
+        throw std::invalid_argument(
+            "uniform trajectory sampling requires at least 2 samples");
+    }
+    // Both Eigen indexing and NumPy's signed byte counts must represent each
+    // output array. Divide before multiplying dimensions or allocating times.
+    const auto maximum =
+        std::min(static_cast<std::size_t>((std::numeric_limits<Eigen::Index>::max)()),
+                 static_cast<std::size_t>((std::numeric_limits<py::ssize_t>::max)()));
+    if (samples > maximum / sizeof(double) / components) {
+        throw std::invalid_argument("sample count is too large");
+    }
+}
+
 }  // namespace
 
 template <int N>
@@ -172,36 +187,39 @@ public:
                     "minimum_duration must be finite and non-negative");
         }
     }
-    py::tuple Sample(const Eigen::VectorXd& times) const {
+    py::tuple Sample(const Eigen::VectorXd &times) const {
         if (!times.allFinite()) {
             throw std::invalid_argument("trajectory times must be finite");
         }
-        Eigen::MatrixXd positions(times.size(), N);
-        Eigen::MatrixXd velocities(times.size(), N);
-        Eigen::MatrixXd accelerations(times.size(), N);
-        Eigen::MatrixXd jerks(times.size(), N);
+        // Fill NumPy-owned column-major buffers directly. Returning temporary
+        // Eigen matrices would copy every sample again while holding the GIL.
+        using SampleArray = py::array_t<double, py::array::f_style>;
+        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(times.size()),
+                                              static_cast<py::ssize_t>(N)};
+        SampleArray positions(shape), velocities(shape), accelerations(shape),
+            jerks(shape);
+        Eigen::Map<Eigen::MatrixXd> position_values(positions.mutable_data(),
+                                                    times.size(), N);
+        Eigen::Map<Eigen::MatrixXd> velocity_values(velocities.mutable_data(),
+                                                    times.size(), N);
+        Eigen::Map<Eigen::MatrixXd> acceleration_values(accelerations.mutable_data(),
+                                                        times.size(), N);
+        Eigen::Map<Eigen::MatrixXd> jerk_values(jerks.mutable_data(), times.size(), N);
         {
             py::gil_scoped_release release;
             for (Eigen::Index index = 0; index < times.size(); ++index) {
                 const auto state = trajectory_->GetState(times[index]);
-                positions.row(index) = state.position.Coeffs().transpose();
-                velocities.row(index) = state.velocity.Coeffs().transpose();
-                accelerations.row(index) =
-                        state.acceleration.Coeffs().transpose();
-                jerks.row(index) = state.jerk.Coeffs().transpose();
+                position_values.row(index) = state.position.Coeffs().transpose();
+                velocity_values.row(index) = state.velocity.Coeffs().transpose();
+                acceleration_values.row(index) =
+                    state.acceleration.Coeffs().transpose();
+                jerk_values.row(index) = state.jerk.Coeffs().transpose();
             }
         }
         return py::make_tuple(positions, velocities, accelerations, jerks);
     }
     py::tuple SampleUniform(std::size_t samples) const {
-        if (samples < 2) {
-            throw std::invalid_argument(
-                    "uniform trajectory sampling requires at least 2 samples");
-        }
-        if (samples > static_cast<std::size_t>(
-                              (std::numeric_limits<Eigen::Index>::max)())) {
-            throw std::invalid_argument("sample count is too large");
-        }
+        ValidateUniformSampleCount(samples, N);
         const Eigen::VectorXd times = Eigen::VectorXd::LinSpaced(
                 static_cast<Eigen::Index>(samples), 0.0, Duration());
         const py::tuple states = Sample(times);
@@ -423,29 +441,35 @@ public:
                 state.acceleration.Coeffs(), state.jerk.Coeffs());
     }
     py::tuple SampleUniform(std::size_t samples) const {
-        if (samples < 2) {
-            throw std::invalid_argument(
-                    "uniform trajectory sampling requires at least 2 samples");
-        }
+        ValidateUniformSampleCount(samples, 16);
         const Eigen::VectorXd times = Eigen::VectorXd::LinSpaced(
-                static_cast<Eigen::Index>(samples), 0.0, Duration());
+            static_cast<Eigen::Index>(samples), 0.0, Duration());
         py::array_t<double> poses(py::array::ShapeContainer{
-                static_cast<py::ssize_t>(samples),
-                static_cast<py::ssize_t>(4),
-                static_cast<py::ssize_t>(4)});
-        Eigen::MatrixXd velocity(samples, 6), acceleration(samples, 6),
-                jerk(samples, 6);
+            static_cast<py::ssize_t>(samples), static_cast<py::ssize_t>(4),
+            static_cast<py::ssize_t>(4)});
+        using SampleArray = py::array_t<double, py::array::f_style>;
+        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(samples),
+                                              static_cast<py::ssize_t>(6)};
+        SampleArray velocity(shape), acceleration(shape), jerk(shape);
+        Eigen::Map<Eigen::MatrixXd> velocity_values(velocity.mutable_data(), samples,
+                                                    6);
+        Eigen::Map<Eigen::MatrixXd> acceleration_values(acceleration.mutable_data(),
+                                                        samples, 6);
+        Eigen::Map<Eigen::MatrixXd> jerk_values(jerk.mutable_data(), samples, 6);
         auto pose_view = poses.mutable_unchecked<3>();
-        for (std::size_t index = 0; index < samples; ++index) {
-            const auto state = trajectory_->GetState(times[index]);
-            const Eigen::Matrix4d pose = state.position.GetTransform();
-            for (int row = 0; row < 4; ++row)
-                for (int column = 0; column < 4; ++column)
-                    pose_view(index, row, column) = pose(row, column);
-            velocity.row(index) = state.velocity.Coeffs().transpose();
-            acceleration.row(index) =
+        {
+            py::gil_scoped_release release;
+            for (std::size_t index = 0; index < samples; ++index) {
+                const auto state = trajectory_->GetState(times[index]);
+                const Eigen::Matrix4d pose = state.position.GetTransform();
+                for (int row = 0; row < 4; ++row)
+                    for (int column = 0; column < 4; ++column)
+                        pose_view(index, row, column) = pose(row, column);
+                velocity_values.row(index) = state.velocity.Coeffs().transpose();
+                acceleration_values.row(index) =
                     state.acceleration.Coeffs().transpose();
-            jerk.row(index) = state.jerk.Coeffs().transpose();
+                jerk_values.row(index) = state.jerk.Coeffs().transpose();
+            }
         }
         return py::make_tuple(times, poses, velocity, acceleration, jerk);
     }
