@@ -74,5 +74,33 @@ inline void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
                  inverse_scale * inverse_scale * inverse_scale;
 }
 
+template <typename State, typename Tangent>
+inline void
+ComposeLinearDerivatives(State &state, const std::array<double, 4> &jet,
+                         const Tangent &tangent, double time_scale) {
+    const auto zero = Tangent::ZeroHelper();
+    if (!std::isfinite(jet[1]) || !std::isfinite(jet[2])) {
+        ComposeDerivatives(state, jet, tangent, zero, zero, time_scale);
+        return;
+    }
+    // Finite clock derivatives keep the line's higher geometric terms zero,
+    // even when speed powers or the mixed factor overflow. Preserve their signs
+    // and the original additions so zero-valued state components stay
+    // identical.
+    const double mixed_zero = jet[1] == 0.0 || jet[2] == 0.0
+                                  ? 0.0
+                                  : std::copysign(0.0, jet[1] * jet[2]);
+    const double cubic_zero = std::copysign(0.0, jet[1]);
+    Tangent mixed = zero, cubic = zero;
+    mixed.Coeffs().setConstant(mixed_zero);
+    cubic.Coeffs().setConstant(cubic_zero);
+    const double inverse_scale = 1.0 / time_scale;
+    state.velocity = tangent * jet[1] * inverse_scale;
+    state.acceleration =
+        (tangent * jet[2] + zero) * inverse_scale * inverse_scale;
+    state.jerk = (tangent * jet[3] + mixed + cubic) * inverse_scale *
+                 inverse_scale * inverse_scale;
+}
+
 } // namespace
 } // namespace holistic_motion::robotics

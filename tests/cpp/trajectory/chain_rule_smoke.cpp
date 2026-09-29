@@ -199,6 +199,56 @@ void CheckDerivedLinearQueries() {
     }
 }
 
+void CheckNativeLinearZeroTerms() {
+    struct VirtualLine : PathSegLinear<Group> {
+        using PathSegLinear::PathSegLinear;
+    };
+    const auto equal = [](const auto &a, const auto &b) {
+        for (Eigen::Index i = 0; i < a.size(); ++i) {
+            if (std::isnan(a[i]) && std::isnan(b[i]))
+                continue;
+            if (a[i] != b[i] ||
+                (a[i] == 0.0 && std::signbit(a[i]) != std::signbit(b[i])))
+                throw std::runtime_error(
+                    "native linear composition changed a zero term");
+        }
+    };
+    for (double endpoint : {0.0, 1e-200, 1.0, -1.0}) {
+        std::array<Group, 2> points;
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << endpoint, -0.0;
+        for (const Eigen::Vector4d &coefficients :
+             {Eigen::Vector4d(0.0, 0.0, -0.0, -0.0),
+              Eigen::Vector4d(0.0, -0.0, 0.0, 0.0),
+              Eigen::Vector4d(0.0, -1.0, -0.25, 1.0),
+              Eigen::Vector4d(0.0, 1e200, 1e-200, -1e-200),
+              Eigen::Vector4d(0.0, -1e200, -1e200, 1e200),
+              Eigen::Vector4d(0.0, 1e-200, -1e-200, -1e-200),
+              Eigen::Vector4d(0.0, 1e308, 0.0, 0.0),
+              Eigen::Vector4d(0.0, 0.0, 1e308, 0.0),
+              Eigen::Vector4d(0.0, 0.0, 0.0, 1e308)}) {
+            QueryProbe native(std::make_shared<PathSegLinear<Group>>(points),
+                              coefficients, 1.0);
+            QueryProbe reference(std::make_shared<VirtualLine>(points),
+                                 coefficients, 1.0);
+            for (double duration : {1.0, 1.7, 1e150}) {
+                if (!native.SetMinimumDuration(duration) ||
+                    !reference.SetMinimumDuration(duration))
+                    throw std::runtime_error(
+                        "cannot scale native linear fixture");
+                for (double fraction : {-1.0, 0.0, 0.125, 0.5, 1.0, 2.0}) {
+                    const auto a = native.GetState(fraction * duration);
+                    const auto b = reference.GetState(fraction * duration);
+                    equal(a.position.Coeffs(), b.position.Coeffs());
+                    equal(a.velocity.Coeffs(), b.velocity.Coeffs());
+                    equal(a.acceleration.Coeffs(), b.acceleration.Coeffs());
+                    equal(a.jerk.Coeffs(), b.jerk.Coeffs());
+                }
+            }
+        }
+    }
+}
+
 void CheckCustomQueryRetainsGeometry() {
     struct OwningProbe : QueryProbe {
         using QueryProbe::QueryProbe;
@@ -471,6 +521,7 @@ int main() {
         CheckMixedJerkProduct();
         CheckFastLinearMotion();
         CheckDerivedLinearQueries();
+        CheckNativeLinearZeroTerms();
         CheckCustomQueryRetainsGeometry();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();

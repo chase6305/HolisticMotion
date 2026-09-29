@@ -3,6 +3,8 @@
 #include "PathSegmentEvaluation.h"
 #include "TrajectoryStateEvaluation.h"
 
+#include <optional>
+
 namespace holistic_motion::robotics {
 
 template <typename LieGroup>
@@ -42,9 +44,32 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
     // Retain the geometry while its cached evaluator borrows the control points.
     std::shared_ptr<PathSegmentBase<LieGroup>> sampled_segment;
     std::optional<detail::SegmentEvaluationSampler<LieGroup>> sampler;
+    std::size_t sampling_phase = 0;
     const auto accumulate = [&](double time) {
         std::array<double, 4> jet;
-        const auto geometry = EvaluatePathJet(time, jet);
+        // Keep scalar-query validation, snapping and phase ownership. Only the
+        // report-local phase hint differs from EvaluatePathJet's full lookup.
+        if (!valid_ || !trajectory_pspline_ || !path_)
+            throw std::logic_error("cannot query an invalid trajectory");
+        if (!std::isfinite(time))
+            throw std::invalid_argument("trajectory time must be finite");
+        time = clamp(time, 0.0, GetDuration()) / time_scale_;
+        std::size_t phase;
+        if (sampling_phase + 1 < trajectory_pspline_->GetKnots().size())
+            jet = trajectory_pspline_->ComputeJetInPhase(time, sampling_phase,
+                                                         phase);
+        else
+            jet = trajectory_pspline_->ComputeJetAtS(time, phase);
+        sampling_phase = phase;
+        if (!std::isfinite(jet[0]))
+            throw std::runtime_error(
+                "trajectory evaluated a non-finite path parameter");
+        const auto geometry =
+            !phase_path_segments_.empty() && phase_path_segments_[phase]
+                ? phase_path_segments_[phase]
+                : path_->GetPathSegmentAtS(jet[0]);
+        if (!geometry)
+            throw std::logic_error("cannot query an invalid path");
         if (geometry != sampled_segment) {
             sampler.reset();
             sampled_segment = geometry;
@@ -53,7 +78,11 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
         State state;
         typename LieGroup::Tangent tangent, curvature, torsion;
         sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-        ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
+        if (sampler->IsLinear())
+            ComposeLinearDerivatives(state, jet, tangent, time_scale_);
+        else
+            ComposeDerivatives(state, jet, tangent, curvature, torsion,
+                               time_scale_);
         accumulate_state(state);
     };
 
@@ -63,10 +92,24 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             static_cast<double>(sample) / static_cast<double>(samples - 1);
         accumulate(duration * fraction);
     }
-    const auto &breakpoints = trajectory_pspline_->GetKnots();
-    for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
+    if (!valid_ || !trajectory_pspline_ || !path_)
+        throw std::logic_error("cannot inspect an invalid trajectory");
+    // A custom geometry query may replace the clock or release the path.
+    // Keep the referenced knots alive and reject a changed phase layout before
+    // using the next endpoint index, including in-place spline replacement.
+    const auto endpoint_clock = trajectory_pspline_;
+    const std::size_t breakpoint_count = endpoint_clock->GetKnots().size();
+    const auto validate_endpoint_owner = [&] {
+        if (!valid_ || !path_ || trajectory_pspline_ != endpoint_clock ||
+            endpoint_clock->GetKnots().size() != breakpoint_count)
+            throw std::logic_error("trajectory changed during constraint "
+                                   "report endpoint sampling");
+    };
+    for (std::size_t index = 1; index + 1 < breakpoint_count; ++index) {
         const auto left_state = GetPhaseEndpoint(index - 1, true);
+        validate_endpoint_owner();
         const auto right_state = GetPhaseEndpoint(index, false);
+        validate_endpoint_owner();
         accumulate_state(left_state);
         accumulate_state(right_state);
         report.maximum_velocity_jump = report.maximum_velocity_jump.cwiseMax(

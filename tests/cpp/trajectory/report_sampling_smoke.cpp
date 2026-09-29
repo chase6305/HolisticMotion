@@ -1,5 +1,6 @@
 #include <array>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <typeinfo>
 #include <vector>
 
+#include "../../../src/trajectory/PathSegmentEvaluation.h"
 #include "holistic_motion/trajectory/TrajectoryDoubleS.h"
 
 using namespace holistic_motion::robotics;
@@ -252,9 +254,10 @@ void CheckLinearReportQueries() {
         throw std::runtime_error("report divided by a zero-length line");
 }
 
+template <typename Curve = PathSegBezierCurve5th<Group>>
 void CheckCustomQueriesAndFailures() {
-    struct ChangingCurve : PathSegBezierCurve5th<Group> {
-        using PathSegBezierCurve5th<Group>::PathSegBezierCurve5th;
+    struct ChangingCurve : Curve {
+        using Curve::Curve;
         mutable unsigned calls{0};
         bool nonfinite_position{false};
         Group GetConfig(double s) const override {
@@ -263,7 +266,7 @@ void CheckCustomQueriesAndFailures() {
                 result.Coeffs().setConstant(std::numeric_limits<double>::infinity());
                 return result;
             }
-            return PathSegBezierCurve5th<Group>::GetConfig(s);
+            return Curve::GetConfig(s);
         }
         Group::Tangent GetTangent(double) const override {
             return Group::Tangent(Eigen::Vector2d::Constant(++calls));
@@ -286,7 +289,7 @@ void CheckCustomQueriesAndFailures() {
     }
 
     points[1].Coeffs()[0] = std::numeric_limits<double>::infinity();
-    auto invalid = std::make_shared<PathSegBezierCurve5th<Group>>(points, 0.0);
+    auto invalid = std::make_shared<Curve>(points, 0.0);
     if (invalid->IsValid())
         throw std::runtime_error("invalid report fixture was accepted");
     ReportProbe invalid_probe(invalid);
@@ -296,6 +299,199 @@ void CheckCustomQueriesAndFailures() {
         return;
     }
     throw std::runtime_error("report accessed invalid native curve controls");
+}
+
+template <typename G> void CheckQuadraticSamplingScales() {
+    using Tangent = typename G::Tangent;
+    for (double scale : {1e-150, 1e-20, 1.0, 1e150, 1e154}) {
+        std::array<G, 3> points;
+        for (int j = 0; j < G::DoF; ++j) {
+            points[0].Coeffs()[j] = scale * (0.02 * j);
+            points[1].Coeffs()[j] = scale * (0.1 + 0.01 * j);
+            points[2].Coeffs()[j] = scale * (0.15 - 0.005 * j);
+        }
+        if (scale == 1e154) {
+            // Each leg's norm is representable, while their summed length
+            // squared overflows. Preserve the scalar curvature's two divisions.
+            for (auto &point : points)
+                point.Coeffs().setZero();
+            points[1].Coeffs()[0] = 0.8 * scale;
+            points[2].Coeffs()[0] = 0.8 * scale;
+            points[2].Coeffs()[1] = 0.8 * scale;
+        }
+        PathSegBezierCurve2nd<G> curve(points, -0.25 * scale);
+        if (!curve.IsValid())
+            throw std::runtime_error(
+                "invalid scaled quadratic sampling fixture");
+        detail::SegmentEvaluationSampler<G> sampler(curve);
+        for (double fraction : {-1.0, 0.0, 0.01, 0.4, 0.75, 1.0, 2.0}) {
+            const double s =
+                curve.GetStartParameter() + fraction * curve.GetLength();
+            G position;
+            Tangent tangent, curvature, torsion;
+            sampler.ComputeJet(s, position, tangent, curvature, torsion);
+            if (position.Coeffs() != curve.GetConfig(s).Coeffs() ||
+                tangent.Coeffs() != curve.GetTangent(s).Coeffs() ||
+                curvature.Coeffs() != curve.GetCurvature(s).Coeffs() ||
+                !torsion.Coeffs().isZero(0.0))
+                throw std::runtime_error(
+                    "scaled quadratic sampling changed a state");
+            sampler.Compute(s, tangent, curvature, torsion);
+            if (tangent.Coeffs() != curve.GetTangent(s).Coeffs() ||
+                curvature.Coeffs() != curve.GetCurvature(s).Coeffs() ||
+                !torsion.Coeffs().isZero(0.0))
+                throw std::runtime_error(
+                    "scaled quadratic sampling changed derivatives");
+        }
+    }
+}
+
+void CheckReportPhaseSelection() {
+    struct RecordingLine : PathSegLinear<Group> {
+        using PathSegLinear<Group>::PathSegLinear;
+        mutable std::vector<double> parameters;
+        std::function<void()> on_query;
+        Group GetConfig(double s) const override {
+            parameters.push_back(s);
+            if (on_query)
+                on_query();
+            return PathSegLinear<Group>::GetConfig(s);
+        }
+    };
+    struct ClockProbe : ReportProbe {
+        using ReportProbe::ReportProbe;
+        void SetClock(const std::shared_ptr<PSpline> &spline) {
+            trajectory_pspline_ = spline;
+            time_scale_ = 1.0;
+        }
+        double ClockScale() const { return time_scale_; }
+        void Invalidate() { valid_ = false; }
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    auto line = std::make_shared<RecordingLine>(points);
+    ClockProbe probe(line);
+    for (double scale : {1e-280, 1.0, 1e280}) {
+        for (unsigned phases : {2, 67, 1024}) {
+            auto spline = std::make_shared<PSpline>();
+            for (unsigned i = 0; i < phases; ++i) {
+                const double span =
+                    scale * (i % 5 == 2 ? 1e-12 : 1.0 + 0.125 * (i % 7));
+                // Distinct constant positions expose phase selection without
+                // introducing extreme clock derivatives into this regression.
+                const double position =
+                    static_cast<double>((i * 31) % 97) / 100.0;
+                if (!spline->PushBack(
+                        std::make_shared<Polynomial>(
+                            Eigen::Vector4d(position, 0.0, 0.0, 0.0)),
+                        span))
+                    throw std::runtime_error("invalid phase-selection fixture");
+            }
+            probe.SetClock(spline);
+            for (double slowdown : {1.0, 1.7}) {
+                if (!probe.SetMinimumDuration(slowdown *
+                                              spline->GetLastTimeStamp()))
+                    throw std::runtime_error(
+                        "cannot rescale phase-selection fixture");
+                for (std::size_t samples : {2, 3, 65, 257, 4097}) {
+                    line->parameters.clear();
+                    probe.GetConstraintReport(samples);
+                    if (line->parameters.size() != samples + 2 * (phases - 1))
+                        throw std::runtime_error(
+                            "report skipped phase endpoints");
+                    for (std::size_t i = 0; i < samples; ++i) {
+                        const double fraction =
+                            static_cast<double>(i) / (samples - 1);
+                        const double time = probe.GetDuration() * fraction;
+                        const double expected =
+                            spline->ComputeJetAtS(time / probe.ClockScale())[0];
+                        if (line->parameters[i] != expected)
+                            throw std::runtime_error(
+                                "report selected a different time phase");
+                    }
+                }
+            }
+        }
+    }
+
+    auto original = std::make_shared<PSpline>();
+    for (unsigned i = 0; i < 10; ++i)
+        original->PushBack(std::make_shared<Polynomial>(
+                               Eigen::Vector4d(0.1 * i, 0.0, 0.0, 0.0)),
+                           1.0);
+    auto shorter = std::make_shared<PSpline>();
+    shorter->PushBack(
+        std::make_shared<Polynomial>(Eigen::Vector4d(0.42, 0.0, 0.0, 0.0)),
+        1.0);
+    probe.SetClock(original);
+    line->parameters.clear();
+    line->on_query = [&] {
+        if (line->parameters.size() == 17)
+            probe.SetClock(shorter);
+    };
+    probe.GetConstraintReport(33);
+    if (line->parameters.size() != 33)
+        throw std::runtime_error("report retained stale spline endpoints");
+    for (std::size_t i = 0; i < 33; ++i) {
+        const double expected =
+            i < 17 ? original->ComputeJetAtS(10.0 * i / 32.0)[0] : 0.42;
+        if (line->parameters[i] != expected)
+            throw std::runtime_error(
+                "report reused a stale phase after a custom query");
+    }
+    for (bool replace_owner : {false, true}) {
+        auto endpoint_clock = std::make_shared<PSpline>(*original);
+        probe.SetClock(endpoint_clock);
+        line->parameters.clear();
+        line->on_query = [&] {
+            if (line->parameters.size() == 3) {
+                if (replace_owner)
+                    probe.SetClock(shorter);
+                else
+                    *endpoint_clock = *shorter;
+            }
+        };
+        bool rejected = false;
+        try {
+            probe.GetConstraintReport(2);
+        } catch (const std::logic_error &) {
+            rejected = true;
+        }
+        if (!rejected)
+            throw std::runtime_error(
+                "report reused invalidated endpoint indices");
+    }
+    line->on_query = [&] { probe.Invalidate(); };
+    bool rejected = false;
+    try {
+        probe.GetConstraintReport(3);
+    } catch (const std::logic_error &) {
+        rejected = true;
+    }
+    line->on_query = {};
+    if (!rejected)
+        throw std::runtime_error(
+            "report ignored invalidation by a custom query");
+}
+
+void CheckQuadraticReportRefresh() {
+    std::array<Group, 3> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 0.5, 0.0;
+    points[2].Coeffs() << 0.5, 0.5;
+    auto curve = std::make_shared<PathSegBezierCurve2nd<Group>>(points);
+    ReportProbe probe(curve);
+    if (probe.GetConstraintReport(65).peak_acceleration !=
+        Eigen::Vector2d(1.0, 1.0))
+        throw std::runtime_error("incorrect native quadratic curvature report");
+    points[1].Coeffs() << 0.25, 0.0;
+    points[2].Coeffs() << 0.5, 0.0;
+    *curve = PathSegBezierCurve2nd<Group>(points);
+    const auto report = probe.GetConstraintReport(65);
+    if (report.peak_velocity != Eigen::Vector2d(1.0, 0.0) ||
+        !report.peak_acceleration.isZero(0.0) || !report.peak_jerk.isZero(0.0))
+        throw std::runtime_error("report reused stale quadratic differences");
 }
 } // namespace
 
@@ -307,9 +503,18 @@ int main() {
         CheckMultiSegmentReports<Rn<double, 7>>();
         CheckMultiSegmentReports<Rn<double, 32>>();
         CheckMultiSegmentReports<SE3d>();
+        CheckMultiSegmentReports<Rn<double, 2>, 2>();
+        CheckMultiSegmentReports<Rn<double, 7>, 2>();
+        CheckMultiSegmentReports<Rn<double, 32>, 2>();
         CheckMultiSegmentReports<SE3d, 2>();
+        CheckQuadraticSamplingScales<Rn<double, 2>>();
+        CheckQuadraticSamplingScales<Rn<double, 7>>();
+        CheckQuadraticSamplingScales<Rn<double, 32>>();
         CheckLinearReportQueries();
         CheckCustomQueriesAndFailures();
+        CheckCustomQueriesAndFailures<PathSegBezierCurve2nd<Group>>();
+        CheckReportPhaseSelection();
+        CheckQuadraticReportRefresh();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;
