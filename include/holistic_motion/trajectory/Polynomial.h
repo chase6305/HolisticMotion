@@ -10,6 +10,10 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace detail {
+template <typename LieGroup> class TrajectoryStateSampler;
+}
+
 class Polynomial : public std::enable_shared_from_this<Polynomial> {
     ///< https://en.wikipedia.org/wiki/Polynomial
    public:
@@ -107,6 +111,7 @@ class PSpline {
 
    private:
     template <typename LieGroup> friend class TrajectoryBase;
+    template <typename LieGroup> friend class detail::TrajectoryStateSampler;
 
     // Diagnostics need the actual one-sided endpoint, without knot snapping
     // or a round trip through the externally scaled trajectory clock.

@@ -224,6 +224,23 @@ public:
         }
     }
 
+    // Match the native clamp and division order, including zero length,
+    // without materializing zero curvature and torsion for a linear state.
+    bool ComputeLinearJet(double s, LieGroup &position,
+                          Tangent &tangent) const {
+        const auto *line = std::get_if<Tangent>(&evaluation_);
+        if (!line)
+            return false;
+        segment_.ValidateQuery(s);
+        const double length = segment_.GetLength();
+        const double local =
+            clamp(s - segment_.GetStartParameter(), 0.0, length);
+        const double parameter = length > 0.0 ? local / length : 0.0;
+        position = segment_.waypoints_[0] + parameter * segment_.tangent_;
+        tangent = *line;
+        return true;
+    }
+
     void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
                     Tangent &torsion) {
         if (auto *quintic =
@@ -231,15 +248,7 @@ public:
             segment_.ValidateQuery(s);
             SetParameter(s, *quintic);
             quintic->ComputeJet(position, tangent, curvature, torsion);
-        } else if (const auto *line = std::get_if<Tangent>(&evaluation_)) {
-            // Match the native line's clamp and division order, including zero
-            // length. Only the constant normalized tangent is cached.
-            segment_.ValidateQuery(s);
-            const double length = segment_.GetLength();
-            const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
-            const double parameter = length > 0.0 ? local / length : 0.0;
-            position = segment_.waypoints_[0] + parameter * segment_.tangent_;
-            tangent = *line;
+        } else if (ComputeLinearJet(s, position, tangent)) {
             curvature = Tangent::ZeroHelper();
             torsion = Tangent::ZeroHelper();
         } else if (auto *quadratic = std::get_if<QuadraticEvaluation<LieGroup>>(

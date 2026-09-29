@@ -1,9 +1,6 @@
 #include "holistic_motion/trajectory/TrajectoryBase.h"
 
-#include "PathSegmentEvaluation.h"
-#include "TrajectoryStateEvaluation.h"
-
-#include <optional>
+#include "TrajectoryStateSampler.h"
 
 namespace holistic_motion::robotics {
 
@@ -46,51 +43,9 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             acceleration_peak.cwiseMax(state.acceleration.Coeffs().cwiseAbs());
         jerk_peak = jerk_peak.cwiseMax(state.jerk.Coeffs().cwiseAbs());
     };
-    // Uniform report samples revisit the same curve. Keep the workspace local
-    // to this report so later queries see any changes to the path or time scale.
-    // Retain the geometry while its cached evaluator borrows the control points.
-    std::shared_ptr<PathSegmentBase<LieGroup>> sampled_segment;
-    std::optional<detail::SegmentEvaluationSampler<LieGroup>> sampler;
-    std::size_t sampling_phase = 0;
+    detail::TrajectoryStateSampler<LieGroup> sampler(*this);
     const auto accumulate = [&](double time) {
-        std::array<double, 4> jet;
-        // Keep scalar-query validation, snapping and phase ownership. Only the
-        // report-local phase hint differs from EvaluatePathJet's full lookup.
-        if (!valid_ || !trajectory_pspline_ || !path_)
-            throw std::logic_error("cannot query an invalid trajectory");
-        if (!std::isfinite(time))
-            throw std::invalid_argument("trajectory time must be finite");
-        time = clamp(time, 0.0, GetDuration()) / time_scale_;
-        std::size_t phase;
-        if (sampling_phase + 1 < trajectory_pspline_->GetKnots().size())
-            jet = trajectory_pspline_->ComputeJetInPhase(time, sampling_phase,
-                                                         phase);
-        else
-            jet = trajectory_pspline_->ComputeJetAtS(time, phase);
-        sampling_phase = phase;
-        if (!std::isfinite(jet[0]))
-            throw std::runtime_error(
-                "trajectory evaluated a non-finite path parameter");
-        const auto geometry =
-            !phase_path_segments_.empty() && phase_path_segments_[phase]
-                ? phase_path_segments_[phase]
-                : path_->GetPathSegmentAtS(jet[0]);
-        if (!geometry)
-            throw std::logic_error("cannot query an invalid path");
-        if (geometry != sampled_segment) {
-            sampler.reset();
-            sampled_segment = geometry;
-            sampler.emplace(*geometry);
-        }
-        State state;
-        typename LieGroup::Tangent tangent, curvature, torsion;
-        sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-        if (sampler->IsLinear())
-            ComposeLinearDerivatives(state, jet, tangent, time_scale_);
-        else
-            ComposeDerivatives(state, jet, tangent, curvature, torsion,
-                               time_scale_);
-        accumulate_state(state);
+        accumulate_state(sampler.GetState(time));
     };
 
     const double duration = GetDuration();
@@ -135,14 +90,14 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
                                            report.jerk_utilization.maxCoeff()});
     report.within_limits = std::isfinite(report.maximum_utilization) &&
                            report.maximum_utilization <= 1.0 + 1e-12;
-    const Eigen::VectorXd velocity_tolerance =
-        max_velocity_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    const Eigen::VectorXd acceleration_tolerance =
-        max_acceleration_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    report.velocity_continuous =
-        (report.maximum_velocity_jump.array() <= velocity_tolerance.array()).all();
+    // Evaluate the tolerances inside the comparisons. Materializing them as
+    // dynamic vectors adds two allocations to even the shortest report.
+    report.velocity_continuous = (report.maximum_velocity_jump.array() <=
+                                  max_velocity_.array().max(1.0) * 1e-7)
+                                     .all();
     report.acceleration_continuous =
-        (report.maximum_acceleration_jump.array() <= acceleration_tolerance.array())
+        (report.maximum_acceleration_jump.array() <=
+         max_acceleration_.array().max(1.0) * 1e-7)
             .all();
     return report;
 }

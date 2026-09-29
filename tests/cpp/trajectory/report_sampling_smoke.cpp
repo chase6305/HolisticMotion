@@ -576,6 +576,50 @@ template <unsigned Dimension> void CheckReportCoefficientPeaks() {
     EqualReports(report, probe.GetConstraintReport(3));
 }
 
+// Exercise the inclusive continuity threshold on the final joint as well as
+// the unit floor used for limits smaller than one.
+template <unsigned Dimension> void CheckContinuityThresholds() {
+    using TestGroup = Rn<double, Dimension>;
+    struct Probe : CustomClockProbe<TestGroup> {
+        Probe(const std::shared_ptr<PathBase<TestGroup>> &path, double limit,
+              double velocity_jump, double acceleration_jump)
+            : CustomClockProbe<TestGroup>(path, Eigen::Vector4d::Zero()) {
+            this->max_velocity_[Dimension - 1] = limit;
+            this->max_acceleration_[Dimension - 1] = limit;
+            this->trajectory_pspline_->PushBack(
+                std::make_shared<Polynomial>(Eigen::Vector4d(
+                    0.0, velocity_jump, acceleration_jump / 2.0, 0.0)),
+                1.0);
+        }
+    };
+    std::vector<TestGroup> points(2);
+    points[0].Coeffs().setZero();
+    points[1].Coeffs().setZero();
+    points[1].Coeffs()[Dimension - 1] = 1.0;
+    auto path = std::make_shared<PathBezierCurve<TestGroup>>(points);
+    for (double limit : {0.5, 1.0, 4.0, 1e150}) {
+        const double threshold = std::max(1.0, limit) * 1e-7;
+        const std::array<double, 3> jumps{
+            std::nextafter(threshold, 0.0), threshold,
+            std::nextafter(threshold, std::numeric_limits<double>::infinity())};
+        for (std::size_t velocity = 0; velocity < jumps.size(); ++velocity) {
+            for (std::size_t acceleration = 0; acceleration < jumps.size();
+                 ++acceleration) {
+                Probe probe(path, limit, jumps[velocity], jumps[acceleration]);
+                const auto report = probe.GetConstraintReport(2);
+                if (report.maximum_velocity_jump[Dimension - 1] !=
+                        jumps[velocity] ||
+                    report.maximum_acceleration_jump[Dimension - 1] !=
+                        jumps[acceleration] ||
+                    report.velocity_continuous != (velocity < 2) ||
+                    report.acceleration_continuous != (acceleration < 2))
+                    throw std::runtime_error(
+                        "incorrect continuity threshold boundary");
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -593,6 +637,9 @@ int main() {
         CheckQuadraticSamplingScales<Rn<double, 2>>();
         CheckQuadraticSamplingScales<Rn<double, 7>>();
         CheckQuadraticSamplingScales<Rn<double, 32>>();
+        CheckContinuityThresholds<1>();
+        CheckContinuityThresholds<3>();
+        CheckContinuityThresholds<32>();
         CheckReportCoefficientPeaks<1>();
         CheckReportCoefficientPeaks<3>();
         CheckReportCoefficientPeaks<14>();

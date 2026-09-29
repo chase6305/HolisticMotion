@@ -6,10 +6,10 @@
 #include <Eigen/Core>
 
 // Shared chain-rule arithmetic for state queries and local sampling workspaces.
-// Keep these helpers local to each implementation unit; neither the expressions
-// nor their extreme-value fallback paths depend on which caller uses them.
+// Inline template definitions can be shared by the internal batch evaluator
+// without changing the arithmetic or introducing per-sample dynamic dispatch.
 namespace holistic_motion::robotics {
-namespace {
+namespace detail {
 template <unsigned Power, typename Tangent>
 Tangent ScaleByPower(const Tangent &value, double speed, double speed_power) {
     if (std::isnormal(speed_power) || speed == 0.0)
@@ -104,5 +104,5 @@ ComposeLinearDerivatives(State &state, const std::array<double, 4> &jet,
             .matrix();
 }
 
-} // namespace
+} // namespace detail
 } // namespace holistic_motion::robotics

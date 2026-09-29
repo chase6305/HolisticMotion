@@ -122,3 +122,88 @@ def test_report_buffers_keep_ownership_and_outlive_trajectory(kind, profile):
     gc.collect()
     for key, view in views.items():
         np.testing.assert_array_equal(view, expected[key])
+
+
+@pytest.mark.parametrize("profile", ["double_s", "trapezoidal"])
+@pytest.mark.parametrize("kind", ["cartesian", "1", "3", "7", "32"])
+def test_state_vector_buffers_are_independent_and_own_their_storage(kind, profile):
+    import gc
+
+    trajectory = _trajectory(kind, profile)
+    time = trajectory.duration * 0.37
+    state = trajectory.state(time)
+    reference = [array.copy() for array in state]
+    vectors = state[1:] if kind == "cartesian" else state
+    for index, array in enumerate(vectors):
+        assert array.dtype == np.dtype(np.float64)
+        assert array.ndim == 1
+        assert array.flags.owndata and array.flags.writeable
+        assert array.flags.c_contiguous and array.flags.f_contiguous
+        for other in vectors[index + 1:]:
+            assert not np.shares_memory(array, other)
+        array[:] = -123.0
+        array.resize((array.size + 1,), refcheck=False)
+    fresh = trajectory.state(time)
+    views = [array[:] for array in fresh]
+    del state, vectors, fresh, trajectory
+    gc.collect()
+    for actual, expected in zip(views, reference):
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("profile", ["double_s", "trapezoidal"])
+@pytest.mark.parametrize("kind", ["1", "3", "7", "32"])
+@pytest.mark.parametrize("samples", [2, 3, 31, 257])
+def test_joint_uniform_sampling_matches_its_returned_times(kind, profile, samples):
+    trajectory = _trajectory(kind, profile)
+    trajectory.set_minimum_duration(trajectory.duration * 2.3)
+    times, *states = trajectory.sample_uniform(samples)
+    assert times.flags.owndata and times.flags.writeable
+    assert times[0] == 0.0 and times[-1] == trajectory.duration
+    np.testing.assert_allclose(
+        times, np.linspace(0.0, trajectory.duration, samples),
+        rtol=2 * np.finfo(float).eps, atol=0.0,
+    )
+    for actual, expected in zip(states, trajectory.sample(times)):
+        np.testing.assert_array_equal(actual, expected)
+    # Changing the output time vector cannot modify any returned state buffer.
+    expected = [array.copy() for array in states]
+    times[:] = -1.0
+    times.resize((samples + 1,), refcheck=False)
+    for actual, reference in zip(states, expected):
+        np.testing.assert_array_equal(actual, reference)
+
+
+@pytest.mark.parametrize("profile", ["double_s", "trapezoidal"])
+@pytest.mark.parametrize("dof", [1, 2, 3, 7, 14, 32])
+@pytest.mark.parametrize("blend", [0.0, 0.005])
+def test_batch_sampling_preserves_scalar_states_at_shuffled_knots(profile, dof, blend):
+    import holistic_motion as hm
+
+    points = 0.3 * np.sin(
+        0.4 * np.arange(8)[:, None] + 0.3 * np.arange(dof)[None, :]
+    )
+    limits = np.ones(dof)
+    trajectory = hm.RnTrajectory(
+        points, limits, limits, limits, blend_tolerance=blend, profile=profile,
+    )
+    rng = np.random.default_rng(20260929 + dof)
+    for scale in (1.0, 2.3):
+        trajectory.set_minimum_duration(trajectory.duration * scale)
+        knots = trajectory.breakpoints
+        times = np.concatenate((
+            np.linspace(0.0, trajectory.duration, 65), knots,
+            np.nextafter(knots, -np.inf), np.nextafter(knots, np.inf),
+            [-1e300, 1e300, 0.0, trajectory.duration],
+        ))
+        # Include non-monotone input, repeated knots and non-contiguous storage.
+        rng.shuffle(times)
+        times = times[::-1]
+        actual = trajectory.sample(times)
+        expected = [np.stack(values) for values in zip(
+            *(trajectory.state(float(time)) for time in times)
+        )]
+        for array, reference in zip(actual, expected):
+            np.testing.assert_array_equal(
+                array.view(np.uint64), reference.view(np.uint64),
+            )
