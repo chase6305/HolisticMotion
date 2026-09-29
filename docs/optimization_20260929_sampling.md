@@ -106,6 +106,27 @@ Rn32 的部分批量采样也存在回退和较宽波动，不能据此宣称 Py
 报告：Rn 查询仍有约 2.9% 的最差历史回退，不能视为已全部恢复。
 所有原始配对和离散程度数据随证据归档，单机微基准不代表所有应用负载。
 
+## 复现采样工况
+
+仓库新增可选目标 `trajectory_sampling_benchmark`，默认输出 R2/R7/R20/R32/SE3
+的 90 个工况；`--all-dimensions` 输出 R1–R32/SE3 的 594 个工况，其中 Rn
+部分对应上面的 576 个配置。每个工况先预热一次，再取 21 次报告的中位数。
+CSV 包含路径次数、混合容差、时钟类型、采样数和输出校验和。
+
+先按项目构建指南完成 Conan/CMake 配置，再在同一构建目录启用基准：
+
+```bash
+cmake -S . -B build/cmake -DHOLISTICMOTION_BUILD_BENCHMARKS=ON
+cmake --build build/cmake --target trajectory_sampling_benchmark -j2
+./build/cmake/trajectory_sampling_benchmark > sampling.csv
+./build/cmake/trajectory_sampling_benchmark --all-dimensions > sampling_all.csv
+```
+
+二次曲线使用显式的一秒线性路径时钟，只测几何报告求值；其他路径使用 Double-S。
+基准使用程序生成的固定路径，不需要机器人资源。比较版本时应使用相同基准源码、
+编译配置和 CPU，交替运行并先核对校验和。新目标遵循所选 CMake 编译配置；上面的
+正式配对数据使用独立 `-O2` 调用程序，因此不应直接混用两者的绝对耗时。
+
 ## 数值复核
 
 本轮新增检查：
@@ -166,6 +187,9 @@ Sanitizer 编译日志保留既有 Eigen / `tl::optional` 的 `-Wmaybe-uninitial
 告警；没有将测试通过描述成无编译告警。严格中英文文档构建及最终提交的 GitHub
 检查结果记录在 PR 和归档的对应日志中。
 
+
+R2 的额外隔离原型也未采用：关闭阶段提示或为低维恢复通用求导，仅能改善部分
+密集工况，同时使部分短报告变慢；8 组轮换复测及未采用原因随归档保存。
 
 固定峰值向量原型未采用：它让 Rn32 的部分报告变慢约 7%–9%。共享时间查询
 模板原型也未采用，避免给独立标量查询增加调用层。保留这些实验的原始数据，
