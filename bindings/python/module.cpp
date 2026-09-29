@@ -24,6 +24,14 @@ using namespace holistic_motion::robotics;
 
 namespace {
 
+// Allocate the owning NumPy buffer directly; diagnostics remain independent
+// and writable after the temporary C++ report is destroyed.
+py::array_t<double> CopyReportVector(const Eigen::VectorXd &values) {
+    py::array_t<double> result(values.size());
+    std::copy_n(values.data(), values.size(), result.mutable_data());
+    return result;
+}
+
 bool IsRigidTransform(const Eigen::Matrix4d& transform) {
     const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
     return transform.allFinite() &&
@@ -236,15 +244,19 @@ public:
     py::dict ConstraintReport(std::size_t samples) const {
         const auto report = trajectory_->GetConstraintReport(samples);
         py::dict result;
-        result["peak_velocity"] = report.peak_velocity;
-        result["peak_acceleration"] = report.peak_acceleration;
-        result["peak_jerk"] = report.peak_jerk;
-        result["velocity_utilization"] = report.velocity_utilization;
-        result["acceleration_utilization"] = report.acceleration_utilization;
-        result["jerk_utilization"] = report.jerk_utilization;
-        result["maximum_velocity_jump"] = report.maximum_velocity_jump;
+        result["peak_velocity"] = CopyReportVector(report.peak_velocity);
+        result["peak_acceleration"] =
+            CopyReportVector(report.peak_acceleration);
+        result["peak_jerk"] = CopyReportVector(report.peak_jerk);
+        result["velocity_utilization"] =
+            CopyReportVector(report.velocity_utilization);
+        result["acceleration_utilization"] =
+            CopyReportVector(report.acceleration_utilization);
+        result["jerk_utilization"] = CopyReportVector(report.jerk_utilization);
+        result["maximum_velocity_jump"] =
+            CopyReportVector(report.maximum_velocity_jump);
         result["maximum_acceleration_jump"] =
-                report.maximum_acceleration_jump;
+            CopyReportVector(report.maximum_acceleration_jump);
         result["maximum_utilization"] = report.maximum_utilization;
         result["within_limits"] = report.within_limits;
         result["velocity_continuous"] = report.velocity_continuous;
@@ -476,9 +488,10 @@ public:
     py::dict ConstraintReport(std::size_t samples) const {
         const auto report = trajectory_->GetConstraintReport(samples);
         py::dict result;
-        result["peak_velocity"] = report.peak_velocity;
-        result["peak_acceleration"] = report.peak_acceleration;
-        result["peak_jerk"] = report.peak_jerk;
+        result["peak_velocity"] = CopyReportVector(report.peak_velocity);
+        result["peak_acceleration"] =
+            CopyReportVector(report.peak_acceleration);
+        result["peak_jerk"] = CopyReportVector(report.peak_jerk);
         result["maximum_utilization"] = report.maximum_utilization;
         result["within_limits"] = report.within_limits;
         result["velocity_continuous"] = report.velocity_continuous;

@@ -88,3 +88,37 @@ def test_empty_joint_samples_keep_shape_and_array_ownership():
         assert value.shape == (0, 7)
         assert value.flags.writeable
         assert value.flags.owndata
+
+
+@pytest.mark.parametrize("profile", ["double_s", "trapezoidal"])
+@pytest.mark.parametrize("kind", ["cartesian", "1", "7", "32"])
+def test_report_buffers_keep_ownership_and_outlive_trajectory(kind, profile):
+    import gc
+
+    trajectory = _trajectory(kind, profile)
+    first = trajectory.constraint_report(65)
+    second = trajectory.constraint_report(65)
+    keys = [key for key, value in first.items() if isinstance(value, np.ndarray)]
+    assert len(keys) == (3 if kind == "cartesian" else 8)
+    dof = 6 if kind == "cartesian" else int(kind)
+    expected = {key: second[key].copy() for key in keys}
+    for index, key in enumerate(keys):
+        array = first[key]
+        assert array.shape == (dof,)
+        assert array.dtype == np.dtype(np.float64)
+        assert array.flags.writeable and array.flags.owndata
+        assert array.flags.c_contiguous and array.flags.f_contiguous
+        assert not np.shares_memory(array, second[key])
+        for other_key in keys[index + 1:]:
+            assert not np.shares_memory(array, first[other_key])
+        array[0] += 1.0
+        # Owning diagnostic buffers remain resizable independently of the report.
+        array.resize((dof + 1,), refcheck=False)
+    fresh = trajectory.constraint_report(65)
+    for key in keys:
+        np.testing.assert_array_equal(fresh[key], expected[key])
+    views = {key: second[key][:] for key in keys}
+    del first, second, fresh, trajectory
+    gc.collect()
+    for key, view in views.items():
+        np.testing.assert_array_equal(view, expected[key])
