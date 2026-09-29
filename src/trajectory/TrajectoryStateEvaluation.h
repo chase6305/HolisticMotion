@@ -78,8 +78,8 @@ template <typename State, typename Tangent>
 inline void
 ComposeLinearDerivatives(State &state, const std::array<double, 4> &jet,
                          const Tangent &tangent, double time_scale) {
-    const auto zero = Tangent::ZeroHelper();
     if (!std::isfinite(jet[1]) || !std::isfinite(jet[2])) {
+        const auto zero = Tangent::ZeroHelper();
         ComposeDerivatives(state, jet, tangent, zero, zero, time_scale);
         return;
     }
@@ -91,15 +91,17 @@ ComposeLinearDerivatives(State &state, const std::array<double, 4> &jet,
                                   ? 0.0
                                   : std::copysign(0.0, jet[1] * jet[2]);
     const double cubic_zero = std::copysign(0.0, jet[1]);
-    Tangent mixed = zero, cubic = zero;
-    mixed.Coeffs().setConstant(mixed_zero);
-    cubic.Coeffs().setConstant(cubic_zero);
     const double inverse_scale = 1.0 / time_scale;
-    state.velocity = tangent * jet[1] * inverse_scale;
-    state.acceleration =
-        (tangent * jet[2] + zero) * inverse_scale * inverse_scale;
-    state.jerk = (tangent * jet[3] + mixed + cubic) * inverse_scale *
-                 inverse_scale * inverse_scale;
+    // Evaluate coefficient expressions directly, retaining each multiplication
+    // and zero addition without materializing intermediate tangent vectors.
+    state.velocity.Coeffs() = tangent.Coeffs() * jet[1] * inverse_scale;
+    state.acceleration.Coeffs() = ((tangent.Coeffs().array() * jet[2] + 0.0) *
+                                   inverse_scale * inverse_scale)
+                                      .matrix();
+    state.jerk.Coeffs() =
+        ((tangent.Coeffs().array() * jet[3] + mixed_zero + cubic_zero) *
+         inverse_scale * inverse_scale * inverse_scale)
+            .matrix();
 }
 
 } // namespace

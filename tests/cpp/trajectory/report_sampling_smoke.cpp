@@ -493,6 +493,89 @@ void CheckQuadraticReportRefresh() {
         !report.peak_acceleration.isZero(0.0) || !report.peak_jerk.isZero(0.0))
         throw std::runtime_error("report reused stale quadratic differences");
 }
+
+// Distinct peaks on every coefficient catch truncated or misaligned reductions,
+// including odd dimensions and the final coefficient of larger tangent vectors.
+template <unsigned Dimension> void CheckReportCoefficientPeaks() {
+    using TestGroup = Rn<double, Dimension>;
+    using Tangent = typename TestGroup::Tangent;
+    struct Curve : PathSegLinear<TestGroup> {
+        using PathSegLinear<TestGroup>::PathSegLinear;
+        int invalid_component{-1};
+        double invalid_value{0.0};
+        TestGroup GetConfig(double s) const override {
+            auto result = PathSegLinear<TestGroup>::GetConfig(s);
+            if (invalid_component == 0 && s > 0.5)
+                result.Coeffs()[Dimension - 1] = invalid_value;
+            return result;
+        }
+        Tangent Derivative(double s, int order) const {
+            Tangent result;
+            for (unsigned axis = 0; axis < Dimension; ++axis) {
+                if (order == 1)
+                    result.Coeffs()[axis] = (axis + 1.0) * (s - 0.25);
+                else if (order == 2)
+                    result.Coeffs()[axis] =
+                        (axis % 2 ? -1.0 : 1.0) * (axis + 2.0) * (s - 0.75);
+                else
+                    result.Coeffs()[axis] =
+                        axis % 3 == 0 ? -0.0 : -(axis + 3.0) * (s - 0.5);
+            }
+            if (invalid_component == order && s > 0.5)
+                result.Coeffs()[Dimension - 1] = invalid_value;
+            return result;
+        }
+        Tangent GetTangent(double s) const override { return Derivative(s, 1); }
+        Tangent GetCurvature(double s) const override {
+            return Derivative(s, 2);
+        }
+        Tangent GetTorsion(double s) const override { return Derivative(s, 3); }
+    };
+    struct TestPath : PathBase<TestGroup> {
+        explicit TestPath(const std::shared_ptr<Curve> &curve) {
+            this->path_segments_.push_back(curve);
+            this->length_ = 1.0;
+            this->valid_ = true;
+        }
+    };
+    std::array<TestGroup, 2> points;
+    points[0].Coeffs().setZero();
+    points[1].Coeffs().setZero();
+    points[1].Coeffs()[0] = 1.0;
+    auto curve = std::make_shared<Curve>(points);
+    auto path = std::make_shared<TestPath>(curve);
+    CustomClockProbe<TestGroup> probe(path,
+                                      Eigen::Vector4d(0.0, 1.0, 0.0, 0.0));
+    const auto report = probe.GetConstraintReport(3);
+    for (unsigned axis = 0; axis < Dimension; ++axis) {
+        const double expected_jerk = axis % 3 == 0 ? 0.0 : 0.5 * (axis + 3.0);
+        if (report.peak_velocity[axis] != 0.75 * (axis + 1.0) ||
+            report.peak_acceleration[axis] != 0.75 * (axis + 2.0) ||
+            report.peak_jerk[axis] != expected_jerk ||
+            std::signbit(report.peak_jerk[axis]))
+            throw std::runtime_error("incorrect coefficient peak reduction");
+    }
+    for (int component = 0; component < 4; ++component) {
+        curve->invalid_component = component;
+        for (double value : {std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity(),
+                             -std::numeric_limits<double>::infinity()}) {
+            curve->invalid_value = value;
+            bool rejected = false;
+            try {
+                probe.GetConstraintReport(3);
+            } catch (const std::runtime_error &) {
+                rejected = true;
+            }
+            if (!rejected)
+                throw std::runtime_error(
+                    "report hid a late non-finite coefficient");
+        }
+    }
+    curve->invalid_component = -1;
+    EqualReports(report, probe.GetConstraintReport(3));
+}
+
 } // namespace
 
 int main() {
@@ -510,6 +593,10 @@ int main() {
         CheckQuadraticSamplingScales<Rn<double, 2>>();
         CheckQuadraticSamplingScales<Rn<double, 7>>();
         CheckQuadraticSamplingScales<Rn<double, 32>>();
+        CheckReportCoefficientPeaks<1>();
+        CheckReportCoefficientPeaks<3>();
+        CheckReportCoefficientPeaks<14>();
+        CheckReportCoefficientPeaks<32>();
         CheckLinearReportQueries();
         CheckCustomQueriesAndFailures();
         CheckCustomQueriesAndFailures<PathSegBezierCurve2nd<Group>>();

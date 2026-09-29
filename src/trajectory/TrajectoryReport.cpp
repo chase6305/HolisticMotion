@@ -33,11 +33,18 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             throw std::runtime_error(
                 "constraint report encountered a non-finite trajectory state");
         }
-        report.peak_velocity =
-            report.peak_velocity.cwiseMax(state.velocity.Coeffs().cwiseAbs());
-        report.peak_acceleration =
-            report.peak_acceleration.cwiseMax(state.acceleration.Coeffs().cwiseAbs());
-        report.peak_jerk = report.peak_jerk.cwiseMax(state.jerk.Coeffs().cwiseAbs());
+        // Reports expose dynamic vectors, but each state has a fixed dimension.
+        // Retain that dimension during the hot reduction without extra storage
+        // or stronger alignment requirements on the report's allocations.
+        using Vector = Eigen::Matrix<double, LieGroup::DoF, 1>;
+        Eigen::Map<Vector> velocity_peak(report.peak_velocity.data());
+        Eigen::Map<Vector> acceleration_peak(report.peak_acceleration.data());
+        Eigen::Map<Vector> jerk_peak(report.peak_jerk.data());
+        velocity_peak =
+            velocity_peak.cwiseMax(state.velocity.Coeffs().cwiseAbs());
+        acceleration_peak =
+            acceleration_peak.cwiseMax(state.acceleration.Coeffs().cwiseAbs());
+        jerk_peak = jerk_peak.cwiseMax(state.jerk.Coeffs().cwiseAbs());
     };
     // Uniform report samples revisit the same curve. Keep the workspace local
     // to this report so later queries see any changes to the path or time scale.
