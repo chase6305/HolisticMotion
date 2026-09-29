@@ -114,6 +114,17 @@ CSV 标识所在群，并输出 `cap_us`、`limit_us`、`construction_us` 的中
 CSV 输出一次预热后 21 次调用的微秒中位数和校验和。计时不包含轨迹构造或
 Python 绑定开销，不作为 CI 阈值。
 
+`benchmarks/python_trajectory_benchmark.py` 测量完整 Python 调用，包括结果赋值及
+上一结果的释放。默认输出 110 个状态查询和均匀采样配置；`--operations report`
+选择 88 个约束报告配置，也可组合 `state uniform report`。`--dofs 1 4 32`
+选择关节维度，仍包含笛卡尔工况；`--repeats` 控制每个配置的重复次数。
+报告校验和包含全部诊断字段及数组形状、dtype、步长、所有权和可写性。例如：
+
+```bash
+PYTHONPATH=build/install python benchmarks/python_trajectory_benchmark.py \
+  --operations report --dofs 1 4 32 --repeats 9
+```
+
 `benchmarks/trajectory_audit.py` 按显式种子生成原生轨迹，在均匀时间点和
 全部分段边界检查有限性、端点和导数限位。例如执行
 `PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`。

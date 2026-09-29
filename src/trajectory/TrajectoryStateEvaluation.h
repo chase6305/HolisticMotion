@@ -65,6 +65,27 @@ inline void ComposeDerivatives(State &state, const std::array<double, 4> &jet,
     const double inverse_scale = 1.0 / time_scale;
     const double speed_squared = jet[1] * jet[1];
 
+    // A constant-speed phase removes the mixed jerk term. Evaluate coefficients
+    // directly while retaining zero multiplications/additions and the extreme
+    // speed-power fallback. Other clocks keep the staged tangent arithmetic:
+    // fusing a nonzero product and sum can change rounding and cancellation.
+    if (jet[2] == 0.0 && jet[3] == 0.0) {
+        const auto scaled_curvature =
+            ScaleByPower<2>(curvature, jet[1], speed_squared);
+        const auto scaled_torsion =
+            ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1]);
+        state.velocity.Coeffs() = tangent.Coeffs() * jet[1] * inverse_scale;
+        state.acceleration.Coeffs() = ((tangent.Coeffs().array() * jet[2] +
+                                        scaled_curvature.Coeffs().array()) *
+                                       inverse_scale * inverse_scale)
+                                          .matrix();
+        state.jerk.Coeffs() = ((tangent.Coeffs().array() * jet[3] + 0.0 +
+                                scaled_torsion.Coeffs().array()) *
+                               inverse_scale * inverse_scale * inverse_scale)
+                                  .matrix();
+        return;
+    }
+
     state.velocity = tangent * jet[1] * inverse_scale;
     state.acceleration =
         (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *

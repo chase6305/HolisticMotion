@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "../../../src/trajectory/TrajectoryStateEvaluation.h"
 #include "holistic_motion/trajectory/TrajectoryTrapezium.h"
 
 using namespace holistic_motion::robotics;
@@ -245,6 +246,104 @@ void CheckNativeLinearZeroTerms() {
                     equal(a.jerk.Coeffs(), b.jerk.Coeffs());
                 }
             }
+        }
+    }
+}
+
+void CheckNonconstantClockCancellation() {
+    using WideGroup = Rn<double, 32>;
+    const double epsilon = std::ldexp(1.0, -27);
+    WideGroup::Tangent tangent, curvature, torsion;
+    tangent.Coeffs().setConstant(1.0 - epsilon);
+    for (unsigned derivative : {2, 3}) {
+        curvature.Coeffs().setConstant(derivative == 2 ? -1.0 : 0.0);
+        torsion.Coeffs().setConstant(derivative == 3 ? -1.0 : 0.0);
+        std::array<double, 4> clock{0.0, 1.0, 0.0, 0.0};
+        clock[derivative] = 1.0 + epsilon;
+        TrajectoryBase<WideGroup>::State state;
+        detail::ComposeDerivatives(state, clock, tangent, curvature, torsion,
+                                   1.0);
+        const auto &result = derivative == 2 ? state.acceleration : state.jerk;
+        // The rounded product (1-e)*(1+e) is exactly 1, then subtracting 1
+        // gives zero. A fused multiply-add instead produces -2^-54.
+        for (double value : result.Coeffs())
+            if (value != 0.0)
+                throw std::runtime_error(
+                    "nonconstant clock changed cancellation");
+    }
+}
+
+void CheckHighDimensionConstantClockZeros() {
+    using WideGroup = Rn<double, 32>;
+    struct ConstantCurve : PathSegmentBase<WideGroup> {
+        ConstantCurve() { length_ = 1.0; }
+        WideGroup GetConfig(double) const override {
+            ++calls[0];
+            WideGroup result;
+            result.Coeffs().setZero();
+            return result;
+        }
+        WideGroup::Tangent GetTangent(double) const override {
+            ++calls[1];
+            return NegativeZero();
+        }
+        WideGroup::Tangent GetCurvature(double) const override {
+            ++calls[2];
+            return NegativeZero();
+        }
+        WideGroup::Tangent GetTorsion(double) const override {
+            ++calls[3];
+            return NegativeZero();
+        }
+        static WideGroup::Tangent NegativeZero() {
+            WideGroup::Tangent value;
+            value.Coeffs().setConstant(-0.0);
+            return value;
+        }
+        mutable std::array<unsigned, 4> calls{};
+    };
+    struct WidePath : PathBase<WideGroup> {
+        explicit WidePath(const std::shared_ptr<ConstantCurve> &curve) {
+            path_segments_.push_back(curve);
+            length_ = 1.0;
+            valid_ = true;
+        }
+    };
+    struct WideProbe : TrajectoryBase<WideGroup> {
+        WideProbe(const std::shared_ptr<ConstantCurve> &curve, double speed) {
+            path_ = std::make_shared<WidePath>(curve);
+            trajectory_pspline_ = std::make_shared<PSpline>();
+            trajectory_pspline_->PushBack(
+                std::make_shared<Polynomial>(
+                    Eigen::Vector4d(0.0, speed, 0.0, 0.0)),
+                1.0);
+            dof_ = 32;
+            valid_ = true;
+        }
+    };
+    for (double speed : {1.0, -1.0, 1e200, -1e200, 1e-200, -1e-200}) {
+        auto curve = std::make_shared<ConstantCurve>();
+        WideProbe trajectory(curve, speed);
+        for (double duration : {1.0, 1e150}) {
+            if (!trajectory.SetMinimumDuration(duration))
+                throw std::runtime_error("cannot slow constant-clock fixture");
+            curve->calls.fill(0);
+            const auto state = trajectory.GetState(0.0);
+            for (int index = 0; index < 32; ++index) {
+                // A constant path remains stationary even when powers of the
+                // clock speed overflow or underflow. Preserve IEEE zero signs.
+                const double velocity = state.velocity.Coeffs()[index];
+                const double acceleration = state.acceleration.Coeffs()[index];
+                const double jerk = state.jerk.Coeffs()[index];
+                if (velocity != 0.0 || acceleration != 0.0 || jerk != 0.0 ||
+                    std::signbit(velocity) != (speed > 0.0) ||
+                    !std::signbit(acceleration) || std::signbit(jerk))
+                    throw std::runtime_error(
+                        "constant-clock zero sign changed");
+            }
+            if (curve->calls != std::array<unsigned, 4>{1, 1, 1, 1})
+                throw std::runtime_error(
+                    "constant clock bypassed virtual geometry");
         }
     }
 }
@@ -522,6 +621,8 @@ int main() {
         CheckFastLinearMotion();
         CheckDerivedLinearQueries();
         CheckNativeLinearZeroTerms();
+        CheckNonconstantClockCancellation();
+        CheckHighDimensionConstantClockZeros();
         CheckCustomQueryRetainsGeometry();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();

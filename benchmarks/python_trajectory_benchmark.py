@@ -13,14 +13,19 @@ import statistics
 import sys
 import time
 
-import numpy as np
-
 import holistic_motion as hm
+import numpy as np
 
 
 def checksum(result):
     digest = hashlib.sha256()
-    for value in result:
+    if isinstance(result, dict):
+        items = sorted(result.items())
+    else:
+        items = [(None, value) for value in result]
+    for key, value in items:
+        if key is not None:
+            digest.update(key.encode())
         array = np.asarray(value)
         if not np.all(np.isfinite(array)):
             raise RuntimeError("benchmark produced non-finite values")
@@ -31,9 +36,9 @@ def checksum(result):
     return digest.hexdigest()
 
 
-def fixtures():
+def fixtures(dofs=(1, 3, 7, 14, 32)):
     for profile in ("double_s", "trapezoidal"):
-        for dof in (1, 3, 7, 14, 32):
+        for dof in dofs:
             for count in (4, 64):
                 points = 0.3 * np.sin(
                     0.4 * np.arange(count)[:, None]
@@ -70,6 +75,16 @@ def measure(call, batch, repeats):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repeats", type=int, default=9)
+    parser.add_argument(
+        "--operations", nargs="+", choices=("state", "uniform", "report"),
+        default=("state", "uniform"),
+        help="operations to time; reports include all returned diagnostics",
+    )
+    parser.add_argument(
+        "--dofs", nargs="+", type=int, choices=range(1, 33),
+        default=(1, 3, 7, 14, 32),
+        help="joint dimensions to measure; Cartesian fixtures are always included",
+    )
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
@@ -78,14 +93,28 @@ def main():
     writer.writerow(("group", "dof", "waypoints", "profile", "operation",
                      "samples", "batch", "median_us", "duration", "checksum"))
     gc.disable()
-    for group, dof, count, profile, trajectory in fixtures():
+    for group, dof, count, profile, trajectory in fixtures(args.dofs):
         query_time = trajectory.duration * 0.37
-        cases = [("state", 1, 256, lambda: trajectory.state(query_time))]
-        for samples, batch in ((2, 128), (65, 16), (2001, 2), (20001, 1)):
+        cases = []
+        if "state" in args.operations:
             cases.append((
-                "uniform", samples, batch,
-                lambda samples=samples: trajectory.sample_uniform(samples),
+                "state", 1, 256,
+                lambda trajectory=trajectory, query_time=query_time:
+                    trajectory.state(query_time),
             ))
+        for samples, batch in ((2, 128), (65, 16), (2001, 2), (20001, 1)):
+            if "uniform" in args.operations:
+                cases.append((
+                    "uniform", samples, batch,
+                    lambda samples=samples, trajectory=trajectory:
+                        trajectory.sample_uniform(samples),
+                ))
+            if "report" in args.operations:
+                cases.append((
+                    "report", samples, batch,
+                    lambda samples=samples, trajectory=trajectory:
+                        trajectory.constraint_report(samples),
+                ))
         for operation, samples, batch, call in cases:
             elapsed, digest = measure(call, batch, args.repeats)
             writer.writerow((group, dof, count, profile, operation, samples,

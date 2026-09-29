@@ -143,6 +143,20 @@ also inspect phase endpoints. Its 24 workloads emit median microseconds from
 21 measured calls after one warmup, plus checksums. It excludes construction
 and Python binding overhead; timing is not a CI threshold.
 
+`benchmarks/python_trajectory_benchmark.py` measures complete Python calls,
+including result assignment and release of the previous result. By default it
+emits 110 state/uniform-sampling configurations. Use `--operations report` for
+88 constraint-report configurations, or combine `state uniform report`.
+`--dofs 1 4 32` selects joint dimensions; Cartesian fixtures remain included.
+`--repeats` controls repetitions within each configuration. Report checksums
+include all diagnostic fields and array shape, dtype, strides, ownership and
+writability. For example:
+
+```bash
+PYTHONPATH=build/install python benchmarks/python_trajectory_benchmark.py \
+  --operations report --dofs 1 4 32 --repeats 9
+```
+
 `benchmarks/trajectory_audit.py` generates native trajectories with an explicit
 seed and checks finite samples, endpoints, and derivative limits at uniform
 times plus every breakpoint. For example, run
