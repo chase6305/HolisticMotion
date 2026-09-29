@@ -175,7 +175,7 @@ template <> struct CachedQuinticEvaluation<SE3d> : QuinticEvaluation<SE3d> {
 // A workspace for one construction or constraint report. Only exact built-in
 // segments may reuse geometry; derived segments retain every virtual query.
 template <typename LieGroup> class SegmentEvaluationSampler {
-  public:
+public:
     using Tangent = typename LieGroup::Tangent;
 
     bool IsLinear() const {
@@ -253,19 +253,19 @@ template <typename LieGroup> class SegmentEvaluationSampler {
     }
 
 private:
-  void SetQuadraticParameter(double s,
-                             QuadraticEvaluation<LieGroup> &quadratic) {
-      const double length = segment_.GetLength();
-      const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
-      // Unlike native quintics, a valid quadratic may be shorter than Epsilon.
-      quadratic.SetParameter(local / length);
-  }
+    void SetQuadraticParameter(double s,
+                               QuadraticEvaluation<LieGroup> &quadratic) {
+        const double length = segment_.GetLength();
+        const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
+        // Unlike native quintics, a valid quadratic may be shorter than Epsilon.
+        quadratic.SetParameter(local / length);
+    }
 
-  void SetParameter(double s, CachedQuinticEvaluation<LieGroup> &quintic) {
-      const double length = segment_.GetLength();
-      s = clamp(s - segment_.GetStartParameter(), 0.0, length);
-      quintic.SetParameter(length > Epsilon ? s / length : 0.0);
-  }
+    void SetParameter(double s, CachedQuinticEvaluation<LieGroup> &quintic) {
+        const double length = segment_.GetLength();
+        s = clamp(s - segment_.GetStartParameter(), 0.0, length);
+        quintic.SetParameter(length > Epsilon ? s / length : 0.0);
+    }
 
     const PathSegmentBase<LieGroup> &segment_;
     std::variant<std::monostate, CachedQuinticEvaluation<LieGroup>, Tangent,
