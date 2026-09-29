@@ -125,6 +125,24 @@ PYTHONPATH=build/install python benchmarks/python_trajectory_benchmark.py \
   --operations report --dofs 1 4 32 --repeats 9
 ```
 
+`benchmarks/compare_python_trajectories.py` 用两个常驻且独立的进程比较安装目录，
+逐工况交替测量、随机排列顺序，并核对全部返回值校验和。默认覆盖 198 个状态、
+均匀采样和报告配置；JSON 保留墙钟/线程 CPU 时间、每次重复，以及实际加载的
+扩展路径和哈希。将同一安装目录同时作为基线和候选，可以估计环境噪声。
+常驻进程能缩短配对间隔，但不能消除共享机器上的竞争；配对变化为负表示候选
+耗时更少。
+
+```bash
+python benchmarks/compare_python_trajectories.py \
+  --baseline /tmp/baseline-install --candidate build/install \
+  --python /path/to/compatible/python --rounds 8 > comparison.json
+```
+
+两个安装目录须兼容所选解释器。支持 CPU 亲和性的平台可以用 `--cpu` 将两个
+进程固定到同一个允许使用的逻辑 CPU；`--dofs`、`--operations`、`--repeats`
+选择与单安装基准相同的工况。计时包括结果赋值、上一结果释放及计时器开销，
+校验和计算在计时之外。
+
 `benchmarks/trajectory_audit.py` 按显式种子生成原生轨迹，在均匀时间点和
 全部分段边界检查有限性、端点和导数限位。例如执行
 `PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`。

@@ -27,11 +27,31 @@ using namespace holistic_motion::robotics;
 
 namespace {
 
+// NumPy copies these fixed-size descriptors and allocates its own writable
+// data. Use pybind11's NumPy API loader so this small bridge needs no NumPy
+// headers and follows its NumPy 1/2 compatibility handling. The ordinary array
+// constructor materializes heap-backed shape and stride containers first.
+template <std::size_t Dimensions, int Flags = py::array::forcecast>
+py::array_t<double, Flags>
+NewDoubleArray(const std::array<Py_intptr_t, Dimensions> &shape,
+               const std::array<Py_intptr_t, Dimensions> &strides) {
+    auto dtype = py::dtype::of<double>();
+    auto &api = py::detail::npy_api::get();
+    auto result = py::reinterpret_steal<py::array_t<double, Flags>>(
+        // NewFromDescr consumes the dtype reference, including on failure.
+        api.PyArray_NewFromDescr_(api.PyArray_Type_, dtype.release().ptr(),
+                                  static_cast<int>(Dimensions), shape.data(),
+                                  strides.data(), nullptr, 0, nullptr));
+    if (!result)
+        throw py::error_already_set();
+    return result;
+}
+
 // Allocate the owning NumPy buffer directly; results remain independent
 // and writable after the temporary C++ state or report is destroyed.
 template <int Rows>
 py::array_t<double> CopyVector(const Eigen::Matrix<double, Rows, 1> &values) {
-    py::array_t<double> result(values.size());
+    auto result = NewDoubleArray<1>({values.size()}, {sizeof(double)});
     std::copy_n(values.data(), values.size(), result.mutable_data());
     return result;
 }
@@ -225,7 +245,8 @@ public:
     }
     py::tuple SampleUniform(std::size_t samples) const {
         ValidateUniformSampleCount(samples, N);
-        py::array_t<double> times(samples);
+        auto times = NewDoubleArray<1>({static_cast<Py_intptr_t>(samples)},
+                                       {sizeof(double)});
         Eigen::Map<Eigen::VectorXd> time_values(times.mutable_data(), samples);
         time_values = Eigen::VectorXd::LinSpaced(
             static_cast<Eigen::Index>(samples), 0.0, Duration());
@@ -272,10 +293,15 @@ private:
         }
         // Fill NumPy-owned column-major buffers directly. Returning temporary
         // Eigen matrices would copy every sample again while holding the GIL.
-        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(times.size()),
-                                              static_cast<py::ssize_t>(N)};
-        SampleArray positions(shape), velocities(shape), accelerations(shape),
-            jerks(shape);
+        const std::array<Py_intptr_t, 2> shape{times.size(), N};
+        const std::array<Py_intptr_t, 2> strides{
+            sizeof(double),
+            static_cast<Py_intptr_t>(sizeof(double)) * times.size()};
+        const auto allocate = [&] {
+            return NewDoubleArray<2, py::array::f_style>(shape, strides);
+        };
+        SampleArray positions = allocate(), velocities = allocate(),
+                    accelerations = allocate(), jerks = allocate();
         Eigen::Map<Eigen::MatrixXd> position_values(positions.mutable_data(),
                                                     times.size(), N);
         Eigen::Map<Eigen::MatrixXd> velocity_values(velocities.mutable_data(),
@@ -493,17 +519,24 @@ public:
     }
     py::tuple SampleUniform(std::size_t samples) const {
         ValidateUniformSampleCount(samples, 16);
-        py::array_t<double> times(samples);
+        auto times = NewDoubleArray<1>({static_cast<Py_intptr_t>(samples)},
+                                       {sizeof(double)});
         Eigen::Map<Eigen::VectorXd> time_values(times.mutable_data(), samples);
         time_values = Eigen::VectorXd::LinSpaced(
             static_cast<Eigen::Index>(samples), 0.0, Duration());
-        py::array_t<double> poses(py::array::ShapeContainer{
-            static_cast<py::ssize_t>(samples), static_cast<py::ssize_t>(4),
-            static_cast<py::ssize_t>(4)});
+        auto poses = NewDoubleArray<3>(
+            {static_cast<Py_intptr_t>(samples), 4, 4},
+            {16 * sizeof(double), 4 * sizeof(double), sizeof(double)});
         using SampleArray = py::array_t<double, py::array::f_style>;
-        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(samples),
-                                              static_cast<py::ssize_t>(6)};
-        SampleArray velocity(shape), acceleration(shape), jerk(shape);
+        const std::array<Py_intptr_t, 2> shape{
+            static_cast<Py_intptr_t>(samples), 6};
+        const std::array<Py_intptr_t, 2> strides{
+            sizeof(double), static_cast<Py_intptr_t>(sizeof(double) * samples)};
+        const auto allocate = [&] {
+            return NewDoubleArray<2, py::array::f_style>(shape, strides);
+        };
+        SampleArray velocity = allocate(), acceleration = allocate(),
+                    jerk = allocate();
         Eigen::Map<Eigen::MatrixXd> velocity_values(velocity.mutable_data(), samples,
                                                     6);
         Eigen::Map<Eigen::MatrixXd> acceleration_values(acceleration.mutable_data(),

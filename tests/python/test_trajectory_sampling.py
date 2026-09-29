@@ -207,3 +207,44 @@ def test_batch_sampling_preserves_scalar_states_at_shuffled_knots(profile, dof, 
             np.testing.assert_array_equal(
                 array.view(np.uint64), reference.view(np.uint64),
             )
+
+
+@pytest.mark.parametrize("kind", ["1", "7", "32"])
+def test_sample_layouts_survive_later_calls_with_different_shapes(kind):
+    trajectory = _trajectory(kind)
+    counts = (0, 1, 2, 33)
+    batches = [
+        trajectory.sample(np.linspace(0, trajectory.duration, count))
+        for count in counts
+    ]
+    # Retain every result while subsequent calls reuse their stack descriptors.
+    del trajectory
+    for count, batch in zip(counts, batches):
+        reference = np.empty((count, int(kind)), dtype=np.float64, order="F")
+        for array in batch:
+            assert array.shape == reference.shape
+            assert array.strides == reference.strides
+            assert array.dtype == reference.dtype
+            assert array.base is None
+            assert array.flags.owndata and array.flags.writeable
+            assert array.flags.aligned
+            assert array.flags.c_contiguous == reference.flags.c_contiguous
+            assert array.flags.f_contiguous == reference.flags.f_contiguous
+
+
+@pytest.mark.parametrize("kind", ["cartesian", "1", "7", "32"])
+def test_uniform_sample_layouts_match_owned_numpy_arrays(kind):
+    trajectory = _trajectory(kind)
+    batches = [trajectory.sample_uniform(count) for count in (2, 33)]
+    del trajectory
+    for batch in batches:
+        for array in batch:
+            order = "F" if array.ndim == 2 else "C"
+            reference = np.empty(array.shape, dtype=np.float64, order=order)
+            assert array.strides == reference.strides
+            assert array.dtype == reference.dtype
+            assert array.base is None
+            assert array.flags.owndata and array.flags.writeable
+            assert array.flags.aligned
+            assert array.flags.c_contiguous == reference.flags.c_contiguous
+            assert array.flags.f_contiguous == reference.flags.f_contiguous

@@ -63,6 +63,12 @@ jobs:
           BUILD_DIR: build-core
           JOBS: "2"
         run: ./scripts/build.sh --tests --no-cuda --no-collision
+      - name: Check trajectory arrays with NumPy 1.23
+        run: |
+          python -m venv "$RUNNER_TEMP/numpy123"
+          "$RUNNER_TEMP/numpy123/bin/python" -m pip install 'numpy==1.23.5' 'pytest>=7'
+          PYTHONPATH="$PWD/build-core/install" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            "$RUNNER_TEMP/numpy123/bin/python" -m pytest tests/python/test_trajectory_sampling.py -q
       - name: Configure C++ sanitizers and Eigen assertions
         run: >-
           cmake -S . -B build-sanitizers
