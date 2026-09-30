@@ -551,3 +551,169 @@ def test_mixed_terminal_speeds_match_independent_values_and_gradients(device):
         for value, target in zip(actual, expected):
             torch.testing.assert_close(value, target)
             assert torch.count_nonzero(value[1 - index]) == 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("units", ["space", "time"])
+def test_independent_units_preserve_batch_values_and_gradients(device, units):
+    p = points(device).requires_grad_()
+    v = torch.tensor(
+        [0.83, 1.07], device=device, dtype=torch.float64, requires_grad=True
+    )
+    a = torch.tensor(
+        [1.63, 2.19], device=device, dtype=torch.float64, requires_grad=True
+    )
+    end = torch.tensor(
+        [0.0, 0.17, 0.13, 0.0], device=device, dtype=torch.float64, requires_grad=True
+    )
+    scales = torch.tensor(
+        [1e-10, 1.0, 1e155, 1e300] if units == "space" else [1e-120, 1.0, 1e60, 1e120],
+        device=device,
+        dtype=torch.float64,
+    )
+
+    def evaluate(scale):
+        space = scale if units == "space" else torch.ones_like(scale)
+        time = scale if units == "time" else torch.ones_like(scale)
+        trajectory = TorchToppraTrajectory(
+            p * space[:, None, None],
+            v * scale[:, None],
+            (a * scale[:, None]) * time[:, None],
+            end_path_velocity=end * time,
+            grid_size=17,
+        )
+        times, q, dq, ddq = trajectory.sample_uniform(29)
+        outputs = (
+            times * time[:, None],
+            q / space[:, None, None],
+            dq / scale[:, None, None],
+            (ddq / scale[:, None, None]) / time[:, None, None],
+        )
+        loss = (trajectory.duration * time).sum() + sum(
+            value.square().mean() * 0.003 for value in outputs[1:]
+        )
+        return outputs, torch.autograd.grad(loss, (p, v, a, end))
+
+    expected, expected_gradients = evaluate(torch.ones_like(scales))
+    actual, gradients = evaluate(scales)
+    for value, target in zip((*actual, *gradients), (*expected, *expected_gradients)):
+        assert torch.isfinite(value).all()
+        torch.testing.assert_close(value, target, rtol=1e-8, atol=1e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_unrepresentable_chord_lengths_are_rejected(device):
+    p = torch.tensor([[-1e308], [1e308]], device=device, dtype=torch.float64)
+    with pytest.raises(ValueError, match="finite chord lengths"):
+        TorchToppraTrajectory(p, 1.0, 2.0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_autocast_preserves_float64_timing_and_input_gradients(device):
+    p = points(device, dtype=torch.float32).requires_grad_()
+    expected = TorchToppraTrajectory(p, 1.0, 2.0, grid_size=13)
+    expected_gradient = torch.autograd.grad(expected.duration, p)[0]
+    dtype = torch.float16 if device == "cuda" else torch.bfloat16
+    with torch.autocast(device_type=device, dtype=dtype):
+        actual = TorchToppraTrajectory(p, 1.0, 2.0, grid_size=13)
+        times, q, dq, ddq = actual.sample_uniform(29)
+    assert times.dtype == actual.duration.dtype == torch.float64
+    assert all(value.dtype == torch.float32 for value in (q, dq, ddq))
+    torch.testing.assert_close(actual.duration, expected.duration)
+    torch.testing.assert_close(
+        torch.autograd.grad(actual.duration, p)[0], expected_gradient
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device unavailable")
+def test_cuda_waypoints_propagate_gradients_to_cpu_limit_tensors():
+    p = points("cuda").requires_grad_()
+    v = torch.tensor([0.8, 1.1], dtype=torch.float32, requires_grad=True)
+    a = torch.tensor([1.7, 2.1], dtype=torch.float64, requires_grad=True)
+    end = torch.tensor(0.17, dtype=torch.float64, requires_grad=True)
+    actual = TorchToppraTrajectory(p, v, a, end_path_velocity=end, grid_size=17)
+    actual_gradients = torch.autograd.grad(actual.duration, (p, v, a, end))
+    cpu = p.detach().cpu().requires_grad_()
+    expected = TorchToppraTrajectory(cpu, v, a, end_path_velocity=end, grid_size=17)
+    expected_gradients = torch.autograd.grad(expected.duration, (cpu, v, a, end))
+    torch.testing.assert_close(actual.duration.cpu(), expected.duration)
+    for actual_gradient, expected_gradient, source in zip(
+        actual_gradients, expected_gradients, (p, v, a, end)
+    ):
+        assert actual_gradient.device == source.device
+        assert actual_gradient.dtype == source.dtype
+        torch.testing.assert_close(actual_gradient.cpu(), expected_gradient)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_boundary_only_gradients_with_constant_path_and_limits(device):
+    p = points(device)
+    start = torch.tensor(0.12, device=device, dtype=torch.float64, requires_grad=True)
+    end = torch.tensor(0.17, device=device, dtype=torch.float64, requires_grad=True)
+
+    def evaluate(start, end):
+        trajectory = TorchToppraTrajectory(
+            p, 1.0, 2.0, start_path_velocity=start, end_path_velocity=end, grid_size=8
+        )
+        return (trajectory.duration, *trajectory.sample_uniform(7)[1:])
+
+    assert torch.autograd.gradcheck(evaluate, (start, end), atol=2e-5, rtol=2e-4)
+    end = torch.zeros((), device=device, dtype=torch.float64, requires_grad=True)
+    duration = evaluate(start, end)[0]
+    start_gradient, end_gradient = torch.autograd.grad(duration, (start, end))
+    assert torch.isfinite(start_gradient)
+    assert end_gradient == 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_projected_stop_has_zero_speed_and_stable_gradients_across_units(device):
+    p = torch.tensor(
+        [
+            0.311,
+            0.032,
+            -0.279,
+            0.247,
+            1.865,
+            -0.702,
+            0.206,
+            0.602,
+            -0.038,
+            0.848,
+            0.887,
+            1.02,
+        ],
+        device=device,
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    results = []
+    for scale in (1.0, 1e-100, 1e100):
+        trajectory = TorchToppraTrajectory(
+            p[:, None],
+            scale,
+            2 * scale**2,
+            start_path_velocity=0.002 * scale,
+            grid_size=9,
+        )
+        assert trajectory.result.path_speeds[8] == 0.0
+        duration = trajectory.duration * scale
+        assert duration.item() == pytest.approx(16.6798165269817138, rel=1e-13)
+        results.append((duration, torch.autograd.grad(duration, p)[0]))
+    for actual in results[1:]:
+        for value, target in zip(actual, results[0]):
+            torch.testing.assert_close(value, target, rtol=1e-10, atol=1e-11)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_coarse_grid_with_adjacent_stops_requests_refinement(device):
+    rng = np.random.default_rng(63054)
+    p = torch.tensor(rng.normal(size=(16, 1)), device=device, dtype=torch.float64)
+    velocity = rng.uniform(0.3, 2.0, 1)
+    acceleration = rng.uniform(0.4, 3.0, 1)
+    with pytest.raises(ValueError, match="zero reachable speed.*increase grid_size"):
+        TorchToppraTrajectory(p, velocity, acceleration, grid_size=3)
+    trajectory = TorchToppraTrajectory(p, velocity, acceleration, grid_size=61)
+    assert 0.0 < trajectory.duration < 100.0
+    _, _, dq, ddq = trajectory.sample_uniform(1001)
+    assert torch.all(dq.abs() <= torch.as_tensor(velocity, device=device) + 1e-10)
+    assert torch.all(ddq.abs() <= torch.as_tensor(acceleration, device=device) + 1e-10)

@@ -38,6 +38,7 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 安装可选依赖：`pip install 'holistic-motion[differentiable]'`。
 CUDA 执行还需要与 GPU、驱动兼容的 CUDA 版 PyTorch。本后端独立于原生库的
 CMake CUDA 开关，无需 Warp 或编译扩展。
+不使用编译扩展时，请在导入包之前设置环境变量 `HOLISTICMOTION_PURE_PYTHON=1`。
 
 ```python
 import torch
@@ -73,6 +74,8 @@ loss.backward()  # points.grad 和 velocity.grad 均位于 CUDA
 自动微分覆盖路点、限值、边界速度及采样时间。梯度是固定激活约束、样条段选择
 及网格拓扑下的分段导数，不保证在切换点可微；零路径速度处的平方根导数约定为零。
 测试验证一阶梯度，该算法没有用平滑近似替换 TOPPRA。
+当停止点的约束残差仅因浮点舍入偏离零时，仍保留零速度及零导数约定。
+若粗网格产生相邻停止点，构造函数会报错并提示细化网格。
 
 求解器先对每条路径的速度单位做归一化，避免大幅改变时间单位时，中间平方速度
 溢出或未激活约束产生无效梯度。物理输出仍需能以 float64 及指定采样类型表示。
@@ -91,6 +94,10 @@ CUDA 支持不代表小批次一定更快：可达性传播沿网格仍是顺序
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
   python examples/python/trajectory/toppra_differentiable.py --device cuda
 ```
+
+添加 `--optimize-steps 50` 可用 Adam 优化示例的内部路点，同时固定端点和运动限值。
+每个内部坐标相对初值的改变量限制在 0.1 内，目标由时长和较小的位移惩罚组成。
+由于优化中激活约束可能切换，示例报告最佳迭代结果，也支持 CPU 执行。
 
 对比版本时，先导出旧版张量模块，再运行
 `benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`。

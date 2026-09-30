@@ -16,6 +16,7 @@ Pinocchio/Coal 碰撞查询以及姿态重定向。
 - C++17 核心库和 pybind11 Python 绑定。
 - URDF 解析以及数值、OPW、UR、SRS、FEP 运动学。
 - 满足约束的 Double-S、梯形速度轨迹和 TOPPRA 路径时间参数化。
+- 可选 PyTorch TOPPRA，支持 CPU/CUDA 批量执行与自动微分。
 - 不依赖 OMPL 的 RRT-Connect、RRT*、Informed RRT* 关节空间规划与可行路径优化。
 - 可通过 `--cuda` 显式启用的 CUDA 批处理后端。
 - 默认启用、由 Conan 管理 Pinocchio 和 Coal 的碰撞查询。
@@ -93,6 +94,11 @@ trajectory = ToppraTrajectory(
 )
 times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 ```
+
+需要可微 CPU/CUDA 重定时时，安装 `differentiable` 可选依赖，再将 Torch 张量传给
+`retime_path_torch`。梯度覆盖路点、限值、边界速度及采样时间，无需原生 `--cuda`
+构建选项。批量形状、梯度约定和运行示例见[轨迹指南](docs/zh_CN/trajectory.md)。
+不使用编译扩展时，在导入前设置 `HOLISTICMOTION_PURE_PYTHON=1`。
 
 Retargeting API 位于 `holistic_motion.kit.retargeting`：
 

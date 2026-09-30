@@ -160,10 +160,11 @@ class _IntervalConstraints:
 
         product = self.forward_a * x
         rounding = 8.0 * np.finfo(float).eps * np.maximum(1.0, np.abs(product))
-        return min(
-            upper,
-            float(np.min((1.0 - product + rounding) / self.forward_b, initial=np.inf)),
-        )
+        residual = 1.0 - product
+        # Preserve exact stops at projected vertices: a tiny positive speed
+        # introduced only by rounding would be amplified by its square root.
+        rhs = np.where(np.abs(residual) <= rounding, 0.0, residual + rounding)
+        return min(upper, float(np.min(rhs / self.forward_b, initial=np.inf)))
 
     def project(self, lower: float, upper: float) -> tuple[float, float]:
         """All x >= 0 that can reach some y in [lower, upper]."""
@@ -180,8 +181,13 @@ class _IntervalConstraints:
         # rounding bits into a spurious empty interval. Apply the tolerance to
         # the dimensionless half-plane residual before dividing, not to the
         # resulting speed bounds; keep small nonzero coefficients intact.
+        # Residuals indistinguishable from zero stay zero, including at stops.
         rounding = 8.0 * np.finfo(float).eps * np.maximum(1.0, np.abs(product))
-        return _intersect_bounds(self.b, 1.0 - product + rounding, lower, upper)
+        residual = 1.0 - product
+        rhs = residual + rounding
+        if lower == 0.0:
+            rhs[np.abs(residual) <= rounding] = 0.0
+        return _intersect_bounds(self.b, rhs, lower, upper)
 
 
 @dataclass(frozen=True)
@@ -430,7 +436,9 @@ class ToppraTrajectory:
     def _compute(self, start_velocity: float, end_velocity: float) -> ToppraResult:
         caps = self._velocity_caps()
         start_x, end_x = start_velocity**2, end_velocity**2
-        if start_x > caps[0] + 1e-10 or end_x > caps[-1] + 1e-10:
+        if start_x > caps[0] + 1e-10 * max(start_x, caps[0]) or end_x > caps[
+            -1
+        ] + 1e-10 * max(end_x, caps[-1]):
             raise ValueError("boundary path velocity violates joint velocity limits")
         constraints = self._interval_constraints()
         if end_velocity == 0.0:
@@ -442,7 +450,10 @@ class ToppraTrajectory:
         speeds = np.sqrt(np.maximum(x, 0.0))
         denominators = speeds[:-1] + speeds[1:]
         if np.any(denominators <= 1e-14):
-            raise ValueError("path contains an interval with zero reachable speed")
+            raise ValueError(
+                "path contains an interval with zero reachable speed; "
+                "refine gridpoints or increase grid_size"
+            )
         dt = 2.0 * ds / denominators
         times = np.concatenate(([0.0], np.cumsum(dt)))
 
@@ -461,7 +472,7 @@ class ToppraTrajectory:
             if not np.isfinite(cap) or cap < 0.0:
                 raise ValueError(f"path is infeasible near gridpoint {index}")
             controllable[index] = cap
-        if start_x > controllable[0] + 1e-12:
+        if start_x > controllable[0] + 1e-12 * max(start_x, controllable[0]):
             raise ValueError("start velocity cannot reach the requested end velocity")
         x = np.empty_like(self._grid)
         x[0] = start_x
@@ -486,10 +497,16 @@ class ToppraTrajectory:
         controllable[-1] = (end_x, end_x)
         for index in range(len(constraints) - 1, -1, -1):
             lo, hi = constraints[index].project(*controllable[index + 1])
-            if not np.isfinite([lo, hi]).all() or lo > hi + 1e-12:
+            if not np.isfinite([lo, hi]).all() or lo > hi + 1e-12 * max(
+                abs(lo), abs(hi)
+            ):
                 raise ValueError(f"path is infeasible near gridpoint {index}")
             controllable[index] = (lo, max(lo, hi))
-        if start_x < controllable[0, 0] - 1e-12 or start_x > controllable[0, 1] + 1e-12:
+        tolerance = 1e-12 * max(start_x, *np.abs(controllable[0]))
+        if (
+            start_x < controllable[0, 0] - tolerance
+            or start_x > controllable[0, 1] + tolerance
+        ):
             raise ValueError("start velocity cannot reach the requested end velocity")
 
         x = np.empty_like(self._grid)
@@ -497,7 +514,7 @@ class ToppraTrajectory:
         for index, interval in enumerate(constraints):
             lower, upper = controllable[index + 1]
             low, high = interval.reachable(x[index], lower, upper)
-            if low > high + 1e-12:
+            if low > high + 1e-12 * max(abs(low), abs(high)):
                 raise RuntimeError(f"TOPPRA forward pass failed at gridpoint {index}")
             x[index + 1] = np.clip(high, lower, upper)
         return x

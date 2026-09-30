@@ -37,7 +37,7 @@ def load_module(path: Path, name: str):
     return module
 
 
-def run(module, inputs, grid_size, backward, end_speed=0.0):
+def run(module, inputs, grid_size, backward, end_speed=0.0, before_backward=None):
     context = contextlib.nullcontext() if backward else torch.no_grad()
     with context:
         trajectory = module.TorchToppraTrajectory(
@@ -50,6 +50,8 @@ def run(module, inputs, grid_size, backward, end_speed=0.0):
                 weight * value.square().mean()
                 for weight, value in zip((0.01, 0.03, 0.001), motion[1:])
             )
+            if before_backward is not None:
+                before_backward()
             gradients = torch.autograd.grad(loss, inputs)
         result = trajectory.result
         return (
@@ -67,21 +69,53 @@ def saved_storage(module, inputs, grid_size, end_speed=0.0):
     storages = {}
     calls = 0
     referenced = 0
+    live_referenced = 0
+    live_storage = 0
+    peak_storage = 0
+    retained_storage = 0
 
-    def pack(tensor):
-        nonlocal calls, referenced
-        calls += 1
-        referenced += tensor.numel() * tensor.element_size()
-        storage = tensor.untyped_storage()
-        storages[(str(tensor.device), storage.data_ptr())] = storage.nbytes()
-        return tensor
+    class SavedTensor:
+        def __init__(self, tensor):
+            nonlocal calls, referenced, live_referenced, live_storage, peak_storage
+            # Detach avoids a reference cycle through the saved tensor's grad_fn.
+            # This aliases storage and does not copy or retain an extra graph.
+            self.tensor = tensor.detach()
+            self.size = tensor.numel() * tensor.element_size()
+            storage = tensor.untyped_storage()
+            self.key = str(tensor.device), storage.data_ptr()
+            calls += 1
+            referenced += self.size
+            live_referenced += self.size
+            if self.key not in storages:
+                storages[self.key] = [storage.nbytes(), 0]
+                live_storage += storage.nbytes()
+            storages[self.key][1] += 1
+            peak_storage = max(peak_storage, live_storage)
 
-    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
-        run(module, inputs, grid_size, True, end_speed)
+        def __del__(self):
+            nonlocal live_referenced, live_storage
+            live_referenced -= self.size
+            entry = storages[self.key]
+            entry[1] -= 1
+            if entry[1] == 0:
+                live_storage -= entry[0]
+                del storages[self.key]
+
+    def before_backward():
+        nonlocal retained_storage
+        retained_storage = live_storage
+
+    with torch.autograd.graph.saved_tensors_hooks(
+        SavedTensor, lambda saved: saved.tensor
+    ):
+        run(module, inputs, grid_size, True, end_speed, before_backward)
+    if live_referenced or live_storage:
+        raise RuntimeError("saved tensors remained alive after the benchmark call")
     return {
         "save_calls": calls,
-        "referenced_bytes": referenced,
-        "unique_storage_bytes": sum(storages.values()),
+        "cumulative_referenced_bytes": referenced,
+        "storage_bytes_before_backward": retained_storage,
+        "peak_live_storage_bytes": peak_storage,
     }
 
 
@@ -209,6 +243,10 @@ def main() -> None:
                         "baseline_ms": medians[0],
                         "candidate_ms": medians[1],
                         "speedup": medians[0] / medians[1],
+                        "paired_speedup": statistics.median(
+                            old["wall_ms"] / new["wall_ms"]
+                            for old, new in zip(*measurements)
+                        ),
                         "measurements": measurements,
                     }
                     if backward:

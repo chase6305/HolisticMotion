@@ -57,11 +57,13 @@ class _StableDivide(torch.autograd.Function):
         ctx, numerator: torch.Tensor, denominator: torch.Tensor
     ) -> torch.Tensor:
         result = numerator / denominator
-        ctx.save_for_backward(denominator, result)
+        ctx.save_for_backward(denominator, result if ctx.needs_input_grad[1] else None)
         return result
 
     @staticmethod
-    def backward(ctx, gradient: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def backward(
+        ctx, gradient: torch.Tensor
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         denominator, result = ctx.saved_tensors
         # Scale the incoming adjoint before multiplying by the quotient. The
         # alternative -(result / denominator) * gradient can overflow even
@@ -69,10 +71,15 @@ class _StableDivide(torch.autograd.Function):
         # are never selected by a finite feasible solution, so their quotient
         # factor can safely be zero for this unused denominator adjoint.
         numerator_gradient = gradient / denominator
-        denominator_gradient = -numerator_gradient * torch.nan_to_num(
-            result, nan=0.0, posinf=0.0, neginf=0.0
+        denominator_gradient = (
+            -numerator_gradient
+            * torch.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            if ctx.needs_input_grad[1]
+            else None
         )
-        return numerator_gradient, denominator_gradient
+        return numerator_gradient if ctx.needs_input_grad[
+            0
+        ] else None, denominator_gradient
 
 
 def _divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
@@ -81,15 +88,6 @@ def _divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
     ):
         return _StableDivide.apply(numerator, denominator)
     return numerator / denominator
-
-
-def _bounds(
-    coefficient: torch.Tensor, rhs: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    ratio = _divide(rhs, torch.where(coefficient != 0.0, coefficient, 1.0))
-    lower = torch.where(coefficient < 0.0, ratio, -torch.inf).max(-1).values
-    upper = torch.where(coefficient > 0.0, ratio, torch.inf).min(-1).values
-    return lower, upper
 
 
 def _projection_caps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -241,8 +239,20 @@ class TorchToppraTrajectory:
         self._acceleration = self._limits(max_acceleration, "max_acceleration")
         start = self._boundary(start_path_velocity)
         end = self._boundary(end_path_velocity)
-        lengths = torch.linalg.vector_norm(torch.diff(self._points, dim=1), dim=-1)
-        _check(lengths > 1e-12, "consecutive waypoints must be distinct")
+        delta = torch.diff(self._points, dim=1)
+        # Squaring physical coordinates in the norm can overflow even when
+        # the chord length itself is representable. Its arbitrary scale has
+        # no effect on the derivative of the norm, so do not differentiate it.
+        with torch.no_grad():
+            length_scale = delta.abs().amax(dim=-1, keepdim=True)
+            length_scale = torch.where(length_scale > 0, length_scale, 1.0)
+        lengths = torch.linalg.vector_norm(
+            delta / length_scale, dim=-1
+        ) * length_scale.squeeze(-1)
+        _check(
+            torch.isfinite(lengths) & (lengths > 1e-12),
+            "consecutive waypoints must be distinct with finite chord lengths",
+        )
         zero = torch.zeros((self._batch, 1), dtype=torch.float64, device=self._device)
         cumulative = torch.cat((zero, lengths.cumsum(1)), dim=1)
         self._knots = cumulative / cumulative[:, -1:]
@@ -260,7 +270,7 @@ class TorchToppraTrajectory:
         )
         self._grid = torch.cat((grid.flatten(1), torch.ones_like(zero)), dim=1)
         _check(torch.diff(self._grid, dim=1) > 0, "path grid is not representable")
-        _, first, second = self._evaluate(self._grid)
+        _, first, second = self._evaluate(self._grid, position=False)
         a, b, speed_scale = self._constraints(first, second)
         _check(
             torch.isfinite(a) & torch.isfinite(b),
@@ -279,7 +289,10 @@ class TorchToppraTrajectory:
             torch.diff(x, dim=1) / (2.0 * ds) * speed_scale[:, None]
         ) * speed_scale[:, None]
         denominator = normalized_speeds[:, :-1] + normalized_speeds[:, 1:]
-        _check(denominator > 0.0, "path contains an interval with zero reachable speed")
+        _check(
+            denominator > 0.0,
+            "path contains an interval with zero reachable speed; increase grid_size",
+        )
         self._times = torch.cat(
             (zero, (2.0 * ds / denominator / speed_scale[:, None]).cumsum(1)), dim=1
         )
@@ -367,16 +380,23 @@ class TorchToppraTrajectory:
         self._c = second[:, :-1] / 2.0
         self._d = torch.diff(second, dim=1) / (6.0 * h[..., None])
 
-    def _evaluate(self, s: torch.Tensor) -> tuple[torch.Tensor, ...]:
+    def _evaluate(
+        self, s: torch.Tensor, *, position: bool = True
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
         index = (
             torch.searchsorted(self._knots.contiguous(), s.contiguous(), right=True) - 1
         ).clamp(0, self._a.shape[1] - 1)
         delta = (s - self._knots.gather(1, index))[..., None]
-        a, b, c, d = (
-            _gather(value, index) for value in (self._a, self._b, self._c, self._d)
+        b, c, d = (_gather(value, index) for value in (self._b, self._c, self._d))
+        # Constraint construction needs only derivatives. Avoid keeping an
+        # unused position graph alive through the complete timing solve.
+        q = (
+            _gather(self._a, index) + delta * (b + delta * (c + delta * d))
+            if position
+            else None
         )
         return (
-            a + delta * (b + delta * (c + delta * d)),
+            q,
             b + delta * (2.0 * c + 3.0 * delta * d),
             2.0 * c + 6.0 * delta * d,
         )
@@ -448,16 +468,22 @@ class TorchToppraTrajectory:
         aa_intervals, bb_intervals = a.unbind(1), b.unbind(1)
         cap_intervals = caps.unbind(1)
         lower = None
+        positive_b = b > 0
+        positive_b_intervals = positive_b.unbind(1)
         if bool((end == 0).all()):
             upper = self._controllable_to_rest(a, b, caps, end)
         else:
             lower, upper = [end], [end]
+            denominators_a = torch.where(a != 0, a, 1.0).unbind(1)
+            negative_a, positive_a = (a < 0).unbind(1), (a > 0).unbind(1)
             for index in range(a.shape[1] - 1, -1, -1):
-                aa, bb = aa_intervals[index], bb_intervals[index]
+                bb = bb_intervals[index]
                 rhs = 1.0 - bb * torch.where(
-                    bb > 0, lower[-1][:, None], upper[-1][:, None]
+                    positive_b_intervals[index], lower[-1][:, None], upper[-1][:, None]
                 )
-                lo, hi = _bounds(aa, rhs)
+                ratio = _divide(rhs, denominators_a[index])
+                lo = torch.where(negative_a[index], ratio, -torch.inf).max(-1).values
+                hi = torch.where(positive_a[index], ratio, torch.inf).min(-1).values
                 lo, hi = lo.clamp_min(0), torch.minimum(hi, cap_intervals[index])
                 lower.append(lo)
                 upper.append(hi)
@@ -480,14 +506,21 @@ class TorchToppraTrajectory:
             "start velocity cannot reach the requested end velocity",
         )
         values = [start]
-        positive = b > 0
-        denominators = torch.where(positive, b, 1.0).unbind(1)
-        positive = positive.unbind(1)
+        denominators = torch.where(positive_b, b, 1.0).unbind(1)
         for index in range(a.shape[1]):
             product = aa_intervals[index] * values[-1][:, None]
             rounding = _ROUNDING_EPS * product.abs().clamp_min(1.0)
-            ratio = _divide(1.0 - product + rounding, denominators[index])
-            high = torch.where(positive[index], ratio, torch.inf).min(-1).values
+            residual = 1.0 - product
+            # A projected vertex may require an exact stop. Inflating a zero
+            # residual produces a tiny speed whose sqrt adjoint amplifies
+            # roundoff. Treat residuals within the same error bound as zero.
+            rhs = torch.where(residual.abs() <= rounding, 0.0, residual + rounding)
+            ratio = _divide(rhs, denominators[index])
+            high = (
+                torch.where(positive_b_intervals[index], ratio, torch.inf)
+                .min(-1)
+                .values
+            )
             value = torch.minimum(high, upper[index + 1])
             values.append(
                 value.clamp_min(0)

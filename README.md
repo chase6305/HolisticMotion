@@ -17,6 +17,7 @@ URDF path; the project never downloads models implicitly.
 - C++17 library with pybind11 bindings.
 - URDF parsing and numerical, OPW, UR, SRS, and FEP kinematics.
 - Constraint-aware Double-S, trapezoidal, and TOPPRA path timing.
+- Optional PyTorch TOPPRA with batched CPU/CUDA execution and autograd.
 - Dependency-free RRT-Connect, RRT*, and Informed RRT* planning with feasible
   path optimization.
 - Optional CUDA batch backends, enabled explicitly with `--cuda`.
@@ -97,6 +98,14 @@ trajectory = ToppraTrajectory(
 )
 times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 ```
+
+For differentiable CPU/CUDA timing, install the `differentiable` extra and use
+`retime_path_torch` with Torch tensors. Gradients cover waypoints, limits,
+boundary speeds, and sampling times. This backend does not require the native
+`--cuda` build option. See the [trajectory guide](docs/en/trajectory.md) for
+batch shapes, gradient conventions, and a runnable example. Set
+`HOLISTICMOTION_PURE_PYTHON=1` before importing when using it without the compiled
+extension.
 
 Retargeting is available under `holistic_motion.kit.retargeting`:
 

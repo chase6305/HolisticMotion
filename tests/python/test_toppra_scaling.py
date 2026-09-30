@@ -5,6 +5,87 @@ import pytest
 from holistic_motion.trajectory import ToppraResult, ToppraTrajectory
 
 
+def test_coarse_grid_with_adjacent_stops_requests_refinement():
+    rng = np.random.default_rng(63054)
+    points = rng.normal(size=(16, 1))
+    velocity = rng.uniform(0.3, 2.0, 1)
+    acceleration = rng.uniform(0.4, 3.0, 1)
+    grid = np.r_[0.0, np.cumsum(np.abs(np.diff(points[:, 0])))]
+    grid /= grid[-1]
+    with pytest.raises(ValueError, match="zero reachable speed.*refine"):
+        ToppraTrajectory(points, velocity, acceleration, gridpoints=grid)
+    trajectory = ToppraTrajectory(points, velocity, acceleration, grid_size=61)
+    assert 0.0 < trajectory.duration < 100.0
+    _, _, dq, ddq = trajectory.sample_uniform(1001)
+    assert np.all(np.abs(dq) <= velocity + 1e-10)
+    assert np.all(np.abs(ddq) <= acceleration + 1e-10)
+
+
+@pytest.mark.parametrize("time_scale", [1e-8, 1.0, 1e8])
+@pytest.mark.parametrize("boundary", [(0.0, 2.0), (2.0, 0.0)])
+def test_infeasible_boundary_detection_is_independent_of_time_units(
+    time_scale, boundary
+):
+    with pytest.raises(ValueError, match="infeasible|reach"):
+        ToppraTrajectory(
+            [[0.0], [1.0]],
+            [10.0 * time_scale],
+            [time_scale**2],
+            start_path_velocity=boundary[0] * time_scale,
+            end_path_velocity=boundary[1] * time_scale,
+            grid_size=21,
+        )
+
+
+@pytest.mark.parametrize("time_scale", [1e-8, 1.0, 1e8])
+@pytest.mark.parametrize("argument", ["start_path_velocity", "end_path_velocity"])
+def test_joint_velocity_boundary_rejection_is_independent_of_time_units(
+    time_scale, argument
+):
+    with pytest.raises(ValueError, match="joint velocity limits"):
+        ToppraTrajectory(
+            [[0.0], [1.0]],
+            [time_scale],
+            [2 * time_scale**2],
+            **{argument: 1.01 * time_scale},
+        )
+
+
+@pytest.mark.parametrize("time_scale", [1e-4, 1.0, 1e4])
+def test_roundoff_does_not_create_motion_at_a_projected_stop(time_scale):
+    points = np.array(
+        [
+            0.311,
+            0.032,
+            -0.279,
+            0.247,
+            1.865,
+            -0.702,
+            0.206,
+            0.602,
+            -0.038,
+            0.848,
+            0.887,
+            1.02,
+        ]
+    )[:, None]
+    grid = np.r_[0.0, np.cumsum(np.abs(np.diff(points[:, 0])))]
+    grid /= grid[-1]
+    trajectory = ToppraTrajectory(
+        points,
+        [time_scale],
+        [2 * time_scale**2],
+        gridpoints=grid,
+        start_path_velocity=0.002 * time_scale,
+    )
+    assert trajectory.result.path_speeds[8] == 0.0
+    # Independently evaluating the half-plane solve at 80 decimal digits gives
+    # 16.6798165269817138078...; old rounding inflated this stop to ~6.5e-8.
+    assert trajectory.duration * time_scale == pytest.approx(
+        16.6798165269817138, rel=1e-13
+    )
+
+
 @pytest.mark.parametrize("time_scale", [1e-4, 1.0, 1e4, 1e8])
 @pytest.mark.parametrize("end_velocity", [0.0, 0.1])
 def test_fast_and_slow_retiming_preserve_interval_dynamics(time_scale, end_velocity):

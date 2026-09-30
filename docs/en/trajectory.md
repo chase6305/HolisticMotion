@@ -48,6 +48,8 @@ Install the `differentiable` extra (`pip install 'holistic-motion[differentiable
 CUDA execution additionally needs a CUDA-enabled PyTorch installation compatible
 with your GPU and driver. This Python backend is independent of the native
 library's CMake CUDA option and requires no Warp or native extension.
+When using it without the compiled extension, set
+`HOLISTICMOTION_PURE_PYTHON=1` in the environment before importing the package.
 
 ```python
 import torch
@@ -91,6 +93,9 @@ piecewise derivatives with active constraints, segment lookups, and grid
 topology fixed; they are not guaranteed at switches. The square-root adjoint
 at zero path speed is defined as zero. Tests validate first-order derivatives;
 this is not a smooth relaxation of TOPPRA.
+Projected stops retain zero speed and the same zero adjoint when the constraint
+residual differs from zero only by floating-point roundoff. If a coarse grid
+produces adjacent stops, construction raises an error asking for a finer grid.
 
 The solver normalizes each path's speed units before eliminating constraints,
 so large changes of time units do not overflow intermediate squared speeds
@@ -115,6 +120,12 @@ Run the batched forward/backward example without the compiled extension:
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
   python examples/python/trajectory/toppra_differentiable.py --device cuda
 ```
+
+Add `--optimize-steps 50` to optimize the example's interior waypoints with
+Adam while keeping endpoints and motion limits fixed. Each interior coordinate
+stays within 0.1 of its original value; the objective combines duration and a
+small displacement penalty. The example reports its best iterate because
+active constraints can switch during optimization. It also runs on CPU.
 
 To compare revisions, extract the earlier tensor module and run
 `benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`.
