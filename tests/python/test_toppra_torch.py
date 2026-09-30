@@ -448,7 +448,7 @@ def test_complex_sample_times_and_numpy_limits_are_rejected(device):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("dof", [1, 3, 7, 32])
+@pytest.mark.parametrize("dof", [1, 3, 7, 32, 128])
 @pytest.mark.parametrize("zero_coefficients", [False, True])
 def test_symmetric_projection_matches_general_half_plane_elimination(
     device, dof, zero_coefficients
@@ -717,3 +717,24 @@ def test_coarse_grid_with_adjacent_stops_requests_refinement(device):
     _, _, dq, ddq = trajectory.sample_uniform(1001)
     assert torch.all(dq.abs() <= torch.as_tensor(velocity, device=device) + 1e-10)
     assert torch.all(ddq.abs() <= torch.as_tensor(acceleration, device=device) + 1e-10)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_long_spline_gradient_matches_directional_finite_difference(device):
+    generator = torch.Generator().manual_seed(1049)
+    p = torch.randn(2, 128, 7, generator=generator, dtype=torch.float64).to(device)
+    direction = torch.randn(p.shape, generator=generator, dtype=p.dtype).to(device)
+    p.requires_grad_()
+
+    def objective(value):
+        trajectory = TorchToppraTrajectory(value, 1.0, 2.0, grid_size=255)
+        return trajectory.duration.sum()
+
+    gradient = torch.autograd.grad(objective(p), p)[0]
+    analytic = (gradient * direction).sum()
+    with torch.no_grad():
+        eps = 1e-6
+        numerical = (
+            objective(p + eps * direction) - objective(p - eps * direction)
+        ) / (2 * eps)
+    torch.testing.assert_close(analytic, numerical, atol=1e-5, rtol=1e-5)

@@ -1,5 +1,9 @@
 # Differentiable TOPPRA on CPU and CUDA
 
+This records the initial backend in `f2e2b17`. Later numerical fixes, performance
+measurements, and expanded validation are in the
+[refinement report](optimization_20260930_toppra_torch_refinements.md).
+
 This extends the NumPy TOPPRA work in `2cf5043` with an optional tensor backend,
 following the device-resident computation and active-constraint differentiation
 approach of EmbodiChain's `feat/differentiable-toppra` branch (`49d76866`,

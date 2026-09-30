@@ -77,9 +77,10 @@ class _StableDivide(torch.autograd.Function):
             if ctx.needs_input_grad[1]
             else None
         )
-        return numerator_gradient if ctx.needs_input_grad[
-            0
-        ] else None, denominator_gradient
+        return (
+            numerator_gradient if ctx.needs_input_grad[0] else None,
+            denominator_gradient,
+        )
 
 
 def _divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
@@ -357,22 +358,25 @@ class TorchToppraTrajectory:
         h = torch.diff(self._knots, dim=1)
         slopes = torch.diff(self._points, dim=1) / h[..., None]
         zero = torch.zeros_like(self._points[:, 0])
+        # Collect interval adjoints once instead of allocating a full-sized
+        # zero gradient buffer for every slice in a long spline solve.
+        interval_widths, segment_slopes = h.unbind(1), slopes.unbind(1)
         diagonal, rhs = [], []
         for index in range(h.shape[1] - 1):
-            d = 2.0 * (h[:, index] + h[:, index + 1])
-            r = 6.0 * (slopes[:, index + 1] - slopes[:, index])
+            d = 2.0 * (interval_widths[index] + interval_widths[index + 1])
+            r = 6.0 * (segment_slopes[index + 1] - segment_slopes[index])
             if index:
-                factor = h[:, index] / diagonal[-1]
-                d = d - factor * h[:, index]
+                factor = interval_widths[index] / diagonal[-1]
+                d = d - factor * interval_widths[index]
                 r = r - factor[:, None] * rhs[-1]
             diagonal.append(d)
             rhs.append(r)
         interior = []
         next_value = zero
         for index in range(len(diagonal) - 1, -1, -1):
-            next_value = (rhs[index] - h[:, index + 1, None] * next_value) / diagonal[
-                index
-            ][:, None]
+            next_value = (
+                rhs[index] - interval_widths[index + 1][:, None] * next_value
+            ) / diagonal[index][:, None]
             interior.append(next_value)
         second = torch.stack([zero, *reversed(interior), zero], dim=1)
         self._a = self._points[:, :-1]

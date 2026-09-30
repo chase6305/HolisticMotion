@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import hashlib
 import importlib.util
+import itertools
 import json
 import math
 import platform
@@ -157,6 +158,8 @@ def main() -> None:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--batches", type=int, nargs="+", default=[1, 16, 64])
     parser.add_argument("--dofs", type=int, nargs="+", default=[1, 7, 32])
+    parser.add_argument("--waypoint-counts", type=int, nargs="+", default=[8])
+    parser.add_argument("--seed", type=int, default=20260930)
     parser.add_argument("--grid-sizes", type=int, nargs="+", default=[31, 101])
     parser.add_argument("--end-speeds", type=float, nargs="+", default=[0.0, 0.005])
     parser.add_argument("--rounds", type=int, default=10)
@@ -165,8 +168,13 @@ def main() -> None:
     args = parser.parse_args()
     if args.rounds < 2 or args.threads < 1:
         parser.error("rounds must be >= 2 and threads >= 1")
-    if min(args.batches + args.dofs) < 1 or min(args.grid_sizes) < 2:
-        parser.error("batch sizes and DOFs must be positive, grid sizes >= 2")
+    if (
+        min(args.batches + args.dofs) < 1
+        or min(args.grid_sizes + args.waypoint_counts) < 2
+    ):
+        parser.error(
+            "batch sizes and DOFs must be positive, grid and waypoint counts >= 2"
+        )
     if any(not math.isfinite(speed) or speed < 0 for speed in args.end_speeds):
         parser.error("end speeds must be finite and non-negative")
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -181,10 +189,10 @@ def main() -> None:
     ]
     cases = []
     for batch in args.batches:
-        for dof in args.dofs:
-            generator = torch.Generator().manual_seed(20260930 + dof)
+        for dof, waypoint_count in itertools.product(args.dofs, args.waypoint_counts):
+            generator = torch.Generator().manual_seed(args.seed + dof)
             points = torch.randn(
-                batch, 8, dof, generator=generator, dtype=torch.float64
+                batch, waypoint_count, dof, generator=generator, dtype=torch.float64
             )
             inputs = tuple(
                 value.to(args.device).requires_grad_()
@@ -236,6 +244,7 @@ def main() -> None:
                     case = {
                         "batch": batch,
                         "dof": dof,
+                        "waypoint_count": waypoint_count,
                         "grid_size": grid_size,
                         "actual_grid_size": actual_grid_size,
                         "end_speed": end_speed,
@@ -256,7 +265,7 @@ def main() -> None:
                         ]
                     cases.append(case)
                     print(
-                        f"{args.device} B={batch} D={dof} G={grid_size} end={end_speed} backward={backward}: {medians[0]:.2f} -> {medians[1]:.2f} ms",
+                        f"{args.device} B={batch} N={waypoint_count} D={dof} G={grid_size} end={end_speed} backward={backward}: {medians[0]:.2f} -> {medians[1]:.2f} ms",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -266,6 +275,7 @@ def main() -> None:
         "device": args.device,
         "threads": args.threads,
         "rounds": args.rounds,
+        "seed": args.seed,
         "cuda_runtime": torch.version.cuda,
         "gpu": torch.cuda.get_device_name() if args.device == "cuda" else None,
         "sources": [
