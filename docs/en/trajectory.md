@@ -74,7 +74,7 @@ Inputs may be `(N, D)` or batched `(B, N, D)`. Positive symmetric velocity and
 acceleration limits may be scalars, `(D,)`, or `(B, D)` tensors; boundary path
 speeds may be scalars or `(B,)`. All numerical work runs on the waypoint device,
 including the spline, constraints, reachability solve, and sampling. Validation
-reductions synchronize with the host; this is not a CUDA-graph-capturable API.
+and terminal-speed dispatch synchronize with the host; this is not a CUDA-graph-capturable API.
 Invalid or infeasible rows reject the entire batch with `ValueError`.
 Limits, boundary speeds, and sample times must be real; complex tensors and
 arrays are rejected before conversion.
@@ -99,7 +99,8 @@ produces adjacent stops, construction raises an error asking for a finer grid.
 
 The solver normalizes each path's speed units before eliminating constraints,
 so large changes of time units do not overflow intermediate squared speeds
-or poison inactive-constraint gradients. Physical outputs still need to be
+or poison inactive-constraint gradients. Sampling keeps the path clock in those
+normalized units to avoid squaring very large physical times. Physical outputs still need to be
 representable in float64 and in the requested sample dtype. A batch whose
 terminal speeds are all zero uses a shorter controllability pass; mixed or
 nonzero terminal speeds retain both lower and upper bounds. Both paths retain

@@ -738,3 +738,35 @@ def test_long_spline_gradient_matches_directional_finite_difference(device):
             objective(p + eps * direction) - objective(p - eps * direction)
         ) / (2 * eps)
     torch.testing.assert_close(analytic, numerical, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_slow_clock_sampling_avoids_time_square_overflow(device):
+    p = torch.tensor(
+        [[0.0], [100.0]], device=device, dtype=torch.float64, requires_grad=True
+    )
+
+    def evaluate(scale):
+        trajectory = TorchToppraTrajectory(
+            p, 2 * scale, (0.01 * scale) * scale, grid_size=3
+        )
+        times, q, dq, ddq = trajectory.sample_uniform(9)
+        outputs = times * scale, q, dq / scale, (ddq / scale) / scale
+        loss = trajectory.duration * scale + sum(
+            value.square().mean() * 0.01 for value in outputs[1:]
+        )
+        return outputs, torch.autograd.grad(loss, p)[0]
+
+    expected, expected_gradient = evaluate(1.0)
+    actual, gradient = evaluate(1e-154)
+    for value, target in zip(actual, expected):
+        torch.testing.assert_close(value, target, atol=1e-10, rtol=1e-12)
+    torch.testing.assert_close(gradient, expected_gradient, atol=1e-10, rtol=1e-12)
+    torch.testing.assert_close(actual[1][[0, -1]], p)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_unrepresentable_path_acceleration_is_rejected_at_construction(device):
+    p = torch.tensor([[0.0], [1e-11]], device=device, dtype=torch.float64)
+    with pytest.raises(ValueError, match="path timing is not representable"):
+        TorchToppraTrajectory(p, 1e150, 1e300, grid_size=3)

@@ -2,8 +2,8 @@
 
 Active constraints, spline segment lookups, and grid topology are discrete.
 Gradients describe the selected smooth branch, not switches between branches.
-Numerical work stays on the input device and uses float64; only validation
-reductions synchronize CUDA with the host. No NumPy solver is used.
+Numerical work stays on the input device and uses float64. Validation and
+terminal-speed dispatch synchronize CUDA with the host. No NumPy solver is used.
 """
 
 from __future__ import annotations
@@ -284,11 +284,12 @@ class TorchToppraTrajectory:
             (end / speed_scale).square(),
         )
         normalized_speeds = _sqrt_speed(x)
-        self._speeds = normalized_speeds * speed_scale[:, None]
+        self._speed_scale = speed_scale[:, None]
+        self._normalized_speeds = normalized_speeds
+        self._speeds = normalized_speeds * self._speed_scale
         ds = torch.diff(self._grid, dim=1)
-        self._u = (
-            torch.diff(x, dim=1) / (2.0 * ds) * speed_scale[:, None]
-        ) * speed_scale[:, None]
+        self._normalized_u = torch.diff(x, dim=1) / (2.0 * ds)
+        self._u = (self._normalized_u * self._speed_scale) * self._speed_scale
         denominator = normalized_speeds[:, :-1] + normalized_speeds[:, 1:]
         _check(
             denominator > 0.0,
@@ -298,7 +299,11 @@ class TorchToppraTrajectory:
             (zero, (2.0 * ds / denominator / speed_scale[:, None]).cumsum(1)), dim=1
         )
         _check(
-            torch.isfinite(self._times[:, 1:]) & (torch.diff(self._times, dim=1) > 0),
+            torch.isfinite(self._times[:, 1:])
+            & torch.isfinite(self._speeds[:, :-1])
+            & torch.isfinite(self._speeds[:, 1:])
+            & torch.isfinite(self._u)
+            & (torch.diff(self._times, dim=1) > 0),
             "path timing is not representable",
         )
         self._result = TorchToppraResult(
@@ -587,12 +592,15 @@ class TorchToppraTrajectory:
             )
             - 1
         ).clamp(0, self._u.shape[1] - 1)
-        elapsed = clipped - self._times.gather(1, index)
-        accel, initial = self._u.gather(1, index), self._speeds.gather(1, index)
+        # Keep the path clock in normalized units too: squaring a physical
+        # time can overflow even though the sampled motion is representable.
+        elapsed = (clipped - self._times.gather(1, index)) * self._speed_scale
+        accel = self._normalized_u.gather(1, index)
+        initial = self._normalized_speeds.gather(1, index)
         s = (
             self._grid.gather(1, index)
             + initial * elapsed
-            + 0.5 * accel * elapsed.square()
+            + (0.5 * accel * elapsed) * elapsed
         )
         s = torch.maximum(
             self._grid.gather(1, index),
@@ -600,10 +608,12 @@ class TorchToppraTrajectory:
         )
         speed = (initial + accel * elapsed).clamp_min(0)
         q, first, second = self._evaluate(s)
+        scale = self._speed_scale[..., None]
         outputs = (
             q,
-            first * speed[..., None],
-            second * speed[..., None].square() + first * accel[..., None],
+            (first * speed[..., None]) * scale,
+            ((second * speed[..., None].square() + first * accel[..., None]) * scale)
+            * scale,
         )
         converted = tuple(self._output(value).to(self._dtype) for value in outputs)
         _check(

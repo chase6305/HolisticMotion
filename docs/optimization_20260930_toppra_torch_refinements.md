@@ -1,7 +1,8 @@
 # Differentiable TOPPRA numerical and performance refinements
 
 Baseline: `f2e2b17`. The main changes are in `5cc6c1e` and `ab848ad`; the
-additional spline-indexing refinement is included with this report.
+additional spline-indexing and normalized-sampling refinements are included
+with this report.
 This report covers the follow-up two-hour session on 2026-09-30. The optional
 PyTorch CPU/CUDA API introduced in the earlier report stays unchanged.
 
@@ -12,6 +13,11 @@ PyTorch CPU/CUDA API introduced in the earlier report stays unchanged.
   it is a change of variables whose derivative cancels. Timing is converted
   back to physical units after solving. Checks cover time scales from 1e-120
   to 1e120 and acceleration-to-velocity ratios through 1e±240.
+- Sample with a normalized clock too. Squaring physical elapsed time could
+  overflow for a valid slow trajectory (duration about 2e156), making clamping
+  hide incorrect positions. Normalized-clock values and waypoint gradients
+  now agree across a 1e-154 time-unit change. Reject non-finite physical timing
+  fields during construction instead of exposing infinite path accelerations.
 - Scale chord vectors before taking norms, avoiding a square overflow when
   the length is representable. Batched spatial-unit tests include 1e300.
 - Apply incoming adjoints before the quotient factor in division backward,
@@ -45,8 +51,8 @@ recursion. Mixed/nonzero terminal speeds preserve both bounds and precompute
 coefficient masks. Interval unbinding avoids a full zero gradient buffer for
 every repeated slice. Constraint construction skips an unused position graph.
 
-At 16 paths, 8 waypoints, 7 DOF and 106 actual grid points, the final profiler
-comparison counts 17,179 baseline CUDA launches, 8,744 with the new rest pass,
+At 16 paths, 8 waypoints, 7 DOF and 106 actual grid points, a profiler
+comparison before the normalized-sampling change counts 17,179 baseline CUDA launches, 8,744 with the new rest pass,
 and 12,444 with a nonzero terminal speed. These are operation-count observations,
 not a promise of proportional speedup. The original NumPy solver is never called
 by the tensor path.
@@ -67,14 +73,19 @@ At 128 waypoints, 7 DOF, and 255 grid points, forward + sampling + backward is:
 | CUDA | 1 | 112.26 | 104.66 | 6.8% |
 | CUDA | 16 | 110.52 | 102.59 | 7.2% |
 
+The later normalized-clock sampling and finite-field checks have an eight-case
+CUDA comparison (20 alternating rounds, B=1/16, D=7, 106 actual grid points,
+zero/nonzero terminal speeds). Its median candidate/baseline time ratio is
+1.019, with range 0.961–1.044; values and gradients agree at ordinary scales.
+
 The full 72-case matrices below remain explicitly tied to `ab848ad`, before
-this indexing-only refinement. Tests add a 128-waypoint directional derivative
+the later indexing and normalized-sampling refinements. Tests add a 128-waypoint directional derivative
 check and 128-DOF independent half-plane comparisons spanning multiple chunks.
 
 ## Validation
 
-- 213 combined tensor, NumPy and native-import tests pass locally, including
-  128 tensor cases (63 CPU, 65 actual CUDA).
+- 217 combined tensor, NumPy and native-import tests pass locally, including
+  132 tensor cases (65 CPU, 67 actual CUDA).
 - 1,200 seeded paths per device check same-grid NumPy duration, finite gradients,
   unit metamorphisms, and directional finite differences at two step sizes.
   This campaign found the projected-stop issue; both complete reruns pass.
@@ -83,8 +94,8 @@ check and 128-DOF independent half-plane comparisons spanning multiple chunks.
   Degenerate coarse rest grids are explicitly refined before boundary trials.
 - The deep Hypothesis profile passes 300 generated NumPy scaling examples.
 - Both the CMake install and a freshly built local CPython 3.10 Linux wheel
-  pass 209 numerical tests against their installed modules. The combined
-  command passes 213 including import checks; two import checks deliberately
+  pass 213 numerical tests against their installed modules. The combined
+  command passes 217 including import checks; two import checks deliberately
   spawn source-tree subprocesses. The wheel contains the exact tensor source
   and declares `torch>=2.2` only in its optional extras. Native import also works.
   This is local packaging validation using the existing Conan toolchain.
