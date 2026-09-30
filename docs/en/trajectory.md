@@ -74,6 +74,8 @@ speeds may be scalars or `(B,)`. All numerical work runs on the waypoint device,
 including the spline, constraints, reachability solve, and sampling. Validation
 reductions synchronize with the host; this is not a CUDA-graph-capturable API.
 Invalid or infeasible rows reject the entire batch with `ValueError`.
+Limits, boundary speeds, and sample times must be real; complex tensors and
+arrays are rejected before conversion.
 
 Timing fields in `TorchToppraResult`, duration, and returned sample times use
 float64. Positions and derivatives use the waypoint dtype (float16, bfloat16,
@@ -90,6 +92,14 @@ topology fixed; they are not guaranteed at switches. The square-root adjoint
 at zero path speed is defined as zero. Tests validate first-order derivatives;
 this is not a smooth relaxation of TOPPRA.
 
+The solver normalizes each path's speed units before eliminating constraints,
+so large changes of time units do not overflow intermediate squared speeds
+or poison inactive-constraint gradients. Physical outputs still need to be
+representable in float64 and in the requested sample dtype. A batch whose
+terminal speeds are all zero uses a shorter controllability pass; mixed or
+nonzero terminal speeds retain both lower and upper bounds. Both paths retain
+autograd and validate every forward interval constraint.
+
 The tensor backend places the same number of subdivisions in each spline
 segment: `ceil((grid_size - 1) / (N - 1))`, with at least two for a two-waypoint
 path. This keeps batch shapes fixed while differentiating chord-length knots.
@@ -105,6 +115,12 @@ Run the batched forward/backward example without the compiled extension:
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
   python examples/python/trajectory/toppra_differentiable.py --device cuda
 ```
+
+To compare revisions, extract the earlier tensor module and run
+`benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`.
+It checks values and gradients before alternating timed runs, and records
+synchronized CUDA timings, peak allocations, and saved tensor storage as JSON.
+Use `--device cpu` for CPU measurements. These measurements need no robot assets.
 
 ## NumPy examples and interval bounds
 

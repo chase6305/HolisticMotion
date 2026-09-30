@@ -61,6 +61,7 @@ loss.backward()  # points.grad 和 velocity.grad 均位于 CUDA
 标量、`(D,)` 或 `(B, D)` 张量；边界路径速度支持标量或 `(B,)`。样条、约束、
 可达性求解及采样均在路点所在设备计算。验证时的归约会与主机同步，
 因此不支持 CUDA Graph 捕获。任意一行无效或不可行都会使整个批次抛出 `ValueError`。
+限值、边界速度和采样时间必须为实数；复数张量与数组会在类型转换前被拒绝。
 
 `TorchToppraResult` 的计时数据、时长及采样时间使用 float64；位置、速度和
 加速度沿用路点类型，支持 float16、bfloat16、float32、float64。
@@ -72,6 +73,11 @@ loss.backward()  # points.grad 和 velocity.grad 均位于 CUDA
 自动微分覆盖路点、限值、边界速度及采样时间。梯度是固定激活约束、样条段选择
 及网格拓扑下的分段导数，不保证在切换点可微；零路径速度处的平方根导数约定为零。
 测试验证一阶梯度，该算法没有用平滑近似替换 TOPPRA。
+
+求解器先对每条路径的速度单位做归一化，避免大幅改变时间单位时，中间平方速度
+溢出或未激活约束产生无效梯度。物理输出仍需能以 float64 及指定采样类型表示。
+当整个批次的终点速度均为零时，使用较短的可控区间递推；混合或非零终点速度
+仍保留上下界。两种分支都保留自动微分，并检查每个前向区间约束。
 
 张量后端对每个样条段使用相同细分数 `ceil((grid_size - 1) / (N - 1))`，
 两路点路径至少分成两段。这样可以保持批量形状固定，并对弦长节点求导。
@@ -85,6 +91,11 @@ CUDA 支持不代表小批次一定更快：可达性传播沿网格仍是顺序
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
   python examples/python/trajectory/toppra_differentiable.py --device cuda
 ```
+
+对比版本时，先导出旧版张量模块，再运行
+`benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`。
+工具先检查结果和梯度，再交替计时，并以 JSON 记录同步后的 CUDA 耗时、峰值分配量
+及反向保存的张量存储量。CPU 测量使用 `--device cpu`，无需机器人资源文件。
 
 ## NumPy 示例与区间约束
 

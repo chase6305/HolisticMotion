@@ -23,6 +23,8 @@ except ModuleNotFoundError as error:
 
 __all__ = ["TorchToppraResult", "TorchToppraTrajectory", "retime_path_torch"]
 
+_ROUNDING_EPS = 8.0 * torch.finfo(torch.float64).eps
+
 
 def _check(condition: torch.Tensor, message: str) -> None:
     if not bool(condition.all()):
@@ -47,43 +49,121 @@ def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
     return values.gather(1, indices[..., None].expand(-1, -1, values.shape[-1]))
 
 
+class _StableDivide(torch.autograd.Function):
+    """Keep zero adjoints zero for inactive, ill-conditioned LP bounds."""
+
+    @staticmethod
+    def forward(
+        ctx, numerator: torch.Tensor, denominator: torch.Tensor
+    ) -> torch.Tensor:
+        result = numerator / denominator
+        ctx.save_for_backward(denominator, result)
+        return result
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        denominator, result = ctx.saved_tensors
+        # Scale the incoming adjoint before multiplying by the quotient. The
+        # alternative -(result / denominator) * gradient can overflow even
+        # when the incoming adjoint is exactly zero. Infinite candidate bounds
+        # are never selected by a finite feasible solution, so their quotient
+        # factor can safely be zero for this unused denominator adjoint.
+        numerator_gradient = gradient / denominator
+        denominator_gradient = -numerator_gradient * torch.nan_to_num(
+            result, nan=0.0, posinf=0.0, neginf=0.0
+        )
+        return numerator_gradient, denominator_gradient
+
+
+def _divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
+    if torch.is_grad_enabled() and (
+        numerator.requires_grad or denominator.requires_grad
+    ):
+        return _StableDivide.apply(numerator, denominator)
+    return numerator / denominator
+
+
 def _bounds(
     coefficient: torch.Tensor, rhs: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    ratio = rhs / torch.where(coefficient != 0.0, coefficient, 1.0)
+    ratio = _divide(rhs, torch.where(coefficient != 0.0, coefficient, 1.0))
     lower = torch.where(coefficient < 0.0, ratio, -torch.inf).max(-1).values
     upper = torch.where(coefficient > 0.0, ratio, torch.inf).min(-1).values
     return lower, upper
 
 
 def _projection_caps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Select pairwise elimination bounds without a quadratic autograd tape."""
+    """Eliminate y using symmetric acceleration strips and its velocity cap.
+
+    The first K columns and the next K columns are opposite half-planes:
+    abs(a_i*x + b_i*y) <= 1. Each distinct pair with nonzero b gives
+    abs(a_i*b_j - b_i*a_j)*x <= abs(b_i) + abs(b_j). Thus only K*(K-1)/2
+    pairs are needed instead of a square over all 2*K+2 half-planes.
+    """
 
     shape = a.shape[:-1]
-    width = a.shape[-1]
-    flat_a, flat_b = a.reshape(-1, width), b.reshape(-1, width)
-    indices = []
-    # Selection itself is discrete. Re-evaluate just the selected pair with
-    # autograd below, keeping both temporary and saved memory bounded.
+    count = (a.shape[-1] - 2) // 2
+    flat_a = a[..., :count].reshape(-1, count)
+    flat_b = b[..., :count].reshape(-1, count)
+    velocity_cap = b[..., -1].reshape(-1, 1)
+    pairs = torch.triu_indices(count, count, offset=1, device=a.device)
+    pair_count = pairs.shape[1]
+    # Target 2 MiB per candidate array, with at most 4096 intervals per chunk.
+    # Large DOF counts can still require more than the target for a single row.
+    chunk = max(1, min(4096, (1 << 18) // (pair_count + count)))
+    choices = []
     with torch.no_grad():
-        for offset in range(0, flat_a.shape[0], 32):
-            aa, bb = flat_a[offset : offset + 32], flat_b[offset : offset + 32]
-            coefficient = (
-                aa[:, :, None] * bb[:, None, :] - bb[:, :, None] * aa[:, None, :]
+        for offset in range(0, flat_a.shape[0], chunk):
+            aa, bb = flat_a[offset : offset + chunk], flat_b[offset : offset + chunk]
+            cap = velocity_cap[offset : offset + chunk]
+            ai, aj = aa[:, pairs[0]], aa[:, pairs[1]]
+            bi, bj = bb[:, pairs[0]], bb[:, pairs[1]]
+            # These are private no-grad scratch arrays. Reuse their storage
+            # and release each chunk before allocating the next one.
+            determinant = ai * bj
+            determinant.sub_(bi * aj).abs_()
+            valid = (bi != 0) & (bj != 0) & (determinant > 0)
+            bound = bi.abs()
+            bound.add_(bj.abs())
+            determinant.masked_fill_(~valid, 1.0)
+            bound.div_(determinant).masked_fill_(~valid, torch.inf)
+            del ai, aj, bi, bj, determinant, valid
+            # The positive-y velocity half-plane pairs with the negative-y
+            # member of a strip only when a and b have opposite signs.
+            divisor = aa.abs() * cap
+            velocity_valid = (((aa < 0) & (bb > 0)) | ((aa > 0) & (bb < 0))) & (
+                divisor > 0
             )
-            valid = (bb[:, :, None] < 0) & (bb[:, None, :] > 0) & (coefficient > 0)
-            rhs = bb[:, None, :] - bb[:, :, None]
-            ratio = rhs / torch.where(valid, coefficient, 1.0)
-            indices.append(torch.where(valid, ratio, torch.inf).flatten(1).argmin(-1))
-    selected = torch.cat(indices)
-    left, right = selected // width, selected % width
-    aj = flat_a.gather(1, left[:, None]).squeeze(1)
-    bj = flat_b.gather(1, left[:, None]).squeeze(1)
-    ak = flat_a.gather(1, right[:, None]).squeeze(1)
-    bk = flat_b.gather(1, right[:, None]).squeeze(1)
-    coefficient = aj * bk - bj * ak
-    valid = (bj < 0) & (bk > 0) & (coefficient > 0)
-    cap = (bk - bj) / torch.where(valid, coefficient, 1.0)
+            velocity_bound = (bb.abs() + cap) / torch.where(
+                velocity_valid, divisor, 1.0
+            )
+            candidates = torch.cat(
+                (
+                    bound,
+                    torch.where(velocity_valid, velocity_bound, torch.inf),
+                ),
+                dim=1,
+            )
+            choices.append(candidates.argmin(dim=1))
+            del bound, divisor, velocity_valid, velocity_bound, candidates
+    choice = torch.cat(choices)
+    is_pair = choice < pair_count
+    lookup = choice.clamp_max(pair_count - 1)
+    left = torch.where(is_pair, pairs[0, lookup], choice - pair_count)
+    right = torch.where(is_pair, pairs[1, lookup], count)
+    # Append the y velocity half-plane, then evaluate only the selected pair
+    # under autograd. Selection remains discrete without a quadratic tape.
+    flat_a = torch.cat((flat_a, torch.zeros_like(velocity_cap)), dim=1)
+    flat_b = torch.cat((flat_b, velocity_cap), dim=1)
+    ai = flat_a.gather(1, left[:, None]).squeeze(1)
+    aj = flat_a.gather(1, right[:, None]).squeeze(1)
+    bi = flat_b.gather(1, left[:, None]).squeeze(1)
+    bj = flat_b.gather(1, right[:, None]).squeeze(1)
+    determinant = (ai * bj - bi * aj).abs()
+    valid = torch.where(
+        is_pair, (bi != 0) & (bj != 0), ((ai < 0) & (bi > 0)) | ((ai > 0) & (bi < 0))
+    ) & (determinant > 0)
+    cap = _divide(bi.abs() + bj.abs(), torch.where(valid, determinant, 1.0))
     return torch.where(valid, cap, torch.inf).reshape(shape)
 
 
@@ -181,18 +261,28 @@ class TorchToppraTrajectory:
         self._grid = torch.cat((grid.flatten(1), torch.ones_like(zero)), dim=1)
         _check(torch.diff(self._grid, dim=1) > 0, "path grid is not representable")
         _, first, second = self._evaluate(self._grid)
-        a, b = self._constraints(first, second)
+        a, b, speed_scale = self._constraints(first, second)
         _check(
             torch.isfinite(a) & torch.isfinite(b),
             "path speed constraints must be finite",
         )
-        x = self._solve(a, b, start.square(), end.square())
-        self._speeds = _sqrt_speed(x)
+        x = self._solve(
+            a,
+            b,
+            (start / speed_scale).square(),
+            (end / speed_scale).square(),
+        )
+        normalized_speeds = _sqrt_speed(x)
+        self._speeds = normalized_speeds * speed_scale[:, None]
         ds = torch.diff(self._grid, dim=1)
-        self._u = torch.diff(x, dim=1) / (2.0 * ds)
-        denominator = self._speeds[:, :-1] + self._speeds[:, 1:]
+        self._u = (
+            torch.diff(x, dim=1) / (2.0 * ds) * speed_scale[:, None]
+        ) * speed_scale[:, None]
+        denominator = normalized_speeds[:, :-1] + normalized_speeds[:, 1:]
         _check(denominator > 0.0, "path contains an interval with zero reachable speed")
-        self._times = torch.cat((zero, (2.0 * ds / denominator).cumsum(1)), dim=1)
+        self._times = torch.cat(
+            (zero, (2.0 * ds / denominator / speed_scale[:, None]).cumsum(1)), dim=1
+        )
         _check(
             torch.isfinite(self._times[:, 1:]) & (torch.diff(self._times, dim=1) > 0),
             "path timing is not representable",
@@ -211,6 +301,12 @@ class TorchToppraTrajectory:
         )
 
     def _tensor(self, value) -> torch.Tensor:
+        # Torch otherwise discards imaginary components during a real cast.
+        # Check tensor/array metadata before conversion; Python complex values
+        # and complex lists are already rejected by torch.as_tensor itself.
+        dtype = getattr(value, "dtype", None)
+        if getattr(dtype, "is_complex", False) or getattr(dtype, "kind", None) == "c":
+            raise TypeError("motion limits, boundary velocities and times must be real")
         return torch.as_tensor(value, dtype=torch.float64, device=self._device)
 
     def _limits(self, value, name: str) -> torch.Tensor:
@@ -287,21 +383,43 @@ class TorchToppraTrajectory:
 
     def _constraints(
         self, first: torch.Tensor, second: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ds = torch.diff(self._grid, dim=1)[..., None]
         f, last = first[:, :-1], first[:, 1:]
         sf, sl = second[:, :-1], second[:, 1:]
         derivative = torch.stack((f, f + 0.5 * ds * sf, last), dim=2)
         zero = torch.zeros_like(f)
-        ax = (
-            torch.stack((sf, 0.5 * sl, zero), dim=2)
-            - derivative / (2.0 * ds[:, :, None])
-        ) / self._acceleration[:, None, None]
-        ay = (
-            torch.stack((zero, 0.5 * sf, sl), dim=2)
-            + derivative / (2.0 * ds[:, :, None])
-        ) / self._acceleration[:, None, None]
-        p0, p1, p2 = (derivative / self._velocity[:, None, None]).unbind(2)
+        ax = torch.stack((sf, 0.5 * sl, zero), dim=2) - derivative / (
+            2.0 * ds[:, :, None]
+        )
+        ay = torch.stack((zero, 0.5 * sf, sl), dim=2) + derivative / (
+            2.0 * ds[:, :, None]
+        )
+        # Solve in dimensionless speed units. Normalize limits *before*
+        # division so both elimination products and their adjoints remain
+        # representable when the caller changes time units. This is only a
+        # change of variables; its derivative cancels identically. Detach the
+        # arbitrary scale selection, keeping gradients through the limits.
+        with torch.no_grad():
+            velocity_scale = (derivative.abs() / self._velocity[:, None, None]).amax(
+                dim=(1, 2, 3)
+            )
+            acceleration_scale = (
+                torch.maximum(ax.abs(), ay.abs()).sqrt()
+                / self._acceleration[:, None, None].sqrt()
+            ).amax(dim=(1, 2, 3))
+            speed_scale = torch.maximum(velocity_scale, acceleration_scale).reciprocal()
+        _check(
+            torch.isfinite(speed_scale) & (speed_scale > 0),
+            "path speed scale is not representable",
+        )
+        velocity = self._velocity / speed_scale[:, None]
+        acceleration = (self._acceleration / speed_scale[:, None]) / speed_scale[
+            :, None
+        ]
+        ax = ax / acceleration[:, None, None]
+        ay = ay / acceleration[:, None, None]
+        p0, p1, p2 = (derivative / velocity[:, None, None]).unbind(2)
         quadratic = p0 - 2.0 * p1 + p2
         ratio = torch.where(
             quadratic != 0, (p0 - p1) / torch.where(quadratic != 0, quadratic, 1.0), 0.0
@@ -317,60 +435,104 @@ class TorchToppraTrajectory:
         return (
             torch.cat((ax, -ax, inverse_cap, torch.zeros_like(inverse_cap)), dim=-1),
             torch.cat((ay, -ay, torch.zeros_like(inverse_cap), inverse_cap), dim=-1),
+            speed_scale,
         )
 
     def _solve(
         self, a: torch.Tensor, b: torch.Tensor, start: torch.Tensor, end: torch.Tensor
     ) -> torch.Tensor:
         caps = _projection_caps(a, b)
-        lower, upper = [end], [end]
-        for index in range(a.shape[1] - 1, -1, -1):
-            aa, bb = a[:, index], b[:, index]
-            rhs = 1.0 - bb * torch.where(bb > 0, lower[-1][:, None], upper[-1][:, None])
-            lo, hi = _bounds(aa, rhs)
-            lo, hi = lo.clamp_min(0), torch.minimum(hi, caps[:, index])
-            lower.append(lo)
-            upper.append(hi)
-        lower = torch.stack(list(reversed(lower)), dim=1)
-        upper = torch.stack(list(reversed(upper)), dim=1)
+        # Unbind once: repeated a[:, i] indexing creates a full-sized zero
+        # gradient buffer for every interval during backward. Unbind collects
+        # the interval adjoints in one stack instead.
+        aa_intervals, bb_intervals = a.unbind(1), b.unbind(1)
+        cap_intervals = caps.unbind(1)
+        lower = None
+        if bool((end == 0).all()):
+            upper = self._controllable_to_rest(a, b, caps, end)
+        else:
+            lower, upper = [end], [end]
+            for index in range(a.shape[1] - 1, -1, -1):
+                aa, bb = aa_intervals[index], bb_intervals[index]
+                rhs = 1.0 - bb * torch.where(
+                    bb > 0, lower[-1][:, None], upper[-1][:, None]
+                )
+                lo, hi = _bounds(aa, rhs)
+                lo, hi = lo.clamp_min(0), torch.minimum(hi, cap_intervals[index])
+                lower.append(lo)
+                upper.append(hi)
+            lower.reverse()
+            upper.reverse()
+        upper_tensor = torch.stack(upper, dim=1)
+        lower_tensor = (
+            torch.stack(lower, dim=1)
+            if lower is not None
+            else torch.zeros_like(upper_tensor)
+        )
         _check(
-            torch.isfinite(lower) & torch.isfinite(upper) & (lower <= upper + 1e-12),
+            torch.isfinite(lower_tensor)
+            & torch.isfinite(upper_tensor)
+            & (lower_tensor <= upper_tensor + 1e-12),
             "path is infeasible for the requested end velocity",
         )
         _check(
-            (start >= lower[:, 0] - 1e-12) & (start <= upper[:, 0] + 1e-12),
+            (start >= lower_tensor[:, 0] - 1e-12) & (start <= upper[0] + 1e-12),
             "start velocity cannot reach the requested end velocity",
         )
         values = [start]
+        positive = b > 0
+        denominators = torch.where(positive, b, 1.0).unbind(1)
+        positive = positive.unbind(1)
         for index in range(a.shape[1]):
-            product = a[:, index] * values[-1][:, None]
-            rounding = (
-                8.0
-                * torch.finfo(torch.float64).eps
-                * torch.maximum(torch.ones_like(product), product.abs())
-            )
-            _, high = _bounds(b[:, index], 1.0 - product + rounding)
+            product = aa_intervals[index] * values[-1][:, None]
+            rounding = _ROUNDING_EPS * product.abs().clamp_min(1.0)
+            ratio = _divide(1.0 - product + rounding, denominators[index])
+            high = torch.where(positive[index], ratio, torch.inf).min(-1).values
+            value = torch.minimum(high, upper[index + 1])
             values.append(
-                torch.maximum(
-                    lower[:, index + 1], torch.minimum(high, upper[:, index + 1])
-                )
+                value.clamp_min(0)
+                if lower is None
+                else torch.maximum(lower[index + 1], value)
             )
         x = torch.stack(values, dim=1)
-        left, right = a * x[:, :-1, None], b * x[:, 1:, None]
-        scale = torch.maximum(
-            torch.ones_like(left), torch.maximum(left.abs(), right.abs())
-        )
-        _check(
-            torch.isfinite(x) & (x >= 0),
-            "path squared speeds must be finite and non-negative",
-        )
-        _check(
-            torch.isfinite(left)
-            & torch.isfinite(right)
-            & (left + right - 1.0 <= 1e-10 * scale),
-            "TOPPRA forward pass violates interval constraints",
-        )
+        with torch.no_grad():
+            left, right = a * x[:, :-1, None], b * x[:, 1:, None]
+            scale = torch.maximum(left.abs(), right.abs()).clamp_min(1.0)
+            _check(
+                torch.isfinite(x) & (x >= 0),
+                "path squared speeds must be finite and non-negative",
+            )
+            _check(
+                torch.isfinite(left)
+                & torch.isfinite(right)
+                & (left + right - 1.0 <= 1e-10 * scale),
+                "TOPPRA forward pass violates interval constraints",
+            )
         return x
+
+    def _controllable_to_rest(
+        self, a: torch.Tensor, b: torch.Tensor, caps: torch.Tensor, end: torch.Tensor
+    ) -> list[torch.Tensor]:
+        # Rest belongs to every controllable interval. For the remaining
+        # upper bounds, b < 0 makes the affine update an addition of positive
+        # terms, so precomputing intercepts/slopes does not cause cancellation.
+        positive = a > 0
+        denominator = torch.where(positive, a, 1.0)
+        inverse = _divide(torch.ones_like(a), denominator)
+        fixed = torch.where(positive & (b >= 0), inverse, torch.inf).min(-1).values
+        caps = torch.minimum(caps, fixed).unbind(1)
+        coupled = positive & (b < 0)
+        intercept = torch.where(coupled, inverse, torch.inf).unbind(1)
+        slope = _divide(-b, denominator)
+        # A nonrepresentable positive intercept is already an infinite bound.
+        # Its slope can be zero, avoiding inf * 0 at the terminal stop.
+        slope = torch.where(coupled & torch.isfinite(inverse), slope, 0.0).unbind(1)
+        upper = [end]
+        for index in range(a.shape[1] - 1, -1, -1):
+            reachable = intercept[index] + slope[index] * upper[-1][:, None]
+            upper.append(torch.minimum(caps[index], reachable.min(-1).values))
+        upper.reverse()
+        return upper
 
     def sample(self, times) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample shared (T,) or per-path (B, T) times; clamp to each duration."""

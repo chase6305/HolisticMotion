@@ -358,3 +358,196 @@ def test_query_validation_and_unrepresentable_half_output(device):
     )
     with pytest.raises(ValueError, match="representable"):
         fast.sample_uniform(17)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("time_scale", [1e-120, 1e-60, 1e60, 1e120])
+def test_time_units_preserve_sampled_loss_and_all_input_gradients(device, time_scale):
+    p = points(device).requires_grad_()
+    v = torch.tensor(
+        [0.83, 1.07], device=device, dtype=torch.float64, requires_grad=True
+    )
+    a = torch.tensor(
+        [1.63, 2.19], device=device, dtype=torch.float64, requires_grad=True
+    )
+    start = torch.tensor(0.12, device=device, dtype=torch.float64, requires_grad=True)
+    end = torch.tensor(0.17, device=device, dtype=torch.float64, requires_grad=True)
+
+    def evaluate(scale):
+        trajectory = TorchToppraTrajectory(
+            p,
+            v * scale,
+            (a * scale) * scale,
+            start_path_velocity=start * scale,
+            end_path_velocity=end * scale,
+            grid_size=17,
+        )
+        times, q, dq, ddq = trajectory.sample_uniform(29)
+        outputs = times * scale, q, dq / scale, (ddq / scale) / scale
+        loss = trajectory.duration * scale + sum(
+            value.square().mean() * 0.03 for value in outputs[1:]
+        )
+        return outputs, torch.autograd.grad(loss, (p, v, a, start, end))
+
+    expected, expected_gradients = evaluate(1.0)
+    actual, gradients = evaluate(time_scale)
+    for value, target in zip((*actual, *gradients), (*expected, *expected_gradients)):
+        assert torch.isfinite(value).all()
+        torch.testing.assert_close(value, target, atol=1e-8, rtol=1e-8)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("power", [-240, -160, 160, 240])
+def test_inactive_constraints_do_not_poison_gradients_at_extreme_limit_ratios(
+    device, power
+):
+    p = points(device).requires_grad_()
+    v = torch.tensor(
+        [0.83, 1.07], device=device, dtype=torch.float64, requires_grad=True
+    )
+    a = torch.tensor(
+        [1.63, 2.19], device=device, dtype=torch.float64, requires_grad=True
+    )
+    factor = 10.0**power
+    actual = TorchToppraTrajectory(p, v, a * factor, grid_size=17)
+    # At these ratios one constraint family is inactive. Compare with a
+    # well-scaled problem in which that family is also provably inactive.
+    if power < 0:
+        reference = TorchToppraTrajectory(p, v * 1e6, a, grid_size=17)
+        loss = actual.duration * factor**0.5
+    else:
+        reference = TorchToppraTrajectory(p, v, a * 1e6, grid_size=17)
+        loss = actual.duration
+    torch.testing.assert_close(loss, reference.duration, atol=1e-12, rtol=1e-12)
+    gradients = torch.autograd.grad(loss, (p, v, a))
+    expected = torch.autograd.grad(reference.duration, (p, v, a))
+    for value, target in zip(gradients, expected):
+        assert torch.isfinite(value).all()
+        torch.testing.assert_close(value, target, atol=1e-10, rtol=1e-9)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize(
+    "argument",
+    ["max_velocity", "max_acceleration", "start_path_velocity", "end_path_velocity"],
+)
+def test_complex_constraints_are_rejected_before_real_cast(device, argument):
+    options = {"max_velocity": 1.0, "max_acceleration": 2.0, "grid_size": 9}
+    options[argument] = torch.tensor(1.0 + 2.0j, device=device)
+    with pytest.raises(TypeError, match="real"):
+        TorchToppraTrajectory(points(device), **options)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_complex_sample_times_and_numpy_limits_are_rejected(device):
+    trajectory = TorchToppraTrajectory(points(device), 1.0, 2.0, grid_size=9)
+    with pytest.raises(TypeError, match="real"):
+        trajectory.sample(torch.tensor([0.2 + 0.3j], device=device))
+    with pytest.raises(TypeError, match="real"):
+        TorchToppraTrajectory(points(device), np.array([1 + 2j, 2 + 3j]), 2.0)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dof", [1, 3, 7, 32])
+@pytest.mark.parametrize("zero_coefficients", [False, True])
+def test_symmetric_projection_matches_general_half_plane_elimination(
+    device, dof, zero_coefficients
+):
+    from holistic_motion.trajectory.toppra import _IntervalConstraints
+    from holistic_motion.trajectory.toppra_torch import _projection_caps
+
+    generator = np.random.default_rng(53 + dof)
+    aa = generator.normal(size=(2, 5, 3 * dof))
+    bb = generator.normal(size=aa.shape)
+    if zero_coefficients:
+        aa[..., ::4] = 0.0
+        bb[..., ::3] = 0.0
+    cap = generator.uniform(0.1, 2.0, size=(2, 5, 1))
+    left = np.concatenate((aa, -aa, cap, np.zeros_like(cap)), axis=-1)
+    right = np.concatenate((bb, -bb, np.zeros_like(cap), cap), axis=-1)
+    expected = np.array(
+        [
+            [_IntervalConstraints(a, b).cap for a, b in zip(row_a, row_b)]
+            for row_a, row_b in zip(left, right)
+        ]
+    )
+    actual = _projection_caps(
+        torch.tensor(left, device=device), torch.tensor(right, device=device)
+    )
+    np.testing.assert_allclose(actual.cpu().numpy(), expected, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_symmetric_projection_bound_gradients(device):
+    from holistic_motion.trajectory.toppra_torch import _projection_caps
+
+    generator = torch.Generator().manual_seed(83)
+    aa = (
+        torch.randn(2, 3, 6, generator=generator, dtype=torch.float64)
+        .to(device)
+        .requires_grad_()
+    )
+    bb = (
+        torch.randn(2, 3, 6, generator=generator, dtype=torch.float64)
+        .to(device)
+        .requires_grad_()
+    )
+    cap = (
+        torch.rand(2, 3, 1, generator=generator, dtype=torch.float64)
+        .to(device)
+        .requires_grad_()
+    )
+
+    def evaluate(aa, bb, cap):
+        left = torch.cat((aa, -aa, cap, torch.zeros_like(cap)), dim=-1)
+        right = torch.cat((bb, -bb, torch.zeros_like(cap), cap), dim=-1)
+        return _projection_caps(left, right)
+
+    assert torch.autograd.gradcheck(
+        evaluate, (aa, bb, cap), nondet_tol=1e-12 if device == "cuda" else 0.0
+    )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("context", [torch.no_grad, torch.inference_mode])
+def test_inference_context_does_not_affect_later_autograd(device, context):
+    p = points(device).requires_grad_()
+    with context():
+        trajectory = TorchToppraTrajectory(p, 1.0, 2.0, grid_size=17)
+        expected = trajectory.sample_uniform(29)
+        assert all(not value.requires_grad for value in expected)
+    differentiable = TorchToppraTrajectory(p, 1.0, 2.0, grid_size=17)
+    actual = differentiable.sample_uniform(29)
+    for value, target in zip(actual, expected):
+        torch.testing.assert_close(value, target)
+    differentiable.duration.backward()
+    assert torch.isfinite(p.grad).all()
+    assert p.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_mixed_terminal_speeds_match_independent_values_and_gradients(device):
+    p = points(device, batch=True).requires_grad_()
+    v = torch.tensor(
+        [[0.8, 1.1], [0.9, 0.7]], dtype=torch.float64, device=device, requires_grad=True
+    )
+    end = torch.tensor(
+        [0.0, 0.17], dtype=torch.float64, device=device, requires_grad=True
+    )
+    batch = TorchToppraTrajectory(p, v, 2.0, end_path_velocity=end, grid_size=17)
+    for index in range(2):
+        single = TorchToppraTrajectory(
+            p[index], v[index], 2.0, end_path_velocity=end[index], grid_size=17
+        )
+        torch.testing.assert_close(batch.duration[index], single.duration)
+        for actual, expected in zip(
+            batch.sample_uniform(29), single.sample_uniform(29)
+        ):
+            torch.testing.assert_close(actual[index], expected)
+        actual = torch.autograd.grad(
+            batch.duration[index], (p, v, end), retain_graph=True
+        )
+        expected = torch.autograd.grad(single.duration, (p, v, end))
+        for value, target in zip(actual, expected):
+            torch.testing.assert_close(value, target)
+            assert torch.count_nonzero(value[1 - index]) == 0
