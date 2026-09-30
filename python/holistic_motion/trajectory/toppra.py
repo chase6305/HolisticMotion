@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Integral
-from typing import Optional
 
 import numpy as np
 
@@ -129,7 +128,42 @@ class _IntervalConstraints:
             - b[self.negative, None] * a[self.positive]
         )
         rhs = b[self.positive] - b[self.negative, None]
-        _, self.cap = _intersect_bounds(coefficients, rhs, 0.0, np.inf)
+        # rhs is positive, so only positive coefficients can constrain x >= 0.
+        mask = coefficients > 0.0
+        self.cap = float(np.min(rhs[mask] / coefficients[mask], initial=np.inf))
+
+    def prepare_to_rest(self) -> None:
+        """Cache only the coefficient subsets needed by the zero-bound solve."""
+
+        a, b = self.a, self.b
+        fixed = (a > 0.0) & (b >= 0.0)
+        self.zero_cap = min(self.cap, float(np.min(1.0 / a[fixed], initial=np.inf)))
+        coupled = (a > 0.0) & self.negative
+        self.coupled_a, self.coupled_b = a[coupled], b[coupled]
+        self.forward_a, self.forward_b = a[self.positive], b[self.positive]
+
+    def project_zero(self, upper: float) -> float:
+        """Upper controllable bound when the lower bound is known to be zero."""
+
+        return min(
+            self.zero_cap,
+            float(
+                np.min(
+                    (1.0 - self.coupled_b * upper) / self.coupled_a,
+                    initial=np.inf,
+                )
+            ),
+        )
+
+    def reachable_upper(self, x: float, upper: float) -> float:
+        """Largest next speed; the caller checks all half-planes afterward."""
+
+        product = self.forward_a * x
+        rounding = 8.0 * np.finfo(float).eps * np.maximum(1.0, np.abs(product))
+        return min(
+            upper,
+            float(np.min((1.0 - product + rounding) / self.forward_b, initial=np.inf)),
+        )
 
     def project(self, lower: float, upper: float) -> tuple[float, float]:
         """All x >= 0 that can reach some y in [lower, upper]."""
@@ -230,7 +264,7 @@ class ToppraTrajectory:
         *,
         start_path_velocity: float = 0.0,
         end_path_velocity: float = 0.0,
-        gridpoints: Optional[Sequence[float]] = None,
+        gridpoints: Sequence[float] | None = None,
         grid_size: int = 200,
     ) -> None:
         points = np.asarray(waypoints, dtype=float)
@@ -266,10 +300,29 @@ class ToppraTrajectory:
         if gridpoints is None:
             if not isinstance(grid_size, Integral) or isinstance(grid_size, bool):
                 raise TypeError("grid_size must be an integer")
-            count = max(int(grid_size), points.shape[0])
-            if count < 2:
+            if grid_size < 2:
                 raise ValueError("grid_size must be at least two")
-            grid = np.unique(np.concatenate((np.linspace(0.0, 1.0, count), waypoint_s)))
+            # Subdivide each spline segment instead of merging two grids:
+            # nominally equal knots can otherwise differ by a few ulps and
+            # create intervals whose arrival times cannot be represented.
+            requested = np.diff(waypoint_s) * (int(grid_size) - 1)
+            nearest = np.rint(requested)
+            requested = np.where(
+                np.abs(requested - nearest)
+                <= 64.0 * np.finfo(float).eps * np.maximum(1.0, requested),
+                nearest,
+                requested,
+            )
+            subdivisions = np.maximum(1, np.ceil(requested).astype(int))
+            grid = np.concatenate(
+                [
+                    np.linspace(left, right, int(count), endpoint=False)
+                    for left, right, count in zip(
+                        waypoint_s[:-1], waypoint_s[1:], subdivisions
+                    )
+                ]
+                + [waypoint_s[-1:]]
+            )
         else:
             grid = np.asarray(gridpoints, dtype=float).reshape(-1)
             if (
@@ -286,7 +339,15 @@ class ToppraTrajectory:
             # outside the path domain. Own the copy before canonicalizing it.
             grid = grid.copy()
             grid[0], grid[-1] = 0.0, 1.0
-            grid = np.unique(np.concatenate((grid, waypoint_s)))
+            # Prefer the exact spline knot to a custom point within rounding
+            # distance. Never remove spline knots or merge genuine segments.
+            insertion = np.searchsorted(waypoint_s, grid)
+            left = waypoint_s[np.maximum(insertion - 1, 0)]
+            right = waypoint_s[np.minimum(insertion, waypoint_s.size - 1)]
+            distance = np.minimum(np.abs(grid - left), np.abs(grid - right))
+            grid = np.unique(
+                np.concatenate((grid[distance > 8.0 * np.finfo(float).eps], waypoint_s))
+            )
         self._grid = grid
         self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
         self._result = self._compute(
@@ -372,6 +433,55 @@ class ToppraTrajectory:
         if start_x > caps[0] + 1e-10 or end_x > caps[-1] + 1e-10:
             raise ValueError("boundary path velocity violates joint velocity limits")
         constraints = self._interval_constraints()
+        if end_velocity == 0.0:
+            x = self._solve_to_rest(constraints, start_x)
+        else:
+            x = self._solve_general(constraints, start_x, end_x)
+        ds = np.diff(self._grid)
+        u = np.diff(x) / (2.0 * ds)
+        speeds = np.sqrt(np.maximum(x, 0.0))
+        denominators = speeds[:-1] + speeds[1:]
+        if np.any(denominators <= 1e-14):
+            raise ValueError("path contains an interval with zero reachable speed")
+        dt = 2.0 * ds / denominators
+        times = np.concatenate(([0.0], np.cumsum(dt)))
+
+        return ToppraResult(self._grid.copy(), speeds, u, times, float(times[-1]))
+
+    def _solve_to_rest(
+        self, constraints: list[_IntervalConstraints], start_x: float
+    ) -> np.ndarray:
+        # Rest satisfies every half-plane. With a zero terminal speed, each
+        # backward controllable interval therefore has lower bound zero.
+        # Keep only its upper bound, including for a nonzero initial speed.
+        controllable = np.zeros(self._grid.size)
+        for index in range(len(constraints) - 1, -1, -1):
+            constraints[index].prepare_to_rest()
+            cap = constraints[index].project_zero(controllable[index + 1])
+            if not np.isfinite(cap) or cap < 0.0:
+                raise ValueError(f"path is infeasible near gridpoint {index}")
+            controllable[index] = cap
+        if start_x > controllable[0] + 1e-12:
+            raise ValueError("start velocity cannot reach the requested end velocity")
+        x = np.empty_like(self._grid)
+        x[0] = start_x
+        for index, interval in enumerate(constraints):
+            x[index + 1] = max(
+                0.0, interval.reachable_upper(x[index], controllable[index + 1])
+            )
+        # Check both signs and zero coefficients together after the sequential
+        # solve, using dimensionless residuals even under a change of units.
+        a = np.stack([interval.a for interval in constraints])
+        b = np.stack([interval.b for interval in constraints])
+        left, right = a * x[:-1, None], b * x[1:, None]
+        tolerance = 1e-10 * np.maximum(1.0, np.maximum(np.abs(left), np.abs(right)))
+        if np.any(left + right - 1.0 > tolerance):
+            raise RuntimeError("TOPPRA forward pass violates interval constraints")
+        return x
+
+    def _solve_general(
+        self, constraints: list[_IntervalConstraints], start_x: float, end_x: float
+    ) -> np.ndarray:
         controllable = np.empty((self._grid.size, 2))
         controllable[-1] = (end_x, end_x)
         for index in range(len(constraints) - 1, -1, -1):
@@ -390,16 +500,7 @@ class ToppraTrajectory:
             if low > high + 1e-12:
                 raise RuntimeError(f"TOPPRA forward pass failed at gridpoint {index}")
             x[index + 1] = np.clip(high, lower, upper)
-        ds = np.diff(self._grid)
-        u = np.diff(x) / (2.0 * ds)
-        speeds = np.sqrt(np.maximum(x, 0.0))
-        denominators = speeds[:-1] + speeds[1:]
-        if np.any(denominators <= 1e-14):
-            raise ValueError("path contains an interval with zero reachable speed")
-        dt = 2.0 * ds / denominators
-        times = np.concatenate(([0.0], np.cumsum(dt)))
-
-        return ToppraResult(self._grid.copy(), speeds, u, times, float(times[-1]))
+        return x
 
     def sample(
         self, times: Sequence[float]

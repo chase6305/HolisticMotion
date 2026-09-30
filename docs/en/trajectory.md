@@ -27,6 +27,15 @@ speed at each forward step. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
 
+When the terminal path speed is zero, rest belongs to every backward
+controllable interval. The solver propagates only its upper bound and checks
+all interval half-planes after the forward pass. Nonzero terminal speeds use
+the full two-bound solve; nonzero initial speeds are supported in both cases.
+This specialization follows the approach in EmbodiChain's
+`feat/differentiable-toppra` branch (commits `49d76866` and `748006a1`).
+HolisticMotion retains its NumPy-only runtime and natural cubic geometry;
+this API does not provide tensor autograd or a CUDA backend.
+
 `start_path_velocity` and `end_path_velocity` specify endpoint speeds of the
 normalized chord-length parameter, both zero by default. Feasible results
 preserve these values. Requests that are infeasible under the current grid's
@@ -71,13 +80,33 @@ analytic extrema of the path derivative to bound velocity, and Bernstein
 coefficients of the quadratic acceleration polynomial to bound acceleration.
 These bounds cover the whole interval and both sides of each knot. They are
 conservative and do not guarantee the globally shortest continuous trajectory;
-increasing `grid_size` can reduce that conservatism. Custom grid endpoints within
+increasing `grid_size` can reduce that conservatism. The default grid subdivides
+each spline segment, targeting spacing no greater than `1 / (grid_size - 1)`
+up to roundoff, and includes every spline knot. Its actual count may exceed
+`grid_size`, which must be an integer of at least two. This avoids tiny intervals
+caused by merging nominally coincident uniform-grid and spline knots. The
+changed default discretization can change durations; it preserves path geometry
+and continuous limit enforcement. Custom grid endpoints within
 `1e-12` of 0 and 1 are canonicalized to those exact values without modifying the
-input; interior gridpoints must remain inside the path domain. `ToppraResult` also checks
+input; interior gridpoints must remain inside the path domain. Custom points
+within `8 * float64 epsilon` of a spline knot are replaced by that exact knot.
+Distinct spline knots are always retained. `ToppraResult` also checks
 that its speed, acceleration, and time arrays describe consistent motion.
 Near a stop, its dynamics residual is compared against the scale of all terms
 in the interval equation, so changing time units does not turn cancellation
 roundoff into a spurious validation failure.
+
+To compare solver speed with a previous revision on identical custom grids:
+
+```bash
+git show 6e56cc7:python/holistic_motion/trajectory/toppra.py > /tmp/toppra-old.py
+python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
+```
+
+The benchmark checks timing and sampled-motion equivalence before alternating
+baseline/candidate measurements. It prints raw timings and medians for 1, 7,
+and 32 joints, three grid sizes, and zero/nonzero terminal speeds. It requires
+only NumPy; no robot assets or compiled extension are needed.
 
 Native Bezier paths retain a reversing waypoint as a sharp linear join, even
 with a positive blend tolerance. Double-S and trapezoidal timing stop there
