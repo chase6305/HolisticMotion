@@ -33,14 +33,80 @@ all interval half-planes after the forward pass. Nonzero terminal speeds use
 the full two-bound solve; nonzero initial speeds are supported in both cases.
 This specialization follows the approach in EmbodiChain's
 `feat/differentiable-toppra` branch (commits `49d76866` and `748006a1`).
-HolisticMotion retains its NumPy-only runtime and natural cubic geometry;
-this API does not provide tensor autograd or a CUDA backend.
+The default API retains its NumPy-only runtime and natural cubic geometry.
+The optional Torch API below adds differentiable CPU/CUDA execution.
 
 `start_path_velocity` and `end_path_velocity` specify endpoint speeds of the
 normalized chord-length parameter, both zero by default. Feasible results
 preserve these values. Requests that are infeasible under the current grid's
 constraints raise `ValueError`; no subsequent global time scaling changes the
 requested endpoint speeds.
+
+## Differentiable CPU and CUDA timing
+
+Install the `differentiable` extra (`pip install 'holistic-motion[differentiable]'`).
+CUDA execution additionally needs a CUDA-enabled PyTorch installation compatible
+with your GPU and driver. This Python backend is independent of the native
+library's CMake CUDA option and requires no Warp or native extension.
+
+```python
+import torch
+from holistic_motion.trajectory import retime_path_torch
+
+points = torch.tensor(
+    [[0.0, 0.0], [0.4, -0.2], [1.0, 0.5]],
+    dtype=torch.float64, device="cuda", requires_grad=True,
+)
+velocity = torch.tensor([1.0, 0.8], device="cuda", requires_grad=True)
+trajectory = retime_path_torch(points, velocity, [2.0, 1.5], grid_size=61)
+times, q, dq, ddq = trajectory.sample_uniform(100)
+loss = trajectory.duration + 0.01 * q.square().mean()
+loss.backward()  # points.grad and velocity.grad stay on CUDA
+```
+
+Use `device="cpu"` for CPU execution. `TorchToppraTrajectory` is the matching
+class; the existing `retime_path` and `ToppraTrajectory` remain NumPy APIs.
+Importing the NumPy API does not import Torch.
+
+Inputs may be `(N, D)` or batched `(B, N, D)`. Positive symmetric velocity and
+acceleration limits may be scalars, `(D,)`, or `(B, D)` tensors; boundary path
+speeds may be scalars or `(B,)`. All numerical work runs on the waypoint device,
+including the spline, constraints, reachability solve, and sampling. Validation
+reductions synchronize with the host; this is not a CUDA-graph-capturable API.
+Invalid or infeasible rows reject the entire batch with `ValueError`.
+
+Timing fields in `TorchToppraResult`, duration, and returned sample times use
+float64. Positions and derivatives use the waypoint dtype (float16, bfloat16,
+float32, or float64). Sampling raises if outputs cannot be represented in that
+dtype. A single path returns `(T, D)` motion; a batch returns `(B, T, D)`.
+`sample(times)` accepts shared `(T,)` or per-path `(B, T)` times, clamps each to
+its path duration, and differentiates through those times. Result tensors are
+copies separate from internal sampling state; ordinary Torch rules against
+mutating tensors needed by backward still apply.
+
+Autograd covers waypoints, limits, boundary speeds, and sample times. These are
+piecewise derivatives with active constraints, segment lookups, and grid
+topology fixed; they are not guaranteed at switches. The square-root adjoint
+at zero path speed is defined as zero. Tests validate first-order derivatives;
+this is not a smooth relaxation of TOPPRA.
+
+The tensor backend places the same number of subdivisions in each spline
+segment: `ceil((grid_size - 1) / (N - 1))`, with at least two for a two-waypoint
+path. This keeps batch shapes fixed while differentiating chord-length knots.
+Its default grid and duration can differ from NumPy's spacing-based grid. For
+numerical comparisons, pass the tensor result's grid to NumPy as `gridpoints`.
+Natural cubic geometry and continuous interval limits are the same. CUDA
+support does not imply a speedup for small batches: the reachability passes
+remain sequential along the grid and launch Torch operations per interval.
+
+Run the batched forward/backward example without the compiled extension:
+
+```bash
+HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
+  python examples/python/trajectory/toppra_differentiable.py --device cuda
+```
+
+## NumPy examples and interval bounds
 
 Run the example:
 
