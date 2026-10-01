@@ -3,10 +3,47 @@
 #include "SE3BezierEvaluation.h"
 #include "holistic_motion/trajectory/PathSegment.h"
 
-#include <optional>
 #include <typeinfo>
+#include <variant>
 
 namespace holistic_motion::robotics::detail {
+template <typename LieGroup> struct QuadraticEvaluation {
+    using Tangent = typename LieGroup::Tangent;
+    const LieGroup &origin;
+    Tangent t0, t1, curvature;
+    double s, length;
+
+    QuadraticEvaluation(const std::vector<LieGroup> &points, double parameter,
+                        double segment_length)
+        : origin(points[0]), t0(points[1] - points[0]),
+          t1(points[2] - points[1]), s(parameter), length(segment_length) {
+        const auto numerator = 2.0 * (t1 - t0);
+        const double length_squared = length * length;
+        curvature = std::isfinite(length_squared)
+                        ? numerator / length_squared
+                        : (numerator / length) / length;
+    }
+
+    void SetParameter(double parameter) { s = parameter; }
+
+    void ComputeDerivatives(Tangent &tangent, Tangent &second,
+                            Tangent &torsion) const {
+        tangent = ((2 - 2 * s) * t0 + 2 * s * t1) / length;
+        second = curvature;
+        torsion = Tangent::ZeroHelper();
+    }
+
+    void ComputeJet(LieGroup &position, Tangent &tangent, Tangent &second,
+                    Tangent &torsion) const {
+        position = origin + s * (2 - s) * t0 + s * s * t1;
+        ComputeDerivatives(tangent, second, torsion);
+    }
+};
+
+template <> struct QuadraticEvaluation<SE3d> : SE3BezierEvaluation<2> {
+    using SE3BezierEvaluation<2>::SE3BezierEvaluation;
+};
+
 // Control differences are shared by a complete state or a local
 // sampling loop. Preserve the scalar API's Bernstein expressions and rounding.
 template <typename LieGroup> struct QuinticEvaluation {
@@ -135,11 +172,15 @@ template <> struct CachedQuinticEvaluation<SE3d> : QuinticEvaluation<SE3d> {
         : QuinticEvaluation<SE3d>(points, 0.0, length) {}
 };
 
-// A workspace for one construction or constraint report. Only the exact
-// built-in curve may reuse controls; derived segments retain every virtual query.
+// A workspace for one construction or constraint report. Only exact built-in
+// segments may reuse geometry; derived segments retain every virtual query.
 template <typename LieGroup> class SegmentEvaluationSampler {
 public:
     using Tangent = typename LieGroup::Tangent;
+
+    bool IsLinear() const {
+        return std::holds_alternative<Tangent>(evaluation_);
+    }
 
     explicit SegmentEvaluationSampler(const PathSegmentBase<LieGroup> &segment)
         : segment_(segment) {
@@ -147,16 +188,33 @@ public:
             segment.IsValid()) {
             const auto &curve =
                 static_cast<const PathSegBezierCurve5th<LieGroup> &>(segment);
-            evaluation_.emplace(curve.control_points_, segment.GetLength());
+            evaluation_.template emplace<CachedQuinticEvaluation<LieGroup>>(
+                curve.control_points_, segment.GetLength());
+        } else if (typeid(segment) == typeid(PathSegLinear<LieGroup>) &&
+                   segment.IsValid()) {
+            const double length = segment.GetLength();
+            evaluation_.template emplace<Tangent>(
+                length > 0.0 ? segment.tangent_ / length : segment.tangent_);
+        } else if (typeid(segment) == typeid(PathSegBezierCurve2nd<LieGroup>) &&
+                   segment.IsValid()) {
+            const auto &curve =
+                static_cast<const PathSegBezierCurve2nd<LieGroup> &>(segment);
+            evaluation_.template emplace<QuadraticEvaluation<LieGroup>>(
+                curve.control_points_, 0.0, segment.GetLength());
         }
     }
 
     // The enclosing speed-cap loop validates geometry and finite sample parameters
     // before constructing this workspace and guarantees forward progress.
     void Compute(double s, Tangent &tangent, Tangent &curvature, Tangent &torsion) {
-        if (evaluation_) {
-            SetParameter(s);
-            evaluation_->ComputeDerivatives(tangent, curvature, torsion);
+        if (auto *quintic =
+                std::get_if<CachedQuinticEvaluation<LieGroup>>(&evaluation_)) {
+            SetParameter(s, *quintic);
+            quintic->ComputeDerivatives(tangent, curvature, torsion);
+        } else if (auto *quadratic = std::get_if<QuadraticEvaluation<LieGroup>>(
+                       &evaluation_)) {
+            SetQuadraticParameter(s, *quadratic);
+            quadratic->ComputeDerivatives(tangent, curvature, torsion);
         } else if constexpr (std::is_same_v<LieGroup, SE3d>) {
             segment_.ComputeDerivatives(s, tangent, curvature, torsion);
         } else {
@@ -166,25 +224,61 @@ public:
         }
     }
 
+    // Match the native clamp and division order, including zero length,
+    // without materializing zero curvature and torsion for a linear state.
+    bool ComputeLinearJet(double s, LieGroup &position,
+                          Tangent &tangent) const {
+        const auto *line = std::get_if<Tangent>(&evaluation_);
+        if (!line)
+            return false;
+        segment_.ValidateQuery(s);
+        const double length = segment_.GetLength();
+        const double local =
+            clamp(s - segment_.GetStartParameter(), 0.0, length);
+        const double parameter = length > 0.0 ? local / length : 0.0;
+        position = segment_.waypoints_[0] + parameter * segment_.tangent_;
+        tangent = *line;
+        return true;
+    }
+
     void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
                     Tangent &torsion) {
-        if (evaluation_) {
+        if (auto *quintic =
+                std::get_if<CachedQuinticEvaluation<LieGroup>>(&evaluation_)) {
             segment_.ValidateQuery(s);
-            SetParameter(s);
-            evaluation_->ComputeJet(position, tangent, curvature, torsion);
+            SetParameter(s, *quintic);
+            quintic->ComputeJet(position, tangent, curvature, torsion);
+        } else if (ComputeLinearJet(s, position, tangent)) {
+            curvature = Tangent::ZeroHelper();
+            torsion = Tangent::ZeroHelper();
+        } else if (auto *quadratic = std::get_if<QuadraticEvaluation<LieGroup>>(
+                       &evaluation_)) {
+            segment_.ValidateQuery(s);
+            SetQuadraticParameter(s, *quadratic);
+            quadratic->ComputeJet(position, tangent, curvature, torsion);
         } else {
             segment_.ComputeJet(s, position, tangent, curvature, torsion);
         }
     }
 
 private:
-    void SetParameter(double s) {
+    void SetQuadraticParameter(double s,
+                               QuadraticEvaluation<LieGroup> &quadratic) {
+        const double length = segment_.GetLength();
+        const double local = clamp(s - segment_.GetStartParameter(), 0.0, length);
+        // Unlike native quintics, a valid quadratic may be shorter than Epsilon.
+        quadratic.SetParameter(local / length);
+    }
+
+    void SetParameter(double s, CachedQuinticEvaluation<LieGroup> &quintic) {
         const double length = segment_.GetLength();
         s = clamp(s - segment_.GetStartParameter(), 0.0, length);
-        evaluation_->SetParameter(length > Epsilon ? s / length : 0.0);
+        quintic.SetParameter(length > Epsilon ? s / length : 0.0);
     }
 
     const PathSegmentBase<LieGroup> &segment_;
-    std::optional<CachedQuinticEvaluation<LieGroup>> evaluation_;
+    std::variant<std::monostate, CachedQuinticEvaluation<LieGroup>, Tangent,
+                 QuadraticEvaluation<LieGroup>>
+        evaluation_;
 };
 } // namespace holistic_motion::robotics::detail

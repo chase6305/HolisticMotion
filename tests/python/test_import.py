@@ -50,3 +50,23 @@ def test_pure_python_toolkit_import_does_not_load_native_extension():
         env=environment,
         check=True,
     )
+
+
+def test_numpy_trajectory_does_not_load_optional_torch():
+    environment = os.environ.copy()
+    environment["HOLISTICMOTION_PURE_PYTHON"] = "1"
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "python")
+    command = """
+import sys
+from holistic_motion.trajectory import retime_path
+retime_path([[0.0], [1.0]], [1.0], [2.0])
+assert 'torch' not in sys.modules
+sys.modules['torch'] = None
+try:
+    from holistic_motion.trajectory import retime_path_torch
+except ImportError as error:
+    assert 'differentiable' in str(error)
+else:
+    raise AssertionError('Torch import unexpectedly succeeded')
+"""
+    subprocess.run([sys.executable, "-c", command], env=environment, check=True)

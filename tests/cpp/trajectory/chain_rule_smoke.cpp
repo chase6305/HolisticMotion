@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "../../../src/trajectory/TrajectoryStateEvaluation.h"
 #include "holistic_motion/trajectory/TrajectoryTrapezium.h"
 
 using namespace holistic_motion::robotics;
@@ -154,6 +156,265 @@ void CheckFastLinearMotion() {
                    0.0);
     }
     CheckValue(trajectory.GetPosition(trajectory.GetDuration()).Coeffs()[0], 1.0);
+}
+
+void CheckDerivedLinearQueries() {
+    struct CustomLinear : PathSegLinear<Group> {
+        using PathSegLinear::PathSegLinear;
+        Group GetConfig(double s) const override {
+            auto result = PathSegLinear::GetConfig(s);
+            result.Coeffs()[1] += 7.0;
+            return result;
+        }
+        Group::Tangent GetTangent(double s) const override {
+            return 2.0 * PathSegLinear::GetTangent(s);
+        }
+        Group::Tangent GetCurvature(double) const override {
+            return Group::Tangent(Eigen::Vector2d(3.0, 4.0));
+        }
+        Group::Tangent GetTorsion(double) const override {
+            return Group::Tangent(Eigen::Vector2d(5.0, 6.0));
+        }
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 5.0, 0.0;
+    QueryProbe trajectory(std::make_shared<CustomLinear>(points),
+                          Eigen::Vector4d(0.0, 1.0, 0.1, 0.01), 1.0);
+    if (!trajectory.SetMinimumDuration(1.7))
+        throw std::runtime_error("could not slow custom linear fixture");
+    // A linear base class does not imply zero higher derivatives when its
+    // public geometry queries are overridden by a caller.
+    for (double time : {-1.0, 0.0, 0.1, 0.5, 1.0, 1.7, 2.0}) {
+        const auto state = trajectory.GetState(time);
+        for (int coordinate = 0; coordinate < 2; ++coordinate) {
+            CheckValue(state.position.Coeffs()[coordinate],
+                       trajectory.GetPosition(time).Coeffs()[coordinate]);
+            CheckValue(state.velocity.Coeffs()[coordinate],
+                       trajectory.GetVelocity(time).Coeffs()[coordinate]);
+            CheckValue(state.acceleration.Coeffs()[coordinate],
+                       trajectory.GetAcceleration(time).Coeffs()[coordinate]);
+            CheckValue(state.jerk.Coeffs()[coordinate],
+                       trajectory.GetJerk(time).Coeffs()[coordinate]);
+        }
+    }
+}
+
+void CheckNativeLinearZeroTerms() {
+    struct VirtualLine : PathSegLinear<Group> {
+        using PathSegLinear::PathSegLinear;
+    };
+    const auto equal = [](const auto &a, const auto &b) {
+        for (Eigen::Index i = 0; i < a.size(); ++i) {
+            if (std::isnan(a[i]) && std::isnan(b[i]))
+                continue;
+            if (a[i] != b[i] ||
+                (a[i] == 0.0 && std::signbit(a[i]) != std::signbit(b[i])))
+                throw std::runtime_error(
+                    "native linear composition changed a zero term");
+        }
+    };
+    for (double endpoint : {0.0, 1e-200, 1.0, -1.0}) {
+        std::array<Group, 2> points;
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << endpoint, -0.0;
+        for (const Eigen::Vector4d &coefficients :
+             {Eigen::Vector4d(0.0, 0.0, -0.0, -0.0),
+              Eigen::Vector4d(0.0, -0.0, 0.0, 0.0),
+              Eigen::Vector4d(0.0, -1.0, -0.25, 1.0),
+              Eigen::Vector4d(0.0, 1e200, 1e-200, -1e-200),
+              Eigen::Vector4d(0.0, -1e200, -1e200, 1e200),
+              Eigen::Vector4d(0.0, 1e-200, -1e-200, -1e-200),
+              Eigen::Vector4d(0.0, 1e308, 0.0, 0.0),
+              Eigen::Vector4d(0.0, 0.0, 1e308, 0.0),
+              Eigen::Vector4d(0.0, 0.0, 0.0, 1e308)}) {
+            QueryProbe native(std::make_shared<PathSegLinear<Group>>(points),
+                              coefficients, 1.0);
+            QueryProbe reference(std::make_shared<VirtualLine>(points),
+                                 coefficients, 1.0);
+            for (double duration : {1.0, 1.7, 1e150}) {
+                if (!native.SetMinimumDuration(duration) ||
+                    !reference.SetMinimumDuration(duration))
+                    throw std::runtime_error(
+                        "cannot scale native linear fixture");
+                for (double fraction : {-1.0, 0.0, 0.125, 0.5, 1.0, 2.0}) {
+                    const auto a = native.GetState(fraction * duration);
+                    const auto b = reference.GetState(fraction * duration);
+                    equal(a.position.Coeffs(), b.position.Coeffs());
+                    equal(a.velocity.Coeffs(), b.velocity.Coeffs());
+                    equal(a.acceleration.Coeffs(), b.acceleration.Coeffs());
+                    equal(a.jerk.Coeffs(), b.jerk.Coeffs());
+                }
+            }
+        }
+    }
+}
+
+void CheckNonconstantClockCancellation() {
+    using WideGroup = Rn<double, 32>;
+    const double epsilon = std::ldexp(1.0, -27);
+    WideGroup::Tangent tangent, curvature, torsion;
+    tangent.Coeffs().setConstant(1.0 - epsilon);
+    for (unsigned derivative : {2, 3}) {
+        curvature.Coeffs().setConstant(derivative == 2 ? -1.0 : 0.0);
+        torsion.Coeffs().setConstant(derivative == 3 ? -1.0 : 0.0);
+        std::array<double, 4> clock{0.0, 1.0, 0.0, 0.0};
+        clock[derivative] = 1.0 + epsilon;
+        TrajectoryBase<WideGroup>::State state;
+        detail::ComposeDerivatives(state, clock, tangent, curvature, torsion,
+                                   1.0);
+        const auto &result = derivative == 2 ? state.acceleration : state.jerk;
+        // The rounded product (1-e)*(1+e) is exactly 1, then subtracting 1
+        // gives zero. A fused multiply-add instead produces -2^-54.
+        for (double value : result.Coeffs())
+            if (value != 0.0)
+                throw std::runtime_error(
+                    "nonconstant clock changed cancellation");
+    }
+}
+
+void CheckHighDimensionConstantClockZeros() {
+    using WideGroup = Rn<double, 32>;
+    struct ConstantCurve : PathSegmentBase<WideGroup> {
+        ConstantCurve() { length_ = 1.0; }
+        WideGroup GetConfig(double) const override {
+            ++calls[0];
+            WideGroup result;
+            result.Coeffs().setZero();
+            return result;
+        }
+        WideGroup::Tangent GetTangent(double) const override {
+            ++calls[1];
+            return NegativeZero();
+        }
+        WideGroup::Tangent GetCurvature(double) const override {
+            ++calls[2];
+            return NegativeZero();
+        }
+        WideGroup::Tangent GetTorsion(double) const override {
+            ++calls[3];
+            return NegativeZero();
+        }
+        static WideGroup::Tangent NegativeZero() {
+            WideGroup::Tangent value;
+            value.Coeffs().setConstant(-0.0);
+            return value;
+        }
+        mutable std::array<unsigned, 4> calls{};
+    };
+    struct WidePath : PathBase<WideGroup> {
+        explicit WidePath(const std::shared_ptr<ConstantCurve> &curve) {
+            path_segments_.push_back(curve);
+            length_ = 1.0;
+            valid_ = true;
+        }
+    };
+    struct WideProbe : TrajectoryBase<WideGroup> {
+        WideProbe(const std::shared_ptr<ConstantCurve> &curve, double speed) {
+            path_ = std::make_shared<WidePath>(curve);
+            trajectory_pspline_ = std::make_shared<PSpline>();
+            trajectory_pspline_->PushBack(
+                std::make_shared<Polynomial>(
+                    Eigen::Vector4d(0.0, speed, 0.0, 0.0)),
+                1.0);
+            dof_ = 32;
+            valid_ = true;
+        }
+    };
+    for (double speed : {1.0, -1.0, 1e200, -1e200, 1e-200, -1e-200}) {
+        auto curve = std::make_shared<ConstantCurve>();
+        WideProbe trajectory(curve, speed);
+        for (double duration : {1.0, 1e150}) {
+            if (!trajectory.SetMinimumDuration(duration))
+                throw std::runtime_error("cannot slow constant-clock fixture");
+            curve->calls.fill(0);
+            const auto state = trajectory.GetState(0.0);
+            for (int index = 0; index < 32; ++index) {
+                // A constant path remains stationary even when powers of the
+                // clock speed overflow or underflow. Preserve IEEE zero signs.
+                const double velocity = state.velocity.Coeffs()[index];
+                const double acceleration = state.acceleration.Coeffs()[index];
+                const double jerk = state.jerk.Coeffs()[index];
+                if (velocity != 0.0 || acceleration != 0.0 || jerk != 0.0 ||
+                    std::signbit(velocity) != (speed > 0.0) ||
+                    !std::signbit(acceleration) || std::signbit(jerk))
+                    throw std::runtime_error(
+                        "constant-clock zero sign changed");
+            }
+            if (curve->calls != std::array<unsigned, 4>{1, 1, 1, 1})
+                throw std::runtime_error(
+                    "constant clock bypassed virtual geometry");
+        }
+    }
+}
+
+void CheckCustomQueryRetainsGeometry() {
+    struct OwningProbe : QueryProbe {
+        using QueryProbe::QueryProbe;
+        void Pin(const std::shared_ptr<PathSegmentBase<Group>> &segment) {
+            phase_path_segments_.assign(1, segment);
+        }
+        void ReleaseGeometry() {
+            phase_path_segments_.clear();
+            path_.reset();
+        }
+    };
+    struct RemovingLine : PathSegLinear<Group> {
+        RemovingLine(const std::array<Group, 2> &points,
+                     std::array<unsigned, 4> &observations, bool &deleted)
+            : PathSegLinear(points), calls(observations), destroyed(deleted) {}
+        ~RemovingLine() { destroyed = true; }
+        Group GetConfig(double s) const override {
+            ++calls[0];
+            const auto result = PathSegLinear::GetConfig(s);
+            release();
+            return result;
+        }
+        Group::Tangent GetTangent(double s) const override {
+            ++calls[1];
+            return PathSegLinear::GetTangent(s);
+        }
+        Group::Tangent GetCurvature(double s) const override {
+            ++calls[2];
+            return PathSegLinear::GetCurvature(s);
+        }
+        Group::Tangent GetTorsion(double s) const override {
+            ++calls[3];
+            return PathSegLinear::GetTorsion(s);
+        }
+        std::array<unsigned, 4> &calls;
+        bool &destroyed;
+        std::function<void()> release;
+    };
+    std::array<Group, 2> points;
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    for (bool pinned : {false, true}) {
+        for (double duration : {1.0, 1.7}) {
+            std::array<unsigned, 4> calls{};
+            bool destroyed = false;
+            auto segment = std::make_shared<RemovingLine>(points, calls, destroyed);
+            std::weak_ptr<RemovingLine> lifetime = segment;
+            OwningProbe trajectory(segment, 1.0, 1.0);
+            if (pinned)
+                trajectory.Pin(segment);
+            if (!trajectory.SetMinimumDuration(duration))
+                throw std::runtime_error("could not scale lifetime fixture");
+            segment->release = [&] { trajectory.ReleaseGeometry(); };
+            segment.reset();
+            // The first virtual query removes every stored owner. The local
+            // query must keep this derived line alive through all derivatives.
+            const auto state = trajectory.GetState(0.5 * duration);
+            CheckValue(state.position.Coeffs()[0], 0.5);
+            CheckValue(state.velocity.Coeffs()[0], 1.0 / duration);
+            CheckValue(state.acceleration.Coeffs()[0], 0.0);
+            CheckValue(state.jerk.Coeffs()[0], 0.0);
+            if (!destroyed || !lifetime.expired() ||
+                calls != std::array<unsigned, 4>{1, 1, 1, 1})
+                throw std::runtime_error(
+                    "query did not retain custom geometry locally");
+        }
+    }
 }
 
 void CheckTinyLimitReciprocal() {
@@ -358,6 +619,11 @@ int main() {
         CheckSmallSpeedPowers();
         CheckMixedJerkProduct();
         CheckFastLinearMotion();
+        CheckDerivedLinearQueries();
+        CheckNativeLinearZeroTerms();
+        CheckNonconstantClockCancellation();
+        CheckHighDimensionConstantClockZeros();
+        CheckCustomQueryRetainsGeometry();
         CheckTinyLimitReciprocal();
         CheckOverflowingUtilizationRoots();
         CheckShortCurvesWithNonlinearTimeLaws();

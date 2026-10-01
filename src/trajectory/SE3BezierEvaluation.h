@@ -3,6 +3,7 @@
 #include "holistic_motion/trajectory/Types.h"
 
 #include <array>
+#include <cmath>
 
 namespace holistic_motion::robotics::detail {
 
@@ -26,7 +27,7 @@ public:
 
     SE3d Position() const {
         SE3d position = origin_;
-        Evaluate<0>(&position);
+        Evaluate<0, true>(&position);
         return position;
     }
 
@@ -45,7 +46,7 @@ public:
     void ComputeJet(SE3d &position, SE3Tangentd &tangent, SE3Tangentd &curvature,
                     SE3Tangentd &torsion) const {
         position = origin_;
-        const auto jet = Evaluate<3>(&position);
+        const auto jet = Evaluate<3, true>(&position);
         tangent = SE3Tangentd(jet[0]);
         curvature = SE3Tangentd(jet[1]);
         torsion = SE3Tangentd(jet[2]);
@@ -60,7 +61,32 @@ private:
         return result;
     }
 
-    template <int Order>
+    static void DerivativeTransform(const SE3Tangentd &scaled,
+                                    Eigen::Matrix3d &rotation,
+                                    Eigen::Vector3d &translation) {
+        const Eigen::Vector3d angular = scaled.Coeffs().tail<3>();
+        const Eigen::Vector3d linear = scaled.Coeffs().head<3>();
+        rotation = SO3Tangentd(angular).Exp().GetRotation().transpose();
+        // Apply the SO3 left Jacobian directly to the linear component. Its
+        // skew products are cross products; no 3x3 Jacobian is needed here.
+        // Keep the exponential's small-angle branch and rotation unchanged.
+        const double theta_squared = angular.squaredNorm();
+        const Eigen::Vector3d cross = angular.cross(linear);
+        if (theta_squared <= Constants<double>::eps) {
+            translation = linear + 0.5 * cross;
+        } else {
+            const double theta = std::sqrt(theta_squared);
+            translation = linear + ((1.0 - std::cos(theta)) / theta_squared) * cross +
+                          ((theta - std::sin(theta)) / (theta_squared * theta)) *
+                              angular.cross(cross);
+        }
+        // Cross products may overflow before their bounded coefficients apply.
+        // Preserve the exponential's finite result at those extreme scales.
+        if (!translation.allFinite())
+            translation = SO3Tangentd(angular).Ljac() * linear;
+    }
+
+    template <int Order, bool WithPosition = false>
     std::array<Vector, Order> Evaluate(SE3d *position = nullptr) const {
         std::array<double, Degree> beta, first, second, third;
         const double s = s_, u = 1 - s;
@@ -86,7 +112,7 @@ private:
             derivative.setZero();
         if constexpr (Order > 0) {
             if (translation_only_) {
-                if (position)
+                if constexpr (WithPosition)
                     *position = Position();
                 for (int i = 0; i < Degree; ++i)
                     jet[0] += first[i] * increments_[i].Coeffs();
@@ -115,7 +141,7 @@ private:
             if constexpr (Order > 0) {
                 // The first factor has no preceding twist to transport.
                 if (i == 0) {
-                    if (position)
+                    if constexpr (WithPosition)
                         *position = position->Compose((beta[0] * increments_[0]).Exp());
                     jet[0] = first[0] * increments_[0].Coeffs();
                     if constexpr (Order > 1)
@@ -125,12 +151,19 @@ private:
                     continue;
                 }
             }
-            const auto factor = (beta[i] * increments_[i]).Exp();
-            if (position)
+            Eigen::Matrix3d rotation;
+            Eigen::Vector3d translation;
+            if constexpr (WithPosition) {
+                const auto factor = (beta[i] * increments_[i]).Exp();
                 *position = position->Compose(factor);
+                if constexpr (Order > 0) {
+                    rotation = factor.GetRotation().transpose();
+                    translation = factor.GetTranslation();
+                }
+            } else {
+                DerivativeTransform(beta[i] * increments_[i], rotation, translation);
+            }
             if constexpr (Order > 0) {
-                const auto rotation = factor.GetRotation().transpose().eval();
-                const auto translation = factor.GetTranslation();
                 const auto transport = [&](const Vector &value) -> Vector {
                     Vector result;
                     result.head<3>() = rotation * (value.head<3>() -

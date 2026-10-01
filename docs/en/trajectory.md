@@ -27,11 +27,114 @@ speed at each forward step. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
 
+When the terminal path speed is zero, rest belongs to every backward
+controllable interval. The solver propagates only its upper bound and checks
+all interval half-planes after the forward pass. Nonzero terminal speeds use
+the full two-bound solve; nonzero initial speeds are supported in both cases.
+This specialization follows the approach in EmbodiChain's
+`feat/differentiable-toppra` branch (commits `49d76866` and `748006a1`).
+The default API retains its NumPy-only runtime and natural cubic geometry.
+The optional Torch API below adds differentiable CPU/CUDA execution.
+
 `start_path_velocity` and `end_path_velocity` specify endpoint speeds of the
 normalized chord-length parameter, both zero by default. Feasible results
 preserve these values. Requests that are infeasible under the current grid's
 constraints raise `ValueError`; no subsequent global time scaling changes the
 requested endpoint speeds.
+
+## Differentiable CPU and CUDA timing
+
+Install the `differentiable` extra (`pip install 'holistic-motion[differentiable]'`).
+CUDA execution additionally needs a CUDA-enabled PyTorch installation compatible
+with your GPU and driver. This Python backend is independent of the native
+library's CMake CUDA option and requires no Warp or native extension.
+When using it without the compiled extension, set
+`HOLISTICMOTION_PURE_PYTHON=1` in the environment before importing the package.
+
+```python
+import torch
+from holistic_motion.trajectory import retime_path_torch
+
+points = torch.tensor(
+    [[0.0, 0.0], [0.4, -0.2], [1.0, 0.5]],
+    dtype=torch.float64, device="cuda", requires_grad=True,
+)
+velocity = torch.tensor([1.0, 0.8], device="cuda", requires_grad=True)
+trajectory = retime_path_torch(points, velocity, [2.0, 1.5], grid_size=61)
+times, q, dq, ddq = trajectory.sample_uniform(100)
+loss = trajectory.duration + 0.01 * q.square().mean()
+loss.backward()  # points.grad and velocity.grad stay on CUDA
+```
+
+Use `device="cpu"` for CPU execution. `TorchToppraTrajectory` is the matching
+class; the existing `retime_path` and `ToppraTrajectory` remain NumPy APIs.
+Importing the NumPy API does not import Torch.
+
+Inputs may be `(N, D)` or batched `(B, N, D)`. Positive symmetric velocity and
+acceleration limits may be scalars, `(D,)`, or `(B, D)` tensors; boundary path
+speeds may be scalars or `(B,)`. All numerical work runs on the waypoint device,
+including the spline, constraints, reachability solve, and sampling. Validation
+and terminal-speed dispatch synchronize with the host; this is not a CUDA-graph-capturable API.
+Invalid or infeasible rows reject the entire batch with `ValueError`.
+Limits, boundary speeds, and sample times must be real; complex tensors and
+arrays are rejected before conversion.
+
+Timing fields in `TorchToppraResult`, duration, and returned sample times use
+float64. Positions and derivatives use the waypoint dtype (float16, bfloat16,
+float32, or float64). Sampling raises if outputs cannot be represented in that
+dtype. A single path returns `(T, D)` motion; a batch returns `(B, T, D)`.
+`sample(times)` accepts shared `(T,)` or per-path `(B, T)` times, clamps each to
+its path duration, and differentiates through those times. Result tensors are
+copies separate from internal sampling state; ordinary Torch rules against
+mutating tensors needed by backward still apply.
+
+Autograd covers waypoints, limits, boundary speeds, and sample times. These are
+piecewise derivatives with active constraints, segment lookups, and grid
+topology fixed; they are not guaranteed at switches. The square-root adjoint
+at zero path speed is defined as zero. Tests validate first-order derivatives;
+this is not a smooth relaxation of TOPPRA.
+Projected stops retain zero speed and the same zero adjoint when the constraint
+residual differs from zero only by floating-point roundoff. If a coarse grid
+produces adjacent stops, construction raises an error asking for a finer grid.
+
+The solver normalizes each path's speed units before eliminating constraints,
+so large changes of time units do not overflow intermediate squared speeds
+or poison inactive-constraint gradients. Sampling keeps the path clock in those
+normalized units to avoid squaring very large physical times. Physical outputs still need to be
+representable in float64 and in the requested sample dtype. A batch whose
+terminal speeds are all zero uses a shorter controllability pass; mixed or
+nonzero terminal speeds retain both lower and upper bounds. Both paths retain
+autograd and validate every forward interval constraint.
+
+The tensor backend places the same number of subdivisions in each spline
+segment: `ceil((grid_size - 1) / (N - 1))`, with at least two for a two-waypoint
+path. This keeps batch shapes fixed while differentiating chord-length knots.
+Its default grid and duration can differ from NumPy's spacing-based grid. For
+numerical comparisons, pass the tensor result's grid to NumPy as `gridpoints`.
+Natural cubic geometry and continuous interval limits are the same. CUDA
+support does not imply a speedup for small batches: the reachability passes
+remain sequential along the grid and launch Torch operations per interval.
+
+Run the batched forward/backward example without the compiled extension:
+
+```bash
+HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
+  python examples/python/trajectory/toppra_differentiable.py --device cuda
+```
+
+Add `--optimize-steps 50` to optimize the example's interior waypoints with
+Adam while keeping endpoints and motion limits fixed. Each interior coordinate
+stays within 0.1 of its original value; the objective combines duration and a
+small displacement penalty. The example reports its best iterate because
+active constraints can switch during optimization. It also runs on CPU.
+
+To compare revisions, extract the earlier tensor module and run
+`benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`.
+It checks values and gradients before alternating timed runs, and records
+synchronized CUDA timings, peak allocations, and saved tensor storage as JSON.
+Use `--device cpu` for CPU measurements. These measurements need no robot assets.
+
+## NumPy examples and interval bounds
 
 Run the example:
 
@@ -71,13 +174,33 @@ analytic extrema of the path derivative to bound velocity, and Bernstein
 coefficients of the quadratic acceleration polynomial to bound acceleration.
 These bounds cover the whole interval and both sides of each knot. They are
 conservative and do not guarantee the globally shortest continuous trajectory;
-increasing `grid_size` can reduce that conservatism. Custom grid endpoints within
+increasing `grid_size` can reduce that conservatism. The default grid subdivides
+each spline segment, targeting spacing no greater than `1 / (grid_size - 1)`
+up to roundoff, and includes every spline knot. Its actual count may exceed
+`grid_size`, which must be an integer of at least two. This avoids tiny intervals
+caused by merging nominally coincident uniform-grid and spline knots. The
+changed default discretization can change durations; it preserves path geometry
+and continuous limit enforcement. Custom grid endpoints within
 `1e-12` of 0 and 1 are canonicalized to those exact values without modifying the
-input; interior gridpoints must remain inside the path domain. `ToppraResult` also checks
+input; interior gridpoints must remain inside the path domain. Custom points
+within `8 * float64 epsilon` of a spline knot are replaced by that exact knot.
+Distinct spline knots are always retained. `ToppraResult` also checks
 that its speed, acceleration, and time arrays describe consistent motion.
 Near a stop, its dynamics residual is compared against the scale of all terms
 in the interval equation, so changing time units does not turn cancellation
 roundoff into a spurious validation failure.
+
+To compare solver speed with a previous revision on identical custom grids:
+
+```bash
+git show 6e56cc7:python/holistic_motion/trajectory/toppra.py > /tmp/toppra-old.py
+python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
+```
+
+The benchmark checks timing and sampled-motion equivalence before alternating
+baseline/candidate measurements. It prints raw timings and medians for 1, 7,
+and 32 joints, three grid sizes, and zero/nonzero terminal speeds. It requires
+only NumPy; no robot assets or compiled extension are needed.
 
 Native Bezier paths retain a reversing waypoint as a sharp linear join, even
 with a positive blend tolerance. Double-S and trapezoidal timing stop there

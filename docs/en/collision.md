@@ -132,7 +132,7 @@ not be queried concurrently without external synchronization.
 
 The design is informed by cuRobo's collision-sphere representation and fused
 batch-query architecture, but is independently implemented around Pinocchio
-and Eigen; HolisticMotion does not import Torch, Warp, or cuRobo.
+and Eigen; the collision backend does not import Torch, Warp, or cuRobo.
 
 ### Offline sphere fitting
 

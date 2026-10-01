@@ -35,6 +35,8 @@ class PathSegBezierCurve2nd : public PathSegmentBase<LieGroup> {
 private:
     using Tangent = typename LieGroup::Tangent;
 
+    friend class detail::SegmentEvaluationSampler<LieGroup>;
+
 public:
     PathSegBezierCurve2nd(const std::array<LieGroup, 3>& waypoints,
                           const double& sp = 0.0,

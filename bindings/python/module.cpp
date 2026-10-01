@@ -1,28 +1,77 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "holistic_motion/robot/Robot.h"
+#include "../../src/trajectory/TrajectoryStateSampler.h"
+#include "Bindings.h"
 #include "holistic_motion/kinematics/OPWKinematics.h"
 #include "holistic_motion/kinematics/URKinematics.h"
-#include "holistic_motion/kinematics/srs/SRSKinematics.h"
 #include "holistic_motion/kinematics/fep/FEPKinematics.h"
+#include "holistic_motion/kinematics/srs/SRSKinematics.h"
 #include "holistic_motion/planning/NullSpacePlanner.h"
+#include "holistic_motion/robot/Robot.h"
 #include "holistic_motion/trajectory/PathBezierCurve.h"
 #include "holistic_motion/trajectory/TrajectoryDoubleS.h"
 #include "holistic_motion/trajectory/TrajectoryTrapezoidal.h"
-#include "Bindings.h"
 
 namespace py = pybind11;
 using namespace holistic_motion::robotics;
 
 namespace {
+
+// NumPy copies these fixed-size descriptors and allocates its own writable
+// data. Use pybind11's NumPy API loader so this small bridge needs no NumPy
+// headers and follows its NumPy 1/2 compatibility handling. The ordinary array
+// constructor materializes heap-backed shape and stride containers first.
+template <std::size_t Dimensions, int Flags = py::array::forcecast>
+py::array_t<double, Flags>
+NewDoubleArray(const std::array<Py_intptr_t, Dimensions> &shape,
+               const std::array<Py_intptr_t, Dimensions> &strides) {
+    auto dtype = py::dtype::of<double>();
+    auto &api = py::detail::npy_api::get();
+    auto result = py::reinterpret_steal<py::array_t<double, Flags>>(
+        // NewFromDescr consumes the dtype reference, including on failure.
+        api.PyArray_NewFromDescr_(api.PyArray_Type_, dtype.release().ptr(),
+                                  static_cast<int>(Dimensions), shape.data(),
+                                  strides.data(), nullptr, 0, nullptr));
+    if (!result)
+        throw py::error_already_set();
+    return result;
+}
+
+// Allocate the owning NumPy buffer directly; results remain independent
+// and writable after the temporary C++ state or report is destroyed.
+template <int Rows>
+py::array_t<double> CopyVector(const Eigen::Matrix<double, Rows, 1> &values) {
+    auto result = NewDoubleArray<1>({values.size()}, {sizeof(double)});
+    std::copy_n(values.data(), values.size(), result.mutable_data());
+    return result;
+}
+
+// Binding closures own these immutable keys for the module's lifetime. Keeping
+// them out of static storage also keeps destruction under Python's GIL.
+struct ReportKeys {
+    const py::str peak_velocity{"peak_velocity"};
+    const py::str peak_acceleration{"peak_acceleration"};
+    const py::str peak_jerk{"peak_jerk"};
+    const py::str velocity_utilization{"velocity_utilization"};
+    const py::str acceleration_utilization{"acceleration_utilization"};
+    const py::str jerk_utilization{"jerk_utilization"};
+    const py::str maximum_velocity_jump{"maximum_velocity_jump"};
+    const py::str maximum_acceleration_jump{"maximum_acceleration_jump"};
+    const py::str maximum_utilization{"maximum_utilization"};
+    const py::str within_limits{"within_limits"};
+    const py::str velocity_continuous{"velocity_continuous"};
+    const py::str acceleration_continuous{"acceleration_continuous"};
+};
 
 bool IsRigidTransform(const Eigen::Matrix4d& transform) {
     const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
@@ -61,6 +110,9 @@ void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
 
 template <int N>
 class JointTrajectory {
+    using SampleArray = py::array_t<double, py::array::f_style>;
+    using SampleArrays = std::array<SampleArray, 4>;
+
 public:
     using Group = Rn<double, N>;
 
@@ -188,16 +240,68 @@ public:
         }
     }
     py::tuple Sample(const Eigen::VectorXd &times) const {
+        const auto states = SampleValues(times);
+        return py::make_tuple(states[0], states[1], states[2], states[3]);
+    }
+    py::tuple SampleUniform(std::size_t samples) const {
+        ValidateUniformSampleCount(samples, N);
+        auto times = NewDoubleArray<1>({static_cast<Py_intptr_t>(samples)},
+                                       {sizeof(double)});
+        Eigen::Map<Eigen::VectorXd> time_values(times.mutable_data(), samples);
+        time_values = Eigen::VectorXd::LinSpaced(
+            static_cast<Eigen::Index>(samples), 0.0, Duration());
+        const auto states = SampleValues(time_values);
+        return py::make_tuple(times, states[0], states[1], states[2],
+                              states[3]);
+    }
+    py::tuple State(double time) const {
+        ValidateTime(time);
+        const auto state = trajectory_->GetState(time);
+        return py::make_tuple(CopyVector(state.position.Coeffs()),
+                              CopyVector(state.velocity.Coeffs()),
+                              CopyVector(state.acceleration.Coeffs()),
+                              CopyVector(state.jerk.Coeffs()));
+    }
+    py::dict ConstraintReport(std::size_t samples,
+                              const ReportKeys &keys) const {
+        const auto report = trajectory_->GetConstraintReport(samples);
+        py::dict result;
+        result[keys.peak_velocity] = CopyVector(report.peak_velocity);
+        result[keys.peak_acceleration] = CopyVector(report.peak_acceleration);
+        result[keys.peak_jerk] = CopyVector(report.peak_jerk);
+        result[keys.velocity_utilization] =
+            CopyVector(report.velocity_utilization);
+        result[keys.acceleration_utilization] =
+            CopyVector(report.acceleration_utilization);
+        result[keys.jerk_utilization] = CopyVector(report.jerk_utilization);
+        result[keys.maximum_velocity_jump] =
+            CopyVector(report.maximum_velocity_jump);
+        result[keys.maximum_acceleration_jump] =
+            CopyVector(report.maximum_acceleration_jump);
+        result[keys.maximum_utilization] = report.maximum_utilization;
+        result[keys.within_limits] = report.within_limits;
+        result[keys.velocity_continuous] = report.velocity_continuous;
+        result[keys.acceleration_continuous] = report.acceleration_continuous;
+        return result;
+    }
+
+private:
+    SampleArrays
+    SampleValues(const Eigen::Ref<const Eigen::VectorXd> &times) const {
         if (!times.allFinite()) {
             throw std::invalid_argument("trajectory times must be finite");
         }
         // Fill NumPy-owned column-major buffers directly. Returning temporary
         // Eigen matrices would copy every sample again while holding the GIL.
-        using SampleArray = py::array_t<double, py::array::f_style>;
-        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(times.size()),
-                                              static_cast<py::ssize_t>(N)};
-        SampleArray positions(shape), velocities(shape), accelerations(shape),
-            jerks(shape);
+        const std::array<Py_intptr_t, 2> shape{times.size(), N};
+        const std::array<Py_intptr_t, 2> strides{
+            sizeof(double),
+            static_cast<Py_intptr_t>(sizeof(double)) * times.size()};
+        const auto allocate = [&] {
+            return NewDoubleArray<2, py::array::f_style>(shape, strides);
+        };
+        SampleArray positions = allocate(), velocities = allocate(),
+                    accelerations = allocate(), jerks = allocate();
         Eigen::Map<Eigen::MatrixXd> position_values(positions.mutable_data(),
                                                     times.size(), N);
         Eigen::Map<Eigen::MatrixXd> velocity_values(velocities.mutable_data(),
@@ -207,8 +311,9 @@ public:
         Eigen::Map<Eigen::MatrixXd> jerk_values(jerks.mutable_data(), times.size(), N);
         {
             py::gil_scoped_release release;
+            detail::TrajectoryStateSampler<Group> sampler(*trajectory_);
             for (Eigen::Index index = 0; index < times.size(); ++index) {
-                const auto state = trajectory_->GetState(times[index]);
+                const auto state = sampler.GetState(times[index]);
                 position_values.row(index) = state.position.Coeffs().transpose();
                 velocity_values.row(index) = state.velocity.Coeffs().transpose();
                 acceleration_values.row(index) =
@@ -216,43 +321,9 @@ public:
                 jerk_values.row(index) = state.jerk.Coeffs().transpose();
             }
         }
-        return py::make_tuple(positions, velocities, accelerations, jerks);
+        return {std::move(positions), std::move(velocities),
+                std::move(accelerations), std::move(jerks)};
     }
-    py::tuple SampleUniform(std::size_t samples) const {
-        ValidateUniformSampleCount(samples, N);
-        const Eigen::VectorXd times = Eigen::VectorXd::LinSpaced(
-                static_cast<Eigen::Index>(samples), 0.0, Duration());
-        const py::tuple states = Sample(times);
-        return py::make_tuple(
-                times, states[0], states[1], states[2], states[3]);
-    }
-    py::tuple State(double time) const {
-        ValidateTime(time);
-        const auto state = trajectory_->GetState(time);
-        return py::make_tuple(
-                state.position.Coeffs(), state.velocity.Coeffs(),
-                state.acceleration.Coeffs(), state.jerk.Coeffs());
-    }
-    py::dict ConstraintReport(std::size_t samples) const {
-        const auto report = trajectory_->GetConstraintReport(samples);
-        py::dict result;
-        result["peak_velocity"] = report.peak_velocity;
-        result["peak_acceleration"] = report.peak_acceleration;
-        result["peak_jerk"] = report.peak_jerk;
-        result["velocity_utilization"] = report.velocity_utilization;
-        result["acceleration_utilization"] = report.acceleration_utilization;
-        result["jerk_utilization"] = report.jerk_utilization;
-        result["maximum_velocity_jump"] = report.maximum_velocity_jump;
-        result["maximum_acceleration_jump"] =
-                report.maximum_acceleration_jump;
-        result["maximum_utilization"] = report.maximum_utilization;
-        result["within_limits"] = report.within_limits;
-        result["velocity_continuous"] = report.velocity_continuous;
-        result["acceleration_continuous"] = report.acceleration_continuous;
-        return result;
-    }
-
-private:
     static void ValidateTime(double time) {
         if (!std::isfinite(time)) {
             throw std::invalid_argument("trajectory time must be finite");
@@ -265,57 +336,62 @@ private:
 };
 
 template <int N>
-void BindJointTrajectory(py::module_& module, const char* name) {
-    py::class_<JointTrajectory<N>>(
-            module, name,
-            "Fifth-order Bezier joint path with selectable Double-S or trapezoidal timing.")
-            .def(py::init<const Eigen::MatrixXd&, const Eigen::VectorXd&,
-                          const Eigen::VectorXd&, const Eigen::VectorXd&,
-                          double, double, const std::string&>(),
-                 py::arg("waypoints"), py::arg("max_velocity"),
-                 py::arg("max_acceleration"), py::arg("max_jerk"),
-                 py::arg("blend_tolerance") = 0.0,
-                 py::arg("minimum_duration") = 0.0,
-                 py::arg("profile") = "double_s")
-            .def_property_readonly("duration", &JointTrajectory<N>::Duration)
-            .def_property_readonly("dof", &JointTrajectory<N>::Dof)
-            .def_property_readonly("time_scale", &JointTrajectory<N>::TimeScale)
-            .def_property_readonly("blend_tolerance",
-                                   &JointTrajectory<N>::BlendTolerance)
-            .def_property_readonly("profile", &JointTrajectory<N>::Profile)
-            .def_property_readonly("breakpoints", &JointTrajectory<N>::Breakpoints)
-            .def_property_readonly("max_velocity",
-                                   &JointTrajectory<N>::MaxVelocity)
-            .def_property_readonly("max_acceleration",
-                                   &JointTrajectory<N>::MaxAcceleration)
-            .def_property_readonly("max_jerk", &JointTrajectory<N>::MaxJerk)
-            .def_property_readonly("path_length", &JointTrajectory<N>::PathLength)
-            .def_property_readonly("waypoints", &JointTrajectory<N>::Waypoints)
-            .def("position", &JointTrajectory<N>::Position, py::arg("time"),
-                 "Evaluate joint position; finite times are clamped to the trajectory.")
-            .def("velocity", &JointTrajectory<N>::Velocity, py::arg("time"),
-                 "Evaluate joint velocity at a finite time.")
-            .def("acceleration", &JointTrajectory<N>::Acceleration,
-                 py::arg("time"),
-                 "Evaluate joint acceleration at a finite time.")
-            .def("jerk", &JointTrajectory<N>::Jerk, py::arg("time"),
-                 "Evaluate joint jerk at a finite time.")
-            .def("set_minimum_duration",
-                 &JointTrajectory<N>::SetMinimumDuration,
-                 py::arg("duration"),
-                 "Slow the trajectory to at least duration seconds; never speeds it up.")
-            .def("sample", &JointTrajectory<N>::Sample, py::arg("times"),
-                 "Return position, velocity, acceleration, and jerk matrices for 1-D times.")
-            .def("sample_uniform", &JointTrajectory<N>::SampleUniform,
-                 py::arg("samples") = 1001,
-                 "Uniformly sample the inclusive [0, duration] interval and "
-                 "return time plus four state matrices.")
-            .def("state", &JointTrajectory<N>::State, py::arg("time"),
-                 "Return position, velocity, acceleration, and jerk at one time.")
-            .def("constraint_report", &JointTrajectory<N>::ConstraintReport,
-                 py::arg("samples") = 2001,
-                 "Return sampled per-joint peaks, limit utilization, and "
-                 "breakpoint continuity diagnostics.");
+void BindJointTrajectory(py::module_ &module, const char *name,
+                         const std::shared_ptr<const ReportKeys> &report_keys) {
+    py::class_<JointTrajectory<N>>(module, name,
+                                   "Fifth-order Bezier joint path with "
+                                   "selectable Double-S or trapezoidal timing.")
+        .def(py::init<const Eigen::MatrixXd &, const Eigen::VectorXd &,
+                      const Eigen::VectorXd &, const Eigen::VectorXd &, double,
+                      double, const std::string &>(),
+             py::arg("waypoints"), py::arg("max_velocity"),
+             py::arg("max_acceleration"), py::arg("max_jerk"),
+             py::arg("blend_tolerance") = 0.0,
+             py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
+        .def_property_readonly("duration", &JointTrajectory<N>::Duration)
+        .def_property_readonly("dof", &JointTrajectory<N>::Dof)
+        .def_property_readonly("time_scale", &JointTrajectory<N>::TimeScale)
+        .def_property_readonly("blend_tolerance",
+                               &JointTrajectory<N>::BlendTolerance)
+        .def_property_readonly("profile", &JointTrajectory<N>::Profile)
+        .def_property_readonly("breakpoints", &JointTrajectory<N>::Breakpoints)
+        .def_property_readonly("max_velocity", &JointTrajectory<N>::MaxVelocity)
+        .def_property_readonly("max_acceleration",
+                               &JointTrajectory<N>::MaxAcceleration)
+        .def_property_readonly("max_jerk", &JointTrajectory<N>::MaxJerk)
+        .def_property_readonly("path_length", &JointTrajectory<N>::PathLength)
+        .def_property_readonly("waypoints", &JointTrajectory<N>::Waypoints)
+        .def("position", &JointTrajectory<N>::Position, py::arg("time"),
+             "Evaluate joint position; finite times are clamped to the "
+             "trajectory.")
+        .def("velocity", &JointTrajectory<N>::Velocity, py::arg("time"),
+             "Evaluate joint velocity at a finite time.")
+        .def("acceleration", &JointTrajectory<N>::Acceleration, py::arg("time"),
+             "Evaluate joint acceleration at a finite time.")
+        .def("jerk", &JointTrajectory<N>::Jerk, py::arg("time"),
+             "Evaluate joint jerk at a finite time.")
+        .def("set_minimum_duration", &JointTrajectory<N>::SetMinimumDuration,
+             py::arg("duration"),
+             "Slow the trajectory to at least duration seconds; never speeds "
+             "it up.")
+        .def("sample", &JointTrajectory<N>::Sample, py::arg("times"),
+             "Return position, velocity, acceleration, and jerk matrices for "
+             "1-D times.")
+        .def("sample_uniform", &JointTrajectory<N>::SampleUniform,
+             py::arg("samples") = 1001,
+             "Uniformly sample the inclusive [0, duration] interval and "
+             "return time plus four state matrices.")
+        .def("state", &JointTrajectory<N>::State, py::arg("time"),
+             "Return position, velocity, acceleration, and jerk at one time.")
+        .def(
+            "constraint_report",
+            [report_keys](const JointTrajectory<N> &trajectory,
+                          std::size_t samples) {
+                return trajectory.ConstraintReport(samples, *report_keys);
+            },
+            py::arg("samples") = 2001,
+            "Return sampled per-joint peaks, limit utilization, and "
+            "breakpoint continuity diagnostics.");
 }
 
 template <int N>
@@ -436,21 +512,31 @@ public:
     py::tuple State(double time) const {
         ValidateTime(time);
         const auto state = trajectory_->GetState(time);
-        return py::make_tuple(
-                state.position.GetTransform(), state.velocity.Coeffs(),
-                state.acceleration.Coeffs(), state.jerk.Coeffs());
+        return py::make_tuple(state.position.GetTransform(),
+                              CopyVector(state.velocity.Coeffs()),
+                              CopyVector(state.acceleration.Coeffs()),
+                              CopyVector(state.jerk.Coeffs()));
     }
     py::tuple SampleUniform(std::size_t samples) const {
         ValidateUniformSampleCount(samples, 16);
-        const Eigen::VectorXd times = Eigen::VectorXd::LinSpaced(
+        auto times = NewDoubleArray<1>({static_cast<Py_intptr_t>(samples)},
+                                       {sizeof(double)});
+        Eigen::Map<Eigen::VectorXd> time_values(times.mutable_data(), samples);
+        time_values = Eigen::VectorXd::LinSpaced(
             static_cast<Eigen::Index>(samples), 0.0, Duration());
-        py::array_t<double> poses(py::array::ShapeContainer{
-            static_cast<py::ssize_t>(samples), static_cast<py::ssize_t>(4),
-            static_cast<py::ssize_t>(4)});
+        auto poses = NewDoubleArray<3>(
+            {static_cast<Py_intptr_t>(samples), 4, 4},
+            {16 * sizeof(double), 4 * sizeof(double), sizeof(double)});
         using SampleArray = py::array_t<double, py::array::f_style>;
-        const py::array::ShapeContainer shape{static_cast<py::ssize_t>(samples),
-                                              static_cast<py::ssize_t>(6)};
-        SampleArray velocity(shape), acceleration(shape), jerk(shape);
+        const std::array<Py_intptr_t, 2> shape{
+            static_cast<Py_intptr_t>(samples), 6};
+        const std::array<Py_intptr_t, 2> strides{
+            sizeof(double), static_cast<Py_intptr_t>(sizeof(double) * samples)};
+        const auto allocate = [&] {
+            return NewDoubleArray<2, py::array::f_style>(shape, strides);
+        };
+        SampleArray velocity = allocate(), acceleration = allocate(),
+                    jerk = allocate();
         Eigen::Map<Eigen::MatrixXd> velocity_values(velocity.mutable_data(), samples,
                                                     6);
         Eigen::Map<Eigen::MatrixXd> acceleration_values(acceleration.mutable_data(),
@@ -459,8 +545,9 @@ public:
         auto pose_view = poses.mutable_unchecked<3>();
         {
             py::gil_scoped_release release;
+            detail::TrajectoryStateSampler<SE3d> sampler(*trajectory_);
             for (std::size_t index = 0; index < samples; ++index) {
-                const auto state = trajectory_->GetState(times[index]);
+                const auto state = sampler.GetState(time_values[index]);
                 const Eigen::Matrix4d pose = state.position.GetTransform();
                 for (int row = 0; row < 4; ++row)
                     for (int column = 0; column < 4; ++column)
@@ -473,16 +560,17 @@ public:
         }
         return py::make_tuple(times, poses, velocity, acceleration, jerk);
     }
-    py::dict ConstraintReport(std::size_t samples) const {
+    py::dict ConstraintReport(std::size_t samples,
+                              const ReportKeys &keys) const {
         const auto report = trajectory_->GetConstraintReport(samples);
         py::dict result;
-        result["peak_velocity"] = report.peak_velocity;
-        result["peak_acceleration"] = report.peak_acceleration;
-        result["peak_jerk"] = report.peak_jerk;
-        result["maximum_utilization"] = report.maximum_utilization;
-        result["within_limits"] = report.within_limits;
-        result["velocity_continuous"] = report.velocity_continuous;
-        result["acceleration_continuous"] = report.acceleration_continuous;
+        result[keys.peak_velocity] = CopyVector(report.peak_velocity);
+        result[keys.peak_acceleration] = CopyVector(report.peak_acceleration);
+        result[keys.peak_jerk] = CopyVector(report.peak_jerk);
+        result[keys.maximum_utilization] = report.maximum_utilization;
+        result[keys.within_limits] = report.within_limits;
+        result[keys.velocity_continuous] = report.velocity_continuous;
+        result[keys.acceleration_continuous] = report.acceleration_continuous;
         return result;
     }
 
@@ -1145,38 +1233,39 @@ PYBIND11_MODULE(_holistic_motion, module) {
                  py::arg("max_jerk"))
             .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
 
-    BindJointTrajectory<1>(module, "JointTrajectory1");
-    BindJointTrajectory<2>(module, "JointTrajectory2");
-    BindJointTrajectory<3>(module, "JointTrajectory3");
-    BindJointTrajectory<4>(module, "JointTrajectory4");
-    BindJointTrajectory<5>(module, "JointTrajectory5");
-    BindJointTrajectory<6>(module, "JointTrajectory6");
-    BindJointTrajectory<7>(module, "JointTrajectory7");
-    BindJointTrajectory<8>(module, "JointTrajectory8");
-    BindJointTrajectory<9>(module, "JointTrajectory9");
-    BindJointTrajectory<10>(module, "JointTrajectory10");
-    BindJointTrajectory<11>(module, "JointTrajectory11");
-    BindJointTrajectory<12>(module, "JointTrajectory12");
-    BindJointTrajectory<13>(module, "JointTrajectory13");
-    BindJointTrajectory<14>(module, "JointTrajectory14");
-    BindJointTrajectory<15>(module, "JointTrajectory15");
-    BindJointTrajectory<16>(module, "JointTrajectory16");
-    BindJointTrajectory<17>(module, "JointTrajectory17");
-    BindJointTrajectory<18>(module, "JointTrajectory18");
-    BindJointTrajectory<19>(module, "JointTrajectory19");
-    BindJointTrajectory<20>(module, "JointTrajectory20");
-    BindJointTrajectory<21>(module, "JointTrajectory21");
-    BindJointTrajectory<22>(module, "JointTrajectory22");
-    BindJointTrajectory<23>(module, "JointTrajectory23");
-    BindJointTrajectory<24>(module, "JointTrajectory24");
-    BindJointTrajectory<25>(module, "JointTrajectory25");
-    BindJointTrajectory<26>(module, "JointTrajectory26");
-    BindJointTrajectory<27>(module, "JointTrajectory27");
-    BindJointTrajectory<28>(module, "JointTrajectory28");
-    BindJointTrajectory<29>(module, "JointTrajectory29");
-    BindJointTrajectory<30>(module, "JointTrajectory30");
-    BindJointTrajectory<31>(module, "JointTrajectory31");
-    BindJointTrajectory<32>(module, "JointTrajectory32");
+    const auto report_keys = std::make_shared<const ReportKeys>();
+    BindJointTrajectory<1>(module, "JointTrajectory1", report_keys);
+    BindJointTrajectory<2>(module, "JointTrajectory2", report_keys);
+    BindJointTrajectory<3>(module, "JointTrajectory3", report_keys);
+    BindJointTrajectory<4>(module, "JointTrajectory4", report_keys);
+    BindJointTrajectory<5>(module, "JointTrajectory5", report_keys);
+    BindJointTrajectory<6>(module, "JointTrajectory6", report_keys);
+    BindJointTrajectory<7>(module, "JointTrajectory7", report_keys);
+    BindJointTrajectory<8>(module, "JointTrajectory8", report_keys);
+    BindJointTrajectory<9>(module, "JointTrajectory9", report_keys);
+    BindJointTrajectory<10>(module, "JointTrajectory10", report_keys);
+    BindJointTrajectory<11>(module, "JointTrajectory11", report_keys);
+    BindJointTrajectory<12>(module, "JointTrajectory12", report_keys);
+    BindJointTrajectory<13>(module, "JointTrajectory13", report_keys);
+    BindJointTrajectory<14>(module, "JointTrajectory14", report_keys);
+    BindJointTrajectory<15>(module, "JointTrajectory15", report_keys);
+    BindJointTrajectory<16>(module, "JointTrajectory16", report_keys);
+    BindJointTrajectory<17>(module, "JointTrajectory17", report_keys);
+    BindJointTrajectory<18>(module, "JointTrajectory18", report_keys);
+    BindJointTrajectory<19>(module, "JointTrajectory19", report_keys);
+    BindJointTrajectory<20>(module, "JointTrajectory20", report_keys);
+    BindJointTrajectory<21>(module, "JointTrajectory21", report_keys);
+    BindJointTrajectory<22>(module, "JointTrajectory22", report_keys);
+    BindJointTrajectory<23>(module, "JointTrajectory23", report_keys);
+    BindJointTrajectory<24>(module, "JointTrajectory24", report_keys);
+    BindJointTrajectory<25>(module, "JointTrajectory25", report_keys);
+    BindJointTrajectory<26>(module, "JointTrajectory26", report_keys);
+    BindJointTrajectory<27>(module, "JointTrajectory27", report_keys);
+    BindJointTrajectory<28>(module, "JointTrajectory28", report_keys);
+    BindJointTrajectory<29>(module, "JointTrajectory29", report_keys);
+    BindJointTrajectory<30>(module, "JointTrajectory30", report_keys);
+    BindJointTrajectory<31>(module, "JointTrajectory31", report_keys);
+    BindJointTrajectory<32>(module, "JointTrajectory32", report_keys);
     module.def(
             "JointTrajectory", &MakeDynamicJointTrajectory,
             py::arg("waypoints"), py::arg("max_velocity"),
@@ -1202,20 +1291,23 @@ PYBIND11_MODULE(_holistic_motion, module) {
             py::arg("profile") = "double_s",
             "Construct an [x, y, yaw] mobile-base trajectory.");
     py::class_<CartesianLineTrajectory>(module, "CartesianLineTrajectory")
-            .def(py::init<const Eigen::Matrix4d&, const Eigen::Matrix4d&,
-                          const Eigen::VectorXd&, const Eigen::VectorXd&,
-                          const Eigen::VectorXd&, double,
-                          const std::string&>(),
-                 py::arg("start"), py::arg("end"),
-                 py::arg("max_velocity"), py::arg("max_acceleration"),
-                 py::arg("max_jerk"), py::arg("minimum_duration") = 0.0,
-                 py::arg("profile") = "double_s")
-            .def_property_readonly("duration", &CartesianLineTrajectory::Duration)
-            .def_property_readonly("profile", &CartesianLineTrajectory::Profile)
-            .def("position", &CartesianLineTrajectory::Position, py::arg("time"))
-            .def("state", &CartesianLineTrajectory::State, py::arg("time"))
-            .def("sample_uniform", &CartesianLineTrajectory::SampleUniform,
-                 py::arg("samples") = 1001)
-            .def("constraint_report", &CartesianLineTrajectory::ConstraintReport,
-                 py::arg("samples") = 2001);
+        .def(py::init<const Eigen::Matrix4d &, const Eigen::Matrix4d &,
+                      const Eigen::VectorXd &, const Eigen::VectorXd &,
+                      const Eigen::VectorXd &, double, const std::string &>(),
+             py::arg("start"), py::arg("end"), py::arg("max_velocity"),
+             py::arg("max_acceleration"), py::arg("max_jerk"),
+             py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
+        .def_property_readonly("duration", &CartesianLineTrajectory::Duration)
+        .def_property_readonly("profile", &CartesianLineTrajectory::Profile)
+        .def("position", &CartesianLineTrajectory::Position, py::arg("time"))
+        .def("state", &CartesianLineTrajectory::State, py::arg("time"))
+        .def("sample_uniform", &CartesianLineTrajectory::SampleUniform,
+             py::arg("samples") = 1001)
+        .def(
+            "constraint_report",
+            [report_keys](const CartesianLineTrajectory &trajectory,
+                          std::size_t samples) {
+                return trajectory.ConstraintReport(samples, *report_keys);
+            },
+            py::arg("samples") = 2001);
 }

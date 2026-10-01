@@ -22,9 +22,90 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 算法以路径速度平方为状态，先反向传播可控区间的上下界，再正向选择可达的最大速度。
 运行时不依赖上游 TOPPRA 包，也不需要额外 LP/QP 求解器。
 
+终点路径速度为零时，静止状态属于每个反向可控区间，因此只需传播上界，
+正向求解后再统一检查所有区间半平面约束。非零终点速度仍传播完整上下界；
+两条求解路径都支持非零起点速度。此优化参考 EmbodiChain 的
+`feat/differentiable-toppra` 分支（提交 `49d76866` 和 `748006a1`）。
+默认接口保留仅依赖 NumPy 的运行时和自然三次样条几何。
+下文的可选 Torch 接口提供可微分 CPU/CUDA 执行。
+
 `start_path_velocity` 和 `end_path_velocity` 指归一化弦长参数的起止速度，
 默认均为零。可行时结果保留指定值；在当前网格的约束下不可行时抛出 `ValueError`。
 求解完成后不会通过整体时间缩放修改这些边界值。
+
+## 可微分 CPU 和 CUDA 计时
+
+安装可选依赖：`pip install 'holistic-motion[differentiable]'`。
+CUDA 执行还需要与 GPU、驱动兼容的 CUDA 版 PyTorch。本后端独立于原生库的
+CMake CUDA 开关，无需 Warp 或编译扩展。
+不使用编译扩展时，请在导入包之前设置环境变量 `HOLISTICMOTION_PURE_PYTHON=1`。
+
+```python
+import torch
+from holistic_motion.trajectory import retime_path_torch
+
+points = torch.tensor(
+    [[0.0, 0.0], [0.4, -0.2], [1.0, 0.5]],
+    dtype=torch.float64, device="cuda", requires_grad=True,
+)
+velocity = torch.tensor([1.0, 0.8], device="cuda", requires_grad=True)
+trajectory = retime_path_torch(points, velocity, [2.0, 1.5], grid_size=61)
+times, q, dq, ddq = trajectory.sample_uniform(100)
+loss = trajectory.duration + 0.01 * q.square().mean()
+loss.backward()  # points.grad 和 velocity.grad 均位于 CUDA
+```
+
+将设备改为 `"cpu"` 即可在 CPU 执行。对应类名为 `TorchToppraTrajectory`；
+原有 `retime_path`、`ToppraTrajectory` 继续使用 NumPy，导入时不会加载 Torch。
+
+路点支持单路径 `(N, D)` 和批量 `(B, N, D)`。正的对称速度、加速度限值可以是
+标量、`(D,)` 或 `(B, D)` 张量；边界路径速度支持标量或 `(B,)`。样条、约束、
+可达性求解及采样均在路点所在设备计算。验证和终点速度分支选择会与主机同步，
+因此不支持 CUDA Graph 捕获。任意一行无效或不可行都会使整个批次抛出 `ValueError`。
+限值、边界速度和采样时间必须为实数；复数张量与数组会在类型转换前被拒绝。
+
+`TorchToppraResult` 的计时数据、时长及采样时间使用 float64；位置、速度和
+加速度沿用路点类型，支持 float16、bfloat16、float32、float64。
+输出无法以该类型表示时，采样会报错。单路径采样形状为 `(T, D)`，批量为
+`(B, T, D)`。`sample(times)` 支持共享 `(T,)` 或逐路径 `(B, T)` 时间，
+裁剪到各自的有效时长，并保留对时间的梯度。结果张量与内部采样状态分开存储；
+仍需遵守 PyTorch 关于不修改反向传播所需张量的规则。
+
+自动微分覆盖路点、限值、边界速度及采样时间。梯度是固定激活约束、样条段选择
+及网格拓扑下的分段导数，不保证在切换点可微；零路径速度处的平方根导数约定为零。
+测试验证一阶梯度，该算法没有用平滑近似替换 TOPPRA。
+当停止点的约束残差仅因浮点舍入偏离零时，仍保留零速度及零导数约定。
+若粗网格产生相邻停止点，构造函数会报错并提示细化网格。
+
+求解器先对每条路径的速度单位做归一化，避免大幅改变时间单位时，中间平方速度
+溢出或未激活约束产生无效梯度。采样时也沿用归一化时钟，避免很大的物理时间
+在平方时溢出。物理输出仍需能以 float64 及指定采样类型表示。
+当整个批次的终点速度均为零时，使用较短的可控区间递推；混合或非零终点速度
+仍保留上下界。两种分支都保留自动微分，并检查每个前向区间约束。
+
+张量后端对每个样条段使用相同细分数 `ceil((grid_size - 1) / (N - 1))`，
+两路点路径至少分成两段。这样可以保持批量形状固定，并对弦长节点求导。
+默认网格及时长可能不同于 NumPy 的按间距细分结果；对比时，将张量结果的
+网格传入 NumPy 的 `gridpoints`。两者保留相同的自然三次样条几何和连续区间限值。
+CUDA 支持不代表小批次一定更快：可达性传播沿网格仍是顺序计算，逐段启动 Torch 操作。
+
+无需编译扩展即可运行批量前向及反向传播示例：
+
+```bash
+HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python \
+  python examples/python/trajectory/toppra_differentiable.py --device cuda
+```
+
+添加 `--optimize-steps 50` 可用 Adam 优化示例的内部路点，同时固定端点和运动限值。
+每个内部坐标相对初值的改变量限制在 0.1 内，目标由时长和较小的位移惩罚组成。
+由于优化中激活约束可能切换，示例报告最佳迭代结果，也支持 CPU 执行。
+
+对比版本时，先导出旧版张量模块，再运行
+`benchmarks/compare_toppra_torch.py --baseline /path/to/earlier_toppra.py --device cuda`。
+工具先检查结果和梯度，再交替计时，并以 JSON 记录同步后的 CUDA 耗时、峰值分配量
+及反向保存的张量存储量。CPU 测量使用 `--device cpu`，无需机器人资源文件。
+
+## NumPy 示例与区间约束
 
 运行示例：
 
@@ -58,10 +139,27 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 路径插值器使用关节空间自然三次样条。每段通过路径一阶导数的解析极值限制速度，
 通过二次加速度多项式的 Bernstein 系数限制加速度，覆盖整个区间及节点两侧。
 这些区间约束偏保守，不能保证连续问题的全局时间最优；增加 `grid_size` 可以减少
-保守程度。自定义网格端点与 0、1 的误差不超过 `1e-12` 时，会在不修改输入的
-前提下归一到准确端点；内部网格点必须位于路径范围内。`ToppraResult` 同时
+保守程度。默认网格按样条段分别细分，并保留全部样条节点；在舍入误差范围内，
+目标间距不超过 `1 / (grid_size - 1)`。实际节点数可能大于 `grid_size`，
+该参数必须为至少 2 的整数。这样可以避免合并均匀网格与样条节点时，
+浮点尾数差异产生极短区间。默认离散网格变化可能改变轨迹时长，路径几何和
+连续区间的限值约束仍保留。自定义网格端点与 0、1 的误差不超过 `1e-12` 时，
+会在不修改输入的前提下归一到准确端点；内部网格点必须位于路径范围内。
+距样条节点不超过 `8 * float64 epsilon` 的自定义网格点使用准确的样条节点
+替代；不同的样条节点始终保留。`ToppraResult` 同时
 校验路径速度、加速度和时间数组的一致性；减速到零附近的动力学误差按等式
 各项的尺度判断，避免更换时间单位后因大数相消误拒合法结果。
+
+可用相同自定义网格与旧版本比较求解耗时：
+
+```bash
+git show 6e56cc7:python/holistic_motion/trajectory/toppra.py > /tmp/toppra-old.py
+python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
+```
+
+基准先核对计时和采样结果一致，再交替测量新旧实现，输出原始耗时和中位数。
+覆盖 1、7、32 自由度、三种网格大小以及零/非零终点速度，仅需 NumPy，
+不需要机器人资源或编译扩展。
 
 原生 Bezier 路径遇到掉头路点时，即使启用了圆滑过渡，也保留准确路点和直线
 连接；Double-S 和梯形时间参数化会先停下再反向。二次曲线使用当前拐点的

@@ -114,7 +114,7 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 精确验证。每个实例持有可变的 Pinocchio 查询缓冲区，并发查询时需要调用方同步。
 
 该设计吸收了 cuRobo 碰撞球表示和批量查询架构的思想，但围绕 Pinocchio 与
-Eigen 独立实现；HolisticMotion 不导入 Torch、Warp 或 cuRobo。
+Eigen 独立实现；碰撞后端不导入 Torch、Warp 或 cuRobo。
 
 ### 离线球化
 

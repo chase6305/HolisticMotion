@@ -3,6 +3,8 @@
 #include "PathSegmentEvaluation.h"
 #include "TrajectoryStateEvaluation.h"
 
+#include <optional>
+
 namespace holistic_motion {
 namespace robotics {
 
@@ -174,7 +176,8 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetAcceleration(
     // Scale stepwise to preserve representable derivatives at large scales.
     const double inverse_scale = 1.0 / time_scale_;
     const double speed_squared = jet[1] * jet[1];
-    return (tangent * jet[2] + ScaleByPower<2>(curvature, jet[1], speed_squared)) *
+    return (tangent * jet[2] +
+            detail::ScaleByPower<2>(curvature, jet[1], speed_squared)) *
            inverse_scale * inverse_scale;
 }
 
@@ -187,8 +190,9 @@ typename LieGroup::Tangent TrajectoryBase<LieGroup>::GetJerk(double t) const {
     const auto torsion = segment->GetTorsion(jet[0]);
     const double inverse_scale = 1.0 / time_scale_;
     const double speed_squared = jet[1] * jet[1];
-    return (tangent * jet[3] + ScaleMixedJerk(curvature, jet[1], jet[2]) +
-            ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
+    return (tangent * jet[3] +
+            detail::ScaleMixedJerk(curvature, jet[1], jet[2]) +
+            detail::ScaleByPower<3>(torsion, jet[1], speed_squared * jet[1])) *
            inverse_scale * inverse_scale * inverse_scale;
 }
 
@@ -205,9 +209,27 @@ inline typename TrajectoryBase<LieGroup>::State TrajectoryBase<LieGroup>::Compos
     const std::array<double, 4> &jet,
     const std::shared_ptr<PathSegmentBase<LieGroup>> &segment) const {
     State state;
+    if constexpr (!std::is_same_v<LieGroup, SE3d>) {
+        // Expose the built-in line's zero higher derivatives to the compiler.
+        // Derived segments must still use their public virtual geometry queries.
+        // Pointer identity is sufficient for the fast path. Separate RTTI
+        // instances of the same type safely use the ordinary implementation.
+        if (&typeid(*segment) == &typeid(PathSegLinear<LieGroup>)) {
+            segment->ValidateQuery(jet[0]);
+            const double length = segment->length_;
+            const double local = clamp(jet[0] - segment->sp_, 0.0, length);
+            const double parameter = length > 0.0 ? local / length : 0.0;
+            state.position = segment->waypoints_[0] + parameter * segment->tangent_;
+            const auto tangent =
+                length > 0.0 ? segment->tangent_ / length : segment->tangent_;
+            detail::ComposeLinearDerivatives(state, jet, tangent, time_scale_);
+            return state;
+        }
+    }
     typename LieGroup::Tangent tangent, curvature, torsion;
     segment->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-    ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
+    detail::ComposeDerivatives(state, jet, tangent, curvature, torsion,
+                               time_scale_);
     return state;
 }
 
@@ -285,7 +307,12 @@ bool TrajectoryBase<LieGroup>::EnforceJointLimits(
             }
             typename LieGroup::Tangent tangent, curvature, torsion;
             sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-            ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
+            if (sampler->IsLinear())
+                detail::ComposeLinearDerivatives(state, jet, tangent,
+                                                 time_scale_);
+            else
+                detail::ComposeDerivatives(state, jet, tangent, curvature,
+                                           torsion, time_scale_);
         } catch (const std::runtime_error&) {
             // Internal evaluation failure invalidates construction, just like
             // a returned nonfinite state. Public diagnostics keep the error.

@@ -143,6 +143,41 @@ also inspect phase endpoints. Its 24 workloads emit median microseconds from
 21 measured calls after one warmup, plus checksums. It excludes construction
 and Python binding overhead; timing is not a CI threshold.
 
+`benchmarks/python_trajectory_benchmark.py` measures complete Python calls,
+including result assignment and release of the previous result. By default it
+emits 110 state/uniform-sampling configurations. Use `--operations report` for
+88 constraint-report configurations, or combine `state uniform report`.
+`--dofs 1 4 32` selects joint dimensions; Cartesian fixtures remain included.
+`--repeats` controls repetitions within each configuration. Report checksums
+include all diagnostic fields and array shape, dtype, strides, ownership and
+writability. For example:
+
+```bash
+PYTHONPATH=build/install python benchmarks/python_trajectory_benchmark.py \
+  --operations report --dofs 1 4 32 --repeats 9
+```
+
+`benchmarks/compare_python_trajectories.py` compares two installation trees in
+separate persistent workers. It alternates each paired call, shuffles workload
+order, and verifies all result checksums. JSON output includes wall/thread-CPU
+measurements, every repetition, and the loaded extension paths and hashes.
+The default covers 198 state, uniform-sampling and report configurations.
+Use the same installation for both arguments to estimate host noise; persistent
+workers reduce process-startup gaps but do not eliminate shared-host contention.
+Negative paired percentage changes mean less elapsed time for the candidate.
+
+```bash
+python benchmarks/compare_python_trajectories.py \
+  --baseline /tmp/baseline-install --candidate build/install \
+  --python /path/to/compatible/python --rounds 8 > comparison.json
+```
+
+`--cpu` optionally pins both workers to one allowed logical CPU on platforms
+supporting affinity. `--dofs`, `--operations`, and `--repeats` narrow the same
+fixtures used by the single-installation benchmark. Both installations must be
+compatible with the selected interpreter. Timings include result assignment,
+previous-result release and timer overhead; checksum work stays outside timing.
+
 `benchmarks/trajectory_audit.py` generates native trajectories with an explicit
 seed and checks finite samples, endpoints, and derivative limits at uniform
 times plus every breakpoint. For example, run

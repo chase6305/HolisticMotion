@@ -296,3 +296,80 @@ def test_toppra_random_paths_do_not_stop_before_the_last_interval():
         np.testing.assert_allclose(
             trajectory.sample([trajectory.duration])[0][0], points[-1], atol=1e-12
         )
+
+
+@pytest.mark.parametrize("start,end", [(0.0, 0.0), (0.4, 0.0), (0.0, 0.3)])
+@pytest.mark.parametrize("time_scale", [1e-4, 1.0, 1e4])
+def test_toppra_linear_path_matches_analytic_reachable_speeds(start, end, time_scale):
+    grid = np.r_[0.0, np.sort(np.random.default_rng(91).uniform(size=35)), 1.0]
+    trajectory = ToppraTrajectory(
+        [[0.0, 0.0], [1.0, -2.0]],
+        np.array([0.8, 1.6]) * time_scale,
+        np.array([1.5, 3.0]) * time_scale**2,
+        start_path_velocity=start * time_scale,
+        end_path_velocity=end * time_scale,
+        gridpoints=grid,
+    )
+    expected_squared = np.minimum(
+        0.8**2, np.minimum(start**2 + 3.0 * grid, end**2 + 3.0 * (1.0 - grid))
+    )
+    np.testing.assert_allclose(
+        trajectory.result.path_speeds / time_scale,
+        np.sqrt(expected_squared),
+        rtol=1e-11,
+        atol=1e-12,
+    )
+    expected_duration = np.sum(
+        2.0
+        * np.diff(grid)
+        / (np.sqrt(expected_squared[:-1]) + np.sqrt(expected_squared[1:]))
+    )
+    assert trajectory.duration * time_scale == pytest.approx(expected_duration)
+
+
+@pytest.mark.parametrize("grid_size", [11, 21, 101])
+@pytest.mark.parametrize("custom", [False, True])
+def test_toppra_near_coincident_grid_and_knots_do_not_create_tiny_intervals(
+    grid_size, custom
+):
+    points = [[0.0], [0.1], [0.3], [1.0]]
+    options = (
+        {"gridpoints": np.linspace(0.0, 1.0, grid_size)}
+        if custom
+        else {"grid_size": grid_size}
+    )
+    trajectory = ToppraTrajectory(points, [1.0], [2.0], **options)
+    grid = trajectory.result.gridpoints
+    assert np.min(np.diff(grid)) > 1e-4
+    assert np.max(np.diff(grid)) <= 1.0 / (grid_size - 1) + 1e-14
+    assert np.isin(trajectory._waypoint_s, grid).all()
+    np.testing.assert_allclose(
+        trajectory.result.path_speeds**2,
+        np.minimum(1.0, np.minimum(4.0 * grid, 4.0 * (1.0 - grid))),
+        rtol=1e-11,
+        atol=1e-12,
+    )
+
+
+@pytest.mark.parametrize("grid_size,duration", [(11, 6.0), (21, 5.5)])
+def test_toppra_aligned_grid_has_no_roundoff_subdivisions(grid_size, duration):
+    trajectory = ToppraTrajectory(
+        np.arange(6)[:, None], [1.0], [2.0], grid_size=grid_size
+    )
+    assert trajectory.duration == pytest.approx(duration, abs=1e-12)
+    assert len(trajectory.result.gridpoints) == grid_size
+
+
+@pytest.mark.parametrize("grid_size", [-10, 0, 1])
+def test_toppra_rejects_too_small_grid_even_with_many_waypoints(grid_size):
+    with pytest.raises(ValueError, match="grid_size"):
+        ToppraTrajectory([[0.0], [0.5], [1.0]], [1.0], [2.0], grid_size=grid_size)
+
+
+def test_toppra_custom_grid_snapping_preserves_short_spline_segments():
+    points = [[0.0], [0.5], [0.5 + 2e-12], [1.0]]
+    trajectory = ToppraTrajectory(
+        points, [1.0], [2.0], gridpoints=[0.0, 0.25, 0.5, 0.75, 1.0]
+    )
+    assert np.isin(trajectory._waypoint_s, trajectory.result.gridpoints).all()
+    assert np.min(np.diff(trajectory.result.gridpoints)) == pytest.approx(2e-12)

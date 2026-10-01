@@ -6,11 +6,16 @@
 namespace holistic_motion {
 namespace robotics {
 
+namespace detail {
+template <typename LieGroup> class TrajectoryStateSampler;
+}
+
 // class TrajectoryBase
 template <typename LieGroup>
 class TrajectoryBase
     : public std::enable_shared_from_this<TrajectoryBase<LieGroup>> {
 private:
+    friend class detail::TrajectoryStateSampler<LieGroup>;
     using Tangent = typename LieGroup::Tangent;
 
 public:

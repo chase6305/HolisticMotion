@@ -114,6 +114,35 @@ CSV 标识所在群，并输出 `cap_us`、`limit_us`、`construction_us` 的中
 CSV 输出一次预热后 21 次调用的微秒中位数和校验和。计时不包含轨迹构造或
 Python 绑定开销，不作为 CI 阈值。
 
+`benchmarks/python_trajectory_benchmark.py` 测量完整 Python 调用，包括结果赋值及
+上一结果的释放。默认输出 110 个状态查询和均匀采样配置；`--operations report`
+选择 88 个约束报告配置，也可组合 `state uniform report`。`--dofs 1 4 32`
+选择关节维度，仍包含笛卡尔工况；`--repeats` 控制每个配置的重复次数。
+报告校验和包含全部诊断字段及数组形状、dtype、步长、所有权和可写性。例如：
+
+```bash
+PYTHONPATH=build/install python benchmarks/python_trajectory_benchmark.py \
+  --operations report --dofs 1 4 32 --repeats 9
+```
+
+`benchmarks/compare_python_trajectories.py` 用两个常驻且独立的进程比较安装目录，
+逐工况交替测量、随机排列顺序，并核对全部返回值校验和。默认覆盖 198 个状态、
+均匀采样和报告配置；JSON 保留墙钟/线程 CPU 时间、每次重复，以及实际加载的
+扩展路径和哈希。将同一安装目录同时作为基线和候选，可以估计环境噪声。
+常驻进程能缩短配对间隔，但不能消除共享机器上的竞争；配对变化为负表示候选
+耗时更少。
+
+```bash
+python benchmarks/compare_python_trajectories.py \
+  --baseline /tmp/baseline-install --candidate build/install \
+  --python /path/to/compatible/python --rounds 8 > comparison.json
+```
+
+两个安装目录须兼容所选解释器。支持 CPU 亲和性的平台可以用 `--cpu` 将两个
+进程固定到同一个允许使用的逻辑 CPU；`--dofs`、`--operations`、`--repeats`
+选择与单安装基准相同的工况。计时包括结果赋值、上一结果释放及计时器开销，
+校验和计算在计时之外。
+
 `benchmarks/trajectory_audit.py` 按显式种子生成原生轨迹，在均匀时间点和
 全部分段边界检查有限性、端点和导数限位。例如执行
 `PYTHONPATH=build/install python benchmarks/trajectory_audit.py --cases 3000`。

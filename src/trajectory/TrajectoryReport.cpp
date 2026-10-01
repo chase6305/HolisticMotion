@@ -1,7 +1,6 @@
 #include "holistic_motion/trajectory/TrajectoryBase.h"
 
-#include "PathSegmentEvaluation.h"
-#include "TrajectoryStateEvaluation.h"
+#include "TrajectoryStateSampler.h"
 
 namespace holistic_motion::robotics {
 
@@ -31,30 +30,22 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             throw std::runtime_error(
                 "constraint report encountered a non-finite trajectory state");
         }
-        report.peak_velocity =
-            report.peak_velocity.cwiseMax(state.velocity.Coeffs().cwiseAbs());
-        report.peak_acceleration =
-            report.peak_acceleration.cwiseMax(state.acceleration.Coeffs().cwiseAbs());
-        report.peak_jerk = report.peak_jerk.cwiseMax(state.jerk.Coeffs().cwiseAbs());
+        // Reports expose dynamic vectors, but each state has a fixed dimension.
+        // Retain that dimension during the hot reduction without extra storage
+        // or stronger alignment requirements on the report's allocations.
+        using Vector = Eigen::Matrix<double, LieGroup::DoF, 1>;
+        Eigen::Map<Vector> velocity_peak(report.peak_velocity.data());
+        Eigen::Map<Vector> acceleration_peak(report.peak_acceleration.data());
+        Eigen::Map<Vector> jerk_peak(report.peak_jerk.data());
+        velocity_peak =
+            velocity_peak.cwiseMax(state.velocity.Coeffs().cwiseAbs());
+        acceleration_peak =
+            acceleration_peak.cwiseMax(state.acceleration.Coeffs().cwiseAbs());
+        jerk_peak = jerk_peak.cwiseMax(state.jerk.Coeffs().cwiseAbs());
     };
-    // Uniform report samples revisit the same curve. Keep the workspace local
-    // to this report so later queries see any changes to the path or time scale.
-    // Retain the geometry while its cached evaluator borrows the control points.
-    std::shared_ptr<PathSegmentBase<LieGroup>> sampled_segment;
-    std::optional<detail::SegmentEvaluationSampler<LieGroup>> sampler;
+    detail::TrajectoryStateSampler<LieGroup> sampler(*this);
     const auto accumulate = [&](double time) {
-        std::array<double, 4> jet;
-        const auto geometry = EvaluatePathJet(time, jet);
-        if (geometry != sampled_segment) {
-            sampler.reset();
-            sampled_segment = geometry;
-            sampler.emplace(*geometry);
-        }
-        State state;
-        typename LieGroup::Tangent tangent, curvature, torsion;
-        sampler->ComputeJet(jet[0], state.position, tangent, curvature, torsion);
-        ComposeDerivatives(state, jet, tangent, curvature, torsion, time_scale_);
-        accumulate_state(state);
+        accumulate_state(sampler.GetState(time));
     };
 
     const double duration = GetDuration();
@@ -63,10 +54,24 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
             static_cast<double>(sample) / static_cast<double>(samples - 1);
         accumulate(duration * fraction);
     }
-    const auto &breakpoints = trajectory_pspline_->GetKnots();
-    for (std::size_t index = 1; index + 1 < breakpoints.size(); ++index) {
+    if (!valid_ || !trajectory_pspline_ || !path_)
+        throw std::logic_error("cannot inspect an invalid trajectory");
+    // A custom geometry query may replace the clock or release the path.
+    // Keep the referenced knots alive and reject a changed phase layout before
+    // using the next endpoint index, including in-place spline replacement.
+    const auto endpoint_clock = trajectory_pspline_;
+    const std::size_t breakpoint_count = endpoint_clock->GetKnots().size();
+    const auto validate_endpoint_owner = [&] {
+        if (!valid_ || !path_ || trajectory_pspline_ != endpoint_clock ||
+            endpoint_clock->GetKnots().size() != breakpoint_count)
+            throw std::logic_error("trajectory changed during constraint "
+                                   "report endpoint sampling");
+    };
+    for (std::size_t index = 1; index + 1 < breakpoint_count; ++index) {
         const auto left_state = GetPhaseEndpoint(index - 1, true);
+        validate_endpoint_owner();
         const auto right_state = GetPhaseEndpoint(index, false);
+        validate_endpoint_owner();
         accumulate_state(left_state);
         accumulate_state(right_state);
         report.maximum_velocity_jump = report.maximum_velocity_jump.cwiseMax(
@@ -85,14 +90,14 @@ TrajectoryBase<LieGroup>::GetConstraintReport(std::size_t samples) const {
                                            report.jerk_utilization.maxCoeff()});
     report.within_limits = std::isfinite(report.maximum_utilization) &&
                            report.maximum_utilization <= 1.0 + 1e-12;
-    const Eigen::VectorXd velocity_tolerance =
-        max_velocity_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    const Eigen::VectorXd acceleration_tolerance =
-        max_acceleration_.cwiseMax(Eigen::VectorXd::Ones(dof_)) * 1e-7;
-    report.velocity_continuous =
-        (report.maximum_velocity_jump.array() <= velocity_tolerance.array()).all();
+    // Evaluate the tolerances inside the comparisons. Materializing them as
+    // dynamic vectors adds two allocations to even the shortest report.
+    report.velocity_continuous = (report.maximum_velocity_jump.array() <=
+                                  max_velocity_.array().max(1.0) * 1e-7)
+                                     .all();
     report.acceleration_continuous =
-        (report.maximum_acceleration_jump.array() <= acceleration_tolerance.array())
+        (report.maximum_acceleration_jump.array() <=
+         max_acceleration_.array().max(1.0) * 1e-7)
             .all();
     return report;
 }
