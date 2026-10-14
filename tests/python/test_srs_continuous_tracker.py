@@ -89,6 +89,14 @@ def test_srs_tracker_validates_dynamic_limits_and_inputs(tmp_path):
     reflection[0, 0] = -1.0
     with pytest.raises(ValueError, match="proper orthonormal"):
         tracker.solve(reflection, dt=0.01)
+    for dtype in (np.complex64, np.complex128, object):
+        for imaginary in (0.0, 1.0):
+            complex_pose = np.eye(4, dtype=dtype)
+            complex_pose[0, 3] = np.complex128(0.5 + imaginary * 1j)
+            with pytest.raises(TypeError, match="real"):
+                tracker.solve(complex_pose, dt=0.01)
+    assert tracker.frame_index == 0
+    np.testing.assert_array_equal(tracker.joints, initial)
     with pytest.raises(ValueError, match="candidate_refresh_interval"):
         SRSContinuousOptions(candidate_refresh_interval=0)
     with pytest.raises(TypeError, match="branch_hysteresis_frames"):

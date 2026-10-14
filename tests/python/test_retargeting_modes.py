@@ -135,6 +135,25 @@ def test_target_owns_validated_pose():
         RetargetingTarget(np.eye(4), weight=object())
 
 
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_target_rejects_complex_pose_without_discarding_components(dtype, imaginary):
+    pose = np.eye(4, dtype=dtype)
+    pose[0, 3] = np.complex128(0.5 + imaginary * 1j)
+    with pytest.raises(TypeError, match="real"):
+        RetargetingTarget(pose)
+
+
+def test_target_accepts_real_object_pose_and_owns_it():
+    pose = np.eye(4, dtype=object)
+    pose[0, 3] = 0.5
+    target = RetargetingTarget(pose)
+    pose[0, 3] = 2.0
+    assert target.pose.dtype == np.float64
+    assert target.pose[0, 3] == 0.5
+    assert not target.pose.flags.writeable
+
+
 def test_retargeting_result_owns_immutable_outputs():
     from holistic_motion.kit.retargeting import RetargetingResult
 
@@ -227,9 +246,7 @@ def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path, monkeypat
     }
     groups = {"left_arm": ["left_joint"], "right_arm": ["right_joint"]}
     with pytest.raises(TypeError, match="max_iterations"):
-        PinocchioRetargetingSolver(
-            urdf, frames, groups, max_iterations=1.5
-        )
+        PinocchioRetargetingSolver(urdf, frames, groups, max_iterations=1.5)
     with pytest.raises(TypeError, match="frames"):
         PinocchioRetargetingSolver(urdf, [], groups)
     with pytest.raises(TypeError, match="sequences"):
