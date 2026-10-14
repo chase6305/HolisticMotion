@@ -401,7 +401,7 @@ class SRSContinuousTracker:
         for candidate in candidates:
             try:
                 values = np.asarray(candidate, dtype=float)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if values.shape == (self._dof,) and np.isfinite(values).all():
                 yield values

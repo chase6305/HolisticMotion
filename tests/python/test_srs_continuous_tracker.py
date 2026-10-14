@@ -150,7 +150,15 @@ def test_srs_tracker_isolates_malformed_native_candidates():
 @pytest.mark.parametrize(
     "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
 )
-@pytest.mark.parametrize("malformed", [np.full(7, np.nan), np.zeros(6), "bad"])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        np.full(7, np.nan),
+        np.zeros(6),
+        "bad",
+        pytest.param([2**2048] * 7, id="overflowing-integers"),
+    ],
+)
 def test_unusable_seed_refreshes_valid_candidates_on_later_frames(
     tracker_name, malformed
 ):
