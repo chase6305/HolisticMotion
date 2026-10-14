@@ -179,7 +179,9 @@ class SRSContinuousTracker:
         try:
             lower, upper = solver.joint_limits
         except (TypeError, ValueError) as error:
-            raise ValueError("solver returned invalid seven-axis joint limits") from error
+            raise ValueError(
+                "solver returned invalid seven-axis joint limits"
+            ) from error
         self._lower = np.array(lower, dtype=float, copy=True)
         self._upper = np.array(upper, dtype=float, copy=True)
         if (
@@ -190,6 +192,8 @@ class SRSContinuousTracker:
             or np.any(self._lower > self._upper)
         ):
             raise ValueError("solver returned invalid seven-axis joint limits")
+        self._bounded_lower = np.isfinite(self._lower)
+        self._bounded_upper = np.isfinite(self._upper)
         self._max_velocity = self._limit_vector(
             self.options.max_velocity, "max_velocity"
         )
@@ -307,18 +311,16 @@ class SRSContinuousTracker:
             ) = selected
             previous_branch = self._configuration
             native = self.solver.configuration(joints)
-            redundancy = self._unwrap_scalar(
-                float(native.redundancy), self._redundancy
-            )
+            redundancy = self._unwrap_scalar(float(native.redundancy), self._redundancy)
             singular_values = np.linalg.svd(
                 np.asarray(self.solver.jacobian(joints), dtype=float),
                 compute_uv=False,
             )
             minimum = float(singular_values[-1]) if singular_values.size else 0.0
             result = self._result_type(
-                joints=joints.copy(),
-                velocity=velocity.copy(),
-                acceleration=acceleration.copy(),
+                joints=joints,
+                velocity=velocity,
+                acceleration=acceleration,
                 configuration=branch,
                 redundancy=redundancy,
                 branch_changed=branch != previous_branch,
@@ -343,7 +345,9 @@ class SRSContinuousTracker:
         candidates = []
         try:
             candidates.extend(
-                self.solver.solve(target, self._joints, self._seeded_method())
+                self._finite_candidates(
+                    self.solver.solve(target, self._joints, self._seeded_method())
+                )
             )
         except ValueError:
             pass
@@ -358,7 +362,7 @@ class SRSContinuousTracker:
         refresh = (
             not candidates
             or any(
-                self._configuration_of(np.asarray(item)) != self._configuration
+                self._configuration_of(item) != self._configuration
                 for item in candidates
             )
             or near_singularity
@@ -367,10 +371,12 @@ class SRSContinuousTracker:
         if refresh:
             try:
                 candidates.extend(
-                    self.solver.solve(
-                        target,
-                        self._joints,
-                        self._all_configurations_method(),
+                    self._finite_candidates(
+                        self.solver.solve(
+                            target,
+                            self._joints,
+                            self._all_configurations_method(),
+                        )
                     )
                 )
             except ValueError:
@@ -380,16 +386,25 @@ class SRSContinuousTracker:
                 f"{self._solver_label} inverse kinematics did not converge"
             )
         unique = []
-        for candidate in candidates:
-            values = np.asarray(candidate, dtype=float)
-            if values.shape != (self._dof,) or not np.all(np.isfinite(values)):
-                continue
+        for values in candidates:
             if not any(
                 np.linalg.norm(self._periodic_delta(values, item)) < 1e-8
                 for item in unique
             ):
                 unique.append(values)
         return unique
+
+    def _finite_candidates(self, candidates):
+        # Validate before querying branch metadata. Native configuration APIs
+        # reject malformed vectors, which must not mask other valid branches
+        # or prevent an all-configurations refresh after an unusable seed.
+        for candidate in candidates:
+            try:
+                values = np.asarray(candidate, dtype=float)
+            except (TypeError, ValueError):
+                continue
+            if values.shape == (self._dof,) and np.isfinite(values).all():
+                yield values
 
     def _all_configurations_method(self):
         import holistic_motion as hm
@@ -446,10 +461,10 @@ class SRSContinuousTracker:
         period = 2.0 * np.pi
         for index in range(self._dof):
             turn = int(np.rint((reference[index] - values[index]) / period))
-            if np.isfinite(self._lower[index]):
+            if self._bounded_lower[index]:
                 minimum = int(np.ceil((self._lower[index] - values[index]) / period))
                 turn = max(turn, minimum)
-            if np.isfinite(self._upper[index]):
+            if self._bounded_upper[index]:
                 maximum = int(np.floor((self._upper[index] - values[index]) / period))
                 turn = min(turn, maximum)
             result[index] = values[index] + turn * period
