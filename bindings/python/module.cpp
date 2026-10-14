@@ -91,6 +91,56 @@ void RequireRigidTransform(const Eigen::Matrix4d& transform,
     }
 }
 
+void RequireRealInput(const py::handle &value, const char *name,
+                      unsigned depth = 0) {
+    if (PyFloat_Check(value.ptr()) || PyLong_Check(value.ptr()))
+        return;
+    if (PyComplex_Check(value.ptr())) {
+        throw py::type_error(std::string(name) + " must contain real values");
+    }
+    if (PyList_Check(value.ptr()) || PyTuple_Check(value.ptr())) {
+        if (depth >= 2) {
+            throw py::type_error(std::string(name) + " has an invalid array shape");
+        }
+        for (auto item : py::reinterpret_borrow<py::sequence>(value)) {
+            RequireRealInput(item, name, depth + 1);
+        }
+        return;
+    }
+    auto array = py::isinstance<py::array>(value)
+                     ? py::reinterpret_borrow<py::array>(value)
+                     : py::array::ensure(value);
+    if (!array) {
+        throw py::type_error(std::string(name) +
+                             " must contain real numeric values");
+    }
+    const char kind = array.dtype().kind();
+    bool complex = kind == 'c';
+    if (!complex && kind == 'O') {
+        auto is_complex = py::module_::import("numpy").attr("iscomplexobj");
+        for (auto item : array.attr("flat")) {
+            if (is_complex(item).cast<bool>()) {
+                complex = true;
+                break;
+            }
+        }
+    }
+    if (complex) {
+        throw py::type_error(std::string(name) + " must contain real values");
+    }
+}
+
+template <typename Matrix>
+Matrix CheckedRealEigen(const py::handle &value, const char *name) {
+    RequireRealInput(value, name);
+    try {
+        return py::cast<Matrix>(value);
+    } catch (const py::cast_error &) {
+        throw py::type_error(std::string(name) +
+                             " has an invalid array shape or type");
+    }
+}
+
 void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
     if (samples < 2) {
         throw std::invalid_argument(
@@ -682,27 +732,47 @@ PYBIND11_MODULE(_holistic_motion, module) {
     py::class_<KinematicsBase, std::shared_ptr<KinematicsBase>>(
             module, "AnalyticKinematics")
             .def("dof", &KinematicsBase::GetDOF)
-            .def("forward", [](const KinematicsBase& self,
-                                const Eigen::VectorXd& joints) {
+        .def(
+            "forward",
+            [](const KinematicsBase &self, const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
                     throw py::value_error("invalid analytic FK joint vector");
                 }
                 return pose.GetTransform();
-            }, py::arg("joints"))
-            .def("solve_all", [](const KinematicsBase& self,
-                                  const Eigen::Matrix4d& target,
-                                  Eigen::VectorXd seed) {
+            },
+            py::arg("joints"))
+        .def(
+            "solve_all",
+            [](const KinematicsBase &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 std::vector<double> distances;
                 if (!self.GetIK(SE3d(target), solutions, seed, distances)) {
                     return std::vector<Eigen::VectorXd>{};
                 }
                 return solutions.ik_joints;
-            }, py::arg("target"), py::arg("seed"))
-            .def("inverse", [](const KinematicsBase& self,
-                                const Eigen::Matrix4d& target,
-                                Eigen::VectorXd seed) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "inverse",
+            [](const KinematicsBase &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
                 if (!self.GetNearestIK(SE3d(target), solutions, seed, distance) ||
@@ -710,7 +780,8 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     throw py::value_error("analytic inverse kinematics failed");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"));
+            },
+            py::arg("target"), py::arg("seed"));
 
     py::class_<OPWParameters>(module, "OPWParameters")
             .def(py::init<>())
@@ -835,39 +906,58 @@ PYBIND11_MODULE(_holistic_motion, module) {
                 py::arg("upper_limits"));
 
     py::class_<NumericalKinematics, KinematicsBase,
-               std::shared_ptr<NumericalKinematics>>(
-            module, "NumericalKinematics")
+               std::shared_ptr<NumericalKinematics>>(module,
+                                                     "NumericalKinematics")
             .def_property(
                     "home_joints", &NumericalKinematics::GetHomeJoints,
-                    [](NumericalKinematics& self,
-                       const Eigen::VectorXd& joints) {
+            [](NumericalKinematics &self, const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                         if (!self.SetHomeJoints(joints)) {
                             throw py::value_error(
                                     "home_joints must match DOF and be finite");
                         }
                     })
             .def_property_readonly("joint_limits",
-                    [](const NumericalKinematics& self) {
+                               [](const NumericalKinematics &self) {
                         Eigen::VectorXd upper;
                         Eigen::VectorXd lower;
                         self.GetJointLimits(upper, lower);
                         return py::make_tuple(lower, upper);
                     })
-            .def("is_reachable", [](const NumericalKinematics& self,
-                                     const Eigen::Matrix4d& target) {
-                if (!target.allFinite()) return false;
+        .def(
+            "is_reachable",
+            [](const NumericalKinematics &self,
+               const py::object &target_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+
+                if (!IsRigidTransform(target))
+                    return false;
                 return self.IsReachable(SE3d(target));
-            }, py::arg("target"))
-            .def("forward", [](const NumericalKinematics& self,
-                               const Eigen::VectorXd& joints) {
+            },
+            py::arg("target"))
+        .def("forward",
+             [](const NumericalKinematics &self,
+                const py::object &joints_input) {
+                 Eigen::VectorXd joints =
+                     CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
-                    throw py::value_error("joint vector does not match robot DOF");
+                     throw py::value_error(
+                         "joint vector does not match robot DOF");
                 }
                 return pose.GetTransform();
             })
-            .def("forward_all", [](const NumericalKinematics& self,
-                                   const Eigen::VectorXd& joints) {
+        .def(
+            "forward_all",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 std::vector<SE3d> poses;
                 if (!self.GetAllFK(joints, poses)) {
                     throw py::value_error("joint vector does not match robot DOF");
@@ -878,19 +968,32 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     matrices.push_back(pose.GetTransform());
                 }
                 return matrices;
-            }, py::arg("joints"))
-            .def("forward_user", [](const NumericalKinematics& self,
-                                     const Eigen::VectorXd& joints) {
+            },
+            py::arg("joints"))
+        .def(
+            "forward_user",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
                     throw py::value_error(
                             "joint vector does not match robot DOF");
                 }
                 return self.ApplyUserFrame(pose).GetTransform();
-            }, py::arg("joints"))
-            .def("inverse", [](const NumericalKinematics& self,
-                               const Eigen::Matrix4d& target,
-                               Eigen::VectorXd seed) {
+            },
+            py::arg("joints"))
+        .def(
+            "inverse",
+            [](const NumericalKinematics &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
@@ -899,10 +1002,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     throw py::value_error("inverse kinematics did not converge");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"))
-            .def("inverse_user", [](const NumericalKinematics& self,
-                                     const Eigen::Matrix4d& target,
-                                     Eigen::VectorXd seed) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "inverse_user",
+            [](const NumericalKinematics &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
@@ -913,30 +1023,48 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             "inverse kinematics did not converge");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"))
-            .def("jacobian", [](const NumericalKinematics& self,
-                                const Eigen::VectorXd& joints) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "jacobian",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 Eigen::MatrixXd jacobian;
                 if (!self.GetJacobian(joints, jacobian)) {
                     throw py::value_error("joint vector does not match robot DOF");
                 }
                 return jacobian;
-            }, py::arg("joints"))
-            .def("set_tcp", [](NumericalKinematics& self,
-                               const Eigen::Matrix4d& pose) {
+            },
+            py::arg("joints"))
+        .def(
+            "set_tcp",
+            [](NumericalKinematics &self, const py::object &pose_input) {
+                Eigen::Matrix4d pose =
+                    CheckedRealEigen<Eigen::Matrix4d>(pose_input, "pose");
+
                 RequireRigidTransform(pose, "TCP pose");
                 return self.SetTCP(SE3d(pose));
-            }, py::arg("pose"))
-            .def("set_user_frame", [](NumericalKinematics& self,
-                                      const Eigen::Matrix4d& pose) {
+            },
+            py::arg("pose"))
+        .def(
+            "set_user_frame",
+            [](NumericalKinematics &self, const py::object &pose_input) {
+                Eigen::Matrix4d pose =
+                    CheckedRealEigen<Eigen::Matrix4d>(pose_input, "pose");
+
                 RequireRigidTransform(pose, "user frame");
                 return self.SetUserFrame(SE3d(pose));
-            }, py::arg("pose"))
-            .def_property_readonly("tcp", [](const NumericalKinematics& self) {
+            },
+            py::arg("pose"))
+        .def_property_readonly("tcp",
+                               [](const NumericalKinematics &self) {
                 return self.GetTCP().GetTransform();
             })
-            .def_property_readonly(
-                    "user_frame", [](const NumericalKinematics& self) {
+        .def_property_readonly("user_frame",
+                               [](const NumericalKinematics &self) {
                         return self.GetUserFrame().GetTransform();
                     })
             .def("clear_tcp", &NumericalKinematics::ClearTCP)
@@ -1009,24 +1137,40 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .def_property_readonly("compatible", &SRSKinematics::IsCompatible)
             .def("analyze_geometry", &SRSKinematics::AnalyzeGeometry,
                  py::arg("axis_tolerance") = 1e-4)
-            .def("configuration", &SRSKinematics::GetConfiguration,
+        .def(
+            "configuration",
+            [](const SRSKinematics &self, const py::object &joints) {
+                return self.GetConfiguration(
+                    CheckedRealEigen<Eigen::VectorXd>(joints, "joints"));
+            },
                  py::arg("joints"))
-            .def("solve", [](const SRSKinematics& self,
-                              const Eigen::Matrix4d& target,
-                              const Eigen::VectorXd& seed,
-                              SRSSolveMethod method) {
+        .def(
+            "solve",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 if (!self.Solve(SE3d(target), seed, method, solutions)) {
                     throw py::value_error("SRS inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_detailed", [](const SRSKinematics& self,
-                                       const Eigen::Matrix4d& target,
-                                       const Eigen::VectorXd& seed,
-                                       SRSSolveMethod method) {
+        .def(
+            "solve_detailed",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 if (!IsRigidTransform(target)) {
                     SRSSolveReport report;
                     report.status = SRSSolveStatus::INVALID_INPUT;
@@ -1034,12 +1178,18 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     return report;
                 }
                 return self.SolveDetailed(SE3d(target), seed, method);
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_user", [](const SRSKinematics& self,
-                                   const Eigen::Matrix4d& target,
-                                   const Eigen::VectorXd& seed,
-                                   SRSSolveMethod method) {
+        .def(
+            "solve_user",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 const SE3d base_target = self.RemoveUserFrame(SE3d(target));
@@ -1048,12 +1198,18 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             "SRS inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_detailed_user", [](const SRSKinematics& self,
-                                            const Eigen::Matrix4d& target,
-                                            const Eigen::VectorXd& seed,
-                                            SRSSolveMethod method) {
+        .def(
+            "solve_detailed_user",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 if (!IsRigidTransform(target)) {
                     SRSSolveReport report;
                     report.status = SRSSolveStatus::INVALID_INPUT;
@@ -1062,50 +1218,79 @@ PYBIND11_MODULE(_holistic_motion, module) {
                 }
                 return self.SolveDetailed(
                         self.RemoveUserFrame(SE3d(target)), seed, method);
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_configuration", [](const SRSKinematics& self,
-                                             const Eigen::Matrix4d& target,
-                                             const SRSConfiguration& config,
-                                             const Eigen::VectorXd& seed) {
+        .def(
+            "solve_configuration",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd solution;
                 if (!self.SolveConfiguration(SE3d(target), config, seed,
                                              solution)) {
                     throw py::value_error("SRS configuration is infeasible");
                 }
                 return solution;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("analytic_elbow_seed", [](const SRSKinematics& self,
-                                            const Eigen::Matrix4d& target,
-                                            const SRSConfiguration& config,
-                                            const Eigen::VectorXd& seed) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "analytic_elbow_seed",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd result;
                 if (!self.GetAnalyticElbowSeed(SE3d(target), config, seed,
                                                result)) {
                     throw py::value_error("target is outside the SRS workspace");
                 }
                 return result;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("analytic_solution", [](const SRSKinematics& self,
-                                          const Eigen::Matrix4d& target,
-                                          const SRSConfiguration& config,
-                                          const Eigen::VectorXd& seed) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "analytic_solution",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd result;
                 if (!self.GetAnalyticSolution(SE3d(target), config, seed,
                                               result)) {
                     throw py::value_error("no feasible closed-form SRS solution");
                 }
                 return result;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("null_space_velocity", [](const SRSKinematics& self,
-                                            const Eigen::VectorXd& joints,
-                                            const Eigen::VectorXd& direction) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "null_space_velocity",
+            [](const SRSKinematics &self, const py::object &joints_input,
+               const py::object &direction_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+                Eigen::VectorXd direction = CheckedRealEigen<Eigen::VectorXd>(
+                    direction_input, "direction");
+
                 Eigen::VectorXd velocity;
                 if (!self.GetNullSpaceVelocity(joints, direction, velocity)) {
                     throw py::value_error("expected a compatible 7R chain");
                 }
                 return velocity;
-            }, py::arg("joints"), py::arg("preferred_direction"));
+            },
+            py::arg("joints"), py::arg("preferred_direction"));
 
     py::enum_<FEPSolveMethod>(module, "FEPSolveMethod")
             .value("SEEDED_NUMERICAL", FEPSolveMethod::SEEDED_NUMERICAL)
@@ -1130,18 +1315,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
                std::shared_ptr<FEPKinematics>>(module, "FEPKinematics")
             .def_property_readonly("compatible", &FEPKinematics::IsCompatible)
             .def_property_readonly_static(
-                    "cuda_available", [](py::object) {
-                        return FEPKinematics::HasCudaBackend();
-                    })
+            "cuda_available",
+            [](py::object) { return FEPKinematics::HasCudaBackend(); })
             .def_property_readonly_static(
-                    "cuda_compiled", [](py::object) {
-                        return FEPKinematics::IsCudaCompiled();
-                    })
+            "cuda_compiled",
+            [](py::object) { return FEPKinematics::IsCudaCompiled(); })
             .def("resolve_backend", &FEPKinematics::ResolveBackend,
                  py::arg("backend"), py::arg("batch_size"))
-            .def("forward_batch", [](const FEPKinematics& self,
-                                      const Eigen::MatrixXd& joints,
+        .def(
+            "forward_batch",
+            [](const FEPKinematics &self, const py::object &joints_input,
                                       FEPBackend backend) {
+                Eigen::MatrixXd joints =
+                    CheckedRealEigen<Eigen::MatrixXd>(joints_input, "joints");
+
                 std::vector<Eigen::Matrix4d> poses;
                 if (!self.ForwardBatch(joints, backend, poses)) {
                     throw py::value_error(
@@ -1160,31 +1347,51 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             values(pose, row, col) =
                                     poses[static_cast<std::size_t>(pose)](row, col);
                 return result;
-            }, py::arg("joints"), py::arg("backend") = FEPBackend::AUTO)
-            .def("configuration", &FEPKinematics::GetConfiguration,
+            },
+            py::arg("joints"), py::arg("backend") = FEPBackend::AUTO)
+        .def(
+            "configuration",
+            [](const FEPKinematics &self, const py::object &joints) {
+                return self.GetConfiguration(
+                    CheckedRealEigen<Eigen::VectorXd>(joints, "joints"));
+            },
                  py::arg("joints"))
-            .def("solve", [](const FEPKinematics& self,
-                              const Eigen::Matrix4d& target,
-                              const Eigen::VectorXd& seed,
-                              FEPSolveMethod method) {
+        .def(
+            "solve",
+            [](const FEPKinematics &self, const py::object &target_input,
+               const py::object &seed_input, FEPSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 if (!self.Solve(SE3d(target), seed, method, solutions)) {
                     throw py::value_error("FEP inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = FEPSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_configuration", [](const FEPKinematics& self,
-                                             const Eigen::Matrix4d& target,
-                                             const FEPConfiguration& config,
-                                             const Eigen::VectorXd& seed) {
+        .def(
+            "solve_configuration",
+            [](const FEPKinematics &self, const py::object &target_input,
+               const FEPConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd solution;
                 if (!self.SolveConfiguration(SE3d(target), config, seed,
                                              solution)) {
                     throw py::value_error("FEP configuration is infeasible");
                 }
                 return solution;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"));
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"));
 
     py::class_<planning::NullSpacePlanner>(module, "NullSpacePlanner")
             .def(py::init<std::shared_ptr<SRSKinematics>>(),

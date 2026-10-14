@@ -130,6 +130,11 @@ OPW solvers copy it before clearing that output. Independent seeds avoid this co
 C++ IK targets use the same rigid-frame validation as TCP and user frames:
 finite coefficients and a quaternion squared norm within `1e-9` of one.
 Invalid targets fail with empty solution outputs and preserve a valid independent seed.
+Native Python FK/IK, SRS/FEP queries and numerical frame setters reject complex
+arrays before Eigen conversion, including object arrays containing complex
+scalars. Raw target matrices are checked before quaternion construction, so
+invalid rotation blocks or homogeneous last rows are rejected. Real lists and
+object arrays remain supported; rejected configuration updates preserve state.
 Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
 representation of the converged branch minimizing weighted joint movement
 from the caller's finite seed. A zero-seed convergence retry
