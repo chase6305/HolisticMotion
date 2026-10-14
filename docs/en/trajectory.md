@@ -226,6 +226,12 @@ baseline/candidate measurements. It prints raw timings and medians for 1, 7,
 and 32 joints, three grid sizes, and zero/nonzero terminal speeds. It requires
 only NumPy; no robot assets or compiled extension are needed.
 
+Native `JointTrajectoryN`, `JointTrajectory`, `RnTrajectory`, and
+`BaseTrajectory` constructors require real waypoint and limit arrays.
+`CartesianLineTrajectory` likewise requires real start/end poses and limits.
+Joint/configuration `sample(times)` methods also require real times; complex NumPy arrays,
+object arrays, and lists raise `TypeError` before conversion.
+
 Native Bezier paths retain a reversing waypoint as a sharp linear join, even
 with a positive blend tolerance. Double-S and trapezoidal timing stop there
 before reversing direction. Quadratic blends use each corner's own control

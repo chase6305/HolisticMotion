@@ -410,9 +410,20 @@ void BindJointTrajectory(py::module_ &module, const char *name,
     py::class_<JointTrajectory<N>>(module, name,
                                    "Fifth-order Bezier joint path with "
                                    "selectable Double-S or trapezoidal timing.")
-        .def(py::init<const Eigen::MatrixXd &, const Eigen::VectorXd &,
-                      const Eigen::VectorXd &, const Eigen::VectorXd &, double,
-                      double, const std::string &>(),
+        .def(py::init([](const py::object &waypoints,
+                         const py::object &max_velocity,
+                         const py::object &max_acceleration,
+                         const py::object &max_jerk, double blend_tolerance,
+                         double minimum_duration, const std::string &profile) {
+                 return std::make_unique<JointTrajectory<N>>(
+                     CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
+                                                       "max_velocity"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                                       "max_acceleration"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+                     blend_tolerance, minimum_duration, profile);
+             }),
              py::arg("waypoints"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
              py::arg("blend_tolerance") = 0.0,
@@ -443,9 +454,15 @@ void BindJointTrajectory(py::module_ &module, const char *name,
              py::arg("duration"),
              "Slow the trajectory to at least duration seconds; never speeds "
              "it up.")
-        .def("sample", &JointTrajectory<N>::Sample, py::arg("times"),
-             "Return position, velocity, acceleration, and jerk matrices for "
-             "1-D times.")
+        .def(
+            "sample",
+            [](const JointTrajectory<N> &trajectory, const py::object &times) {
+                return trajectory.Sample(
+                    CheckedRealEigen<Eigen::VectorXd>(times, "times"));
+            },
+            py::arg("times"),
+            "Return position, velocity, acceleration, and jerk matrices for "
+            "1-D times.")
         .def("sample_uniform", &JointTrajectory<N>::SampleUniform,
              py::arg("samples") = 1001,
              "Uniformly sample the inclusive [0, duration] interval and "
@@ -666,6 +683,26 @@ private:
     std::shared_ptr<TrajectoryBase<SE3d>> trajectory_;
     std::string profile_;
 };
+
+namespace {
+
+template <typename Factory> auto CheckedTrajectoryFactory(Factory factory) {
+    return
+        [factory](const py::object &waypoints, const py::object &max_velocity,
+                  const py::object &max_acceleration,
+                  const py::object &max_jerk, double blend_tolerance,
+                  double minimum_duration, const std::string &profile) {
+            return factory(
+                CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
+                CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity"),
+                CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                                  "max_acceleration"),
+                CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+                blend_tolerance, minimum_duration, profile);
+        };
+}
+
+} // namespace
 
 PYBIND11_MODULE(_holistic_motion, module) {
     module.doc() = "Robot models, kinematics, manifolds, and trajectories";
@@ -1539,34 +1576,46 @@ PYBIND11_MODULE(_holistic_motion, module) {
     BindJointTrajectory<30>(module, "JointTrajectory30", report_keys);
     BindJointTrajectory<31>(module, "JointTrajectory31", report_keys);
     BindJointTrajectory<32>(module, "JointTrajectory32", report_keys);
+    module.def("JointTrajectory",
+               CheckedTrajectoryFactory(&MakeDynamicJointTrajectory),
+               py::arg("waypoints"), py::arg("max_velocity"),
+               py::arg("max_acceleration"), py::arg("max_jerk"),
+               py::arg("blend_tolerance") = 0.0,
+               py::arg("minimum_duration") = 0.0,
+               py::arg("profile") = "double_s",
+               "Construct a 1-32 DoF joint/configuration trajectory from its "
+               "waypoint columns.");
     module.def(
-            "JointTrajectory", &MakeDynamicJointTrajectory,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct a 1-32 DoF joint/configuration trajectory from its waypoint columns.");
+        "RnTrajectory", CheckedTrajectoryFactory(&MakeDynamicJointTrajectory),
+        py::arg("waypoints"), py::arg("max_velocity"),
+        py::arg("max_acceleration"), py::arg("max_jerk"),
+        py::arg("blend_tolerance") = 0.0, py::arg("minimum_duration") = 0.0,
+        py::arg("profile") = "double_s",
+        "Construct an R^n trajectory and infer n (1-32) from the waypoint "
+        "columns.");
     module.def(
-            "RnTrajectory", &MakeDynamicJointTrajectory,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct an R^n trajectory and infer n (1-32) from the waypoint columns.");
-    module.def(
-            "BaseTrajectory", &MakeJointTrajectory<3>,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct an [x, y, yaw] mobile-base trajectory.");
+        "BaseTrajectory", CheckedTrajectoryFactory(&MakeJointTrajectory<3>),
+        py::arg("waypoints"), py::arg("max_velocity"),
+        py::arg("max_acceleration"), py::arg("max_jerk"),
+        py::arg("blend_tolerance") = 0.0, py::arg("minimum_duration") = 0.0,
+        py::arg("profile") = "double_s",
+        "Construct an [x, y, yaw] mobile-base trajectory.");
     py::class_<CartesianLineTrajectory>(module, "CartesianLineTrajectory")
-        .def(py::init<const Eigen::Matrix4d &, const Eigen::Matrix4d &,
-                      const Eigen::VectorXd &, const Eigen::VectorXd &,
-                      const Eigen::VectorXd &, double, const std::string &>(),
+        .def(py::init([](const py::object &start, const py::object &end,
+                         const py::object &max_velocity,
+                         const py::object &max_acceleration,
+                         const py::object &max_jerk, double minimum_duration,
+                         const std::string &profile) {
+                 return std::make_unique<CartesianLineTrajectory>(
+                     CheckedRealEigen<Eigen::Matrix4d>(start, "start"),
+                     CheckedRealEigen<Eigen::Matrix4d>(end, "end"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
+                                                       "max_velocity"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                                       "max_acceleration"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+                     minimum_duration, profile);
+             }),
              py::arg("start"), py::arg("end"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
              py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")

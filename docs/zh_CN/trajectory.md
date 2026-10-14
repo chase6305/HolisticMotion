@@ -181,6 +181,11 @@ python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
 覆盖 1、7、32 自由度、三种网格大小以及零/非零终点速度，仅需 NumPy，
 不需要机器人资源或编译扩展。
 
+原生 `JointTrajectoryN`、`JointTrajectory`、`RnTrajectory` 和
+`BaseTrajectory` 构造器的路点、限值，以及 `sample(times)` 的时间必须为实数。
+`CartesianLineTrajectory` 的起止位姿和限值同样必须为实数。
+复数 NumPy 数组、对象数组和列表会在转换前抛出 `TypeError`。
+
 原生 Bezier 路径遇到掉头路点时，即使启用了圆滑过渡，也保留准确路点和直线
 连接；Double-S 和梯形时间参数化会先停下再反向。二次曲线使用当前拐点的
 控制点与归一化方向计算过渡距离，使容差随长度单位一致缩放。完整路点调试
