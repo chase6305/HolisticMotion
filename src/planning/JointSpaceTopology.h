@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -22,7 +23,7 @@ class JointSpaceMetric {
   public:
     JointSpaceMetric(const Eigen::VectorXd &weights,
                      const std::vector<bool> &continuous)
-        : weights_(weights), continuous_(continuous),
+        : weights_(weights), continuous_(continuous.begin(), continuous.end()),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })) {}
 
@@ -56,7 +57,9 @@ class JointSpaceMetric {
 
   private:
     const Eigen::VectorXd &weights_;
-    const std::vector<bool> &continuous_;
+    // Distance queries visit every joint for every candidate. Cache bytes to
+    // avoid unpacking vector<bool> bits in that inner loop.
+    const std::vector<std::uint8_t> continuous_;
     const bool has_continuous_;
 };
 

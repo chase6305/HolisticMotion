@@ -43,6 +43,8 @@ ctest --test-dir build-sanitizers --output-on-failure --no-tests=error
 `sampling_planner_benchmark 0.05 7 1`。显式维度支持 2–32；`continuous=1` 将
 第一个关节设为周期关节。CSV 包含路径校验和，应先比较固定种子的结果，再比较
 耗时。索引查询缓存非周期坐标的包围盒，并保留保守的舍入余量以正确处理边界并列。
+距离查询为每个关节缓存一个字节的拓扑标记，避免扫描候选状态时反复解包位标记，
+并保持加权求和顺序。
 
 同一选项还构建 `<构建目录>/fep_batch_benchmark`。该 CPU 基准使用合成七轴链、
 非单位关节原点和 TCP、种子 7，覆盖批量 1/32/128/1024。每个用例预热三次，

@@ -78,5 +78,39 @@ int main() {
         std::cerr << "weighted joint-space metric changed\n";
         return 1;
     }
+    // Exercise masks across packed-word boundaries and compare shortest arcs
+    // independently, including exact seams and angles several turns apart.
+    for (Eigen::Index dof : {7, 14, 63, 64, 65, 129}) {
+        const Eigen::VectorXd axis_weights =
+            Eigen::VectorXd::LinSpaced(dof, 0.125, 2.0);
+        std::vector<bool> topology(static_cast<std::size_t>(dof));
+        for (Eigen::Index axis = 0; axis < dof; ++axis)
+            topology[static_cast<std::size_t>(axis)] = axis % 3 != 1;
+        const JointSpaceMetric mixed_metric(axis_weights, topology);
+        Eigen::VectorXd from(dof), to(dof);
+        for (int sample = 0; sample < 128; ++sample) {
+            double expected = 0.0;
+            for (Eigen::Index axis = 0; axis < dof; ++axis) {
+                from[axis] = angle(generator);
+                to[axis] = angle(generator);
+                if (sample % 8 == 0) {
+                    from[axis] = 0.0;
+                    to[axis] = (axis % 2 ? -1.0 : 1.0) * kPi;
+                }
+                double delta = to[axis] - from[axis];
+                if (topology[static_cast<std::size_t>(axis)])
+                    delta = std::remainder(delta, 2.0 * kPi);
+                expected += axis_weights[axis] * (delta * delta);
+            }
+            Eigen::internal::set_is_malloc_allowed(false);
+            const double actual = mixed_metric.SquaredDistance(from, to);
+            Eigen::internal::set_is_malloc_allowed(true);
+            if (actual != expected) {
+                std::cerr << "mixed metric changed at dimension " << dof
+                          << '\n';
+                return 3;
+            }
+        }
+    }
     return 0;
 }

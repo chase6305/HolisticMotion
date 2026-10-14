@@ -49,6 +49,8 @@ Pass `[goal_bias [dof continuous]]` to isolate a workload, for example
 `continuous=1` makes the first joint periodic. CSV includes a path checksum to
 compare seeded results before timing. Indexed queries cache bounded-coordinate
 boxes and use conservative roundoff margins to retain boundary ties.
+Distance queries cache one byte per joint for topology checks, preserving the
+weighted sum order while avoiding packed-bit decoding in candidate scans.
 
 The same option also builds `<build-directory>/fep_batch_benchmark`. This CPU
 benchmark uses a synthetic seven-joint chain, nonidentity origins and TCP, seed 7,
