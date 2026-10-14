@@ -140,6 +140,18 @@ install(TARGETS holistic_motion EXPORT HolisticMotionTargets)
 if(HOLISTICMOTION_ENABLE_COLLISION)
     install(TARGETS holistic_motion_collision EXPORT HolisticMotionTargets)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_INSTALL_RPATH_USE_LINK_PATH)
+    # scripts/build.sh creates a local install tied to its Conan cache. Its
+    # per-library runtime paths avoid overriding Python dependency runtimes.
+    install(CODE [[
+        file(WRITE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/.holistic_motion_local_runtime"
+             "Dependencies use this local install's runtime paths.\n")
+    ]])
+else()
+    install(CODE [[
+        file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/.holistic_motion_local_runtime")
+    ]])
+endif()
 install(DIRECTORY include/holistic_motion/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/holistic_motion
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
