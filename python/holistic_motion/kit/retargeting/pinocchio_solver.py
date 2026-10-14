@@ -20,6 +20,8 @@ import numpy as np
 from ..._validation import validated_transform
 from .modes import RetargetingMode, RetargetingModeManager
 
+_MIN_NORMAL_NORM = np.sqrt(np.finfo(float).tiny)
+
 
 def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
     result = np.array(value, dtype=float, copy=True)
@@ -42,12 +44,14 @@ def _positive_float(value, name: str) -> float:
 
 
 def _stable_norm(value) -> float:
-    """Return a Euclidean norm without squaring finite large components."""
+    """Preserve finite norms when component squares overflow or underflow."""
 
     values = np.asarray(value, dtype=float).reshape(-1)
-    with np.errstate(over="ignore", invalid="ignore"):
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
         norm = float(np.linalg.norm(values))
-    if np.isfinite(norm) or not np.isfinite(values).all():
+    if (np.isfinite(norm) and norm >= _MIN_NORMAL_NORM) or not np.isfinite(
+        values
+    ).all():
         return norm
     return float(np.hypot.reduce(np.abs(values)))
 
