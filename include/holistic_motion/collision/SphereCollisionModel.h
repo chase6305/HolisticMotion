@@ -82,8 +82,9 @@ public:
                    double security_margin = 0.0, bool stop_at_first = true);
   SphereDistanceResult MinimumDistance(const Eigen::VectorXd &configuration);
   /// Tangent-space gradient of minimum signed sphere distance (size model.nv).
-  /// Coincident centers use a zero gradient; other separations use a unit
-  /// normal.
+  /// Coincident centers and pairs rigidly attached to the same joint use a
+  /// zero gradient; other separations use a unit normal. Overflowing gradient
+  /// arithmetic throws std::overflow_error.
   Eigen::VectorXd MinimumDistanceGradient(const Eigen::VectorXd &configuration);
   SphereDistanceGradientResult
   MinimumDistanceWithGradient(const Eigen::VectorXd &configuration);

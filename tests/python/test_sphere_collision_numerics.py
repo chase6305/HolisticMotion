@@ -10,6 +10,89 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.parametrize("scale", [1.0, 1e150, 1e308])
+@pytest.mark.parametrize("fixed_child", [False, True])
+def test_rigidly_attached_spheres_have_exact_zero_gradient(
+    tmp_path, scale, fixed_child
+):
+    path = tmp_path / "rigid_pair.urdf"
+    fixed = (
+        '<link name="tool"/><joint name="mount" type="fixed">'
+        '<parent link="arm"/><child link="tool"/>'
+        '<origin xyz="0.125 0 0" rpy="0 0 0.2"/></joint>'
+        if fixed_child
+        else ""
+    )
+    path.write_text(
+        '<robot name="rigid"><link name="base"/><link name="arm"/>'
+        '<joint name="hinge" type="revolute"><parent link="base"/>'
+        '<child link="arm"/><axis xyz="0 0 1"/>'
+        '<limit lower="-1" upper="1" velocity="1" effort="1"/>'
+        f"</joint>{fixed}</robot>"
+    )
+    model = hm.SphereCollisionModel(
+        str(path),
+        [
+            hm.CollisionSphere(
+                "first", "arm", [-1.5 * scale, 1.5 * scale, 0], 0.01 * scale
+            ),
+            hm.CollisionSphere(
+                "second",
+                "tool" if fixed_child else "arm",
+                [-1.375 * scale, 1.625 * scale, 0],
+                0.01 * scale,
+            ),
+        ],
+        exclude_same_link=False,
+    )
+    result = model.minimum_distance_with_gradient([0.0])
+    assert np.isfinite(result.distance_result.distance)
+    np.testing.assert_array_equal(result.gradient, [0.0])
+
+
+def test_unrepresentable_distance_gradient_is_reported(tmp_path):
+    path = tmp_path / "gradient_overflow.urdf"
+    path.write_text(
+        '<robot name="overflow"><link name="base"/><link name="arm"/>'
+        '<joint name="hinge" type="revolute"><parent link="base"/>'
+        '<child link="arm"/><axis xyz="0 0 1"/>'
+        '<limit lower="-1" upper="1" velocity="1" effort="1"/>'
+        "</joint></robot>"
+    )
+    model = hm.SphereCollisionModel(
+        str(path),
+        [
+            hm.CollisionSphere("fixed", "base", [-1.625e308, 1.375e308, 0], 1e306),
+            hm.CollisionSphere("moving", "arm", [-1.5e308, 1.5e308, 0], 1e306),
+        ],
+    )
+    assert np.isfinite(model.minimum_distance([0.0]).distance)
+    with pytest.raises(OverflowError, match="sphere distance gradient"):
+        model.minimum_distance_with_gradient([0.0])
+
+
+def test_fixed_frame_does_not_overflow_a_finite_moving_point_gradient(tmp_path):
+    path = tmp_path / "fixed_frame_gradient.urdf"
+    path.write_text(
+        '<robot name="fixed_frame"><link name="base"/><link name="arm"/>'
+        '<joint name="hinge" type="revolute"><parent link="base"/>'
+        '<child link="arm"/><axis xyz="0 0 1"/>'
+        '<origin xyz="-1.5e308 1.5e308 0"/>'
+        '<limit lower="-1" upper="1" velocity="1" effort="1"/>'
+        "</joint></robot>"
+    )
+    model = hm.SphereCollisionModel(
+        str(path),
+        [
+            hm.CollisionSphere("fixed", "base", [-1.625e308, 1.375e308, 0], 1e306),
+            hm.CollisionSphere("moving", "arm", [0.25, 0, 0], 1e306),
+        ],
+    )
+    result = model.minimum_distance_with_gradient([0.0])
+    assert np.isfinite(result.distance_result.distance)
+    np.testing.assert_allclose(result.gradient, [0.25 / np.sqrt(2)], rtol=1e-14)
+
+
 def slider_model(tmp_path, radius, offset=0.0, second_radius=None):
     path = tmp_path / "slider.urdf"
     path.write_text(

@@ -154,6 +154,9 @@ class SphereCollisionModel::Impl {
     void AddProjectedPointJacobian(std::size_t sphere_index,
                                    const Eigen::Vector3d &normal,
                                    Eigen::VectorXd &gradient) const {
+        // Universe-attached frames are fixed. Avoid projecting an identically
+        // zero Jacobian, including zero times an overflowing local lever arm.
+        if (model.frames[frame_ids[sphere_index]].parentJoint == 0) return;
         frame_jacobian.setZero();
         pinocchio::getFrameJacobian(model, *data, frame_ids[sphere_index],
                                     pinocchio::LOCAL_WORLD_ALIGNED,
@@ -420,10 +423,15 @@ SphereDistanceGradientResult SphereCollisionModel::MinimumDistanceWithGradient(
     SphereDistanceGradientResult result;
     result.distance_result = best;
     result.gradient = Eigen::VectorXd::Zero(impl_->model.nv);
-    if (best.first_center != best.second_center) {
+    const bool rigid_pair =
+        impl_->model.frames[impl_->frame_ids[first]].parentJoint ==
+        impl_->model.frames[impl_->frame_ids[second]].parentJoint;
+    if (!rigid_pair && best.first_center != best.second_center) {
         impl_->AddProjectedPointJacobian(second, best.normal, result.gradient);
         impl_->AddProjectedPointJacobian(first, -best.normal, result.gradient);
     }
+    if (!result.gradient.allFinite())
+        throw std::overflow_error("sphere distance gradient is not finite");
     return result;
 }
 
