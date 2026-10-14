@@ -155,7 +155,7 @@ def test_unusable_seed_refreshes_valid_candidates_on_later_frames(
     tracker_name, malformed
 ):
     import holistic_motion as hm
-    import holistic_motion.kinematics as kinematics
+    from holistic_motion import kinematics
 
     methods = hm.SRSSolveMethod if tracker_name.startswith("SRS") else hm.FEPSolveMethod
 
