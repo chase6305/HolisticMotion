@@ -10,7 +10,7 @@ from typing import Union
 
 import numpy as np
 
-from .._validation import validated_transform
+from .._validation import real_array, require_real, validated_transform
 
 Limit = Union[float, Sequence[float], np.ndarray]
 
@@ -33,15 +33,18 @@ class SRSContinuousOptions:
     max_acceleration: Limit = np.inf
 
     def __post_init__(self) -> None:
-        scalars = (
-            self.position_weight,
-            self.velocity_weight,
-            self.acceleration_weight,
-            self.branch_switch_penalty,
-            self.joint_limit_weight,
-            self.singular_value_threshold,
-            self.position_tolerance,
-            self.angle_tolerance,
+        scalar_names = (
+            "position_weight",
+            "velocity_weight",
+            "acceleration_weight",
+            "branch_switch_penalty",
+            "joint_limit_weight",
+            "singular_value_threshold",
+            "position_tolerance",
+            "angle_tolerance",
+        )
+        scalars = tuple(
+            require_real(getattr(self, name), name=name) for name in scalar_names
         )
         if not all(np.isfinite(value) and value >= 0.0 for value in scalars):
             raise ValueError(
@@ -66,7 +69,7 @@ class SRSContinuousOptions:
             self, "candidate_refresh_interval", int(self.candidate_refresh_interval)
         )
         for name in ("max_velocity", "max_acceleration"):
-            value = np.asarray(getattr(self, name), dtype=float)
+            value = real_array(getattr(self, name), name=name)
             if value.ndim == 0:
                 normalized = float(value)
                 valid = not np.isnan(normalized) and normalized > 0.0
@@ -101,7 +104,7 @@ class SRSContinuousResult:
 
     def __post_init__(self) -> None:
         for name in ("joints", "velocity", "acceleration"):
-            value = np.array(getattr(self, name), dtype=float, copy=True)
+            value = real_array(getattr(self, name), name=name, copy=True)
             if value.shape != (7,) or not np.isfinite(value).all():
                 raise ValueError(f"{name} must contain seven finite values")
             value.setflags(write=False)
@@ -118,11 +121,14 @@ class SRSContinuousResult:
         object.__setattr__(
             self, "configuration", tuple(int(value) for value in self.configuration)
         )
-        metrics = (
-            self.redundancy,
-            self.minimum_singular_value,
-            self.position_error,
-            self.angle_error,
+        metric_names = (
+            "redundancy",
+            "minimum_singular_value",
+            "position_error",
+            "angle_error",
+        )
+        metrics = tuple(
+            require_real(getattr(self, name), name=name) for name in metric_names
         )
         if not all(np.isfinite(value) for value in metrics):
             raise ValueError("result metrics must be finite")
@@ -183,8 +189,8 @@ class SRSContinuousTracker:
             raise ValueError(
                 "solver returned invalid seven-axis joint limits"
             ) from error
-        self._lower = np.array(lower, dtype=float, copy=True)
-        self._upper = np.array(upper, dtype=float, copy=True)
+        self._lower = real_array(lower, name="joint lower limits", copy=True)
+        self._upper = real_array(upper, name="joint upper limits", copy=True)
         if (
             self._lower.shape != (self._dof,)
             or self._upper.shape != (self._dof,)
@@ -237,7 +243,7 @@ class SRSContinuousTracker:
         return self._frame_index
 
     def reset(self, joints: Sequence[float]) -> None:
-        values = np.asarray(joints, dtype=float)
+        values = real_array(joints, name="initial_joints")
         if values.shape != (self._dof,) or not np.all(np.isfinite(values)):
             raise ValueError("initial_joints must contain seven finite values")
         if np.any(values < self._lower) or np.any(values > self._upper):

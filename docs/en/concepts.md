@@ -108,12 +108,16 @@ Streaming offset-arm targets can use `FEPContinuousTracker` with the same
 options and diagnostics as the SRS tracker. Both trackers solve the current
 branch on every frame, refresh all branches periodically, and immediately
 enumerate all candidates if the current branch fails or approaches a
-singularity. Malformed candidates are filtered before branch metadata queries;
-an unusable seeded result also triggers a refresh between periodic refreshes.
+singularity. Malformed candidates are filtered before branch metadata queries.
+An unusable seeded result, including one rejected by pose or dynamics checks,
+also triggers a refresh between periodic refreshes. Each frame enumerates all
+branches at most once; a failed refresh leaves tracker history intact.
 `candidate_refresh_interval` controls that tradeoff.
 Both trackers retain small pose errors with stable position norms and `atan2`
 rotation angles. Candidates with non-finite dynamics, FK poses or scores are
 discarded before ranking; an unrepresentable prediction leaves history intact.
+Initial joints, dynamic limits, weights and result snapshots must contain real
+values. Complex inputs raise `TypeError` before conversion.
 
 Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
 An already converged seed skips these buffers. The workspace is local to the
