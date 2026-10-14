@@ -2,6 +2,23 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize("seed", [np.nan, np.inf, -np.inf])
+def test_numerical_inverse_rejects_nonfinite_seed_without_zero_retry(tmp_path, seed):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "multi_turn.urdf"
+    urdf.write_text("""<robot name="multi_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+        <limit lower="-7" upper="7" velocity="1" effort="1"/>
+      </joint></robot>""")
+    solver = hm.Robot(str(urdf)).kinematics
+    with pytest.raises(ValueError, match="inverse kinematics"):
+        solver.inverse(np.eye(4), np.array([seed]))
+    np.testing.assert_allclose(solver.inverse(np.eye(4), [0.0]), [0.0])
+
+
 def test_robot_loads_explicit_urdf_path(tmp_path):
     import holistic_motion as hm
 

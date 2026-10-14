@@ -2,6 +2,7 @@
 
 #include "DampedIKWorkspace.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -151,24 +152,53 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
     return false;
 }
 
-bool NumericalKinematics::GetNearstIK(const SE3d& target_pose,
-                                      IkRtn& ik_solutions,
-                                      Eigen::VectorXd& joint_seed,
-                                      double& min_dist) const {
+bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
+                                      IkRtn &ik_solutions,
+                                      Eigen::VectorXd &joint_seed,
+                                      double &min_dist) const {
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK.");
 
     if (joint_seed.size() != this->dof_) {
-        holistic_motion::utility::LogWarning("Joint seed size[{}] not match dof[{}].",
-                                  joint_seed.size(), this->dof_);
+        holistic_motion::utility::LogWarning(
+            "Joint seed size[{}] not match dof[{}].", joint_seed.size(),
+            this->dof_);
         joint_seed = this->home_joints_;
     }
 
+    if (!joint_seed.allFinite()) {
+        ik_solutions.Clear();
+        return false;
+    }
+
     std::vector<double> dist;
+    const auto select_nearest = [&](bool retried) {
+        if (!ik_solutions.success || ik_solutions.ik_joints.empty())
+            return false;
+        if (retried) {
+            // The retry's zero seed helps convergence, but the caller's
+            // original seed still defines the nearest joint representation.
+            for (std::size_t i = 0; i < ik_solutions.ik_joints.size(); ++i) {
+                dist[i] = 0.0;
+                for (int joint = 0; joint < this->dof_; ++joint)
+                    dist[i] += std::abs(
+                        (ik_solutions.ik_joints[i][joint] - joint_seed[joint]) *
+                        this->ik_nearst_weight_[joint]);
+            }
+        }
+        const auto closest = std::min_element(dist.begin(), dist.end());
+        min_dist = *closest;
+        const auto index = static_cast<std::size_t>(closest - dist.begin());
+        if (index != 0)
+            ik_solutions.ik_joints.front().swap(ik_solutions.ik_joints[index]);
+        ik_solutions.ik_joints.resize(1);
+        ik_solutions.ik_number = 1;
+        return true;
+    };
     if (this->GetIK(target_pose, ik_solutions, joint_seed, dist)) {
         // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        if (select_nearest(false)) {
+            holistic_motion::utility::LogDebug(
+                "GetNearstIK: Success to get nearst IK.");
             return true;
         }
     }
@@ -177,9 +207,9 @@ bool NumericalKinematics::GetNearstIK(const SE3d& target_pose,
     Eigen::VectorXd zero_joint_seed = Eigen::VectorXd::Zero(this->dof_);
     if (this->GetIK(target_pose, ik_solutions, zero_joint_seed, dist)) {
         // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        if (select_nearest(true)) {
+            holistic_motion::utility::LogDebug(
+                "GetNearstIK: Success to get nearst IK.");
             return true;
         }
     }
@@ -188,7 +218,7 @@ bool NumericalKinematics::GetNearstIK(const SE3d& target_pose,
     return false;
 }
 
-bool NumericalKinematics::SetMaxIterNum(const int& max_iter_num) {
+bool NumericalKinematics::SetMaxIterNum(const int &max_iter_num) {
     if (max_iter_num <= 0) {
         return false;
     }

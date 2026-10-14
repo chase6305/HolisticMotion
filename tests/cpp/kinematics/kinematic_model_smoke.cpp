@@ -150,6 +150,37 @@ int main() {
     if (stationary.GetIK(SE3d(), solutions, empty, distances) ||
         solutions.ik_number != 0 || !distances.empty())
         return Fail(__LINE__);
+
+    // A zero-seed retry must still choose the multi-turn representation
+    // nearest to the caller's seed, and report that movement's distance.
+    std::vector<JointNode> turning{JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                                             JointType::REVOLUTE, -7.0, 7.0),
+                                   JointNode()};
+    turning.back().joint_type = JointType::FIXED;
+    NumericalKinematics nearest(turning);
+    nearest.SetMaxIterNum(1);
+    nearest.SetIkNearstWeight(Eigen::VectorXd::Constant(1, 2.0));
+    seed = Eigen::VectorXd::Constant(1, 2.0 * M_PI - 0.1);
+    double nearest_distance = -1.0;
+    if (!nearest.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+        solutions.ik_number != 1 ||
+        std::abs(solutions.ik_joints.front()[0] - 2.0 * M_PI) > 1e-12 ||
+        std::abs(nearest_distance - 0.2) > 1e-12 || seed[0] != 2.0 * M_PI - 0.1)
+        return Fail(__LINE__);
+    seed[0] = 0.2;
+    SE3d nearest_target;
+    if (!nearest.GetFK(seed, nearest_target) ||
+        !nearest.GetNearestIK(nearest_target, solutions, seed,
+                              nearest_distance) ||
+        solutions.ik_number != 1 || nearest_distance != 0.0 ||
+        solutions.ik_joints.front()[0] != seed[0])
+        return Fail(__LINE__);
+    for (double invalid_seed : {nan, infinity, -infinity}) {
+        seed[0] = invalid_seed;
+        if (nearest.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            solutions.ik_number != 0)
+            return Fail(__LINE__);
+    }
     if (!solutions.PushBack(empty) || solutions.PushBack(q) ||
         !solutions.PushBack(empty) || !solutions.RemoveRepeatedIK() ||
         !solutions.GetLimitsIK(fixed) || solutions.ik_number != 1 ||

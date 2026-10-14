@@ -40,6 +40,8 @@ public:
                        std::vector<double>& dist) const override final;
 
     /// \brief get the nearst inverse kinematics
+    /// Returns one solution minimizing weighted movement from the caller's
+    /// finite seed, including when convergence requires a zero-seed retry.
     ///
     /// \param target_pose
     /// \param ik_solutions
