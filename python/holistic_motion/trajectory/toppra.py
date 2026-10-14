@@ -461,10 +461,20 @@ class ToppraTrajectory:
             self._speed_scale = 1.0 / max(velocity_scale, acceleration_scale)
             if not np.isfinite(self._speed_scale) or self._speed_scale <= 0.0:
                 raise ValueError("path speed scale is not representable")
-            self._solver_velocity = self.max_velocity / self._speed_scale
-            self._solver_acceleration = (
-                self.max_acceleration / self._speed_scale
-            ) / self._speed_scale
+            with np.errstate(over="ignore", under="ignore"):
+                self._solver_velocity = self.max_velocity / self._speed_scale
+                self._solver_acceleration = (
+                    self.max_acceleration / self._speed_scale
+                ) / self._speed_scale
+            # The selected scale bounds every nonzero geometry coefficient.
+            # A normalized limit can underflow only for an inactive axis;
+            # give its zero numerators a safe denominator.
+            self._solver_velocity = np.where(
+                self._solver_velocity > 0.0, self._solver_velocity, 1.0
+            )
+            self._solver_acceleration = np.where(
+                self._solver_acceleration > 0.0, self._solver_acceleration, 1.0
+            )
         acceleration_x = acceleration_x / self._solver_acceleration
         acceleration_y = acceleration_y / self._solver_acceleration
 

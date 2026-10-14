@@ -185,3 +185,25 @@ def test_extreme_time_units_preserve_retiming_and_sampling(time_scale, end_veloc
 def test_unrepresentable_boundary_speed_raises_validation_error(argument, speed):
     with pytest.raises(ValueError, match="boundary path velocity"):
         ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0], **{argument: speed})
+
+
+@pytest.mark.parametrize("time_scale", [1e-100, 1e100])
+@pytest.mark.parametrize("inactive_limit", [1e-300, 1e300])
+def test_inactive_joint_limits_do_not_break_speed_normalization(
+    time_scale, inactive_limit
+):
+    with np.errstate(all="raise"):
+        expected = ToppraTrajectory(
+            [[0.0], [1.0]], [time_scale], [2.0 * time_scale**2], grid_size=31
+        )
+        actual = ToppraTrajectory(
+            [[0.0, 0.0], [1.0, 0.0]],
+            [time_scale, inactive_limit],
+            [2.0 * time_scale**2, inactive_limit],
+            grid_size=31,
+        )
+        assert actual.duration == pytest.approx(expected.duration, rel=1e-12)
+        times = np.linspace(0.0, actual.duration, 65)
+        for reference, sampled in zip(expected.sample(times), actual.sample(times)):
+            np.testing.assert_allclose(sampled[:, :1], reference, rtol=1e-12, atol=0)
+            np.testing.assert_array_equal(sampled[:, 1], 0.0)

@@ -446,6 +446,11 @@ class TorchToppraTrajectory:
         acceleration = (self._acceleration / speed_scale[:, None]) / speed_scale[
             :, None
         ]
+        # A zero normalized limit belongs to an inactive axis: the chosen
+        # speed scale bounds every nonzero derivative/acceleration coefficient.
+        # Keep its zero numerators and adjoints finite rather than forming 0/0.
+        velocity = torch.where(velocity > 0, velocity, 1.0)
+        acceleration = torch.where(acceleration > 0, acceleration, 1.0)
         ax = ax / acceleration[:, None, None]
         ay = ay / acceleration[:, None, None]
         p0, p1, p2 = (derivative / velocity[:, None, None]).unbind(2)

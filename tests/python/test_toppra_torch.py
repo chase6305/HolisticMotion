@@ -770,3 +770,46 @@ def test_unrepresentable_path_acceleration_is_rejected_at_construction(device):
     p = torch.tensor([[0.0], [1e-11]], device=device, dtype=torch.float64)
     with pytest.raises(ValueError, match="path timing is not representable"):
         TorchToppraTrajectory(p, 1e150, 1e300, grid_size=3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("time_scale", [1e-100, 1e100])
+@pytest.mark.parametrize("inactive_limit", [1e-300, 1e300])
+def test_inactive_joint_limits_preserve_timing_and_finite_gradients(
+    device, time_scale, inactive_limit
+):
+    points = torch.tensor(
+        [[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64, device=device, requires_grad=True
+    )
+    velocity = torch.tensor(
+        [time_scale, inactive_limit],
+        dtype=torch.float64,
+        device=device,
+        requires_grad=True,
+    )
+    acceleration = torch.tensor(
+        [2.0 * time_scale**2, inactive_limit],
+        dtype=torch.float64,
+        device=device,
+        requires_grad=True,
+    )
+    expected = TorchToppraTrajectory(
+        points.detach()[:, :1],
+        velocity.detach()[:1],
+        acceleration.detach()[:1],
+        grid_size=31,
+    )
+    actual = TorchToppraTrajectory(points, velocity, acceleration, grid_size=31)
+    torch.testing.assert_close(actual.duration, expected.duration, rtol=1e-12, atol=0)
+    times, position, speed, accel = actual.sample_uniform(65)
+    for values in (times, position, speed, accel):
+        assert torch.isfinite(values).all()
+    for values in (position, speed, accel):
+        torch.testing.assert_close(
+            values[:, 1], torch.zeros_like(values[:, 1]), rtol=0, atol=0
+        )
+    (actual.duration * time_scale).backward()
+    for values in (points, velocity, acceleration):
+        assert torch.isfinite(values.grad).all()
+    assert velocity.grad[1] == 0.0
+    assert acceleration.grad[1] == 0.0
