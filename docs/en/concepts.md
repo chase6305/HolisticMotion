@@ -127,8 +127,9 @@ previous setting intact. `GetIK()` clears solution and distance outputs before
 validation, so a failed call does not retain distances from a previous solve.
 If a C++ seed is an element of the previous IK output, the numerical, UR and
 OPW solvers copy it before clearing that output. Independent seeds avoid this copy.
-`GetNearestIK()` and Python `inverse()` return one solution minimizing weighted
-joint movement from the caller's finite seed. A zero-seed convergence retry
+Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
+representation of the converged branch minimizing weighted joint movement
+from the caller's finite seed. A zero-seed convergence retry
 still uses the original seed to choose multi-turn representations and distances.
 Extreme-scale Jacobians and errors use a normalized decomposition and bounded
 mantissa/exponent arithmetic when direct singular values, projections, or squared
