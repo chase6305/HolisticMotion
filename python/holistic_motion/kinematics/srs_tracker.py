@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import atan2, hypot, isfinite
 from numbers import Integral
 from typing import Union
 
@@ -257,7 +258,10 @@ class SRSContinuousTracker:
         if not np.isfinite(dt) or dt <= 0.0:
             raise ValueError("dt must be finite and positive")
 
-        predicted = self._joints + self._velocity * dt
+        with np.errstate(over="ignore", invalid="ignore"):
+            predicted = self._joints + self._velocity * dt
+        if not np.isfinite(predicted).all():
+            raise ValueError("dt produces a nonfinite joint prediction")
         candidates = self._candidates(pose)
         evaluated = []
         for raw in candidates:
@@ -267,20 +271,35 @@ class SRSContinuousTracker:
                 # A native enumeration may contain an unusable branch near a
                 # joint limit. Keep evaluating the other independent branches.
                 continue
-            velocity = (joints - self._joints) / dt
-            acceleration = (velocity - self._velocity) / dt
-            if np.any(np.abs(velocity) > self._max_velocity + 1e-12):
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                velocity = (joints - self._joints) / dt
+                acceleration = (velocity - self._velocity) / dt
+            if not np.all(
+                np.isfinite(velocity) & (np.abs(velocity) <= self._max_velocity + 1e-12)
+            ):
                 continue
-            if np.any(np.abs(acceleration) > self._max_acceleration + 1e-12):
+            if not np.all(
+                np.isfinite(acceleration)
+                & (np.abs(acceleration) <= self._max_acceleration + 1e-12)
+            ):
                 continue
             branch = self._configuration_of(joints)
             actual = np.asarray(self.solver.forward(joints), dtype=float)
+            if actual.shape != (4, 4) or not np.isfinite(actual).all():
+                continue
             position_error, angle_error = self._pose_error(actual, pose)
+            if not isfinite(position_error) or not isfinite(angle_error):
+                continue
             if position_error > self.options.position_tolerance:
                 continue
             if angle_error > self.options.angle_tolerance:
                 continue
-            score = self._score(joints, velocity, acceleration, predicted, branch, dt)
+            with np.errstate(over="ignore", invalid="ignore"):
+                score = self._score(
+                    joints, velocity, acceleration, predicted, branch, dt
+                )
+            if not isfinite(score):
+                continue
             evaluated.append(
                 (
                     score,
@@ -463,21 +482,18 @@ class SRSContinuousTracker:
         values = np.asarray(candidate, dtype=float)
         if values.shape != (self._dof,) or not np.all(np.isfinite(values)):
             raise ValueError("candidate must contain seven finite values")
-        result = values.copy()
         period = 2.0 * np.pi
-        for index in range(self._dof):
-            turn = int(np.rint((reference[index] - values[index]) / period))
-            if self._bounded_lower[index]:
-                minimum = int(np.ceil((self._lower[index] - values[index]) / period))
-                turn = max(turn, minimum)
-            if self._bounded_upper[index]:
-                maximum = int(np.floor((self._upper[index] - values[index]) / period))
-                turn = min(turn, maximum)
-            result[index] = values[index] + turn * period
-            if result[index] < self._lower[index] - 1e-12:
-                raise ValueError("candidate has no joint-limit-equivalent angle")
-            if result[index] > self._upper[index] + 1e-12:
-                raise ValueError("candidate has no joint-limit-equivalent angle")
+        turns = np.rint((reference - values) / period)
+        minimum = np.ceil((self._lower - values) / period)
+        maximum = np.floor((self._upper - values) / period)
+        turns = np.minimum(np.maximum(turns, minimum), maximum)
+        # Match the scalar integer path's canonical positive zero turn.
+        turns[turns == 0.0] = 0.0
+        result = values + turns * period
+        if not np.isfinite(result).all() or np.any(
+            (result < self._lower - 1e-12) | (result > self._upper + 1e-12)
+        ):
+            raise ValueError("candidate has no joint-limit-equivalent angle")
         return result
 
     @staticmethod
@@ -524,8 +540,19 @@ class SRSContinuousTracker:
     @staticmethod
     def _pose_error(actual: np.ndarray, target: np.ndarray) -> tuple[float, float]:
         relative = actual[:3, :3].T @ target[:3, :3]
-        cosine = np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0)
+        cosine = min(
+            1.0,
+            max(
+                -1.0,
+                float((relative[0, 0] + relative[1, 1] + relative[2, 2] - 1.0) * 0.5),
+            ),
+        )
+        sine = 0.5 * hypot(
+            relative[2, 1] - relative[1, 2],
+            relative[0, 2] - relative[2, 0],
+            relative[1, 0] - relative[0, 1],
+        )
         return (
-            float(np.linalg.norm(actual[:3, 3] - target[:3, 3])),
-            float(np.arccos(cosine)),
+            hypot(*(actual[:3, 3] - target[:3, 3])),
+            atan2(sine, cosine),
         )
