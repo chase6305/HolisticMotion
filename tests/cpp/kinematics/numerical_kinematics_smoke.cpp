@@ -28,6 +28,7 @@ int main() {
                 Eigen::VectorXd seed = initial;
                 IkRtn solutions;
                 solutions.PushBack(initial);
+                solutions.joint_states = Eigen::MatrixXd::Ones(2, 7);
                 std::vector<double> distances{99.0};
                 double distance = 99.0;
                 const bool success =
@@ -36,6 +37,8 @@ int main() {
                         : solver.GetIK(target, solutions, seed, distances);
                 if (success || solutions.success || solutions.ik_number != 0 ||
                     !solutions.ik_joints.empty() ||
+                    solutions.joint_states.rows() != 0 ||
+                    solutions.joint_states.cols() != 0 ||
                     !seed.isApprox(initial, 0.0) ||
                     (!nearest && !distances.empty()) ||
                     (nearest && distance != 99.0)) {

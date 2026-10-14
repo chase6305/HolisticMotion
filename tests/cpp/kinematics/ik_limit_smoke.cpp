@@ -29,6 +29,14 @@ std::vector<double> Values(const IkRtn& result) {
 }  // namespace
 
 int main() {
+    for (const auto& shape : {std::pair<int, int>{2, 3}, {0, 7}, {7, 0}}) {
+        IkRtn result(true, 0, Eigen::MatrixXd::Ones(shape.first, shape.second));
+        result.PushBack(Eigen::VectorXd::Ones(3));
+        result.Clear();
+        if (!EmptyFailure(result) || result.state != -1 || result.dof != 6 ||
+            result.joint_states.rows() != 0 || result.joint_states.cols() != 0)
+            return Fail(__LINE__);
+    }
     constexpr double tau = 2.0 * M_PI;
     const double infinity = std::numeric_limits<double>::infinity();
     // Inclusive endpoints must not depend on which equivalent seed was used.

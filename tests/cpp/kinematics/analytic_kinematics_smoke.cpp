@@ -65,12 +65,15 @@ bool CheckInvalidTargets(Solver &solver, const Eigen::VectorXd &joints) {
             Eigen::VectorXd seed = joints;
             IkRtn solutions;
             solutions.PushBack(joints);
+            solutions.joint_states = Eigen::MatrixXd::Ones(2, 7);
             std::vector<double> distances{99.0};
             double distance = 99.0;
             const bool success =
                 nearest ? solver.GetNearestIK(target, solutions, seed, distance)
                         : solver.GetIK(target, solutions, seed, distances);
             if (success || solutions.success || solutions.ik_number != 0 ||
+                solutions.joint_states.rows() != 0 ||
+                solutions.joint_states.cols() != 0 ||
                 !solutions.ik_joints.empty() || !seed.isApprox(joints, 0.0) ||
                 (!nearest && !distances.empty()) ||
                 (nearest && distance != 99.0))

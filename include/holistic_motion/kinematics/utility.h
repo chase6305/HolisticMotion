@@ -243,8 +243,8 @@ struct IkRtn {
     // may define a enum
     int state;  // state 0: success; 1: exceed link length; 2: exceed joint
                 // limit;
-    Eigen::MatrixXd joint_states;  // [result_num, control_joint_num] of
-                                   // float32. inverse kinematic joint states
+    Eigen::MatrixXd joint_states; // [result_num, control_joint_num]
+                                  // inverse kinematic joint states
     int dof;
     int ik_number;
     std::vector<Eigen::VectorXd> ik_joints;  // ik
@@ -265,6 +265,9 @@ struct IkRtn {
         success = false;
         state = -1;
         dof = 6;
+        if (joint_states.rows() != 0 || joint_states.cols() != 0) {
+            joint_states.resize(0, 0);
+        }
         ik_joints.clear();
         ik_number = 0;
     }
