@@ -135,6 +135,8 @@ arrays before Eigen conversion, including object arrays containing complex
 scalars. Raw target matrices are checked before quaternion construction, so
 invalid rotation blocks or homogeneous last rows are rejected. Real lists and
 object arrays remain supported; rejected configuration updates preserve state.
+SRS/FEP configuration flags and redundancy values also require real scalars;
+rejected assignments preserve the configuration.
 UR/OPW parameter assignments and constructor limits follow the same real-input
 rule. Base and tool transforms must be rigid; rejected assignments retain the
 previous parameter value.

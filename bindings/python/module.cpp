@@ -1186,11 +1186,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .value("NO_SOLUTION", SRSSolveStatus::NO_SOLUTION);
 
     py::class_<SRSConfiguration>(module, "SRSConfiguration")
-            .def(py::init<>())
-            .def_readwrite("shoulder", &SRSConfiguration::shoulder)
-            .def_readwrite("elbow", &SRSConfiguration::elbow)
-            .def_readwrite("wrist", &SRSConfiguration::wrist)
-            .def_readwrite("redundancy", &SRSConfiguration::redundancy);
+        .def(py::init<>())
+        .def_property(
+            "shoulder", ReadParameter(&SRSConfiguration::shoulder),
+            WriteRealParameter(&SRSConfiguration::shoulder, "shoulder"))
+        .def_property("elbow", ReadParameter(&SRSConfiguration::elbow),
+                      WriteRealParameter(&SRSConfiguration::elbow, "elbow"))
+        .def_property("wrist", ReadParameter(&SRSConfiguration::wrist),
+                      WriteRealParameter(&SRSConfiguration::wrist, "wrist"))
+        .def_property(
+            "redundancy", ReadParameter(&SRSConfiguration::redundancy),
+            WriteRealParameter(&SRSConfiguration::redundancy, "redundancy"));
 
     py::class_<SRSGeometryAnalysis>(module, "SRSGeometryAnalysis")
             .def_readonly("structurally_compatible",
@@ -1408,11 +1414,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .value("CUDA", FEPBackend::CUDA);
 
     py::class_<FEPConfiguration>(module, "FEPConfiguration")
-            .def(py::init<>())
-            .def_readwrite("shoulder", &FEPConfiguration::shoulder)
-            .def_readwrite("elbow", &FEPConfiguration::elbow)
-            .def_readwrite("wrist", &FEPConfiguration::wrist)
-            .def_readwrite("redundancy", &FEPConfiguration::redundancy);
+        .def(py::init<>())
+        .def_property(
+            "shoulder", ReadParameter(&FEPConfiguration::shoulder),
+            WriteRealParameter(&FEPConfiguration::shoulder, "shoulder"))
+        .def_property("elbow", ReadParameter(&FEPConfiguration::elbow),
+                      WriteRealParameter(&FEPConfiguration::elbow, "elbow"))
+        .def_property("wrist", ReadParameter(&FEPConfiguration::wrist),
+                      WriteRealParameter(&FEPConfiguration::wrist, "wrist"))
+        .def_property(
+            "redundancy", ReadParameter(&FEPConfiguration::redundancy),
+            WriteRealParameter(&FEPConfiguration::redundancy, "redundancy"));
 
     py::class_<FEPKinematics, NumericalKinematics,
                std::shared_ptr<FEPKinematics>>(module, "FEPKinematics")
