@@ -56,6 +56,27 @@ def test_numerical_inverse_avoids_all_solution_turn_expansion(tmp_path):
     np.testing.assert_array_equal(solver.inverse(target, seed), seed)
 
 
+@pytest.mark.parametrize("axis_scale", [0.5, 1.5, 2.0])
+def test_scaled_revolute_axis_preserves_rotation_when_wrapping_ik(tmp_path, axis_scale):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "scaled_turn.urdf"
+    urdf.write_text(f"""<robot name="scaled_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 {axis_scale}"/>
+        <limit lower="-7" upper="7" velocity="1" effort="1"/>
+      </joint></robot>""")
+    solver = hm.Robot(str(urdf)).kinematics
+    seed = np.array([4 * np.pi / axis_scale])
+    target = np.eye(4)
+    for joints in solver.solve_all(target, seed):
+        np.testing.assert_allclose(solver.forward(joints), target, atol=1e-10)
+    nearest = solver.inverse(target, seed)
+    np.testing.assert_allclose(solver.forward(nearest), target, atol=1e-10)
+    assert -7.0 <= nearest[0] <= 7.0
+
+
 def test_robot_loads_explicit_urdf_path(tmp_path):
     import holistic_motion as hm
 

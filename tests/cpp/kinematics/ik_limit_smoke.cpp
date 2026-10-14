@@ -208,5 +208,17 @@ int main() {
         std::abs(result.ik_joints[0][0] - (7.5 - tau)) > 1e-12 ||
         std::abs(result.ik_joints[1][0] - (0.7 + tau)) > 1e-12)
         return Fail(__LINE__);
+    for (double scale : {0.5, 1.5, 2.0}) {
+        const double period = tau / scale;
+        auto node = Revolute(0.0, period);
+        node.axis *= scale;
+        for (double seed : {-period, 0.0, period, 2.0 * period}) {
+            result.Clear();
+            result.PushBack(Eigen::VectorXd::Constant(1, seed));
+            if (!result.GetLimitsIK({node}) ||
+                Values(result) != std::vector<double>({0.0, period}))
+                return Fail(__LINE__);
+        }
+    }
     return 0;
 }

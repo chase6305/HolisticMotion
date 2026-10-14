@@ -63,71 +63,114 @@ namespace {
 constexpr double kTwoPi = 2.0 * M_PI;
 constexpr std::size_t kDefaultSolutionLimit = 65536;
 
+struct CoordinateLimits {
+    double lower;
+    double upper;
+    double period;
+};
+
 bool SameRotation(double first, double second) {
     // A large turn offset can lose its phase when rounded back to double.
     return std::abs(std::sin(first) - std::sin(second)) <= 1e-10 &&
            std::abs(std::cos(first) - std::cos(second)) <= 1e-10;
 }
 
+double CoordinatePeriod(const JointNode &node) {
+    const double squared = node.axis.squaredNorm();
+    if (squared == 1.0)
+        return kTwoPi;
+    const double norm = std::sqrt(squared);
+    return norm > 0.0 && std::isfinite(norm) ? kTwoPi / norm : 0.0;
+}
+
+double CoordinateAngle(double joint, const JointNode &node) {
+    // Retain the ordinary cardinal-axis phase exactly, including huge inputs.
+    const auto &axis = node.axis;
+    if ((axis.x() == 0.0 && axis.y() == 0.0 && std::abs(axis.z()) == 1.0) ||
+        (axis.x() == 0.0 && axis.z() == 0.0 && std::abs(axis.y()) == 1.0) ||
+        (axis.y() == 0.0 && axis.z() == 0.0 && std::abs(axis.x()) == 1.0))
+        return joint;
+    const Eigen::Vector3d rotation = joint * axis;
+    double angle = rotation.norm();
+    if (angle < std::sqrt(std::numeric_limits<double>::min()))
+        angle = std::hypot(rotation.x(), rotation.y(), rotation.z());
+    return std::copysign(angle, joint);
+}
+
+bool SameCoordinateRotation(double first, double second,
+                            const JointNode &node) {
+    const double first_angle = CoordinateAngle(first, node);
+    const double second_angle = CoordinateAngle(second, node);
+    return std::isfinite(first_angle) && std::isfinite(second_angle) &&
+           SameRotation(first_angle, second_angle);
+}
+
+double PeriodicAnchor(double joint, const JointNode &node, double period) {
+    double anchor = std::remainder(joint, period);
+    if (!SameCoordinateRotation(anchor, joint, node)) {
+        const double angle = CoordinateAngle(joint, node);
+        anchor =
+            std::atan2(std::sin(angle), std::cos(angle)) * (period / kTwoPi);
+    }
+    return anchor;
+}
+
 bool NearestPeriodicValue(double lower, double upper, double joint,
-                          double reference, double &value) {
+                          double reference, double &value,
+                          const JointNode &node, double period) {
     if (!std::isfinite(lower) || !std::isfinite(upper))
         return false;
     const bool inside = joint >= lower && joint <= upper;
-    if (inside && std::abs(reference - joint) < M_PI) {
+    if (inside && std::abs(reference - joint) < 0.5 * period) {
         value = joint;
         return true;
     }
     double anchor = joint;
     if (!inside) {
-        anchor = std::remainder(joint, kTwoPi);
-        if (!SameRotation(anchor, joint))
-            anchor = std::atan2(std::sin(joint), std::cos(joint));
+        anchor = PeriodicAnchor(joint, node, period);
     }
     const long double minimum =
-        std::ceil((static_cast<long double>(lower) - anchor) / kTwoPi);
+        std::ceil((static_cast<long double>(lower) - anchor) / period);
     const long double maximum =
-        std::floor((static_cast<long double>(upper) - anchor) / kTwoPi);
+        std::floor((static_cast<long double>(upper) - anchor) / period);
     if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
         return false;
     const long double nearest =
-        std::round((static_cast<long double>(reference) - anchor) / kTwoPi);
+        std::round((static_cast<long double>(reference) - anchor) / period);
     const long double turn = std::clamp(nearest, minimum, maximum);
     constexpr long double kMaxExactTurn = 4503599627370495.0L;
     if (!std::isfinite(turn) || std::abs(turn) > kMaxExactTurn)
         return false;
     value = turn == 0.0L ? anchor
-                         : std::fma(static_cast<double>(turn), kTwoPi, anchor);
+                         : std::fma(static_cast<double>(turn), period, anchor);
     return value >= lower && value <= upper &&
-           (value == joint || SameRotation(value, joint));
+           (value == joint || SameCoordinateRotation(value, joint, node));
 }
 
 // Returns false if enumeration cannot fit the budget or turn indices cannot
 // be represented exactly. An empty result is an ordinary infeasible interval.
 bool PeriodicValues(double lower, double upper, double joint,
-                    std::size_t budget, std::vector<double>& values) {
+                    std::size_t budget, std::vector<double> &values,
+                    const JointNode &node, double period) {
     values.clear();
     if (!std::isfinite(lower) || !std::isfinite(upper) ||
         !std::isfinite(joint) || lower > upper)
         return true;
     const bool inside = joint >= lower && joint <= upper;
-    if (inside && joint - lower < kTwoPi && upper - joint < kTwoPi) {
+    if (inside && joint - lower < period && upper - joint < period) {
         values.push_back(joint);
         return true;
     }
     double anchor = joint;
     if (!inside) {
-        anchor = std::remainder(joint, kTwoPi);
-        // Remainder preserves exact double-period endpoints for ordinary
-        // angles. For extreme inputs, use the phase of the actual rotation.
-        if (!SameRotation(anchor, joint))
-            anchor = std::atan2(std::sin(joint), std::cos(joint));
+        anchor = PeriodicAnchor(joint, node, period);
     }
     const long double first =
-        std::ceil((static_cast<long double>(lower) - anchor) / kTwoPi);
+        std::ceil((static_cast<long double>(lower) - anchor) / period);
     const long double last =
-        std::floor((static_cast<long double>(upper) - anchor) / kTwoPi);
-    if (first > last) return true;
+        std::floor((static_cast<long double>(upper) - anchor) / period);
+    if (first > last)
+        return true;
     constexpr long double kMaxExactTurn = 4503599627370495.0L;
     const long double count = last - first + 1.0L;
     if (!std::isfinite(first) || !std::isfinite(last) ||
@@ -139,9 +182,10 @@ bool PeriodicValues(double lower, double upper, double joint,
     const auto append = [&](long long turn) {
         const double candidate =
             turn == 0 ? anchor
-                      : std::fma(static_cast<double>(turn), kTwoPi, anchor);
+                      : std::fma(static_cast<double>(turn), period, anchor);
         if (candidate >= lower && candidate <= upper &&
-            (candidate == joint || SameRotation(candidate, joint)) &&
+            (candidate == joint ||
+             SameCoordinateRotation(candidate, joint, node)) &&
             (values.empty() || candidate != values.back()))
             values.push_back(candidate);
     };
@@ -149,18 +193,22 @@ bool PeriodicValues(double lower, double upper, double joint,
     const auto maximum = static_cast<long long>(last);
     if (inside) {
         append(0);
-        for (long long turn = -1; turn >= minimum; --turn) append(turn);
-        for (long long turn = 1; turn <= maximum; ++turn) append(turn);
+        for (long long turn = -1; turn >= minimum; --turn)
+            append(turn);
+        for (long long turn = 1; turn <= maximum; ++turn)
+            append(turn);
     } else if (joint > upper) {
-        for (long long turn = maximum; turn >= minimum; --turn) append(turn);
+        for (long long turn = maximum; turn >= minimum; --turn)
+            append(turn);
     } else {
-        for (long long turn = minimum; turn <= maximum; ++turn) append(turn);
+        for (long long turn = minimum; turn <= maximum; ++turn)
+            append(turn);
     }
     return true;
 }
-}  // namespace
+} // namespace
 
-bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes) {
+bool IkRtn::GetLimitsIK(const std::vector<JointNode> &joint_nodes) {
     return GetLimitsIK(joint_nodes, kDefaultSolutionLimit);
 }
 
@@ -179,7 +227,7 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
             static_cast<std::size_t>(std::numeric_limits<int>::max()))
         return fail();
 
-    std::vector<std::pair<double, double>> limits(dof);
+    std::vector<CoordinateLimits> limits(dof);
     for (int joint = 0; joint < dof; ++joint) {
         const auto& node = joint_nodes[joint];
         if (std::isnan(node.lower_limit) || std::isnan(node.upper_limit) ||
@@ -187,25 +235,34 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
             std::isnan(node.upper_limit_set))
             return fail();
         limits[joint] = {std::max(node.lower_limit, node.lower_limit_set),
-                         std::min(node.upper_limit, node.upper_limit_set)};
-        if (limits[joint].first > limits[joint].second) return fail();
+                         std::min(node.upper_limit, node.upper_limit_set), 0.0};
+        if (limits[joint].lower > limits[joint].upper)
+            return fail();
+        if (node.joint_type == JointType::REVOLUTE ||
+            node.joint_type == JointType::CONTINUOUS) {
+            limits[joint].period = CoordinatePeriod(node);
+            if (!(limits[joint].period > 0.0) ||
+                !std::isfinite(limits[joint].period))
+                return fail();
+        }
     }
 
     std::vector<Eigen::VectorXd> filtered;
     std::vector<std::vector<double>> choices;
     std::vector<std::size_t> indices;
     Eigen::VectorXd candidate;
-    for (const auto& solution : ik_joints) {
-        if (solution.size() != dof || !solution.allFinite()) continue;
+    for (const auto &solution : ik_joints) {
+        if (solution.size() != dof || !solution.allFinite())
+            continue;
         bool single_representation = true;
         for (int joint = 0; joint < dof; ++joint) {
-            const auto [lower, upper] = limits[joint];
+            const auto [lower, upper, period] = limits[joint];
             const auto type = joint_nodes[joint].joint_type;
             const double value = solution[joint];
             if (value < lower || value > upper ||
                 ((type == JointType::REVOLUTE || type == JointType::CONTINUOUS)
                      ? (!std::isfinite(lower) || !std::isfinite(upper) ||
-                        value - lower >= kTwoPi || upper - value >= kTwoPi)
+                        value - lower >= period || upper - value >= period)
                      : (type != JointType::PRISMATIC &&
                         type != JointType::FIXED &&
                         type != JointType::UNKNOWN))) {
@@ -214,7 +271,8 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
             }
         }
         if (single_representation) {
-            if (filtered.size() == max_solutions) return fail();
+            if (filtered.size() == max_solutions)
+                return fail();
             filtered.push_back(solution);
             continue;
         }
@@ -225,8 +283,8 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
         }
         bool feasible = true;
         for (int joint = 0; joint < dof; ++joint) {
-            const auto [lower, upper] = limits[joint];
-            auto& values = choices[joint];
+            const auto [lower, upper, period] = limits[joint];
+            auto &values = choices[joint];
             values.clear();
             if (joint_nodes[joint].joint_type == JointType::PRISMATIC ||
                 joint_nodes[joint].joint_type == JointType::FIXED ||
@@ -236,7 +294,8 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
             } else if (joint_nodes[joint].joint_type == JointType::REVOLUTE ||
                        joint_nodes[joint].joint_type == JointType::CONTINUOUS) {
                 if (!PeriodicValues(lower, upper, solution[joint],
-                                    max_solutions, values)) {
+                                    max_solutions, values, joint_nodes[joint],
+                                    period)) {
                     holistic_motion::utility::LogWarning(
                         "IK limit expansion exceeds its budget or turn "
                         "precision");
@@ -332,8 +391,12 @@ bool IkRtn::WrapToLimitsNear(const std::vector<JointNode> &joint_nodes,
                 node.joint_type != JointType::CONTINUOUS)
                 return fail();
             double value;
+            const double period = CoordinatePeriod(node);
+            if (!(period > 0.0) || !std::isfinite(period))
+                return fail();
             if (!NearestPeriodicValue(lower, upper, solution[joint],
-                                      (*stable_reference)[joint], value)) {
+                                      (*stable_reference)[joint], value, node,
+                                      period)) {
                 valid = false;
                 break;
             }

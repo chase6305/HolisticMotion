@@ -234,6 +234,26 @@ int main() {
             !solutions.ik_joints.front().isZero(0.0))
             return Fail(__LINE__);
     }
+    for (double axis_scale : {0.5, -0.5, 1.5, -1.5, 2.0}) {
+        auto scaled_nodes = turning;
+        scaled_nodes[0].axis = axis_scale * Eigen::Vector3d::UnitZ();
+        NumericalKinematics scaled(scaled_nodes);
+        seed = Eigen::VectorXd::Constant(1, 2.0 * M_PI / std::abs(axis_scale) *
+                                                2.0);
+        if (!scaled.GetIK(SE3d(), solutions, seed, distances))
+            return Fail(__LINE__);
+        for (const auto &joints : solutions.ik_joints) {
+            if (!scaled.GetFK(joints, actual) ||
+                (actual.GetTransform() - Eigen::Matrix4d::Identity()).norm() >
+                    1e-10)
+                return Fail(__LINE__);
+        }
+        if (!scaled.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            !scaled.GetFK(solutions.ik_joints.front(), actual) ||
+            (actual.GetTransform() - Eigen::Matrix4d::Identity()).norm() >
+                1e-10)
+            return Fail(__LINE__);
+    }
     solutions.Clear();
     if (!solutions.PushBack(empty) || solutions.PushBack(q) ||
         !solutions.PushBack(empty) || !solutions.RemoveRepeatedIK() ||

@@ -287,6 +287,8 @@ struct IkRtn {
     /// At most 65536 results are generated. Excessive expansion or a turn
     /// offset that cannot be represented fails and clears solution outputs.
     /// Nonperiodic coordinates are checked without angle wrapping.
+    /// Rotational coordinate periods follow the model's axis length:
+    /// 2*pi/axis.norm(), preserving the FK convention for nonunit axes.
     ///
     /// \param joint_nodes Vector containing joint limit information
     /// \return true if valid solutions found, false otherwise
