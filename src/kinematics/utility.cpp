@@ -68,6 +68,39 @@ bool SameRotation(double first, double second) {
            std::abs(std::cos(first) - std::cos(second)) <= 1e-10;
 }
 
+bool NearestPeriodicValue(double lower, double upper, double joint,
+                          double reference, double &value) {
+    if (!std::isfinite(lower) || !std::isfinite(upper))
+        return false;
+    const bool inside = joint >= lower && joint <= upper;
+    if (inside && std::abs(reference - joint) < M_PI) {
+        value = joint;
+        return true;
+    }
+    double anchor = joint;
+    if (!inside) {
+        anchor = std::remainder(joint, kTwoPi);
+        if (!SameRotation(anchor, joint))
+            anchor = std::atan2(std::sin(joint), std::cos(joint));
+    }
+    const long double minimum =
+        std::ceil((static_cast<long double>(lower) - anchor) / kTwoPi);
+    const long double maximum =
+        std::floor((static_cast<long double>(upper) - anchor) / kTwoPi);
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum)
+        return false;
+    const long double nearest =
+        std::round((static_cast<long double>(reference) - anchor) / kTwoPi);
+    const long double turn = std::clamp(nearest, minimum, maximum);
+    constexpr long double kMaxExactTurn = 4503599627370495.0L;
+    if (!std::isfinite(turn) || std::abs(turn) > kMaxExactTurn)
+        return false;
+    value = turn == 0.0L ? anchor
+                         : std::fma(static_cast<double>(turn), kTwoPi, anchor);
+    return value >= lower && value <= upper &&
+           (value == joint || SameRotation(value, joint));
+}
+
 // Returns false if enumeration cannot fit the budget or turn indices cannot
 // be represented exactly. An empty result is an ordinary infeasible interval.
 bool PeriodicValues(double lower, double upper, double joint,
@@ -245,63 +278,68 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
     return success;
 }
 
-bool IkRtn::WrapToLimitsNear(const std::vector<JointNode>& joint_nodes,
-                             const Eigen::VectorXd& reference) {
-    if (ik_joints.empty() || reference.size() != dof ||
-        joint_nodes.size() < static_cast<size_t>(dof) ||
-        !reference.allFinite()) {
+bool IkRtn::WrapToLimitsNear(const std::vector<JointNode> &joint_nodes,
+                             const Eigen::VectorXd &reference) {
+    const auto fail = [this]() {
+        ik_joints.clear();
+        ik_number = 0;
         success = false;
         return false;
-    }
-    constexpr double kTwoPi = 2.0 * M_PI;
+    };
+    if (ik_joints.empty() || dof < 0 || reference.size() != dof ||
+        joint_nodes.size() < static_cast<size_t>(dof) || !reference.allFinite())
+        return fail();
     std::vector<Eigen::VectorXd> wrapped;
     wrapped.reserve(ik_joints.size());
     for (auto solution : ik_joints) {
-        if (solution.size() != dof || !solution.allFinite()) continue;
+        if (solution.size() != dof || !solution.allFinite())
+            continue;
         bool valid = true;
         for (int joint = 0; joint < dof; ++joint) {
-            const auto& node = joint_nodes[joint];
-            const double lower = std::max(node.lower_limit,
-                                          node.lower_limit_set);
-            const double upper = std::min(node.upper_limit,
-                                          node.upper_limit_set);
-            if (!std::isfinite(lower) || !std::isfinite(upper) ||
-                lower > upper) {
-                valid = false;
-                break;
-            }
-            if (node.joint_type == JointType::PRISMATIC) {
+            const auto &node = joint_nodes[joint];
+            if (std::isnan(node.lower_limit) || std::isnan(node.upper_limit) ||
+                std::isnan(node.lower_limit_set) ||
+                std::isnan(node.upper_limit_set))
+                return fail();
+            const double lower =
+                std::max(node.lower_limit, node.lower_limit_set);
+            const double upper =
+                std::min(node.upper_limit, node.upper_limit_set);
+            if (lower > upper)
+                return fail();
+            if (node.joint_type == JointType::PRISMATIC ||
+                node.joint_type == JointType::FIXED ||
+                node.joint_type == JointType::UNKNOWN) {
                 if (solution[joint] < lower || solution[joint] > upper) {
                     valid = false;
                     break;
                 }
                 continue;
             }
-            const double minimum_turn = std::ceil(
-                    (lower - solution[joint]) / kTwoPi);
-            const double maximum_turn = std::floor(
-                    (upper - solution[joint]) / kTwoPi);
-            if (minimum_turn > maximum_turn) {
+            if (node.joint_type != JointType::REVOLUTE &&
+                node.joint_type != JointType::CONTINUOUS)
+                return fail();
+            double value;
+            if (!NearestPeriodicValue(lower, upper, solution[joint],
+                                      reference[joint], value)) {
                 valid = false;
                 break;
             }
-            const double nearest_turn = std::round(
-                    (reference[joint] - solution[joint]) / kTwoPi);
-            const double turn = std::clamp(nearest_turn, minimum_turn,
-                                           maximum_turn);
-            solution[joint] += turn * kTwoPi;
+            solution[joint] = value;
         }
-        if (valid) wrapped.push_back(std::move(solution));
+        if (valid)
+            wrapped.push_back(std::move(solution));
     }
     ik_joints = std::move(wrapped);
     ik_number = static_cast<int>(ik_joints.size());
     success = ik_number > 0;
-    if (success) RemoveRepeatedIK();
+    if (success)
+        RemoveRepeatedIK();
     return success;
 }
 
-bool IkRtn::SortMinMovement(const Eigen::VectorXd& target_joints,
-                            std::vector<double>& dist) {
+bool IkRtn::SortMinMovement(const Eigen::VectorXd &target_joints,
+                            std::vector<double> &dist) {
     (void)target_joints;
     if (0 == ik_number || dist.size() != static_cast<size_t>(ik_number)) {
         success = false;

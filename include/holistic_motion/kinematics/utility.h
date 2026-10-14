@@ -300,6 +300,8 @@ struct IkRtn {
 
     /// Map each periodic IK branch into limits using the representation nearest
     /// to a reference state, without generating equivalent multi-turn copies.
+    /// Nonperiodic coordinates are only checked against their limits. Invalid
+    /// input or an unrepresentable selected turn/phase clears solution outputs.
     bool WrapToLimitsNear(const std::vector<JointNode>& joint_nodes,
                           const Eigen::VectorXd& reference);
 

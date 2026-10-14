@@ -158,5 +158,46 @@ int main() {
     if (!result.GetLimitsIK({}, 1) || result.ik_number != 1 ||
         result.ik_joints.front().size() != 0)
         return Fail(__LINE__);
+    result.Clear();
+    for (JointType type :
+         {JointType::PRISMATIC, JointType::FIXED, JointType::UNKNOWN}) {
+        for (double bound : {10.0, infinity}) {
+            auto node = Revolute(-bound, bound);
+            node.joint_type = type;
+            result.PushBack(Eigen::VectorXd::Constant(1, 0.2));
+            if (!result.WrapToLimitsNear({node},
+                                         Eigen::VectorXd::Constant(1, 8.0)) ||
+                result.ik_number != 1 || result.ik_joints.front()[0] != 0.2)
+                return Fail(__LINE__);
+            result.Clear();
+        }
+    }
+    for (double seed : {-1e100, -1e20, 1e20, 1e100}) {
+        result.PushBack(Eigen::VectorXd::Constant(1, seed));
+        if (!result.WrapToLimitsNear({Revolute(-M_PI, M_PI)},
+                                     Eigen::VectorXd::Zero(1)))
+            return Fail(__LINE__);
+        const double value = result.ik_joints.front()[0];
+        if (value < -M_PI || value > M_PI ||
+            std::abs(std::sin(value) - std::sin(seed)) > 1e-10 ||
+            std::abs(std::cos(value) - std::cos(seed)) > 1e-10)
+            return Fail(__LINE__);
+        result.Clear();
+    }
+    for (int field = 0; field < 4; ++field) {
+        auto node = Revolute(-1.0, 1.0);
+        double *fields[] = {&node.lower_limit, &node.upper_limit,
+                            &node.lower_limit_set, &node.upper_limit_set};
+        *fields[field] = std::numeric_limits<double>::quiet_NaN();
+        result.PushBack(Eigen::VectorXd::Zero(1));
+        if (result.WrapToLimitsNear({node}, Eigen::VectorXd::Zero(1)) ||
+            !EmptyFailure(result))
+            return Fail(__LINE__);
+    }
+    result.PushBack(Eigen::VectorXd::Zero(1));
+    if (result.WrapToLimitsNear({Revolute(-1.0, 1.0)},
+                                Eigen::VectorXd::Constant(1, infinity)) ||
+        !EmptyFailure(result))
+        return Fail(__LINE__);
     return 0;
 }
