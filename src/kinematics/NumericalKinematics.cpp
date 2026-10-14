@@ -50,10 +50,15 @@ bool NumericalKinematics::GetFK(const Eigen::VectorXd& target_joint,
     return false;
 }
 
-bool NumericalKinematics::GetIK(const SE3d& target_pose,
-                                IkRtn& ik_solutions,
-                                Eigen::VectorXd& joint_seed,
-                                std::vector<double>& dist) const {
+bool NumericalKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                                Eigen::VectorXd &joint_seed,
+                                std::vector<double> &dist) const {
+    return SolveIK(target_pose, ik_solutions, joint_seed, dist, nullptr);
+}
+
+bool NumericalKinematics::SolveIK(
+    const SE3d &target_pose, IkRtn &ik_solutions, Eigen::VectorXd &joint_seed,
+    std::vector<double> &dist, const Eigen::VectorXd *nearest_reference) const {
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get position IK.");
     ik_solutions.Clear();
     dist.clear();
@@ -147,31 +152,35 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
         ik_solutions.success = ik_solutions.PushBack(iter_joint);
     }
 
-    // Remove repeated IK, if there are.
-    ik_solutions.RemoveRepeatedIK();
-    // Finds IK that is within joint limits, removes IK that is out of range.
-    ik_solutions.GetLimitsIK(this->joint_nodes_);
+    // The numerical iteration produces at most one branch. Nearest-only
+    // queries wrap that branch directly instead of expanding its Cartesian
+    // product of equivalent turns. All-solutions queries retain their budget.
+    if (nearest_reference)
+        ik_solutions.WrapToLimitsNear(this->joint_nodes_, *nearest_reference);
+    else
+        ik_solutions.GetLimitsIK(this->joint_nodes_);
 
+    const auto &reference = nearest_reference ? *nearest_reference : joint_seed;
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {
             temp_dist +=
-                    std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
-                             this->ik_nearst_weight_[j]);
+                std::abs((ik_solutions.ik_joints[i][j] - reference[j]) *
+                         this->ik_nearst_weight_[j]);
         }
         dist.push_back(temp_dist);
     }
 
     if (ik_solutions.success && ik_solutions.ik_number > 0) {
         holistic_motion::utility::LogDebug(
-                "GetIK: Success to get position IK, ik number:[{}].",
-                ik_solutions.ik_number);
+            "GetIK: Success to get position IK, ik number:[{}].",
+            ik_solutions.ik_number);
         return true;
     }
 
     holistic_motion::utility::LogDebug(
-            "GetIK: Failed to get position IK, success:[{}], ik_number:[{}]",
-            ik_solutions.success, ik_solutions.ik_number);
+        "GetIK: Failed to get position IK, success:[{}], ik_number:[{}]",
+        ik_solutions.success, ik_solutions.ik_number);
 
     return false;
 }
@@ -195,32 +204,10 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
     }
 
     std::vector<double> dist;
-    const auto select_nearest = [&](bool retried) {
-        if (!ik_solutions.success || ik_solutions.ik_joints.empty())
-            return false;
-        if (retried) {
-            // The retry's zero seed helps convergence, but the caller's
-            // original seed still defines the nearest joint representation.
-            for (std::size_t i = 0; i < ik_solutions.ik_joints.size(); ++i) {
-                dist[i] = 0.0;
-                for (int joint = 0; joint < this->dof_; ++joint)
-                    dist[i] += std::abs(
-                        (ik_solutions.ik_joints[i][joint] - joint_seed[joint]) *
-                        this->ik_nearst_weight_[joint]);
-            }
-        }
-        const auto closest = std::min_element(dist.begin(), dist.end());
-        min_dist = *closest;
-        const auto index = static_cast<std::size_t>(closest - dist.begin());
-        if (index != 0)
-            ik_solutions.ik_joints.front().swap(ik_solutions.ik_joints[index]);
-        ik_solutions.ik_joints.resize(1);
-        ik_solutions.ik_number = 1;
-        return true;
-    };
-    if (this->GetIK(target_pose, ik_solutions, joint_seed, dist)) {
+    if (SolveIK(target_pose, ik_solutions, joint_seed, dist, &joint_seed)) {
         // ik_solutions
-        if (select_nearest(false)) {
+        if (ik_solutions.success) {
+            min_dist = dist.front();
             holistic_motion::utility::LogDebug(
                 "GetNearstIK: Success to get nearst IK.");
             return true;
@@ -229,9 +216,11 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
 
     ik_solutions.Clear();
     Eigen::VectorXd zero_joint_seed = Eigen::VectorXd::Zero(this->dof_);
-    if (this->GetIK(target_pose, ik_solutions, zero_joint_seed, dist)) {
+    if (SolveIK(target_pose, ik_solutions, zero_joint_seed, dist,
+                &joint_seed)) {
         // ik_solutions
-        if (select_nearest(true)) {
+        if (ik_solutions.success) {
+            min_dist = dist.front();
             holistic_motion::utility::LogDebug(
                 "GetNearstIK: Success to get nearst IK.");
             return true;

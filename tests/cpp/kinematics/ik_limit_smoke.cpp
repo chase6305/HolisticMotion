@@ -199,5 +199,14 @@ int main() {
                                 Eigen::VectorXd::Constant(1, infinity)) ||
         !EmptyFailure(result))
         return Fail(__LINE__);
+    // Wrapping the first branch must not change an aliased reference used to
+    // choose the representation of the remaining branches.
+    result.PushBack(Eigen::VectorXd::Constant(1, 7.5));
+    result.PushBack(Eigen::VectorXd::Constant(1, 0.7));
+    if (!result.WrapToLimitsNear({Revolute(0.0, 7.0)}, result.ik_joints.front()) ||
+        result.ik_number != 2 ||
+        std::abs(result.ik_joints[0][0] - (7.5 - tau)) > 1e-12 ||
+        std::abs(result.ik_joints[1][0] - (0.7 + tau)) > 1e-12)
+        return Fail(__LINE__);
     return 0;
 }

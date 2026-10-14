@@ -1,6 +1,7 @@
 
 #include "holistic_motion/kinematics/utility.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace holistic_motion {
@@ -289,9 +290,20 @@ bool IkRtn::WrapToLimitsNear(const std::vector<JointNode> &joint_nodes,
     if (ik_joints.empty() || dof < 0 || reference.size() != dof ||
         joint_nodes.size() < static_cast<size_t>(dof) || !reference.allFinite())
         return fail();
-    std::vector<Eigen::VectorXd> wrapped;
-    wrapped.reserve(ik_joints.size());
-    for (auto solution : ik_joints) {
+    // The caller may use one of these solutions as its reference. Keep that
+    // seed stable while updating and compacting the existing result storage.
+    Eigen::VectorXd reference_copy;
+    const Eigen::VectorXd *stable_reference = &reference;
+    if (std::any_of(ik_joints.begin(), ik_joints.end(),
+                    [&](const auto &solution) {
+                        return solution.data() == reference.data();
+                    })) {
+        reference_copy = reference;
+        stable_reference = &reference_copy;
+    }
+    std::size_t kept = 0;
+    for (std::size_t index = 0; index < ik_joints.size(); ++index) {
+        auto &solution = ik_joints[index];
         if (solution.size() != dof || !solution.allFinite())
             continue;
         bool valid = true;
@@ -321,19 +333,22 @@ bool IkRtn::WrapToLimitsNear(const std::vector<JointNode> &joint_nodes,
                 return fail();
             double value;
             if (!NearestPeriodicValue(lower, upper, solution[joint],
-                                      reference[joint], value)) {
+                                      (*stable_reference)[joint], value)) {
                 valid = false;
                 break;
             }
             solution[joint] = value;
         }
-        if (valid)
-            wrapped.push_back(std::move(solution));
+        if (valid) {
+            if (kept != index)
+                ik_joints[kept] = std::move(solution);
+            ++kept;
+        }
     }
-    ik_joints = std::move(wrapped);
+    ik_joints.resize(kept);
     ik_number = static_cast<int>(ik_joints.size());
     success = ik_number > 0;
-    if (success)
+    if (success && ik_number > 1)
         RemoveRepeatedIK();
     return success;
 }

@@ -215,6 +215,26 @@ int main() {
             solutions.ik_number != 0)
             return Fail(__LINE__);
     }
+
+    // Nearest-only queries must not enumerate a Cartesian product of
+    // equivalent turns or inherit the all-solutions expansion budget.
+    for (int dof : {17, 32, 65}) {
+        std::vector<JointNode> periodic_nodes(
+            dof, JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                           JointType::REVOLUTE, 0.0, 2.0 * M_PI));
+        periodic_nodes.emplace_back();
+        periodic_nodes.back().joint_type = JointType::FIXED;
+        NumericalKinematics periodic(periodic_nodes);
+        seed = Eigen::VectorXd::Zero(dof);
+        if (periodic.GetIK(SE3d(), solutions, seed, distances) ||
+            solutions.ik_number != 0 || !distances.empty())
+            return Fail(__LINE__);
+        if (!periodic.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            solutions.ik_number != 1 || nearest_distance != 0.0 ||
+            !solutions.ik_joints.front().isZero(0.0))
+            return Fail(__LINE__);
+    }
+    solutions.Clear();
     if (!solutions.PushBack(empty) || solutions.PushBack(q) ||
         !solutions.PushBack(empty) || !solutions.RemoveRepeatedIK() ||
         !solutions.GetLimitsIK(fixed) || solutions.ik_number != 1 ||

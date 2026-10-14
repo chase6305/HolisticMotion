@@ -76,6 +76,10 @@ public:
     bool GetDamp(double& damp) const;
 
 private:
+    bool SolveIK(const SE3d& target_pose, IkRtn& ik_solutions,
+                 Eigen::VectorXd& joint_seed, std::vector<double>& dist,
+                 const Eigen::VectorXd* nearest_reference) const;
+
     /// \brief Computes the kinematic Jacobian matrix for the robotic
     /// manipulator.
     ///

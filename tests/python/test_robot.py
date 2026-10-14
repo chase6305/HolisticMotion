@@ -35,6 +35,27 @@ def test_numerical_forward_preserves_tiny_nonzero_rotation(tmp_path, angle):
     assert pose[0, 1] / angle == pytest.approx(-1.0, rel=1e-14, abs=0.0)
 
 
+def test_numerical_inverse_avoids_all_solution_turn_expansion(tmp_path):
+    import holistic_motion as hm
+
+    dof = 17
+    links = "".join(f'<link name="link{i}"/>' for i in range(dof + 1))
+    joints = "".join(
+        f'''<joint name="turn{i}" type="revolute">
+          <parent link="link{i}"/><child link="link{i + 1}"/><axis xyz="0 0 1"/>
+          <limit lower="0" upper="{2 * np.pi}" velocity="1" effort="1"/>
+        </joint>'''
+        for i in range(dof)
+    )
+    urdf = tmp_path / "many_turns.urdf"
+    urdf.write_text(f'<robot name="many_turns">{links}{joints}</robot>')
+    solver = hm.Robot(str(urdf)).kinematics
+    seed = np.zeros(dof)
+    target = solver.forward(seed)
+    assert solver.solve_all(target, seed) == []
+    np.testing.assert_array_equal(solver.inverse(target, seed), seed)
+
+
 def test_robot_loads_explicit_urdf_path(tmp_path):
     import holistic_motion as hm
 
