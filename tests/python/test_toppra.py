@@ -410,3 +410,57 @@ def test_numpy_projection_rejects_nonfinite_half_planes(invalid):
     a[1, 0] = invalid
     with pytest.raises(ValueError, match="constraints must be finite"):
         _projection_caps(a, b)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("imaginary", [0.0, 0.1])
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "waypoints",
+        "max_velocity",
+        "max_acceleration",
+        "gridpoints",
+        "start_path_velocity",
+        "end_path_velocity",
+    ],
+)
+def test_toppra_rejects_complex_inputs_without_discarding_imaginary_parts(
+    argument, dtype, imaginary
+):
+    values = {
+        "waypoints": [[0.0], [1.0]],
+        "max_velocity": [1.0],
+        "max_acceleration": [2.0],
+        "gridpoints": [0.0, 0.5, 1.0],
+        "start_path_velocity": 0.0,
+        "end_path_velocity": 0.0,
+    }
+    values[argument] = np.array(values[argument], dtype=dtype) + imaginary * 1j
+    with pytest.raises(TypeError, match="real"):
+        ToppraTrajectory(**values)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("imaginary", [0.0, 0.1])
+def test_toppra_rejects_complex_sample_times(dtype, imaginary):
+    trajectory = ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0], grid_size=25)
+    times = np.array([0.0, trajectory.duration], dtype=dtype) + imaginary * 1j
+    with pytest.raises(TypeError, match="sample times must be real"):
+        trajectory.sample(times)
+
+
+@pytest.mark.parametrize(
+    "field", ["gridpoints", "path_speeds", "path_accelerations", "times", "duration"]
+)
+def test_toppra_result_rejects_complex_snapshots(field):
+    values = dict(
+        gridpoints=[0.0, 1.0],
+        path_speeds=[1.0, 1.0],
+        path_accelerations=[0.0],
+        times=[0.0, 1.0],
+        duration=1.0,
+    )
+    values[field] = np.array(values[field], dtype=np.complex128)
+    with pytest.raises(TypeError, match="real"):
+        ToppraResult(**values)

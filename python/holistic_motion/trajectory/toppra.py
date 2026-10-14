@@ -87,8 +87,16 @@ class _NaturalCubicPath:
         return index, delta
 
 
+def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
+    if np.iscomplexobj(value):
+        raise TypeError(f"{name} must be real")
+    if copy:
+        return np.array(value, dtype=float, copy=True)
+    return np.asarray(value, dtype=float)
+
+
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:
-    result = np.array(value, dtype=float, copy=True).reshape(-1)
+    result = _real_array(value, name, copy=True).reshape(-1)
     if result.shape != (dof,) or not np.isfinite(result).all():
         raise ValueError(f"{name} must be a finite vector of size {dof}")
     if np.any(result <= 0.0):
@@ -260,7 +268,7 @@ class ToppraResult:
             "times",
         )
         for name in arrays:
-            value = np.array(getattr(self, name), dtype=float, copy=True)
+            value = _real_array(getattr(self, name), name, copy=True)
             if value.ndim != 1 or not np.isfinite(value).all():
                 raise ValueError(f"{name} must be a finite one-dimensional array")
             value.setflags(write=False)
@@ -273,6 +281,8 @@ class ToppraResult:
             or self.path_accelerations.size != count - 1
         ):
             raise ValueError("TOPPRA result arrays have inconsistent lengths")
+        if np.iscomplexobj(self.duration):
+            raise TypeError("duration must be real")
         if not np.isfinite(self.duration) or self.duration < 0.0:
             raise ValueError("TOPPRA result duration must be finite and non-negative")
         if np.any(np.diff(self.gridpoints) <= 0.0):
@@ -325,7 +335,7 @@ class ToppraTrajectory:
         gridpoints: Sequence[float] | None = None,
         grid_size: int = 200,
     ) -> None:
-        points = np.asarray(waypoints, dtype=float)
+        points = _real_array(waypoints, "waypoints")
         if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 1:
             raise ValueError("waypoints must have shape (count >= 2, dof >= 1)")
         if not np.isfinite(points).all():
@@ -339,6 +349,8 @@ class ToppraTrajectory:
         )
         self.max_velocity.setflags(write=False)
         self.max_acceleration.setflags(write=False)
+        if np.iscomplexobj(start_path_velocity) or np.iscomplexobj(end_path_velocity):
+            raise TypeError("boundary path velocities must be real")
         if not (
             np.isfinite(start_path_velocity)
             and start_path_velocity >= 0.0
@@ -404,7 +416,7 @@ class ToppraTrajectory:
                 + [waypoint_s[-1:]]
             )
         else:
-            grid = np.asarray(gridpoints, dtype=float).reshape(-1)
+            grid = _real_array(gridpoints, "gridpoints").reshape(-1)
             if (
                 grid.size < 2
                 or not np.isfinite(grid).all()
@@ -656,7 +668,7 @@ class ToppraTrajectory:
     def sample(
         self, times: Sequence[float]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        query = np.asarray(times, dtype=float).reshape(-1)
+        query = _real_array(times, "sample times").reshape(-1)
         if not np.isfinite(query).all():
             raise ValueError("sample times must be finite")
         clipped = np.clip(query, 0.0, self.duration)

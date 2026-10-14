@@ -20,6 +20,8 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 Waypoint, limit, and timing-result arrays are immutable owned snapshots.
 `sample()` and `sample_uniform()` return new arrays that applications may
 modify freely without changing the trajectory object.
+Both timing backends require real inputs; complex arrays and scalar parameters
+raise `TypeError`, including complex values with zero imaginary components.
 
 NumPy uses scaled chord norms when squaring finite coordinates would overflow.
 Unrepresentable waypoint differences or chord lengths raise `ValueError`.
