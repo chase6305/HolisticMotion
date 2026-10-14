@@ -14,9 +14,9 @@ reduces unnecessary waypoints, and TOPPRA should subsequently apply velocity
 and acceleration limits. Controllers remain outside this library.
 
 `RRT_CONNECT` is the default for single-query robot planning. `RRT_STAR` and
-`INFORMED_RRT_STAR` use the complete time budget to improve path cost, so their
-reported planning time normally approaches `timeout_seconds` even after an
-initial solution is available.
+`INFORMED_RRT_STAR` continue improving path cost until the time or iteration
+budget is exhausted. With a large iteration budget, planning time normally
+approaches `timeout_seconds` even after an initial solution is available.
 
 Before growing a tree, every algorithm validates the complete start-to-goal
 edge. If it is valid, planning immediately returns the two-point shortest path;
@@ -46,6 +46,12 @@ RRT* and Informed RRT* reuse an existing nearest state when it is sampled again,
 while still reconsidering its parent and rewiring its neighbors. This avoids
 storing duplicate goal samples. The neighborhood radius follows the admitted
 sample count; `tree_nodes` reports the nodes actually stored in the tree.
+
+After finding an incumbent, Informed RRT* allows at most 128 uniform draws per
+iteration to enter its informed subset. If all are rejected, it revisits the
+goal, which permits incumbent rewiring. This bounds rejection work when the
+subset becomes extremely narrow; affected seeded searches can follow a different
+sample sequence. Motion validation still applies to every new connection.
 
 ## Python example
 

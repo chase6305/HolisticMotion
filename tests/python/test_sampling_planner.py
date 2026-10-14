@@ -372,6 +372,42 @@ def test_sampling_planner_weighted_periodic_seam():
     )
 
 
+def test_informed_sampling_bounds_rejections_for_a_narrow_weighted_subset():
+    def valid(state):
+        return not (abs(state[0]) < 0.2 and abs(state[1]) < 0.22)
+
+    lower = np.full(6, -1.0)
+    upper = -lower
+    lower[[0, 3]], upper[[0, 3]] = -np.pi, np.pi
+    planner = hm.SamplingPlanner(lower, upper, valid)
+    planner.set_continuous_joints([0, 3])
+    planner.set_joint_weights([0.25, 0.015625, 0.015625, 0.015625, 4.0, 8.0])
+    options = _options(hm.SamplingAlgorithm.INFORMED_RRT_STAR)
+    options.max_iterations = 1317
+    options.random_seed = 18081385724285266904
+    options.goal_bias = 0.17
+    options.extension_range = 0.5
+    options.edge_resolution = 0.08
+    options.shortcut_attempts = 0
+    options.timeout_seconds = 5.0
+    start, goal = np.zeros(6), np.zeros(6)
+    start[0], goal[0] = -0.85, 0.85
+    result = planner.plan(start, goal, options)
+
+    assert result.success, result.message
+    assert result.statistics.iterations == options.max_iterations
+    assert result.statistics.sampled_states <= 128 * options.max_iterations
+    np.testing.assert_array_equal(result.path[0], start)
+    np.testing.assert_array_equal(result.path[-1], goal)
+    for first, second in zip(result.path, result.path[1:]):
+        delta = np.asarray(second) - first
+        delta[[0, 3]] = (delta[[0, 3]] + np.pi) % (2 * np.pi) - np.pi
+        count = max(1, int(np.ceil(np.max(np.abs(delta)) / options.edge_resolution)))
+        samples = first + np.linspace(0.0, 1.0, count + 1)[:, None] * delta
+        samples[:, [0, 3]] = (samples[:, [0, 3]] + np.pi) % (2 * np.pi) - np.pi
+        assert all(valid(state) for state in samples)
+
+
 @pytest.mark.parametrize(
     "algorithm",
     [

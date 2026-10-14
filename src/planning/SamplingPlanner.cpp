@@ -468,8 +468,22 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             // Rejection sampling implements an informed subset without a
             // heavyweight ellipsoid dependency and remains valid for weighted
             // and wrapped joint metrics.
+            constexpr std::size_t kMaximumInformedAttempts = 128;
+            std::size_t attempts = 0;
             do {
                 sample = context.SampleUniform();
+                ++attempts;
+                if (informed && std::isfinite(best_cost) &&
+                    attempts == kMaximumInformedAttempts &&
+                    context.Distance(start, sample) +
+                            context.Distance(sample, goal) >
+                        best_cost) {
+                    // A narrow informed set can have negligible acceptance
+                    // probability. The goal belongs to the set and permits
+                    // incumbent rewiring without exhausting the time budget.
+                    sample = goal;
+                    break;
+                }
             } while (informed && std::isfinite(best_cost) &&
                      context.Distance(start, sample) +
                              context.Distance(sample, goal) >

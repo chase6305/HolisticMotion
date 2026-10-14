@@ -163,5 +163,44 @@ int main() {
       return 3;
     }
   }
-  return 0;
+    // A tiny informed subset must not turn one iteration into an unbounded
+    // rejection loop. Exercise the weighted mixed-topology regression without
+    // using an elapsed-time threshold.
+    Eigen::VectorXd narrow_lower = Eigen::VectorXd::Constant(6, -1.0);
+    Eigen::VectorXd narrow_upper = Eigen::VectorXd::Constant(6, 1.0);
+    for (Eigen::Index axis : {0, 3}) {
+        narrow_lower[axis] = -std::acos(-1.0);
+        narrow_upper[axis] = std::acos(-1.0);
+    }
+    SamplingPlanner narrow(
+        narrow_lower, narrow_upper, [](const Eigen::VectorXd &q) {
+            return !(std::abs(q[0]) < 0.2 && std::abs(q[1]) < 0.22);
+        });
+    narrow.SetContinuousJoints({0, 3});
+    narrow.SetJointWeights(
+        (Eigen::VectorXd(6) << 0.25, 0.015625, 0.015625, 0.015625, 4.0, 8.0)
+            .finished());
+    PlanningOptions narrow_options;
+    narrow_options.algorithm = SamplingAlgorithm::INFORMED_RRT_STAR;
+    narrow_options.max_iterations = 1317;
+    narrow_options.random_seed = 18081385724285266904ULL;
+    narrow_options.goal_bias = 0.17;
+    narrow_options.extension_range = 0.5;
+    narrow_options.edge_resolution = 0.08;
+    narrow_options.shortcut_attempts = 0;
+    narrow_options.timeout_seconds = 5.0;
+    Eigen::VectorXd narrow_start = Eigen::VectorXd::Zero(6);
+    Eigen::VectorXd narrow_goal = narrow_start;
+    narrow_start[0] = -0.85;
+    narrow_goal[0] = 0.85;
+    const auto narrow_result =
+        narrow.Plan(narrow_start, narrow_goal, narrow_options);
+    if (!narrow_result.Success() ||
+        narrow_result.statistics.iterations != narrow_options.max_iterations ||
+        narrow_result.statistics.sampled_states >
+            128 * narrow_options.max_iterations) {
+        std::cerr << "informed rejection sampling exhausted its budget\n";
+        return 9;
+    }
+    return 0;
 }
