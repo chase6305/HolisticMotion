@@ -152,3 +152,36 @@ def test_grid_endpoint_roundoff_is_canonicalized_without_mutating_input(offset):
 def test_interior_gridpoints_outside_path_domain_rejected(grid):
     with pytest.raises(ValueError, match="gridpoints"):
         ToppraTrajectory([[0.0], [1.0]], [1.0], [1.0], gridpoints=grid)
+
+
+@pytest.mark.parametrize("time_scale", [1e-155, 1e-100, 1e-20, 1e100, 1e153])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.05])
+def test_extreme_time_units_preserve_retiming_and_sampling(time_scale, end_velocity):
+    points = np.array([[0.0, 0.0], [0.2, -0.3], [0.7, 0.1], [1.0, 0.0]])
+    limits = np.array([1.0, 0.7])
+    expected = ToppraTrajectory(
+        points, limits, np.ones(2), grid_size=31, end_path_velocity=end_velocity
+    )
+    actual = ToppraTrajectory(
+        points,
+        limits * time_scale,
+        np.ones(2) * time_scale**2,
+        grid_size=31,
+        end_path_velocity=end_velocity * time_scale,
+    )
+    assert actual.duration * time_scale == pytest.approx(expected.duration, rel=1e-10)
+    times = np.linspace(0.0, expected.duration, 301)
+    reference = expected.sample(times)
+    sampled = actual.sample(times / time_scale)
+    for order, (before, after) in enumerate(zip(reference, sampled)):
+        assert np.isfinite(after).all()
+        np.testing.assert_allclose(
+            after / time_scale**order, before, rtol=1e-9, atol=1e-10
+        )
+
+
+@pytest.mark.parametrize("argument", ["start_path_velocity", "end_path_velocity"])
+@pytest.mark.parametrize("speed", [1e200, 1e308])
+def test_unrepresentable_boundary_speed_raises_validation_error(argument, speed):
+    with pytest.raises(ValueError, match="boundary path velocity"):
+        ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0], **{argument: speed})

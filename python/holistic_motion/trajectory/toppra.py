@@ -14,6 +14,8 @@ from numbers import Integral
 
 import numpy as np
 
+_MAX_PATH_SPEED = np.sqrt(np.finfo(float).max)
+
 
 class _NaturalCubicPath:
     """Small vector-valued natural cubic spline with analytic derivatives."""
@@ -405,6 +407,9 @@ class ToppraTrajectory:
             )
         self._grid = grid
         self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
+        self._speed_scale = 1.0
+        self._solver_velocity = self.max_velocity
+        self._solver_acceleration = self.max_acceleration
         self._result = self._compute(
             float(start_path_velocity), float(end_path_velocity)
         )
@@ -422,7 +427,7 @@ class ToppraTrajectory:
     def _velocity_caps(self) -> np.ndarray:
         ratios = np.full_like(self._q_s, np.inf)
         moving = np.abs(self._q_s) > 1e-12
-        limits = np.broadcast_to(self.max_velocity, self._q_s.shape)
+        limits = np.broadcast_to(self._solver_velocity, self._q_s.shape)
         ratios[moving] = limits[moving] / np.abs(self._q_s[moving])
         return np.min(ratios, axis=1) ** 2
 
@@ -434,20 +439,40 @@ class ToppraTrajectory:
         # with these Bernstein coefficients, and q_ss is linear.
         derivative = np.stack((first, first + 0.5 * ds * second_first, last), axis=1)
         zero = np.zeros_like(first)
-        acceleration_x = (
-            np.stack((second_first, 0.5 * second_last, zero), axis=1)
-            - derivative / (2.0 * ds[:, None, :])
-        ) / self.max_acceleration
-        acceleration_y = (
-            np.stack((zero, 0.5 * second_first, second_last), axis=1)
-            + derivative / (2.0 * ds[:, None, :])
-        ) / self.max_acceleration
+        acceleration_x = np.stack(
+            (second_first, 0.5 * second_last, zero), axis=1
+        ) - derivative / (2.0 * ds[:, None, :])
+        acceleration_y = np.stack(
+            (zero, 0.5 * second_first, second_last), axis=1
+        ) + derivative / (2.0 * ds[:, None, :])
+        unit_scale = max(
+            float(np.max(self.max_velocity)),
+            float(np.sqrt(np.max(self.max_acceleration))),
+        )
+        if unit_scale < 1e-60 or unit_scale > 1e60:
+            # A change of speed units keeps elimination products near one.
+            # Normalize limits before division rather than rescaling already
+            # overflowing/underflowing half-plane coefficients.
+            velocity_scale = np.max(np.abs(derivative) / self.max_velocity)
+            acceleration_scale = np.max(
+                np.sqrt(np.maximum(np.abs(acceleration_x), np.abs(acceleration_y)))
+                / np.sqrt(self.max_acceleration)
+            )
+            self._speed_scale = 1.0 / max(velocity_scale, acceleration_scale)
+            if not np.isfinite(self._speed_scale) or self._speed_scale <= 0.0:
+                raise ValueError("path speed scale is not representable")
+            self._solver_velocity = self.max_velocity / self._speed_scale
+            self._solver_acceleration = (
+                self.max_acceleration / self._speed_scale
+            ) / self._speed_scale
+        acceleration_x = acceleration_x / self._solver_acceleration
+        acceleration_y = acceleration_y / self._solver_acceleration
 
         # Bound |q_s| at both endpoints and its quadratic extremum. Applying
         # the resulting velocity cap independently to x and y also bounds
         # their linear interpolation. Independent caps avoid artificial stops
         # caused by maximizing x against a coupled velocity constraint on y.
-        p0, p1, p2 = np.moveaxis(derivative / self.max_velocity, 1, 0)
+        p0, p1, p2 = np.moveaxis(derivative / self._solver_velocity, 1, 0)
         quadratic = p0 - 2.0 * p1 + p2
         ratio = np.clip(
             np.divide(
@@ -487,13 +512,18 @@ class ToppraTrajectory:
         ]
 
     def _compute(self, start_velocity: float, end_velocity: float) -> ToppraResult:
+        constraints = self._interval_constraints()
         caps = self._velocity_caps()
-        start_x, end_x = start_velocity**2, end_velocity**2
+        with np.errstate(over="ignore"):
+            normalized_start = start_velocity / self._speed_scale
+            normalized_end = end_velocity / self._speed_scale
+        if normalized_start > _MAX_PATH_SPEED or normalized_end > _MAX_PATH_SPEED:
+            raise ValueError("boundary path velocity is not representable")
+        start_x, end_x = normalized_start**2, normalized_end**2
         if start_x > caps[0] + 1e-10 * max(start_x, caps[0]) or end_x > caps[
             -1
         ] + 1e-10 * max(end_x, caps[-1]):
             raise ValueError("boundary path velocity violates joint velocity limits")
-        constraints = self._interval_constraints()
         if end_velocity == 0.0:
             x = self._solve_to_rest(constraints, start_x)
         else:
@@ -502,14 +532,19 @@ class ToppraTrajectory:
         u = np.diff(x) / (2.0 * ds)
         speeds = np.sqrt(np.maximum(x, 0.0))
         denominators = speeds[:-1] + speeds[1:]
-        if np.any(denominators <= 1e-14):
+        if np.any(denominators <= 0.0):
             raise ValueError(
                 "path contains an interval with zero reachable speed; "
                 "refine gridpoints or increase grid_size"
             )
-        dt = 2.0 * ds / denominators
+        dt = (2.0 * ds / denominators) / self._speed_scale
         times = np.concatenate(([0.0], np.cumsum(dt)))
 
+        if self._speed_scale != 1.0:
+            self._normalized_speeds = speeds
+            self._normalized_u = u
+            speeds = speeds * self._speed_scale
+            u = (u * self._speed_scale) * self._speed_scale
         return ToppraResult(self._grid.copy(), speeds, u, times, float(times[-1]))
 
     def _solve_to_rest(
@@ -587,15 +622,27 @@ class ToppraTrajectory:
         accel = self.result.path_accelerations[segment]
         elapsed = clipped - self.result.times[segment]
         initial_speed = self.result.path_speeds[segment]
+        if self._speed_scale != 1.0:
+            elapsed *= self._speed_scale
+            accel = self._normalized_u[segment]
+            initial_speed = self._normalized_speeds[segment]
         s = self._grid[segment] + initial_speed * elapsed + 0.5 * accel * elapsed**2
         s = np.clip(s, self._grid[segment], self._grid[segment + 1])
         speed = np.maximum(0.0, initial_speed + accel * elapsed)
         q, q_s, q_ss = self._path_model.evaluate_all(s)
-        return (
+        result = (
             q,
             q_s * speed[..., None],
             q_ss * speed[..., None] ** 2 + q_s * accel[..., None],
         )
+        if self._speed_scale != 1.0:
+            q, velocity, acceleration = result
+            result = (
+                q,
+                velocity * self._speed_scale,
+                (acceleration * self._speed_scale) * self._speed_scale,
+            )
+        return result
 
     def sample_uniform(
         self, count: int = 200
