@@ -67,6 +67,30 @@ int main() {
         }
     }
 
+    // The gain alone may underflow although multiplying by a large error
+    // would produce a representable update. Preserve subnormal gains too.
+    for (double sigma : {1e-300, 1e-120}) {
+        DampedIKWorkspace scaled_workspace(1);
+        Eigen::MatrixXd scaled_jacobian = Eigen::MatrixXd::Zero(6, 1);
+        scaled_jacobian(0, 0) = sigma;
+        Eigen::Matrix<double, 6, 1> scaled_error =
+            Eigen::Matrix<double, 6, 1>::Zero();
+        scaled_error[0] = -1e300;
+        Eigen::VectorXd scaled_update(1);
+        const long double reference =
+            static_cast<long double>(scaled_error[0]) * sigma /
+            (static_cast<long double>(sigma) * sigma + 1e200L);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const bool scaled_success = scaled_workspace.Solve(
+            scaled_jacobian, scaled_error, 1e100, 0.0, scaled_update);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!scaled_success ||
+            std::abs((scaled_update[0] - reference) / reference) > 1e-12L) {
+            std::cerr << "damped inversion lost an underflowing gain\n";
+            return 1;
+        }
+    }
+
     // A rectangular Jacobian can have an unrepresentable singular value or
     // projected error even when every input and the regularized update fit.
     for (double scale : {1e-320, 1e308}) {

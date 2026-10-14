@@ -55,9 +55,11 @@ public:
                 continue;
             }
             const double denominator = sigma * sigma + damping * damping;
+            const double gain =
+                std::isnormal(denominator) ? sigma / denominator : 0.0;
             if (jacobian_scale == 1.0 && error_scale == 1.0 &&
-                std::isnormal(denominator)) {
-                projected_[i] *= sigma / denominator;
+                std::isnormal(denominator) && std::isnormal(gain)) {
+                projected_[i] *= gain;
             } else {
                 if (!std::isfinite(projected_[i])) return false;
                 projected_[i] = ScaledProjection(
