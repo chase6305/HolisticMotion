@@ -67,13 +67,20 @@ bool FEPKinematics::ForwardBatch(
                     packed_joints.data(), static_cast<int>(joints.rows()),
                     origins.data(), axes.data(), tcp.data(), output.data())) {
             poses.resize(static_cast<std::size_t>(joints.rows()));
-            for (Eigen::Index pose = 0; pose < joints.rows(); ++pose)
+            bool finite_poses = true;
+            for (Eigen::Index pose = 0; pose < joints.rows(); ++pose) {
                 for (int row = 0; row < 4; ++row)
                     for (int col = 0; col < 4; ++col)
                         poses[static_cast<std::size_t>(pose)](row, col) =
                                 output[static_cast<std::size_t>(pose) * 16 +
                                        row * 4 + col];
-            return true;
+                if (!poses[static_cast<std::size_t>(pose)].allFinite()) {
+                    finite_poses = false;
+                    break;
+                }
+            }
+            if (finite_poses) return true;
+            poses.clear();
         }
         if (backend == FEPBackend::CUDA) return false;
     }
@@ -94,11 +101,19 @@ bool FEPKinematics::ForwardBatch(
     for (Eigen::Index row = 0; row < joints.rows(); ++row) {
         SE3d pose;
         for (int joint = 0; joint < 7; ++joint) {
-            const SO3d rotation(Eigen::AngleAxisd(
-                    joints(row, joint) * axis_norms[joint], axes[joint]));
-            pose = pose * joint_nodes_[joint].origin_pose * SE3d(rotation);
+            pose = pose * joint_nodes_[joint].origin_pose;
+            if (joints(row, joint) != 0.0) {
+                const SO3d rotation(Eigen::AngleAxisd(
+                        joints(row, joint) * axis_norms[joint], axes[joint]));
+                pose = SE3d(pose.GetTranslation(),
+                           SO3d(pose.GetQuat()) * rotation);
+            }
         }
         poses.push_back((pose * terminal).GetTransform());
+        if (!poses.back().allFinite()) {
+            poses.clear();
+            return false;
+        }
     }
     return true;
 }

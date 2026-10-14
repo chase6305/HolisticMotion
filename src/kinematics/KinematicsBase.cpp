@@ -91,6 +91,16 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             pose_list.clear();
             return false;
         }
+        // Fixed nodes and exactly zero joint motions only compose their
+        // origin. Avoid constructing and multiplying a second identity SE3.
+        // Keep malformed protected-model axes on the validation path below.
+        if (type == JointType::FIXED || type == JointType::UNKNOWN ||
+            (i < static_cast<std::size_t>(this->dof_) && target_joint[i] == 0.0 &&
+             this->joint_nodes_[i].axis.allFinite())) {
+            pose_list.push_back(pre_pose * this->joint_nodes_[i].origin_pose);
+            pre_pose = pose_list.back();
+            continue;
+        }
         SE3d transform = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         Eigen::Vector3d xyz(0.0, 0.0, 0.0);
         SO3d rot = SO3d(0.0, 0.0, 0.0, 1.0);
@@ -117,8 +127,15 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             }
         }
         transform = SE3d(xyz, rot);
-        pose_list.push_back(pre_pose * this->joint_nodes_[i].origin_pose *
-                            transform);
+        SE3d pose = pre_pose * this->joint_nodes_[i].origin_pose;
+        if (type == JointType::REVOLUTE || type == JointType::CONTINUOUS) {
+            // Revolute motion has no translation. Compose the same SO3
+            // factors without forming a rotation matrix just to multiply zero.
+            pose = SE3d(pose.GetTranslation(), SO3d(pose.GetQuat()) * rot);
+        } else {
+            pose = pose * transform;
+        }
+        pose_list.push_back(pose);
         pre_pose = pose_list.back();
         // holistic_motion::utility::LogDebug("Joint{} pose:[SE3({})].", i + 1,
         //                         fmt::join(pre_pose.Coeffs(), ","));
