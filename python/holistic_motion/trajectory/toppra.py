@@ -114,12 +114,17 @@ def _intersect_bounds(
 class _IntervalConstraints:
     """Half-planes ``a * x + b * y <= 1`` for adjacent squared speeds."""
 
-    def __init__(self, a: np.ndarray, b: np.ndarray) -> None:
+    def __init__(
+        self, a: np.ndarray, b: np.ndarray, *, cap: float | None = None
+    ) -> None:
         if not np.isfinite(a).all() or not np.isfinite(b).all():
             raise ValueError("path speed constraints must be finite")
         self.a, self.b = a, b
         self.positive = b > 0.0
         self.negative = b < 0.0
+        if cap is not None:
+            self.cap = float(cap)
+            return
         # Eliminate y by comparing each lower bound on y with each upper
         # bound. These pairs do not depend on the next controllable interval,
         # so compute their cap on x once, without iterative feasibility probes.
@@ -188,6 +193,50 @@ class _IntervalConstraints:
         if lower == 0.0:
             rhs[np.abs(residual) <= rounding] = 0.0
         return _intersect_bounds(self.b, rhs, lower, upper)
+
+
+def _projection_caps(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Eliminate y from symmetric strips, in bounded interval chunks.
+
+    The first K columns and next K columns are opposite half-planes. Each
+    distinct pair gives |a_i*b_j - b_i*a_j|*x <= |b_i| + |b_j|. Include the
+    positive-y velocity half-plane separately; zero-b bounds remain in the
+    scalar backward solve. This halves the pair work and batches NumPy calls.
+    """
+    if not np.isfinite(a).all() or not np.isfinite(b).all():
+        raise ValueError("path speed constraints must be finite")
+    count = (a.shape[1] - 2) // 2
+    left, right = np.triu_indices(count, k=1)
+    # Target 128 KiB per candidate array to keep CPU scratch cache-friendly.
+    chunk = max(1, min(4096, (1 << 14) // (left.size + count)))
+    result = np.empty(a.shape[0])
+    for offset in range(0, a.shape[0], chunk):
+        aa = a[offset : offset + chunk, :count]
+        bb = b[offset : offset + chunk, :count]
+        velocity_cap = b[offset : offset + chunk, -1:]
+        ai, aj = np.take(aa, left, axis=1), np.take(aa, right, axis=1)
+        bi, bj = np.take(bb, left, axis=1), np.take(bb, right, axis=1)
+        determinant = ai * bj - bi * aj
+        np.abs(determinant, out=determinant)
+        valid = (bi != 0.0) & (bj != 0.0) & (determinant > 0.0)
+        bound = np.abs(bi) + np.abs(bj)
+        np.divide(bound, determinant, out=bound, where=valid)
+        bound[~valid] = np.inf
+        pair_cap = np.min(bound, axis=1, initial=np.inf)
+        del ai, aj, bi, bj, determinant, valid, bound
+
+        divisor = np.abs(aa) * velocity_cap
+        valid = (((aa < 0.0) & (bb > 0.0)) | ((aa > 0.0) & (bb < 0.0))) & (
+            divisor > 0.0
+        )
+        bound = np.abs(bb) + velocity_cap
+        np.divide(bound, divisor, out=bound, where=valid)
+        bound[~valid] = np.inf
+        result[offset : offset + chunk] = np.minimum(
+            pair_cap, np.min(bound, axis=1, initial=np.inf)
+        )
+        del divisor, valid, bound, pair_cap
+    return result
 
 
 @dataclass(frozen=True)
@@ -431,7 +480,11 @@ class ToppraTrajectory:
             ),
             axis=1,
         )
-        return [_IntervalConstraints(left, right) for left, right in zip(a, b)]
+        caps = _projection_caps(a, b)
+        return [
+            _IntervalConstraints(left, right, cap=cap)
+            for left, right, cap in zip(a, b, caps)
+        ]
 
     def _compute(self, start_velocity: float, end_velocity: float) -> ToppraResult:
         caps = self._velocity_caps()

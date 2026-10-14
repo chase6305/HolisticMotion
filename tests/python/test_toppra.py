@@ -373,3 +373,40 @@ def test_toppra_custom_grid_snapping_preserves_short_spline_segments():
     )
     assert np.isin(trajectory._waypoint_s, trajectory.result.gridpoints).all()
     assert np.min(np.diff(trajectory.result.gridpoints)) == pytest.approx(2e-12)
+
+
+@pytest.mark.parametrize("dof", [1, 7, 32, 128])
+@pytest.mark.parametrize("zero_coefficients", [False, True])
+@pytest.mark.parametrize("scale", [1e-100, 1.0, 1e100])
+def test_numpy_projection_matches_general_half_plane_elimination(
+    dof, zero_coefficients, scale
+):
+    from holistic_motion.trajectory.toppra import (
+        _IntervalConstraints,
+        _projection_caps,
+    )
+
+    generator = np.random.default_rng(20261014 + dof)
+    aa = scale * generator.normal(size=(10, 3 * dof))
+    bb = scale * generator.normal(size=aa.shape)
+    if zero_coefficients:
+        aa[:, ::4] = 0.0
+        bb[:, ::3] = 0.0
+    velocity_cap = scale * generator.uniform(0.1, 2.0, size=(10, 1))
+    a = np.concatenate((aa, -aa, velocity_cap, np.zeros_like(velocity_cap)), axis=1)
+    b = np.concatenate((bb, -bb, np.zeros_like(velocity_cap), velocity_cap), axis=1)
+    expected = np.array(
+        [_IntervalConstraints(left, right).cap for left, right in zip(a, b)]
+    )
+    np.testing.assert_allclose(_projection_caps(a, b), expected, rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_numpy_projection_rejects_nonfinite_half_planes(invalid):
+    from holistic_motion.trajectory.toppra import _projection_caps
+
+    a = np.ones((2, 8))
+    b = a.copy()
+    a[1, 0] = invalid
+    with pytest.raises(ValueError, match="constraints must be finite"):
+        _projection_caps(a, b)
