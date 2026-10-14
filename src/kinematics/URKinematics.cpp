@@ -1,5 +1,7 @@
 #include "holistic_motion/kinematics/URKinematics.h"
 
+#include "SeedAlias.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -73,6 +75,11 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                          IkRtn &ik_solutions,
                          Eigen::VectorXd &joint_seed,
                          std::vector<double> &dist) const {
+    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
+        Eigen::VectorXd stable_seed = joint_seed;
+        return GetIK(target_pose, ik_solutions, stable_seed, dist);
+    }
+
     holistic_motion::utility::LogDebug("GetIK:Begin to get position IK");
 
     ik_solutions.Clear();
@@ -395,6 +402,11 @@ bool URKinematics::GetNearstIK(const SE3d &target_pose,
                                IkRtn &ik_solutions,
                                Eigen::VectorXd &joint_seed,
                                double &min_dist) const {
+    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
+        Eigen::VectorXd stable_seed = joint_seed;
+        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
+    }
+
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK");
 
     if (joint_seed.size() != this->dof_) {

@@ -1,5 +1,7 @@
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 
+#include "SeedAlias.h"
+
 #include "DampedIKWorkspace.h"
 
 #include <algorithm>
@@ -53,6 +55,11 @@ bool NumericalKinematics::GetFK(const Eigen::VectorXd& target_joint,
 bool NumericalKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
                                 Eigen::VectorXd &joint_seed,
                                 std::vector<double> &dist) const {
+    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
+        Eigen::VectorXd stable_seed = joint_seed;
+        return GetIK(target_pose, ik_solutions, stable_seed, dist);
+    }
+
     return SolveIK(target_pose, ik_solutions, joint_seed, dist, nullptr);
 }
 
@@ -189,6 +196,11 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
                                       IkRtn &ik_solutions,
                                       Eigen::VectorXd &joint_seed,
                                       double &min_dist) const {
+    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
+        Eigen::VectorXd stable_seed = joint_seed;
+        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
+    }
+
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK.");
 
     if (joint_seed.size() != this->dof_) {

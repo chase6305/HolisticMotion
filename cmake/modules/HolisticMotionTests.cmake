@@ -71,6 +71,11 @@ function(holistic_motion_register_tests)
         tests/cpp/kinematics/numerical_kinematics_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        ik_seed_alias_smoke_test
+        tests/cpp/kinematics/ik_seed_alias_smoke.cpp
+        holistic_motion)
+    set_tests_properties(ik_seed_alias_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
         ik_limit_smoke_test
         tests/cpp/kinematics/ik_limit_smoke.cpp
         holistic_motion)
