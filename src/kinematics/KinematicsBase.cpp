@@ -1,6 +1,7 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace holistic_motion {
@@ -109,7 +110,13 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             // SO3d(Vector3d) interprets Euler angles, not a rotation vector.
             const Eigen::Vector3d rotation_vector =
                     target_joint[i] * this->joint_nodes_[i].axis;
-            const double angle = rotation_vector.norm();
+            double angle = rotation_vector.norm();
+            if (angle < std::sqrt(std::numeric_limits<double>::min())) {
+                // Preserve representable tiny rotations when the norm's
+                // component squares lose precision or underflow to zero.
+                angle = std::hypot(rotation_vector.x(), rotation_vector.y(),
+                                   rotation_vector.z());
+            }
             if (!std::isfinite(angle)) {
                 pose_list.clear();
                 return false;

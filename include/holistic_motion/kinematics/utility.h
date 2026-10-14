@@ -11,9 +11,17 @@
 namespace holistic_motion {
 namespace robotics {
 
-inline double GetRAngle(const Eigen::Matrix3d& rotation) {
+inline double GetRAngle(const Eigen::Matrix3d &rotation) {
     const double cosine = clamp((rotation.trace() - 1.0) * 0.5, -1.0, 1.0);
-    return std::acos(cosine);
+    // atan2 retains small rotations whose trace already rounds to three.
+    // hypot also preserves tiny skew coefficients when their squares vanish.
+    const double x = rotation(2, 1) - rotation(1, 2);
+    const double y = rotation(0, 2) - rotation(2, 0);
+    const double z = rotation(1, 0) - rotation(0, 1);
+    if (x == 0.0 && y == 0.0 && z == 0.0)
+        return cosine < 0.0 ? M_PI : 0.0;
+    const double sine = 0.5 * std::hypot(x, y, z);
+    return std::atan2(sine, cosine);
 }
 
 /// \brief OPW available through papers: "An Analytical Solution of the Inverse

@@ -118,6 +118,40 @@ int main() {
     if (!solver.GetIK(original, solutions, seed, distances))
         return Fail(__LINE__);
 
+    // Representable tiny translation errors must not disappear when their
+    // squares underflow before comparison with a caller-selected tolerance.
+    NumericalKinematics tiny_slide(nodes);
+    for (double target_translation : {1e-160, 1e-180}) {
+        const double tolerance = target_translation * 1e-10;
+        tiny_slide.SetTransErrTh(tolerance);
+        seed = Eigen::VectorXd::Zero(1);
+        const SE3d target(Eigen::Vector3d(target_translation, 0.0, 0.0),
+                          SO3d());
+        if (!tiny_slide.GetIK(target, solutions, seed, distances) ||
+            !tiny_slide.GetFK(solutions.ik_joints.front(), actual) ||
+            std::abs(actual.GetTranslation().x() / target_translation - 1.0) >=
+                1e-10)
+            return Fail(__LINE__);
+    }
+
+    auto rotation_nodes = nodes;
+    rotation_nodes[0].joint_type = JointType::REVOLUTE;
+    rotation_nodes[0].axis = Eigen::Vector3d::UnitZ();
+    NumericalKinematics tiny_rotation(rotation_nodes);
+    for (double angle : {1e-8, 1e-12, 1e-180}) {
+        const Eigen::Matrix3d rotation =
+            Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ())
+                .toRotationMatrix();
+        if (std::abs(GetRAngle(rotation) / angle - 1.0) > 1e-14)
+            return Fail(__LINE__);
+        tiny_rotation.SetAngleErrTh(angle * 1e-10);
+        seed = Eigen::VectorXd::Zero(1);
+        if (!tiny_rotation.GetIK(SE3d(Eigen::Vector3d::Zero(), SO3d(rotation)),
+                                 solutions, seed, distances) ||
+            std::abs(solutions.ik_joints.front()[0] / angle - 1.0) >= 1e-10)
+            return Fail(__LINE__);
+    }
+
     for (double invalid_value : {nan, infinity, -infinity}) {
         SE3d frame;
         frame.Coeffs()[0] = invalid_value;

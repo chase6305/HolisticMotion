@@ -19,6 +19,22 @@ def test_numerical_inverse_rejects_nonfinite_seed_without_zero_retry(tmp_path, s
     np.testing.assert_allclose(solver.inverse(np.eye(4), [0.0]), [0.0])
 
 
+@pytest.mark.parametrize("angle", [1e-160, -1e-180, 1e-300])
+def test_numerical_forward_preserves_tiny_nonzero_rotation(tmp_path, angle):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "tiny_turn.urdf"
+    urdf.write_text("""<robot name="tiny_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+        <limit lower="-1" upper="1" velocity="1" effort="1"/>
+      </joint></robot>""")
+    pose = hm.Robot(str(urdf)).kinematics.forward([angle])
+    assert pose[1, 0] / angle == pytest.approx(1.0, rel=1e-14, abs=0.0)
+    assert pose[0, 1] / angle == pytest.approx(-1.0, rel=1e-14, abs=0.0)
+
+
 def test_robot_loads_explicit_urdf_path(tmp_path):
     import holistic_motion as hm
 

@@ -9,6 +9,17 @@
 
 namespace holistic_motion {
 namespace robotics {
+namespace {
+
+double TranslationNorm(const Eigen::Vector3d &value) {
+    const double squared = value.squaredNorm();
+    return (std::isnormal(squared) ||
+            (value.x() == 0.0 && value.y() == 0.0 && value.z() == 0.0))
+               ? std::sqrt(squared)
+               : std::hypot(value.x(), value.y(), value.z());
+}
+
+} // namespace
 
 NumericalKinematics::NumericalKinematics(
         const std::vector<JointNode>& joint_node) {
@@ -78,7 +89,7 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
     };
     SE3d delta_x = task_error(tcp_pose);
     double angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
-    double translation_err = delta_x.GetTranslation().norm();
+    double translation_err = TranslationNorm(delta_x.GetTranslation());
     bool converged = translation_err < this->trans_err_th_ &&
                      angle_err < this->angle_err_th_;
     // Exact seeds avoid allocating iteration storage altogether.
@@ -87,27 +98,40 @@ bool NumericalKinematics::GetIK(const SE3d& target_pose,
         Eigen::VectorXd delta_theta(this->dof_);
         detail::DampedIKWorkspace workspace(this->dof_);
         for (int i = 0; i < this->max_iter_num_; ++i) {
-            if (!this->_GetKinJacobian(jacobian, pose_list)) break;
+            if (!this->_GetKinJacobian(jacobian, pose_list))
+                break;
             Eigen::Matrix<double, 6, 1> error;
             error.head<3>() = delta_x.GetTranslation();
             const Eigen::AngleAxisd rotation_error(
-                    Eigen::Quaterniond(delta_x.GetRotation()));
+                Eigen::Quaterniond(delta_x.GetRotation()));
             error.tail<3>() = rotation_error.angle() * rotation_error.axis();
+            if (rotation_error.angle() == 0.0 && angle_err > 0.0) {
+                // Eigen's quaternion-vector norm can square away a tiny
+                // nonzero angle. At this scale sin(angle) equals angle to
+                // floating precision, so use the rotation's skew directly.
+                const auto rotation = delta_x.GetRotation();
+                error.tail<3>() =
+                    0.5 * Eigen::Vector3d(rotation(2, 1) - rotation(1, 2),
+                                          rotation(0, 2) - rotation(2, 0),
+                                          rotation(1, 0) - rotation(0, 1));
+            }
             if (!workspace.Solve(jacobian, error, this->damp_coeff_, this->eps_,
-                                 delta_theta)) break;
+                                 delta_theta))
+                break;
             iter_joint += this->step_size_ * delta_theta;
             for (int joint = 0; joint < this->dof_; ++joint) {
-                const auto& node = this->joint_nodes_[joint];
+                const auto &node = this->joint_nodes_[joint];
                 iter_joint[joint] = clamp(iter_joint[joint], node.lower_limit,
-                                         node.upper_limit);
+                                          node.upper_limit);
             }
             if (!this->GetAllFK(iter_joint, pose_list) ||
-                pose_list.size() <= static_cast<std::size_t>(this->dof_)) break;
+                pose_list.size() <= static_cast<std::size_t>(this->dof_))
+                break;
             tcp_pose = pose_list.back();
 
             delta_x = task_error(tcp_pose);
             angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
-            translation_err = delta_x.GetTranslation().norm();
+            translation_err = TranslationNorm(delta_x.GetTranslation());
 
             if (translation_err < this->trans_err_th_ &&
                 angle_err < this->angle_err_th_) {
