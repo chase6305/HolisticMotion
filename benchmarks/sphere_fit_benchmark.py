@@ -47,6 +47,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", help="Previous sphere_fit.py source file")
     parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument(
+        "--selection-workloads",
+        action="store_true",
+        help="Measure small, large, and duplicate-heavy candidate selection",
+    )
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be positive")
@@ -61,15 +66,24 @@ def main():
 
     rng = np.random.default_rng(77)
     cases = []
-    for interior_count, surface_count in ((256, 1000), (2000, 5000), (2000, 20000)):
+    workloads = (
+        ((128, 64), (20000, 64), (20000, 64))
+        if args.selection_workloads
+        else ((256, 1000), (2000, 5000), (2000, 20000))
+    )
+    for workload, (interior_count, surface_count) in enumerate(workloads):
         interior = rng.uniform(-0.5, 0.5, (interior_count, 3))
         surface = rng.normal(size=(surface_count, 3))
         surface /= np.linalg.norm(surface, axis=1)[:, None]
+        duplicates = args.selection_workloads and workload == 2
+        if duplicates:
+            interior = np.repeat(interior[:8], interior_count // 8, axis=0)
         for coverage in (False, True):
             record = {
                 "interior_count": interior_count,
                 "surface_count": surface_count,
                 "sampled_coverage": coverage,
+                "duplicate_candidates": duplicates,
             }
             record["current"], result = _measure(
                 sphere_fit, interior, surface, coverage, args.repeats

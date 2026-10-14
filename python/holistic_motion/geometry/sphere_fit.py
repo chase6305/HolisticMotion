@@ -304,26 +304,38 @@ def fit_spheres(
     # Prefer large medial candidates while suppressing centers already covered
     # by an earlier sphere. Stable sorting makes equal inputs deterministic.
     order = eligible[np.argsort(-radii[eligible], kind="stable")]
-    selected = []
+    capacity = min(options.max_spheres, len(order), 32)
+    # Grow only when a sphere is accepted; a large max_spheres value should
+    # not reserve storage for thousands of candidates that may be suppressed.
+    selected_centers = np.empty((capacity, 3), dtype=float)
+    selected_radii = np.empty(capacity, dtype=float)
+    count = 0
     for index in order:
         center = interior[index]
         radius = radii[index]
-        if selected:
-            selected_centers = interior[np.asarray(selected)]
-            selected_radii = radii[np.asarray(selected)]
-            if np.any(
-                np.linalg.norm(selected_centers - center, axis=1)
-                <= np.maximum(selected_radii - radius, 0.0)
-            ):
-                continue
-        selected.append(int(index))
-        if len(selected) == options.max_spheres:
+        if count and np.any(
+            np.linalg.norm(selected_centers[:count] - center, axis=1)
+            <= np.maximum(selected_radii[:count] - radius, 0.0)
+        ):
+            continue
+        if count == capacity:
+            capacity = min(2 * capacity, options.max_spheres, len(order))
+            centers = np.empty((capacity, 3), dtype=float)
+            centers[:count] = selected_centers
+            selected_centers = centers
+            grown_radii = np.empty(capacity, dtype=float)
+            grown_radii[:count] = selected_radii
+            selected_radii = grown_radii
+        selected_centers[count] = center
+        selected_radii[count] = radius
+        count += 1
+        if count == options.max_spheres:
             break
-    if not selected:
+    if not count:
         raise RuntimeError("sphere selection produced no candidates")
 
-    centers = interior[np.asarray(selected)]
-    selected_radii = radii[np.asarray(selected)].copy()
+    centers = selected_centers[:count]
+    selected_radii = selected_radii[:count]
     mode = "inscribed"
     if options.sampled_coverage:
         maximum_assigned = np.zeros(len(centers), dtype=float)
