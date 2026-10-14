@@ -150,8 +150,7 @@ class JointSpaceIndex {
                 selected = axis;
             }
         }
-        if (end - begin <= kLeafSize)
-            return node;
+        if (end - begin <= kLeafSize) return node;
         const std::size_t middle = begin + (end - begin) / 2;
         std::nth_element(order_.begin() + begin, order_.begin() + middle,
                          order_.begin() + end,
@@ -189,16 +188,16 @@ class JointSpaceIndex {
             const double value = query[bounded_axes_[axis]];
             const double lower = node.lower[axis];
             const double upper = node.upper[axis];
-            const double delta = value < lower ? lower - value
+            const double delta = value < lower   ? lower - value
                                  : value > upper ? value - upper
                                                  : 0.0;
             bound += metric.SquaredAxisDistance(delta, bounded_axes_[axis]);
         }
         // The box omits periodic coordinates. Round its bound down before
         // pruning so a different summation order cannot exclude boundary ties.
-        const double margin = 16.0 * std::numeric_limits<double>::epsilon() *
-                                  bound +
-                              16.0 * std::numeric_limits<double>::denorm_min();
+        const double margin =
+            16.0 * std::numeric_limits<double>::epsilon() * bound +
+            16.0 * std::numeric_limits<double>::denorm_min();
         return bound > limit && bound - margin > limit;
     }
 

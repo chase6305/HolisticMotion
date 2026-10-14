@@ -27,6 +27,13 @@ speed at each forward step. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
 
+The NumPy implementation eliminates symmetric acceleration bounds in bounded
+CPU chunks. Extreme time units use normalized speed variables for solving and
+sampling, then restore the requested physical units. Positive reachable speeds
+remain valid at small magnitudes; unrepresentable boundary speeds raise
+`ValueError`. Both backends keep inactive joint constraints finite when a
+normalized limit underflows, including their Torch adjoints.
+
 When the terminal path speed is zero, rest belongs to every backward
 controllable interval. The solver propagates only its upper bound and checks
 all interval half-planes after the forward pass. Nonzero terminal speeds use

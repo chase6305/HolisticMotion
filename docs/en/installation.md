@@ -18,6 +18,14 @@
 This one-command build enables Python and collision support. Add `--cuda` for
 the optional CUDA backend, or use `--no-collision` for a lighter build.
 
+On Linux, the build helper records Conan dependency directories in the local
+libraries' runtime search paths. `source scripts/activate.sh` and
+`./scripts/run.sh python3 ...` expose the install while preserving the caller's
+loader paths, allowing native collision and Python retargeting in one process.
+Older installs and other platforms use the Conan runtime environment. Exported
+Conan packages retain their standard configuration; the local search-path
+setting is enabled by `scripts/build.sh`.
+
 Run the installed bindings rather than importing stale files from the source
 tree:
 

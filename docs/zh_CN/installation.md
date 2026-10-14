@@ -18,6 +18,12 @@
 这一条命令默认构建 Python 和碰撞组件。使用 `--cuda` 可加入可选 CUDA 后端，
 使用 `--no-collision` 可进一步精简构建。
 
+Linux 本地构建会将 Conan 依赖目录写入各库的运行时搜索路径。
+`source scripts/activate.sh` 和 `./scripts/run.sh python3 ...` 会启用本地安装，
+同时保留调用方的动态库路径，可在同一进程使用原生碰撞与 Python 重定向。
+旧安装和其他平台继续使用 Conan 运行环境。导出的 Conan 包保留标准配置；
+本地搜索路径设置由 `scripts/build.sh` 启用。
+
 应针对安装目录运行测试，避免从源码目录导入旧文件：
 
 ```bash

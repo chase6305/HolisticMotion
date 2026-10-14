@@ -117,8 +117,7 @@ int main() {
         JointSpaceIndex extreme;
         for (double radius :
              {1e-200, 1e200, std::numeric_limits<double>::infinity()})
-            if (!Check(extreme, states, query, metric, radius))
-                return 1;
+            if (!Check(extreme, states, query, metric, radius)) return 1;
     }
     // Degenerate boxes can equal a point's distance. Conservative pruning
     // must retain ties despite scalar versus vectorized reduction rounding.

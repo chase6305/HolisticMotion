@@ -39,6 +39,11 @@ ctest --test-dir build-sanitizers --output-on-failure --no-tests=error
 五次取中位数。`success` 区分找到路径与搜索预算耗尽；未求解用例的零路径长度
 不代表路径质量提升。不需要外部机器人资产或基准库，时间不作为 CI 通过门槛。
 
+可传入 `[goal_bias [dof continuous]]` 单独测量一个场景，例如
+`sampling_planner_benchmark 0.05 7 1`。显式维度支持 2–32；`continuous=1` 将
+第一个关节设为周期关节。CSV 包含路径校验和，应先比较固定种子的结果，再比较
+耗时。索引查询缓存非周期坐标的包围盒，并保留保守的舍入余量以正确处理边界并列。
+
 同一选项还构建 `<构建目录>/fep_batch_benchmark`。该 CPU 基准使用合成七轴链、
 非单位关节原点和 TCP、种子 7，覆盖批量 1/32/128/1024。每个用例预热三次，
 随后测量七组，每组调用 `max(1, 16384 / batch_size)` 次，CSV 报告单次调用的

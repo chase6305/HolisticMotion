@@ -44,6 +44,12 @@ path length on an unsolved case is not a quality improvement. No external robot
 asset or benchmark dependency is required. Timing is observational and is not
 a CI pass/fail threshold.
 
+Pass `[goal_bias [dof continuous]]` to isolate a workload, for example
+`sampling_planner_benchmark 0.05 7 1`. Explicit dimensions range from 2 to 32;
+`continuous=1` makes the first joint periodic. CSV includes a path checksum to
+compare seeded results before timing. Indexed queries cache bounded-coordinate
+boxes and use conservative roundoff margins to retain boundary ties.
+
 The same option also builds `<build-directory>/fep_batch_benchmark`. This CPU
 benchmark uses a synthetic seven-joint chain, nonidentity origins and TCP, seed 7,
 and batch sizes 1/32/128/1024. Each case has three warmup calls followed by seven

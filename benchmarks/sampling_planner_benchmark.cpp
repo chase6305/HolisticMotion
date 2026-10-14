@@ -26,7 +26,8 @@ int main(int argc, char **argv) {
             goal_bias = std::stod(argument, &consumed);
             if (consumed != argument.size() || !std::isfinite(goal_bias) ||
                 goal_bias < 0.0 || goal_bias > 1.0)
-                throw std::invalid_argument("goal bias must be between zero and one");
+                throw std::invalid_argument(
+                    "goal bias must be between zero and one");
         }
         if (argc == 4) {
             std::size_t consumed;
@@ -44,8 +45,9 @@ int main(int argc, char **argv) {
                      "[dof in [2,32] continuous in {0,1}]]\n";
         return 2;
     }
-    std::cout << "dof,continuous,goal_bias,median_ms,success,iterations,nodes,checks,"
-                 "path_length,path_checksum\n";
+    std::cout
+        << "dof,continuous,goal_bias,median_ms,success,iterations,nodes,checks,"
+           "path_length,path_checksum\n";
     const std::vector<Eigen::Index> dimensions =
         selected_dof != 0 ? std::vector<Eigen::Index>{selected_dof}
                           : std::vector<Eigen::Index>{2, 7, 14};
@@ -102,8 +104,7 @@ int main(int argc, char **argv) {
                               << result.message << '\n';
                     return 1;
                 }
-                if (repeat > 0)
-                    elapsed.push_back(milliseconds);
+                if (repeat > 0) elapsed.push_back(milliseconds);
                 statistics = result.statistics;
                 success = result.Success();
                 path_checksum = 0.0;
@@ -116,10 +117,10 @@ int main(int argc, char **argv) {
             std::cout << dof << ',' << continuous << ',' << goal_bias << ','
                       << std::fixed << std::setprecision(3)
                       << elapsed[elapsed.size() / 2] << ',' << success << ','
-                      << statistics.iterations << ',' << statistics.tree_nodes << ','
-                      << statistics.collision_checks << ',' << std::setprecision(12)
-                      << statistics.final_path_length << ','
-                      << std::setprecision(17) << path_checksum << '\n';
+                      << statistics.iterations << ',' << statistics.tree_nodes
+                      << ',' << statistics.collision_checks << ','
+                      << std::setprecision(12) << statistics.final_path_length
+                      << ',' << std::setprecision(17) << path_checksum << '\n';
         }
     }
 }
