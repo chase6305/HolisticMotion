@@ -7,8 +7,8 @@ def solver_data(request, tmp_path):
     import holistic_motion as hm
 
     if request.param in ("srs", "fep"):
-        from test_srs_kinematics import _write_ideal_srs_urdf
         from test_fep_batch import _seven_axis_urdf
+        from test_srs_kinematics import _write_ideal_srs_urdf
 
         urdf = tmp_path / "seven.urdf"
         if request.param == "srs":
@@ -150,7 +150,7 @@ def test_native_batch_rejects_complex(solver_data):
 
 @pytest.mark.parametrize("setter", ["set_tcp", "set_user_frame", "home_joints"])
 def test_native_complex_configuration_update_preserves_state(solver_data, setter):
-    solver, joints = solver_data
+    solver, _ = solver_data
     if not hasattr(solver, setter):
         pytest.skip("numerical configuration setter")
     name = {"set_tcp": "tcp", "set_user_frame": "user_frame"}.get(setter, setter)

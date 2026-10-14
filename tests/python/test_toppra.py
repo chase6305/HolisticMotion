@@ -454,13 +454,13 @@ def test_toppra_rejects_complex_sample_times(dtype, imaginary):
     "field", ["gridpoints", "path_speeds", "path_accelerations", "times", "duration"]
 )
 def test_toppra_result_rejects_complex_snapshots(field):
-    values = dict(
-        gridpoints=[0.0, 1.0],
-        path_speeds=[1.0, 1.0],
-        path_accelerations=[0.0],
-        times=[0.0, 1.0],
-        duration=1.0,
-    )
+    values = {
+        "gridpoints": [0.0, 1.0],
+        "path_speeds": [1.0, 1.0],
+        "path_accelerations": [0.0],
+        "times": [0.0, 1.0],
+        "duration": 1.0,
+    }
     values[field] = np.array(values[field], dtype=np.complex128)
     with pytest.raises(TypeError, match="real"):
         ToppraResult(**values)

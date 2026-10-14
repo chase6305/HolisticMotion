@@ -95,19 +95,19 @@ def test_complex_tracker_scalar_option_is_rejected(prefix, name):
 def test_complex_tracker_result_is_rejected(prefix, name, imaginary):
     from holistic_motion import kinematics
 
-    values = dict(
-        joints=np.zeros(7),
-        velocity=np.zeros(7),
-        acceleration=np.zeros(7),
-        configuration=(1, 1, 1),
-        redundancy=0.0,
-        branch_changed=False,
-        near_singularity=False,
-        minimum_singular_value=1.0,
-        position_error=0.0,
-        angle_error=0.0,
-        candidate_count=1,
-    )
+    values = {
+        "joints": np.zeros(7),
+        "velocity": np.zeros(7),
+        "acceleration": np.zeros(7),
+        "configuration": (1, 1, 1),
+        "redundancy": 0.0,
+        "branch_changed": False,
+        "near_singularity": False,
+        "minimum_singular_value": 1.0,
+        "position_error": 0.0,
+        "angle_error": 0.0,
+        "candidate_count": 1,
+    }
     invalid = np.complex128(0.25 + imaginary * 1j)
     values[name] = (
         np.full(7, invalid)

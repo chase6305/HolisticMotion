@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import (
     CuroboRetargetingSolver,
-    PinocchioRetargetingSolver,
     PinkRetargetingSolver,
+    PinocchioRetargetingSolver,
     PostureTask,
     RetargetingTarget,
 )

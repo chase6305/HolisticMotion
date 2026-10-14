@@ -186,14 +186,14 @@ def test_retargeting_result_rejects_complex_configuration(dtype):
 def test_retargeting_result_rejects_complex_diagnostics(field):
     from holistic_motion.kit.retargeting import RetargetingResult
 
-    kwargs = dict(
-        configuration=[0.0],
-        success=True,
-        iterations=1,
-        residual=0.0,
-        solve_ms=0.0,
-        mode=RetargetingMode.LEFT_ARM,
-    )
+    kwargs = {
+        "configuration": [0.0],
+        "success": True,
+        "iterations": 1,
+        "residual": 0.0,
+        "solve_ms": 0.0,
+        "mode": RetargetingMode.LEFT_ARM,
+    }
     kwargs[field] = np.complex128(0.5 + 1j)
     with pytest.raises(TypeError, match="real"):
         RetargetingResult(**kwargs)
