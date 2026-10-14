@@ -109,6 +109,8 @@ double PeriodicAnchor(double joint, const JointNode &node, double period) {
     double anchor = std::remainder(joint, period);
     if (!SameCoordinateRotation(anchor, joint, node)) {
         const double angle = CoordinateAngle(joint, node);
+        if (!std::isfinite(angle))
+            return std::numeric_limits<double>::quiet_NaN();
         anchor =
             std::atan2(std::sin(angle), std::cos(angle)) * (period / kTwoPi);
     }
