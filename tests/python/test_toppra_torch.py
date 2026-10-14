@@ -40,6 +40,39 @@ def points(device, dtype=torch.float64, batch=False):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("time_scale", [1e-120, 1.0, 1e120])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.01])
+@pytest.mark.parametrize("grid_size", [14, 20])
+def test_roundoff_sized_constraint_does_not_force_batch_stop(
+    device, time_scale, end_velocity, grid_size
+):
+    path = torch.tensor(
+        [[0.125, 0.125], [0.25, 0.25], [0.375, 0.25], [0.5, 0.125]],
+        device=device,
+        dtype=torch.float64,
+    )
+    p = torch.stack((path, path + 0.5)).requires_grad_()
+    v = torch.tensor(
+        [0.5, 0.25], device=device, dtype=torch.float64, requires_grad=True
+    )
+    a = torch.tensor([0.5, 0.5], device=device, dtype=torch.float64, requires_grad=True)
+    trajectory = TorchToppraTrajectory(
+        p,
+        v * time_scale,
+        (a * time_scale) * time_scale,
+        grid_size=grid_size,
+        end_path_velocity=end_velocity * time_scale,
+    )
+    assert bool((trajectory.result.path_speeds[:, 1:-1] > 0).all())
+    _, q, dq, ddq = trajectory.sample_uniform(501)
+    assert bool((dq.abs() / time_scale <= v + 1e-10).all())
+    assert bool(((ddq.abs() / time_scale) / time_scale <= a + 1e-10).all())
+    loss = (trajectory.duration * time_scale).sum() + q.square().mean() * 0.001
+    for gradient in torch.autograd.grad(loss, (p, v, a)):
+        assert bool(torch.isfinite(gradient).all())
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("boundary", [(0.0, 0.0), (0.1, 0.2), (0.2, 0.0)])
 def test_matches_numpy_on_same_grid_and_continuous_limits(device, batch, boundary):

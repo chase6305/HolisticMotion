@@ -108,6 +108,9 @@ this is not a smooth relaxation of TOPPRA.
 Projected stops retain zero speed and the same zero adjoint when the constraint
 residual differs from zero only by floating-point roundoff. If a coarse grid
 produces adjacent stops, construction raises an error asking for a finer grid.
+When the next-speed coefficient has only a roundoff-sized effect throughout
+the reachable interval, it does not force a stop. This applies to NumPy and
+Torch timing, including batched CPU/CUDA gradients.
 
 The solver normalizes each path's speed units before eliminating constraints,
 so large changes of time units do not overflow intermediate squared speeds

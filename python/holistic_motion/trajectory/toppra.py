@@ -182,7 +182,10 @@ class _IntervalConstraints:
         residual = 1.0 - product
         # Preserve exact stops at projected vertices: a tiny positive speed
         # introduced only by rounding would be amplified by its square root.
-        rhs = np.where(np.abs(residual) <= rounding, 0.0, residual + rounding)
+        # If b*y is within roundoff throughout the reachable interval, this
+        # bound acts only on x and must not force the next speed to zero.
+        stop = (np.abs(residual) <= rounding) & (self.forward_b * upper > rounding)
+        rhs = np.where(stop, 0.0, residual + rounding)
         return min(upper, float(np.min(rhs / self.forward_b, initial=np.inf)))
 
     def project(self, lower: float, upper: float) -> tuple[float, float]:
@@ -205,7 +208,8 @@ class _IntervalConstraints:
         residual = 1.0 - product
         rhs = residual + rounding
         if lower == 0.0:
-            rhs[np.abs(residual) <= rounding] = 0.0
+            stop = (np.abs(residual) <= rounding) & (np.abs(self.b) * upper > rounding)
+            rhs[stop] = 0.0
         return _intersect_bounds(self.b, rhs, lower, upper)
 
 

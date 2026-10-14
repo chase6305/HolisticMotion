@@ -519,6 +519,10 @@ class TorchToppraTrajectory:
             (start >= lower_tensor[:, 0] - 1e-12) & (start <= upper[0] + 1e-12),
             "start velocity cannot reach the requested end velocity",
         )
+        # These effects are used only for discrete stop selection. Compute
+        # all intervals once without retaining an additional autograd tape.
+        with torch.no_grad():
+            next_effect = (b * upper_tensor[:, 1:, None]).abs().unbind(1)
         values = [start]
         denominators = torch.where(positive_b, b, 1.0).unbind(1)
         for index in range(a.shape[1]):
@@ -528,7 +532,10 @@ class TorchToppraTrajectory:
             # A projected vertex may require an exact stop. Inflating a zero
             # residual produces a tiny speed whose sqrt adjoint amplifies
             # roundoff. Treat residuals within the same error bound as zero.
-            rhs = torch.where(residual.abs() <= rounding, 0.0, residual + rounding)
+            # A near-zero b whose entire reachable b*y contribution fits
+            # within roundoff acts only on x; it cannot require y == 0.
+            stop = (residual.abs() <= rounding) & (next_effect[index] > rounding)
+            rhs = torch.where(stop, 0.0, residual + rounding)
             ratio = _divide(rhs, denominators[index])
             high = (
                 torch.where(positive_b_intervals[index], ratio, torch.inf)

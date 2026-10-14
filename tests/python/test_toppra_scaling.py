@@ -7,6 +7,27 @@ import pytest
 from holistic_motion.trajectory import ToppraResult, ToppraTrajectory
 
 
+@pytest.mark.parametrize("time_scale", [1e-120, 1e-8, 1.0, 1e8, 1e120])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.01])
+def test_roundoff_sized_next_speed_coefficient_does_not_force_a_stop(
+    time_scale, end_velocity
+):
+    points = np.array([[0.125, 0.125], [0.25, 0.25], [0.375, 0.25], [0.5, 0.125]])
+    velocity, acceleration = np.array([0.5, 0.25]), np.array([0.5, 0.5])
+    trajectory = ToppraTrajectory(
+        points,
+        velocity * time_scale,
+        (acceleration * time_scale) * time_scale,
+        grid_size=20,
+        end_path_velocity=end_velocity * time_scale,
+    )
+    assert np.isfinite(trajectory.duration) and trajectory.duration > 0.0
+    assert np.all(trajectory.result.path_speeds[1:-1] > 0.0)
+    _, _, dq, ddq = trajectory.sample_uniform(1001)
+    assert np.all(np.abs(dq / time_scale) <= velocity + 1e-10)
+    assert np.all(np.abs((ddq / time_scale) / time_scale) <= acceleration + 1e-10)
+
+
 def test_coarse_grid_with_adjacent_stops_requests_refinement():
     rng = np.random.default_rng(63054)
     points = rng.normal(size=(16, 1))
