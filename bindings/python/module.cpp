@@ -141,6 +141,25 @@ Matrix CheckedRealEigen(const py::handle &value, const char *name) {
     }
 }
 
+template <typename Class, typename Value>
+auto ReadParameter(Value Class::*member) {
+    return [member](const Class &self) { return self.*member; };
+}
+
+template <typename Class, typename Value>
+auto WriteRealParameter(Value Class::*member, const char *name) {
+    return [member, name](Class &self, const py::object &input) {
+        RequireRealInput(input, name);
+        try {
+            Value value = py::cast<Value>(input);
+            self.*member = std::move(value);
+        } catch (const py::cast_error &) {
+            throw py::type_error(std::string(name) +
+                                 " has an unsupported type or shape");
+        }
+    };
+}
+
 void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
     if (samples < 2) {
         throw std::invalid_argument(
@@ -785,50 +804,85 @@ PYBIND11_MODULE(_holistic_motion, module) {
 
     py::class_<OPWParameters>(module, "OPWParameters")
             .def(py::init<>())
-            .def_readwrite("a1", &OPWParameters::a1)
-            .def_readwrite("a2", &OPWParameters::a2)
-            .def_readwrite("b", &OPWParameters::b)
-            .def_readwrite("c1", &OPWParameters::c1)
-            .def_readwrite("c2", &OPWParameters::c2)
-            .def_readwrite("c3", &OPWParameters::c3)
-            .def_readwrite("c4", &OPWParameters::c4)
-            .def_readwrite("offsets", &OPWParameters::offsets)
-            .def_readwrite("rotation_directions",
-                           &OPWParameters::rotation_directions)
-            .def_property("base_transform",
-                    [](const OPWParameters& self) {
+        .def_property("a1", ReadParameter(&OPWParameters::a1),
+                      WriteRealParameter(&OPWParameters::a1, "a1"))
+        .def_property("a2", ReadParameter(&OPWParameters::a2),
+                      WriteRealParameter(&OPWParameters::a2, "a2"))
+        .def_property("b", ReadParameter(&OPWParameters::b),
+                      WriteRealParameter(&OPWParameters::b, "b"))
+        .def_property("c1", ReadParameter(&OPWParameters::c1),
+                      WriteRealParameter(&OPWParameters::c1, "c1"))
+        .def_property("c2", ReadParameter(&OPWParameters::c2),
+                      WriteRealParameter(&OPWParameters::c2, "c2"))
+        .def_property("c3", ReadParameter(&OPWParameters::c3),
+                      WriteRealParameter(&OPWParameters::c3, "c3"))
+        .def_property("c4", ReadParameter(&OPWParameters::c4),
+                      WriteRealParameter(&OPWParameters::c4, "c4"))
+        .def_property("offsets", ReadParameter(&OPWParameters::offsets),
+                      WriteRealParameter(&OPWParameters::offsets, "offsets"))
+        .def_property("rotation_directions",
+                      ReadParameter(&OPWParameters::rotation_directions),
+                      WriteRealParameter(&OPWParameters::rotation_directions,
+                                         "rotation_directions"))
+        .def_property(
+            "base_transform",
+            [](const OPWParameters &self) {
                         return self.T_b_ob.GetTransform();
-                    }, [](OPWParameters& self, const Eigen::Matrix4d& value) {
+            },
+            [](OPWParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_b_ob = SE3d(value);
                     })
-            .def_property("tool_transform",
-                    [](const OPWParameters& self) {
+        .def_property(
+            "tool_transform",
+            [](const OPWParameters &self) {
                         return self.T_oe_e.GetTransform();
-                    }, [](OPWParameters& self, const Eigen::Matrix4d& value) {
+            },
+            [](OPWParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_oe_e = SE3d(value);
                     });
 
     py::class_<URParameters>(module, "URParameters")
             .def(py::init<>())
-            .def_readwrite("d1", &URParameters::d1)
-            .def_readwrite("a2", &URParameters::a2)
-            .def_readwrite("a3", &URParameters::a3)
-            .def_readwrite("d4", &URParameters::d4)
-            .def_readwrite("d5", &URParameters::d5)
-            .def_readwrite("d6", &URParameters::d6)
-            .def_readwrite("offsets", &URParameters::offsets)
-            .def_readwrite("rotation_directions",
-                           &URParameters::rotation_directions)
-            .def_property("base_transform",
-                    [](const URParameters& self) {
-                        return self.T_b_ob.GetTransform();
-                    }, [](URParameters& self, const Eigen::Matrix4d& value) {
+        .def_property("d1", ReadParameter(&URParameters::d1),
+                      WriteRealParameter(&URParameters::d1, "d1"))
+        .def_property("a2", ReadParameter(&URParameters::a2),
+                      WriteRealParameter(&URParameters::a2, "a2"))
+        .def_property("a3", ReadParameter(&URParameters::a3),
+                      WriteRealParameter(&URParameters::a3, "a3"))
+        .def_property("d4", ReadParameter(&URParameters::d4),
+                      WriteRealParameter(&URParameters::d4, "d4"))
+        .def_property("d5", ReadParameter(&URParameters::d5),
+                      WriteRealParameter(&URParameters::d5, "d5"))
+        .def_property("d6", ReadParameter(&URParameters::d6),
+                      WriteRealParameter(&URParameters::d6, "d6"))
+        .def_property("offsets", ReadParameter(&URParameters::offsets),
+                      WriteRealParameter(&URParameters::offsets, "offsets"))
+        .def_property("rotation_directions",
+                      ReadParameter(&URParameters::rotation_directions),
+                      WriteRealParameter(&URParameters::rotation_directions,
+                                         "rotation_directions"))
+        .def_property(
+            "base_transform",
+            [](const URParameters &self) { return self.T_b_ob.GetTransform(); },
+            [](URParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_b_ob = SE3d(value);
                     })
-            .def_property("tool_transform",
-                    [](const URParameters& self) {
-                        return self.T_oe_e.GetTransform();
-                    }, [](URParameters& self, const Eigen::Matrix4d& value) {
+        .def_property(
+            "tool_transform",
+            [](const URParameters &self) { return self.T_oe_e.GetTransform(); },
+            [](URParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_oe_e = SE3d(value);
                     });
 
@@ -857,12 +911,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
         }
         return nodes;
     };
-    py::class_<OPWKinematics, KinematicsBase,
-               std::shared_ptr<OPWKinematics>>(module, "OPWKinematics")
-            .def(py::init([make_joint_nodes, valid_directions, valid_offsets](
-                                             const OPWParameters& params,
-                                             const Eigen::VectorXd& lower,
-                                             const Eigen::VectorXd& upper) {
+    py::class_<OPWKinematics, KinematicsBase, std::shared_ptr<OPWKinematics>>(
+        module, "OPWKinematics")
+        .def(
+            py::init([make_joint_nodes, valid_directions,
+                      valid_offsets](const OPWParameters &params,
+                                     const py::object &lower_input,
+                                     const py::object &upper_input) {
+                const Eigen::VectorXd lower = CheckedRealEigen<Eigen::VectorXd>(
+                    lower_input, "lower_limits");
+                const Eigen::VectorXd upper = CheckedRealEigen<Eigen::VectorXd>(
+                    upper_input, "upper_limits");
                 const bool geometry_valid =
                         std::isfinite(params.a1) && std::isfinite(params.a2) &&
                         std::isfinite(params.b) && std::isfinite(params.c1) &&
@@ -879,14 +938,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
                         params, make_joint_nodes(lower, upper));
                 solver->DisableRobotConfig();
                 return solver;
-            }), py::arg("parameters"), py::arg("lower_limits"),
+            }),
+            py::arg("parameters"), py::arg("lower_limits"),
                 py::arg("upper_limits"));
-    py::class_<URKinematics, KinematicsBase,
-               std::shared_ptr<URKinematics>>(module, "URKinematics")
-            .def(py::init([make_joint_nodes, valid_directions, valid_offsets](
-                                             const URParameters& params,
-                                             const Eigen::VectorXd& lower,
-                                             const Eigen::VectorXd& upper) {
+    py::class_<URKinematics, KinematicsBase, std::shared_ptr<URKinematics>>(
+        module, "URKinematics")
+        .def(
+            py::init([make_joint_nodes, valid_directions,
+                      valid_offsets](const URParameters &params,
+                                     const py::object &lower_input,
+                                     const py::object &upper_input) {
+                const Eigen::VectorXd lower = CheckedRealEigen<Eigen::VectorXd>(
+                    lower_input, "lower_limits");
+                const Eigen::VectorXd upper = CheckedRealEigen<Eigen::VectorXd>(
+                    upper_input, "upper_limits");
                 const bool geometry_valid =
                         std::isfinite(params.d1) && std::isfinite(params.a2) &&
                         std::isfinite(params.a3) && std::isfinite(params.d4) &&
@@ -902,7 +967,8 @@ PYBIND11_MODULE(_holistic_motion, module) {
                         params, make_joint_nodes(lower, upper));
                 solver->DisableRobotConfig();
                 return solver;
-            }), py::arg("parameters"), py::arg("lower_limits"),
+            }),
+            py::arg("parameters"), py::arg("lower_limits"),
                 py::arg("upper_limits"));
 
     py::class_<NumericalKinematics, KinematicsBase,

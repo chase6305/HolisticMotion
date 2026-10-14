@@ -135,6 +135,9 @@ arrays before Eigen conversion, including object arrays containing complex
 scalars. Raw target matrices are checked before quaternion construction, so
 invalid rotation blocks or homogeneous last rows are rejected. Real lists and
 object arrays remain supported; rejected configuration updates preserve state.
+UR/OPW parameter assignments and constructor limits follow the same real-input
+rule. Base and tool transforms must be rigid; rejected assignments retain the
+previous parameter value.
 Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
 representation of the converged branch minimizing weighted joint movement
 from the caller's finite seed. A zero-seed convergence retry
