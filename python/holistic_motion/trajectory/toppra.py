@@ -88,11 +88,12 @@ class _NaturalCubicPath:
 
 
 def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
-    if np.iscomplexobj(value):
+    array = np.asarray(value)
+    if np.iscomplexobj(array):
         raise TypeError(f"{name} must be real")
     if copy:
-        return np.array(value, dtype=float, copy=True)
-    return np.asarray(value, dtype=float)
+        return np.array(array, dtype=float, copy=True)
+    return np.asarray(array, dtype=float)
 
 
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:
