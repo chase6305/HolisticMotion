@@ -37,6 +37,22 @@ int main() {
             result.joint_states.rows() != 0 || result.joint_states.cols() != 0)
             return Fail(__LINE__);
     }
+    for (bool nearest : {false, true}) {
+        for (bool feasible : {false, true}) {
+            IkRtn result(true, 0, Eigen::MatrixXd::Ones(2, 3));
+            result.PushBack(Eigen::VectorXd::Constant(1, feasible ? 0.5 : 2.0));
+            const std::vector<JointNode> nodes{
+                JointNode(SE3d(), Eigen::Vector3d::UnitX(), JointType::PRISMATIC,
+                          0.0, 1.0)};
+            const Eigen::VectorXd reference = Eigen::VectorXd::Constant(1, 0.5);
+            const bool success = nearest ? result.WrapToLimitsNear(nodes, reference)
+                                         : result.GetLimitsIK(nodes);
+            if (success != feasible || result.joint_states.rows() != 0 ||
+                result.joint_states.cols() != 0 ||
+                (!feasible && !EmptyFailure(result)))
+                return Fail(__LINE__);
+        }
+    }
     constexpr double tau = 2.0 * M_PI;
     const double infinity = std::numeric_limits<double>::infinity();
     // Inclusive endpoints must not depend on which equivalent seed was used.

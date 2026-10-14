@@ -216,6 +216,8 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode> &joint_nodes) {
 
 bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
                         std::size_t max_solutions) {
+    if (joint_states.rows() != 0 || joint_states.cols() != 0)
+        joint_states.resize(0, 0);
     const auto fail = [this]() {
         ik_joints.clear();
         ik_number = 0;
@@ -342,6 +344,8 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
 
 bool IkRtn::WrapToLimitsNear(const std::vector<JointNode> &joint_nodes,
                              const Eigen::VectorXd &reference) {
+    if (joint_states.rows() != 0 || joint_states.cols() != 0)
+        joint_states.resize(0, 0);
     const auto fail = [this]() {
         ik_joints.clear();
         ik_number = 0;
