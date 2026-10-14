@@ -50,6 +50,9 @@ def _stable_norm(value) -> float:
     values = np.asarray(value, dtype=float).reshape(-1)
     with np.errstate(over="ignore", under="ignore", invalid="ignore"):
         norm = float(np.linalg.norm(values))
+    if norm == 0.0:
+        # Squared components may underflow even when the vector is nonzero.
+        return float(np.hypot.reduce(np.abs(values))) if values.any() else norm
     if (np.isfinite(norm) and norm >= _MIN_NORMAL_NORM) or not np.isfinite(
         values
     ).all():
