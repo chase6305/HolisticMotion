@@ -120,5 +120,29 @@ int main() {
             if (!Check(extreme, states, query, metric, radius))
                 return 1;
     }
+    // Degenerate boxes can equal a point's distance. Conservative pruning
+    // must retain ties despite scalar versus vectorized reduction rounding.
+    for (bool periodic : {false, true}) {
+        std::vector<bool> topology(7, false);
+        topology[0] = periodic;
+        for (double weight : {1e-300, 1.0, 1e300}) {
+            const Eigen::VectorXd unequal_weights =
+                weight * Eigen::VectorXd::LinSpaced(7, 0.1, 1.3);
+            JointSpaceMetric point_metric(unequal_weights, topology);
+            const Eigen::VectorXd point =
+                Eigen::VectorXd::LinSpaced(7, -0.7, 1.1);
+            const std::vector<Eigen::VectorXd> points(513, point);
+            const Eigen::VectorXd origin = Eigen::VectorXd::Zero(7);
+            const double radius =
+                std::sqrt(point_metric.SquaredDistance(point, origin));
+            JointSpaceIndex point_index;
+            for (double boundary :
+                 {radius, std::nextafter(radius, 0.0),
+                  std::nextafter(radius,
+                                 std::numeric_limits<double>::infinity())})
+                if (!Check(point_index, points, origin, point_metric, boundary))
+                    return 1;
+        }
+    }
     return 0;
 }
