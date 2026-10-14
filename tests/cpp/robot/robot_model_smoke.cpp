@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 
 #include "holistic_motion/robot/Robot.h"
 
@@ -37,6 +38,9 @@ int main() {
 
     auto link = robot.GetLink("link20");
     auto joint = robot.GetJoint("joint20");
+    std::ostringstream report;
+    report << *joint << static_cast<const Joint&>(*joint);
+    if (report.str().find("joint20") == std::string::npos) return 1;
     link->name = "renamed_link";
     joint->name = "renamed_joint";
     link->parent_joint = joint->name;

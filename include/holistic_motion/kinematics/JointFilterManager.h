@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cmath>
 #include <numeric>
 #include <set>
 
@@ -75,12 +77,16 @@ public:
     /// \brief Set angle thresholds for all joints using a vector
     ///
     /// \param thresholds Vector containing threshold values for all joints
-    /// \return true if successful, false if vector size doesn't match
+    /// \return false if the size doesn't match or a threshold is not finite
     bool SetJointAngleThresholds(const std::vector<double>& thresholds) {
         if (thresholds.size() != angle_thresholds_.size()) {
             holistic_motion::utility::LogWarning(
                     "Thresholds size ({}) does not match robot DOF ({})",
                     thresholds.size(), angle_thresholds_.size());
+            return false;
+        }
+        if (!std::all_of(thresholds.begin(), thresholds.end(),
+                         [](double value) { return std::isfinite(value); })) {
             return false;
         }
         std::copy(thresholds.begin(), thresholds.end(),
@@ -92,8 +98,9 @@ public:
     ///
     /// \param joint_index Index of the joint
     /// \param threshold Threshold value for the joint
-    /// \return true if successful, false if index out of range
+    /// \return false if the index is out of range or the threshold is not finite
     bool SetJointAngleThreshold(size_t joint_index, double threshold) {
+        if (!std::isfinite(threshold)) return false;
         if (joint_index >= angle_thresholds_.size()) {
             holistic_motion::utility::LogWarning("Joint index {} out of range (max {})",
                                       joint_index,
@@ -130,8 +137,9 @@ public:
     ///
     /// \param joint_index Index of the joint to check
     /// \param angle Angle value to validate
-    /// \return true if angle is valid, false otherwise
+    /// \return true if the angle is finite and satisfies the filter
     bool IsValidJointAngle(size_t joint_index, double angle) const {
+        if (!std::isfinite(angle)) return false;
         if (joint_index >= filters_.size()) {
             return true;
         }

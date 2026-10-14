@@ -10,6 +10,29 @@ using namespace holistic_motion::robotics;
 
 int main() {
     {
+        JointFilterManager filters(2);
+        filters.SetAllJointFilters(JointFilterManager::FilterMode::POSITIVE);
+        if (!filters.SetJointAngleThresholds({0.1, 0.2}))
+            return 1;
+        for (double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity()}) {
+            filters.SetAllJointFilters(
+                JointFilterManager::FilterMode::POSITIVE);
+            if (filters.SetJointAngleThreshold(0, invalid) ||
+                filters.SetJointAngleThresholds({0.5, invalid}) ||
+                filters.GetJointAngleThresholds() !=
+                    std::vector<double>({0.1, 0.2}) ||
+                filters.IsValidJointAngle(0, invalid))
+                return 1;
+            filters.Reset();
+            if (filters.IsValidJointAngle(0, invalid))
+                return 1;
+        }
+        if (!filters.IsValidJointAngle(0, 0.3))
+            return 1;
+    }
+    {
         std::vector<JointNode> nodes{JointNode(SE3d(), Eigen::Vector3d::UnitX(),
                                                JointType::PRISMATIC, -1.0, 1.0),
                                      JointNode()};
