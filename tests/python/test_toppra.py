@@ -464,3 +464,28 @@ def test_toppra_result_rejects_complex_snapshots(field):
     values[field] = np.array(values[field], dtype=np.complex128)
     with pytest.raises(TypeError, match="real"):
         ToppraResult(**values)
+
+
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_toppra_rejects_object_arrays_of_complex_scalars(imaginary):
+    points = np.array(
+        [[np.complex128(imaginary * 1j)], [np.complex128(1.0 + imaginary * 1j)]],
+        dtype=object,
+    )
+    with pytest.raises(TypeError, match="real"):
+        ToppraTrajectory(points, [1.0], [2.0])
+
+
+def test_toppra_preserves_real_object_array_inputs_and_snapshot_ownership():
+    points = np.array([[0.0], [1.0]], dtype=object)
+    trajectory = ToppraTrajectory(
+        points,
+        np.array([1.0], dtype=object),
+        np.array([2.0], dtype=object),
+        grid_size=25,
+    )
+    points[1, 0] = 2.0
+    position, _, _ = trajectory.sample(
+        np.array([0.0, trajectory.duration], dtype=object)
+    )
+    np.testing.assert_array_equal(position, [[0.0], [1.0]])

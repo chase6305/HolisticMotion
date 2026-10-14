@@ -157,6 +157,14 @@ def test_srs_tracker_isolates_malformed_native_candidates():
         np.zeros(6),
         "bad",
         pytest.param([2**2048] * 7, id="overflowing-integers"),
+        pytest.param(
+            np.full(7, 0.25 + 1j, dtype=np.complex64), id="complex-candidates"
+        ),
+        pytest.param(np.full(7, 0.25 + 0j), id="complex-zero-imaginary"),
+        pytest.param(
+            np.array([np.complex128(0.25 + 1j)] * 7, dtype=object),
+            id="object-complex-candidates",
+        ),
     ],
 )
 def test_unusable_seed_refreshes_valid_candidates_on_later_frames(

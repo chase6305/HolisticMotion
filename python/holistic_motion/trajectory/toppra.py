@@ -89,7 +89,9 @@ class _NaturalCubicPath:
 
 def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
     array = np.asarray(value)
-    if np.iscomplexobj(array):
+    if np.iscomplexobj(array) or (
+        array.dtype.kind == "O" and any(np.iscomplexobj(item) for item in array.flat)
+    ):
         raise TypeError(f"{name} must be real")
     if copy:
         return np.array(array, dtype=float, copy=True)

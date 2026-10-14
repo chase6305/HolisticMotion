@@ -400,7 +400,13 @@ class SRSContinuousTracker:
         # or prevent an all-configurations refresh after an unusable seed.
         for candidate in candidates:
             try:
-                values = np.asarray(candidate, dtype=float)
+                values = np.asarray(candidate)
+                if np.iscomplexobj(values) or (
+                    values.dtype.kind == "O"
+                    and any(np.iscomplexobj(item) for item in values.flat)
+                ):
+                    continue
+                values = np.asarray(values, dtype=float)
             except (TypeError, ValueError, OverflowError):
                 continue
             if values.shape == (self._dof,) and np.isfinite(values).all():
