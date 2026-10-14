@@ -110,9 +110,13 @@ offsets include both frame translation and angular point-velocity terms.
 The local offset is rotated directly, preserving its Jacobian contribution
 after large world translations. Every nonzero center separation has a unit
 normal; exactly coincident centers use the deterministic +X normal and a zero
-distance gradient. Distances and collision predicates fall back to extended
+distance gradient. Spheres rigidly attached to the same joint have an exact zero
+distance gradient, including spheres on different links joined by fixed joints.
+Static world frames skip their identically zero point Jacobian. Distances and
+collision predicates fall back to extended
 precision when squared lengths overflow or underflow. World coordinates or
-signed distances that remain unrepresentable raise `OverflowError`.
+signed distances that remain unrepresentable raise `OverflowError`; overflowing
+gradient arithmetic also raises `OverflowError` rather than returning NaN or Inf.
 `PathOptimizer.from_sphere_collision_model` automatically uses this gradient
 for vector-space configurations when a positive soft `clearance` is requested;
 its manifold configuration updates still fall back to finite differences.

@@ -55,8 +55,10 @@ shoulder/wrist chains. Its null-space projection rejects non-finite inputs and
 uses a relative singular-value cutoff so near-singular configurations do not
 amplify numerical noise. Projection uses the retained right singular vectors
 directly, without forming a pseudoinverse. `NullSpacePlanner` requires its start
-to satisfy both hardware and user limits and safely normalizes large finite
-preferred directions before taking a step.
+to satisfy both hardware and user limits. The magnitude of a nonzero preferred
+direction does not change its step, including very small or large finite inputs.
+A seed that cannot change the current floating-point coordinates, or an IK
+correction back to the current configuration, fails and clears the output path.
 Ideal SRS models retain the direct closed-form result;
 small URDF link offsets use that result as a branch-preserving seed for a
 strict local correction. Equivalent revolute angles are selected directly
@@ -100,11 +102,15 @@ call, then accumulates each pose without allocating per-row joint or pose lists.
 Model and TCP changes take effect on the next call. Scalar FK uses axis-angle
 rotations for oblique revolute axes, and C++ continuous joint nodes contribute
 to both FK and the geometric Jacobian. Empty batches return shape `(0, 4, 4)`.
+CPU and CUDA batch FK reject non-finite output poses even when the input joints
+and TCP are finite. C++ failures clear all poses, including any completed rows.
 Streaming offset-arm targets can use `FEPContinuousTracker` with the same
 options and diagnostics as the SRS tracker. Both trackers solve the current
 branch on every frame, refresh all branches periodically, and immediately
 enumerate all candidates if the current branch fails or approaches a
-singularity. `candidate_refresh_interval` controls that tradeoff.
+singularity. Malformed candidates are filtered before branch metadata queries;
+an unusable seeded result also triggers a refresh between periodic refreshes.
+`candidate_refresh_interval` controls that tradeoff.
 
 Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
 An already converged seed skips these buffers. The workspace is local to the
@@ -112,6 +118,9 @@ call and introduces no shared mutable solver cache. C++ tolerance, step-size,
 and damping setters require finite positive values; invalid values leave the
 previous setting intact. `GetIK()` clears solution and distance outputs before
 validation, so a failed call does not retain distances from a previous solve.
+Extreme-scale Jacobians and errors use a normalized decomposition and bounded
+mantissa/exponent arithmetic when direct singular values, projections, or squared
+regularization terms overflow or lose subnormal precision.
 
 C++ solver construction validates joint fields and coordinate layout before
 allocating model-sized state. Numerical models reserve their last node for a

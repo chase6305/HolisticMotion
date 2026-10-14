@@ -91,8 +91,11 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 切空间解析梯度，也支持 `nq != nv` 的流形构型。link-local 球偏置同时计入 frame
 平移和角速度引起的点速度。局部偏移直接经旋转变换后参与 Jacobian，避免大世界
 坐标平移抹去局部力臂。非零球心间距使用单位法向量；球心完全重合时使用固定的
-+X 法向量与零距离梯度。平方长度溢出或下溢时，距离与碰撞判定会回退到扩展
-精度计算；世界坐标或有符号距离仍无法表示时抛出 `OverflowError`。
++X 法向量与零距离梯度。刚性附着于同一关节的球对具有严格的零距离梯度，包括
+通过固定关节连接的不同 link；世界固定坐标系跳过恒为零的点 Jacobian。
+平方长度溢出或下溢时，距离与碰撞判定会回退到扩展精度计算；世界坐标或有符号
+距离仍无法表示时抛出 `OverflowError`。梯度运算溢出同样抛出 `OverflowError`，
+不会返回 NaN 或 Inf。
 `PathOptimizer.from_sphere_collision_model` 对向量空间
 构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
 碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此

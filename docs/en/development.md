@@ -95,6 +95,18 @@ final length, and a path checksum. Compare all result columns before timing;
 this benchmark excludes Python callback overhead and native mesh collision costs.
 Four optional positional arguments select one case, for example
 `path_optimizer_benchmark 7 256 1 0`, to alternate versions within each case.
+Append `--finite-cost` or `--analytic-cost` to include a quadratic state cost
+with numerical or analytic gradients. CSV also records cost mode and callback
+counts so reused workspaces can be compared without changing the amount of work.
+
+`benchmarks/continuous_tracker_benchmark.py` measures complete Python tracking
+steps with 1 or 8 candidates using fixed-transform/Jacobian fixtures. It includes
+NumPy SVD and continuity selection but excludes native FK/IK work. Run with
+`HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python`; use `--baseline` to compare an
+earlier `srs_tracker.py`. Candidate counts and result checks accompany timings.
+`benchmarks/sphere_fit_benchmark.py --selection-workloads` covers small, large,
+and duplicate-heavy candidate sets in both fitting modes. Its existing
+`--baseline` option checks output equivalence and measures allocations separately.
 
 `path_geometry_workspace_smoke` checks local objective changes against full path
 objectives and analytic gradients against central finite differences, including

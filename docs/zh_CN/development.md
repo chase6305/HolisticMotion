@@ -77,6 +77,15 @@ Clang 和 MSVC 的类型与版本比较，不替代各平台的真实构建。pr
 网格碰撞计算成本。
 可用四个位置参数单独选择用例，例如 `path_optimizer_benchmark 7 256 1 0`，
 便于逐用例交替测量前后版本。
+追加 `--finite-cost` 或 `--analytic-cost` 可启用二次状态代价，分别使用数值或
+解析梯度。CSV 同时记录代价模式与回调次数，便于在工作量一致时比较缓冲区复用。
+
+`benchmarks/continuous_tracker_benchmark.py` 使用固定变换和 Jacobian 夹具，测量
+1 或 8 个候选的完整 Python 跟踪步骤。计时包含 NumPy SVD 和连续性选择，不包含
+原生 FK/IK。使用 `HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python` 运行；
+`--baseline` 可比较旧版 `srs_tracker.py`，并核对候选数量与求解结果。
+`benchmarks/sphere_fit_benchmark.py --selection-workloads` 覆盖小型、大型及大量
+重复候选的两种拟合模式；已有的 `--baseline` 会核对输出，并单独测量分配开销。
 
 `path_geometry_workspace_smoke` 将局部目标变化与完整路径目标比较，并用中心
 有限差分校验解析梯度，覆盖周期接缝、反向扫描、多次试探和重合路点。Eigen 分配
