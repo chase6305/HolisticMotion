@@ -199,3 +199,35 @@ def test_unrelated_state_cost_cannot_mask_a_local_change(constant, gradient_sign
     assert result.success
     assert result.path[2][0] == pytest.approx(0.6 if gradient_sign > 0.0 else 0.7)
     np.testing.assert_array_equal(result.path[1], [-0.8])
+
+
+@pytest.mark.parametrize("analytic", [False, True])
+def test_retained_cost_callback_samples_are_independent_snapshots(analytic):
+    optimizer = hm.PathOptimizer([-1.0, -1.0], [1.0, 1.0])
+    retained, snapshots = [], []
+
+    def remember(q):
+        retained.append(q)
+        snapshots.append(q.copy())
+
+    def cost(q):
+        remember(q)
+        return float(np.dot(q, q))
+
+    def gradient(q):
+        remember(q)
+        return 2.0 * q
+
+    optimizer.set_state_cost(cost)
+    if analytic:
+        optimizer.set_state_cost_gradient(gradient)
+    options = cost_options(0.001, 0.1)
+    options.max_iterations = 4
+    result = optimizer.optimize(
+        [[-0.5, -0.5], [0.4, 0.2], [-0.1, 0.5], [0.5, 0.5]], options
+    )
+    assert result.success
+    assert len(retained) > 4
+    assert result.statistics.final_objective <= result.statistics.initial_objective
+    for value, snapshot in zip(retained, snapshots):
+        np.testing.assert_array_equal(value, snapshot)

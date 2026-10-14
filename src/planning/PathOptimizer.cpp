@@ -27,6 +27,7 @@ class OptimizationContext {
         PathOptimizationStatistics &statistics,
         std::chrono::steady_clock::time_point deadline)
         : lower_(lower), upper_(upper), weights_(weights),
+          metric_(weights, continuous),
           inverse_weights_(weights.cwiseInverse()),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
@@ -43,6 +44,27 @@ class OptimizationContext {
         return detail::Difference(from, to, continuous_);
     }
 
+    bool IsSmallMotion(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                       double tolerance) const {
+        for (Eigen::Index i = 0; i < from.size(); ++i) {
+            const double delta = to[i] - from[i];
+            const double difference = continuous_[static_cast<std::size_t>(i)]
+                                          ? detail::WrappedDifference(delta)
+                                          : delta;
+            if (!(std::abs(difference) <= tolerance)) return false;
+        }
+        return true;
+    }
+
+    void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                        Eigen::VectorXd &difference) const {
+        difference = to - from;
+        if (has_continuous_)
+            for (Eigen::Index i = 0; i < difference.size(); ++i)
+                if (continuous_[static_cast<std::size_t>(i)])
+                    difference[i] = detail::WrappedDifference(difference[i]);
+    }
+
     void Normalize(Eigen::VectorXd &state) const {
         for (Eigen::Index i = 0; i < state.size(); ++i)
             state[i] = NormalizeCoordinate(state[i], i);
@@ -55,13 +77,14 @@ class OptimizationContext {
                                  false);
     }
 
-    double SquaredNorm(const Eigen::VectorXd &value) const {
+    template <class Derived>
+    double SquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
         return (weights_.array() * value.array().square()).sum();
     }
 
     double Distance(const Eigen::VectorXd &first,
                     const Eigen::VectorXd &second) const {
-        return std::sqrt(SquaredNorm(Difference(first, second)));
+        return std::sqrt(metric_.SquaredDistance(first, second));
     }
 
     double PathLength(const std::vector<Eigen::VectorXd> &path) const {
@@ -74,17 +97,18 @@ class OptimizationContext {
     double GeometryObjective(const std::vector<Eigen::VectorXd> &path) const {
         if (options_.length_weight == 0.0 && options_.smoothness_weight == 0.0)
             return 0.0;
-        Eigen::VectorXd previous = Difference(path[0], path[1]);
+        Eigen::VectorXd previous(lower_.size()), next(lower_.size());
+        DifferenceInto(path[0], path[1], previous);
         double length =
             options_.length_weight > 0.0 ? std::sqrt(SquaredNorm(previous)) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
-            Eigen::VectorXd next = Difference(path[i], path[i + 1]);
+            DifferenceInto(path[i], path[i + 1], next);
             if (options_.length_weight > 0.0)
                 length += std::sqrt(SquaredNorm(next));
             if (options_.smoothness_weight > 0.0)
                 smoothness += SquaredNorm(next - previous);
-            previous = std::move(next);
+            previous.swap(next);
         }
         return options_.length_weight * length +
                options_.smoothness_weight * smoothness;
@@ -152,9 +176,10 @@ class OptimizationContext {
         return value;
     }
 
-    Eigen::VectorXd StateCostGradient(const Eigen::VectorXd &state,
-                                      double current_cost) {
-        Eigen::VectorXd gradient = Eigen::VectorXd::Zero(state.size());
+    const Eigen::VectorXd &StateCostGradient(const Eigen::VectorXd &state,
+                                            double current_cost) {
+        auto &gradient = cost_gradient_;
+        gradient.setZero(state.size());
         if (!state_cost_ || options_.state_cost_weight == 0.0)
             return gradient;
         if (state_cost_gradient_) {
@@ -166,8 +191,13 @@ class OptimizationContext {
                     "dimension");
             return gradient;
         }
-        Eigen::VectorXd positive = state;
-        Eigen::VectorXd negative = state;
+        // These samples belong to this optimization request. Retain their
+        // storage across waypoints rather than allocating three vectors for
+        // every finite-difference gradient.
+        auto &positive = positive_sample_;
+        auto &negative = negative_sample_;
+        positive = state;
+        negative = state;
         for (Eigen::Index i = 0; i < state.size(); ++i) {
             const bool continuous = continuous_[static_cast<std::size_t>(i)];
             // Keep circular samples on opposite sides of the current point.
@@ -290,6 +320,7 @@ class OptimizationContext {
     const Eigen::VectorXd &lower_;
     const Eigen::VectorXd &upper_;
     const Eigen::VectorXd &weights_;
+    detail::JointSpaceMetric metric_;
     Eigen::VectorXd inverse_weights_;
     bool has_continuous_{false};
     const std::vector<bool> &continuous_;
@@ -299,6 +330,7 @@ class OptimizationContext {
     const PathOptimizationOptions &options_;
     PathOptimizationStatistics &statistics_;
     std::chrono::steady_clock::time_point deadline_;
+    Eigen::VectorXd cost_gradient_, positive_sample_, negative_sample_;
 };
 
 } // namespace
@@ -545,9 +577,7 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 ++result.statistics.line_search_evaluations;
                 candidate = previous + step * direction;
                 context.Normalize(candidate);
-                if (context.Difference(previous, candidate)
-                        .cwiseAbs()
-                        .maxCoeff() <= 1e-15)
+                if (context.IsSmallMotion(previous, candidate, 1e-15))
                     break;
                 result.path[i] = candidate;
                 const double candidate_geometry = geometry.CandidateObjective(
