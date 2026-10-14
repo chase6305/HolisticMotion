@@ -1,5 +1,7 @@
 #include "holistic_motion/kinematics/OPWKinematics.h"
 
+#include "FrameValidation.h"
+
 #include "SeedAlias.h"
 
 #include <algorithm>
@@ -99,6 +101,8 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
 
     ik_solutions.Clear();
     dist.clear();
+    if (!detail::IsValidFrame(target_pose))
+        return false;
 
     if (joint_seed.size() != this->dof_) {
         joint_seed = this->home_joints_;

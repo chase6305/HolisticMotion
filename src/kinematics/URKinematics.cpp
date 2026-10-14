@@ -1,5 +1,7 @@
 #include "holistic_motion/kinematics/URKinematics.h"
 
+#include "FrameValidation.h"
+
 #include "SeedAlias.h"
 
 #include <algorithm>
@@ -84,6 +86,8 @@ bool URKinematics::GetIK(const SE3d &target_pose,
 
     ik_solutions.Clear();
     dist.clear();
+    if (!detail::IsValidFrame(target_pose))
+        return false;
 
     if (joint_seed.size() != this->dof_) {
         joint_seed = this->home_joints_;

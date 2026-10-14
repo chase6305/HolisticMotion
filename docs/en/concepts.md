@@ -127,6 +127,9 @@ previous setting intact. `GetIK()` clears solution and distance outputs before
 validation, so a failed call does not retain distances from a previous solve.
 If a C++ seed is an element of the previous IK output, the numerical, UR and
 OPW solvers copy it before clearing that output. Independent seeds avoid this copy.
+C++ IK targets use the same rigid-frame validation as TCP and user frames:
+finite coefficients and a quaternion squared norm within `1e-9` of one.
+Invalid targets fail with empty solution outputs and preserve a valid independent seed.
 Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
 representation of the converged branch minimizing weighted joint movement
 from the caller's finite seed. A zero-seed convergence retry

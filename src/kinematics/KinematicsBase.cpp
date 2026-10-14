@@ -1,4 +1,7 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
+
+#include "FrameValidation.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -13,17 +16,12 @@ bool ValidLimitInterval(double lower, double upper) {
     return !std::isnan(lower) && !std::isnan(upper) && lower <= upper;
 }
 
-bool ValidFrame(const SE3d& pose) {
-    return pose.Coeffs().allFinite() &&
-           std::abs(pose.Coeffs().tail<4>().squaredNorm() - 1.0) <= 1e-9;
-}
-
 bool ValidJointNode(const JointNode& node) {
-    if (!ValidFrame(node.origin_pose) || !node.axis.allFinite() ||
+    if (!detail::IsValidFrame(node.origin_pose) || !node.axis.allFinite() ||
         !ValidLimitInterval(node.lower_limit, node.upper_limit) ||
         !ValidLimitInterval(node.lower_limit_set, node.upper_limit_set) ||
         std::max(node.lower_limit, node.lower_limit_set) >
-                std::min(node.upper_limit, node.upper_limit_set)) {
+            std::min(node.upper_limit, node.upper_limit_set)) {
         return false;
     }
     switch (node.joint_type) {
@@ -157,7 +155,8 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
 }
 
 bool KinematicsBase::SetTCP(const SE3d& pose) {
-    if (!ValidFrame(pose)) return false;
+    if (!detail::IsValidFrame(pose))
+        return false;
     this->tcp_ = pose;
     return true;
 }
@@ -167,7 +166,8 @@ void KinematicsBase::ClearTCP() {
 }
 
 bool KinematicsBase::SetUserFrame(const SE3d& pose) {
-    if (!ValidFrame(pose)) return false;
+    if (!detail::IsValidFrame(pose))
+        return false;
     this->userframe_ = pose;
     return true;
 }

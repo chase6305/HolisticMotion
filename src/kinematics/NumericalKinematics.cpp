@@ -1,8 +1,8 @@
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 
-#include "SeedAlias.h"
-
 #include "DampedIKWorkspace.h"
+#include "FrameValidation.h"
+#include "SeedAlias.h"
 
 #include <algorithm>
 #include <cmath>
@@ -73,8 +73,7 @@ bool NumericalKinematics::SolveIK(
     if (joint_seed.size() != this->dof_) {
         joint_seed = this->home_joints_;
     }
-    if (!joint_seed.allFinite() ||
-        !target_pose.GetTransform().allFinite()) {
+    if (!joint_seed.allFinite() || !detail::IsValidFrame(target_pose)) {
         ik_solutions.success = false;
         return false;
     }

@@ -47,6 +47,44 @@ bool CheckRoundTrip(Solver& solver, const Eigen::VectorXd& joints) {
     return true;
 }
 
+template <typename Solver>
+bool CheckInvalidTargets(Solver &solver, const Eigen::VectorXd &joints) {
+    SE3d valid;
+    if (!solver.GetFK(joints, valid))
+        return false;
+    std::vector<SE3d> targets;
+    for (double scale : {0.0, 0.5, 2.0, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()}) {
+        targets.push_back(valid);
+        targets.back().Coeffs().tail<4>() *= scale;
+    }
+    targets.push_back(valid);
+    targets.back().Coeffs()[0] = std::numeric_limits<double>::quiet_NaN();
+    for (const auto &target : targets) {
+        for (bool nearest : {false, true}) {
+            Eigen::VectorXd seed = joints;
+            IkRtn solutions;
+            solutions.PushBack(joints);
+            std::vector<double> distances{99.0};
+            double distance = 99.0;
+            const bool success =
+                nearest ? solver.GetNearestIK(target, solutions, seed, distance)
+                        : solver.GetIK(target, solutions, seed, distances);
+            if (success || solutions.success || solutions.ik_number != 0 ||
+                !solutions.ik_joints.empty() || !seed.isApprox(joints, 0.0) ||
+                (!nearest && !distances.empty()) ||
+                (nearest && distance != 99.0))
+                return false;
+        }
+    }
+    valid.Coeffs().tail<4>() *= -1;
+    Eigen::VectorXd seed = joints;
+    IkRtn solutions;
+    double distance = -1;
+    return solver.GetNearestIK(valid, solutions, seed, distance) &&
+           solutions.ik_number == 1 && distance >= 0;
+}
+
 }  // namespace
 
 int main() {
@@ -79,6 +117,11 @@ int main() {
     q << 0.25, -0.70, 0.85, -0.45, 0.65, -0.20;
     if (!CheckRoundTrip(opw_solver, q) || !CheckRoundTrip(ur_solver, q)) {
         std::cerr << "analytic FK/IK round trip failed\n";
+        return 1;
+    }
+    if (!CheckInvalidTargets(opw_solver, q) ||
+        !CheckInvalidTargets(ur_solver, q)) {
+        std::cerr << "invalid analytic IK target changed solver outputs\n";
         return 1;
     }
 
