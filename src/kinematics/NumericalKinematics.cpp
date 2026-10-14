@@ -194,12 +194,14 @@ bool NumericalKinematics::SolveIK(
 
 bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
                                       IkRtn &ik_solutions,
-                                      Eigen::VectorXd &joint_seed,
+                                      Eigen::VectorXd &seed_input,
                                       double &min_dist) const {
-    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
-        Eigen::VectorXd stable_seed = joint_seed;
-        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
+    const bool aliased = detail::SeedAliasesSolutions(ik_solutions, seed_input);
+    Eigen::VectorXd seed_copy;
+    if (aliased) {
+        seed_copy = seed_input;
     }
+    Eigen::VectorXd &joint_seed = aliased ? seed_copy : seed_input;
 
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK.");
 
