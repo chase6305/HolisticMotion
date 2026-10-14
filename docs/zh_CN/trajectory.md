@@ -99,6 +99,14 @@ loss.backward()  # points.grad 和 velocity.grad 均位于 CUDA
 网格传入 NumPy 的 `gridpoints`。两者保留相同的自然三次样条几何和连续区间限值。
 CUDA 支持不代表小批次一定更快：可达性传播沿网格仍是顺序计算，逐段启动 Torch 操作。
 
+在测试的 Python 3.10 / Torch 2.13.0+cu130 环境中，固定到单个 CPU 的 CUDA
+梯度长测完成了 10,000 组数值对照，但在解释器退出时中止。原生栈显示 autograd
+后台线程销毁张量 Python 引用时重新获取 GIL。将求值与反向传播包在
+`with torch.autograd.set_multithreading_enabled(False):` 中可在对照运行中避开
+该问题；此上下文仅影响当前线程，反向传播在调用线程执行。相关上游
+[GIL 退出竞态报告](https://github.com/pytorch/pytorch/issues/179238)
+描述了另一后端中的相同关闭机制。
+
 无需编译扩展即可运行批量前向及反向传播示例：
 
 ```bash

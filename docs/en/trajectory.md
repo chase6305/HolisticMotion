@@ -127,6 +127,15 @@ Natural cubic geometry and continuous interval limits are the same. CUDA
 support does not imply a speedup for small batches: the reachability passes
 remain sequential along the grid and launch Torch operations per interval.
 
+In an audited Python 3.10 / Torch 2.13.0+cu130 environment, single-CPU-affinity
+CUDA gradient stress runs completed 10,000 numerical comparisons but aborted
+during interpreter shutdown. The native stack showed an autograd worker
+reacquiring the GIL while destroying tensor Python references. Enclosing
+evaluation and backward calls in `with torch.autograd.set_multithreading_enabled(False):`
+avoided the abort in controlled runs. This thread-local context runs backward
+on the calling thread. A related upstream [GIL shutdown race report](https://github.com/pytorch/pytorch/issues/179238)
+describes the same finalization mechanism in another backend.
+
 Run the batched forward/backward example without the compiled extension:
 
 ```bash
