@@ -286,6 +286,11 @@ snapshots of caller-provided arrays and sequences. Copy
 UI or controller code from modifying solver history through a returned result.
 Target matrices must be proper SE(3) transforms with a homogeneous last row
 and a right-handed orthonormal rotation.
+Target poses must contain real values; complex input raises `TypeError` before
+conversion.
+The same rule applies to gains, costs, weights, configurations, support vertices,
+balance targets and result diagnostics. Rejected seed or target updates retain
+the previous solver state.
 
 The previous result is reused as a warm start. Pass `seed=` to override it or
 call `solver.reset()` to return to Pinocchio's neutral configuration.
@@ -293,8 +298,9 @@ The base `PinocchioRetargetingSolver` validates the result before updating that
 history. Rejected non-finite diagnostics or aborted result construction retain
 the previous warm start, even when an explicit seed was supplied. A normally
 returned result that exhausts the iteration budget still becomes the next seed.
-Residual norms use overflow-safe accumulation, so a large finite pose error can
-still be returned as a failed solve diagnostic. If that residual is representable
+Residual norms use stable accumulation when their squared components overflow
+or underflow. Large finite errors remain useful diagnostics, and tiny nonzero
+errors do not become false zero residuals. If that residual is representable
 but its squared objective is not, `result.objective` is `NaN`; the residual and
 configuration remain valid, and the normally returned configuration becomes the
 next warm start.

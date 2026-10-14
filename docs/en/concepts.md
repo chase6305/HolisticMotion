@@ -111,6 +111,9 @@ enumerate all candidates if the current branch fails or approaches a
 singularity. Malformed candidates are filtered before branch metadata queries;
 an unusable seeded result also triggers a refresh between periodic refreshes.
 `candidate_refresh_interval` controls that tradeoff.
+Both trackers retain small pose errors with stable position norms and `atan2`
+rotation angles. Candidates with non-finite dynamics, FK poses or scores are
+discarded before ranking; an unrepresentable prediction leaves history intact.
 
 Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
 An already converged seed skips these buffers. The workspace is local to the
@@ -118,9 +121,15 @@ call and introduces no shared mutable solver cache. C++ tolerance, step-size,
 and damping setters require finite positive values; invalid values leave the
 previous setting intact. `GetIK()` clears solution and distance outputs before
 validation, so a failed call does not retain distances from a previous solve.
+`GetNearestIK()` and Python `inverse()` return one solution minimizing weighted
+joint movement from the caller's finite seed. A zero-seed convergence retry
+still uses the original seed to choose multi-turn representations and distances.
 Extreme-scale Jacobians and errors use a normalized decomposition and bounded
 mantissa/exponent arithmetic when direct singular values, projections, or squared
 regularization terms overflow or lose subnormal precision.
+Translation norms retain tiny nonzero errors when their component squares
+underflow. Rotation errors use `atan2` to preserve angles whose trace rounds to
+three; FK also retains tiny revolute motions when their norm squares vanish.
 
 C++ solver construction validates joint fields and coordinate layout before
 allocating model-sized state. Numerical models reserve their last node for a
@@ -149,6 +158,8 @@ use their sine/cosine phase when ordinary remainder reduction loses accuracy;
 returned wraps must preserve that phase to `1e-10`. Nonperiodic coordinates are
 only checked against their interval. An already in-limit configuration with no
 other periodic representation skips turn enumeration and its workspace.
+For nonunit rotational axes, the coordinate period is `2*pi/axis.norm()`.
+Wrapping checks the physical rotation angle used by FK, including oblique axes.
 
 Expansion is limited to 65536 configurations by default, counted before any
 later deduplication. The C++ overload `GetLimitsIK(nodes, max_solutions)` accepts
@@ -157,7 +168,11 @@ unrepresentable turn range returns `false` with an empty result. No partial
 solution set is reported. Numerical `solve_all()` inherits the default budget;
 large multi-turn ranges can therefore fail even if individual joints have valid
 representations. Analytic nearest-branch filtering uses its existing separate
-`WrapToLimitsNear()` path.
+`WrapToLimitsNear()` path. Numerical `GetNearestIK()` and Python `inverse()`
+also select one representation per joint directly, so they can succeed when
+enumerating all turn combinations would exceed the all-solutions budget.
+Nearest wrapping checks nonperiodic coordinates without changing them and
+rejects NaN limits or an unrepresentable selected periodic phase.
 
 ## Scope
 
