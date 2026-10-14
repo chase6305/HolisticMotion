@@ -13,6 +13,22 @@ from holistic_motion.kit.retargeting import (
 )
 
 
+@pytest.mark.parametrize("value", [np.complex64(0.5), np.complex128(0.5 + 1j)])
+@pytest.mark.parametrize(
+    "field", ["gain", "lm_damping", "position_cost", "orientation_cost"]
+)
+def test_frame_task_rejects_complex_parameters(value, field):
+    with pytest.raises(TypeError, match="real"):
+        FrameTask(**{field: value})
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
+def test_frame_task_rejects_complex_cost_arrays(dtype):
+    values = np.array([np.complex128(0.5 + 1j)] * 3, dtype=dtype)
+    with pytest.raises(TypeError, match="real"):
+        FrameTask(position_cost=values)
+
+
 def make_solver(tmp_path, solver_type, kind, gain, posture_gain):
     pytest.importorskip("pinocchio", exc_type=ImportError)
     urdf = tmp_path / "sliding_mass.urdf"
@@ -69,6 +85,51 @@ def make_solver(tmp_path, solver_type, kind, gain, posture_gain):
 @pytest.mark.parametrize(
     "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
 )
+@pytest.mark.parametrize("method", ["reset", "solve"])
+def test_complex_seed_rejection_preserves_retargeting_history(
+    tmp_path, solver_type, method
+):
+    solver, targets = make_solver(tmp_path, solver_type, "frame", 1.0, 1.0)
+    solver.reset([0.25])
+    solver._last_velocity[:] = 0.1
+    original_q, original_velocity = solver._last_q.copy(), solver._last_velocity.copy()
+    values = np.array([0.5 + 1j])
+    with pytest.raises(TypeError, match="real"):
+        if method == "reset":
+            solver.reset(values)
+        else:
+            solver.solve(targets, seed=values)
+    np.testing.assert_array_equal(solver._last_q, original_q)
+    np.testing.assert_array_equal(solver._last_velocity, original_velocity)
+    np.testing.assert_array_equal(values, [0.5 + 1j])
+
+
+@pytest.mark.parametrize(
+    "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
+)
+@pytest.mark.parametrize(
+    "method,attribute,size",
+    [
+        ("set_center_of_mass_target", "_center_of_mass_target", 3),
+        ("set_zmp_target", "_zmp_target", 2),
+        ("set_center_of_mass_acceleration", "_center_of_mass_acceleration", 3),
+    ],
+)
+def test_complex_balance_target_rejection_preserves_previous_value(
+    tmp_path, solver_type, method, attribute, size
+):
+    solver, _ = make_solver(tmp_path, solver_type, "frame", 1.0, 1.0)
+    setter = getattr(solver, method)
+    original = np.arange(size) * 0.1
+    setter(original)
+    with pytest.raises(TypeError, match="real"):
+        setter(original + 1j)
+    np.testing.assert_array_equal(getattr(solver, attribute), original)
+
+
+@pytest.mark.parametrize(
+    "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
+)
 @pytest.mark.parametrize("kind", ["frame", "com", "zmp", "support_com", "support_zmp"])
 @pytest.mark.parametrize("gain,posture_gain,seed", [(0.1, 1.0, 0.02), (1.0, 0.1, 0.55)])
 def test_offline_solve_accepts_the_gain_weighted_descent_direction(
@@ -90,6 +151,7 @@ def test_offline_solve_accepts_the_gain_weighted_descent_direction(
     # A compromise between conflicting tasks must not be labeled converged.
     assert not result.success
     q = float(result.configuration[0])
+
     def objective(x):
         return 0.5 * (gain * (1.0 - x) ** 2 + posture_gain * x**2)
 

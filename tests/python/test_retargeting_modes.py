@@ -154,6 +154,51 @@ def test_target_accepts_real_object_pose_and_owns_it():
     assert not target.pose.flags.writeable
 
 
+@pytest.mark.parametrize("value", [np.complex64(0.5), np.complex128(0.5 + 1j)])
+def test_target_rejects_complex_weight(value):
+    with pytest.raises(TypeError, match="real"):
+        RetargetingTarget(np.eye(4), weight=value)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
+def test_retargeting_result_rejects_complex_configuration(dtype):
+    from holistic_motion.kit.retargeting import RetargetingResult
+
+    values = np.array([np.complex128(0.5 + 1j)], dtype=dtype)
+    with pytest.raises(TypeError, match="real"):
+        RetargetingResult(values, True, 1, 0.0, 0.0, RetargetingMode.LEFT_ARM)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "residual",
+        "solve_ms",
+        "collision_cost",
+        "objective",
+        "position_residual",
+        "orientation_residual",
+        "support_polygon_violation",
+        "center_of_mass_residual",
+        "zmp_residual",
+    ],
+)
+def test_retargeting_result_rejects_complex_diagnostics(field):
+    from holistic_motion.kit.retargeting import RetargetingResult
+
+    kwargs = dict(
+        configuration=[0.0],
+        success=True,
+        iterations=1,
+        residual=0.0,
+        solve_ms=0.0,
+        mode=RetargetingMode.LEFT_ARM,
+    )
+    kwargs[field] = np.complex128(0.5 + 1j)
+    with pytest.raises(TypeError, match="real"):
+        RetargetingResult(**kwargs)
+
+
 def test_retargeting_result_owns_immutable_outputs():
     from holistic_motion.kit.retargeting import RetargetingResult
 

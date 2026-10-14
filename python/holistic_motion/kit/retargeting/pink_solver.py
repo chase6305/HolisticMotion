@@ -14,6 +14,7 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 
+from ..._validation import real_array
 from .modes import RetargetingMode
 from .pinocchio_solver import (
     PinocchioRetargetingSolver,
@@ -267,19 +268,19 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             raise
 
     def set_center_of_mass_target(self, target: Sequence[float]) -> None:
-        value = np.asarray(target, dtype=float).reshape(-1)
+        value = real_array(target, name="center-of-mass target").reshape(-1)
         if value.shape != (3,) or not np.isfinite(value).all():
             raise ValueError("center-of-mass target must contain three finite values")
         self._center_of_mass_target = value.copy()
 
     def set_zmp_target(self, target: Sequence[float]) -> None:
-        value = np.asarray(target, dtype=float).reshape(-1)
+        value = real_array(target, name="ZMP target").reshape(-1)
         if value.shape != (2,) or not np.isfinite(value).all():
             raise ValueError("ZMP target must contain two finite XY values")
         self._zmp_target = value.copy()
 
     def set_center_of_mass_acceleration(self, acceleration: Sequence[float]) -> None:
-        value = np.asarray(acceleration, dtype=float).reshape(-1)
+        value = real_array(acceleration, name="center-of-mass acceleration").reshape(-1)
         if value.shape != (3,) or not np.isfinite(value).all():
             raise ValueError(
                 "center-of-mass acceleration must contain three finite values"

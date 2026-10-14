@@ -10,15 +10,31 @@ _HOMOGENEOUS_LAST_ROW = np.array([0.0, 0.0, 0.0, 1.0])
 _HOMOGENEOUS_LAST_ROW.setflags(write=False)
 
 
-def validated_transform(value, *, name: str, readonly: bool = False) -> np.ndarray:
-    """Return an owned, validated homogeneous SE(3) transform."""
-
+def require_real(value, *, name: str):
+    """Reject recognized complex values before a real numeric conversion."""
+    if isinstance(value, (float, int, np.floating, np.integer)):
+        return value
     array = np.asarray(value)
     if np.iscomplexobj(array) or (
         array.dtype.kind == "O" and any(np.iscomplexobj(item) for item in array.flat)
     ):
         raise TypeError(f"{name} must contain real values")
-    transform = np.array(array, dtype=float, copy=True)
+    return array
+
+
+def real_array(value, *, name: str, copy: bool = False) -> np.ndarray:
+    array = require_real(value, name=name)
+    return (
+        np.array(array, dtype=float, copy=True)
+        if copy
+        else np.asarray(array, dtype=float)
+    )
+
+
+def validated_transform(value, *, name: str, readonly: bool = False) -> np.ndarray:
+    """Return an owned, validated homogeneous SE(3) transform."""
+
+    transform = real_array(value, name=name, copy=True)
     if transform.shape != (4, 4) or not np.isfinite(transform).all():
         raise ValueError(f"{name} must be a finite 4x4 matrix")
     if not np.allclose(transform[3], _HOMOGENEOUS_LAST_ROW, rtol=0.0, atol=1e-8):
