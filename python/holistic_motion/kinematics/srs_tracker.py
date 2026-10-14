@@ -262,55 +262,11 @@ class SRSContinuousTracker:
             predicted = self._joints + self._velocity * dt
         if not np.isfinite(predicted).all():
             raise ValueError("dt produces a nonfinite joint prediction")
-        candidates = self._candidates(pose)
-        evaluated = []
-        for raw in candidates:
-            try:
-                joints = self._unwrap(raw, predicted)
-            except ValueError:
-                # A native enumeration may contain an unusable branch near a
-                # joint limit. Keep evaluating the other independent branches.
-                continue
-            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-                velocity = (joints - self._joints) / dt
-                acceleration = (velocity - self._velocity) / dt
-            if not np.all(
-                np.isfinite(velocity) & (np.abs(velocity) <= self._max_velocity + 1e-12)
-            ):
-                continue
-            if not np.all(
-                np.isfinite(acceleration)
-                & (np.abs(acceleration) <= self._max_acceleration + 1e-12)
-            ):
-                continue
-            branch = self._configuration_of(joints)
-            actual = np.asarray(self.solver.forward(joints), dtype=float)
-            if actual.shape != (4, 4) or not np.isfinite(actual).all():
-                continue
-            position_error, angle_error = self._pose_error(actual, pose)
-            if not isfinite(position_error) or not isfinite(angle_error):
-                continue
-            if position_error > self.options.position_tolerance:
-                continue
-            if angle_error > self.options.angle_tolerance:
-                continue
-            with np.errstate(over="ignore", invalid="ignore"):
-                score = self._score(
-                    joints, velocity, acceleration, predicted, branch, dt
-                )
-            if not isfinite(score):
-                continue
-            evaluated.append(
-                (
-                    score,
-                    joints,
-                    velocity,
-                    acceleration,
-                    branch,
-                    position_error,
-                    angle_error,
-                )
-            )
+        candidates, refreshed = self._candidates(pose)
+        evaluated = self._evaluate_candidates(candidates, pose, predicted, dt)
+        if not evaluated and not refreshed:
+            candidates, _ = self._candidates(pose, force_refresh=True)
+            evaluated = self._evaluate_candidates(candidates, pose, predicted, dt)
         if not evaluated:
             raise ValueError(
                 f"no {self._solver_label} candidate satisfies continuity limits"
@@ -360,33 +316,88 @@ class SRSContinuousTracker:
         self._frame_index += 1
         return result
 
-    def _candidates(self, target: np.ndarray) -> list[np.ndarray]:
-        candidates = []
-        try:
-            candidates.extend(
-                self._finite_candidates(
-                    self.solver.solve(target, self._joints, self._seeded_method())
+    def _evaluate_candidates(self, candidates, pose, predicted, dt):
+        evaluated = []
+        for raw in candidates:
+            try:
+                joints = self._unwrap(raw, predicted)
+            except ValueError:
+                # A native enumeration may contain an unusable branch near a
+                # joint limit. Keep evaluating the other independent branches.
+                continue
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                velocity = (joints - self._joints) / dt
+                acceleration = (velocity - self._velocity) / dt
+            if not np.all(
+                np.isfinite(velocity) & (np.abs(velocity) <= self._max_velocity + 1e-12)
+            ):
+                continue
+            if not np.all(
+                np.isfinite(acceleration)
+                & (np.abs(acceleration) <= self._max_acceleration + 1e-12)
+            ):
+                continue
+            branch = self._configuration_of(joints)
+            actual = np.asarray(self.solver.forward(joints), dtype=float)
+            if actual.shape != (4, 4) or not np.isfinite(actual).all():
+                continue
+            position_error, angle_error = self._pose_error(actual, pose)
+            if not isfinite(position_error) or not isfinite(angle_error):
+                continue
+            if position_error > self.options.position_tolerance:
+                continue
+            if angle_error > self.options.angle_tolerance:
+                continue
+            with np.errstate(over="ignore", invalid="ignore"):
+                score = self._score(
+                    joints, velocity, acceleration, predicted, branch, dt
+                )
+            if not isfinite(score):
+                continue
+            evaluated.append(
+                (
+                    score,
+                    joints,
+                    velocity,
+                    acceleration,
+                    branch,
+                    position_error,
+                    angle_error,
                 )
             )
-        except ValueError:
-            pass
-        singular_values = np.linalg.svd(
-            np.asarray(self.solver.jacobian(self._joints), dtype=float),
-            compute_uv=False,
-        )
-        near_singularity = (
-            singular_values.size == 0
-            or singular_values[-1] <= self.options.singular_value_threshold
-        )
-        refresh = (
-            not candidates
-            or any(
-                self._configuration_of(item) != self._configuration
-                for item in candidates
+        return evaluated
+
+    def _candidates(
+        self, target: np.ndarray, *, force_refresh: bool = False
+    ) -> tuple[list[np.ndarray], bool]:
+        candidates = []
+        refresh = force_refresh
+        if not force_refresh:
+            try:
+                candidates.extend(
+                    self._finite_candidates(
+                        self.solver.solve(target, self._joints, self._seeded_method())
+                    )
+                )
+            except ValueError:
+                pass
+            singular_values = np.linalg.svd(
+                np.asarray(self.solver.jacobian(self._joints), dtype=float),
+                compute_uv=False,
             )
-            or near_singularity
-            or self._frame_index % self.options.candidate_refresh_interval == 0
-        )
+            near_singularity = (
+                singular_values.size == 0
+                or singular_values[-1] <= self.options.singular_value_threshold
+            )
+            refresh = (
+                not candidates
+                or any(
+                    self._configuration_of(item) != self._configuration
+                    for item in candidates
+                )
+                or near_singularity
+                or self._frame_index % self.options.candidate_refresh_interval == 0
+            )
         if refresh:
             try:
                 candidates.extend(
@@ -411,7 +422,7 @@ class SRSContinuousTracker:
                 for item in unique
             ):
                 unique.append(values)
-        return unique
+        return unique, refresh
 
     def _finite_candidates(self, candidates):
         # Validate before querying branch metadata. Native configuration APIs

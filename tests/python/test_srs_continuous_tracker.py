@@ -343,6 +343,76 @@ def test_unusable_seed_refreshes_valid_candidates_on_later_frames(
     assert tracker.frame_index == 2
 
 
+@pytest.mark.parametrize(
+    "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
+)
+@pytest.mark.parametrize("rejection", ["pose", "velocity"])
+@pytest.mark.parametrize("valid_refresh", [False, True])
+def test_rejected_seed_refreshes_after_candidate_validation(
+    tracker_name, rejection, valid_refresh
+):
+    import holistic_motion as hm
+    from holistic_motion import kinematics
+
+    methods = hm.SRSSolveMethod if tracker_name.startswith("SRS") else hm.FEPSolveMethod
+
+    class Solver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        def __init__(self):
+            self.refreshes = 0
+            self.seeded_calls = 0
+
+        @staticmethod
+        def configuration(_joints):
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        @staticmethod
+        def forward(joints):
+            pose = np.eye(4)
+            pose[0, 3] = joints[0]
+            return pose
+
+        def solve(self, target, _seed, method):
+            joints = np.zeros(7)
+            if method == methods.ALL_CONFIGURATIONS:
+                self.refreshes += 1
+                if valid_refresh:
+                    joints[0] = target[0, 3]
+            else:
+                self.seeded_calls += 1
+                if rejection == "velocity":
+                    joints[0] = 2.0
+            return [joints]
+
+    solver = Solver()
+    options_type = getattr(kinematics, tracker_name.replace("Tracker", "Options"))
+    tracker = getattr(kinematics, tracker_name)(
+        solver, np.zeros(7), options_type(max_velocity=np.ones(7))
+    )
+    tracker.solve(np.eye(4), 0.01)
+    target = np.eye(4)
+    target[0, 3] = 0.001
+    if valid_refresh:
+        result = tracker.solve(target, 0.01)
+        assert result.joints[0] == target[0, 3]
+        assert result.candidate_count == 1
+        assert tracker.frame_index == 2
+    else:
+        with pytest.raises(ValueError, match="continuity limits"):
+            tracker.solve(target, 0.01)
+        np.testing.assert_array_equal(tracker.joints, np.zeros(7))
+        np.testing.assert_array_equal(tracker.velocity, np.zeros(7))
+        assert tracker.frame_index == 1
+    assert solver.refreshes == 2
+    assert solver.seeded_calls == 2
+
+
 def test_srs_tracker_rejects_wrong_options_type(tmp_path):
     import holistic_motion as hm
     from holistic_motion.kinematics import SRSContinuousTracker
