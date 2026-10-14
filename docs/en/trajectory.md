@@ -21,6 +21,9 @@ Waypoint, limit, and timing-result arrays are immutable owned snapshots.
 `sample()` and `sample_uniform()` return new arrays that applications may
 modify freely without changing the trajectory object.
 
+NumPy uses scaled chord norms when squaring finite coordinates would overflow.
+Unrepresentable waypoint differences or chord lengths raise `ValueError`.
+
 The implementation uses squared path velocity as its state, propagates both
 bounds of controllable intervals backward, then selects the largest reachable
 speed at each forward step. It has
@@ -28,8 +31,8 @@ no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
 
 The NumPy implementation eliminates symmetric acceleration bounds in bounded
-CPU chunks. Extreme time units use normalized speed variables for solving and
-sampling, then restore the requested physical units. Positive reachable speeds
+CPU chunks. Extreme spatial and time scales use normalized speed variables for
+solving and sampling, then restore the requested physical units. Positive reachable speeds
 remain valid at small magnitudes; unrepresentable boundary speeds raise
 `ValueError`. Both backends keep inactive joint constraints finite when a
 normalized limit underflows, including their Torch adjoints.

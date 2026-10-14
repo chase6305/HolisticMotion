@@ -15,6 +15,7 @@ from numbers import Integral
 import numpy as np
 
 _MAX_PATH_SPEED = np.sqrt(np.finfo(float).max)
+_MIN_INVERSE_CAP = 1.0 / float(np.finfo(float).max)
 
 
 class _NaturalCubicPath:
@@ -346,10 +347,32 @@ class ToppraTrajectory:
         ):
             raise ValueError("boundary path velocities must be finite and non-negative")
 
-        lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-        if np.any(lengths <= 1e-12):
-            raise ValueError("consecutive waypoints must be distinct")
-        waypoint_s = np.concatenate(([0.0], np.cumsum(lengths)))
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            delta = np.diff(points, axis=0)
+            lengths = np.linalg.norm(delta, axis=1)
+        if not np.isfinite(delta).all():
+            raise ValueError("waypoint differences must be finite")
+        if not np.isfinite(lengths).all():
+            # Squaring large coordinates can overflow a representable norm.
+            # Preserve the ordinary path and use scaled norms only when needed.
+            scale = np.max(np.abs(delta), axis=1)
+            normalized = np.divide(
+                delta,
+                scale[:, None],
+                out=np.zeros_like(delta),
+                where=scale[:, None] > 0,
+            )
+            with np.errstate(over="ignore"):
+                lengths = np.linalg.norm(normalized, axis=1) * scale
+        if not np.isfinite(lengths).all() or np.any(lengths <= 1e-12):
+            raise ValueError(
+                "consecutive waypoints must be distinct with finite chord lengths"
+            )
+        with np.errstate(over="ignore"):
+            waypoint_s = np.concatenate(([0.0], np.cumsum(lengths)))
+        if not np.isfinite(waypoint_s[-1]):
+            # Only relative chord lengths enter the spline parameterization.
+            waypoint_s = np.concatenate(([0.0], np.cumsum(lengths / np.max(lengths))))
         waypoint_s /= waypoint_s[-1]
         self._waypoint_s = waypoint_s
         self._path_model = _NaturalCubicPath(waypoint_s, points)
@@ -429,7 +452,10 @@ class ToppraTrajectory:
         moving = np.abs(self._q_s) > 1e-12
         limits = np.broadcast_to(self._solver_velocity, self._q_s.shape)
         ratios[moving] = limits[moving] / np.abs(self._q_s[moving])
-        return np.min(ratios, axis=1) ** 2
+        # A loose velocity bound may exceed representable squared speeds. Its
+        # infinite cap is valid; the acceleration constraints still limit x.
+        with np.errstate(over="ignore"):
+            return np.min(ratios, axis=1) ** 2
 
     def _interval_constraints(self) -> list[_IntervalConstraints]:
         ds = np.diff(self._grid)[:, None]
@@ -449,16 +475,23 @@ class ToppraTrajectory:
             float(np.max(self.max_velocity)),
             float(np.sqrt(np.max(self.max_acceleration))),
         )
-        if unit_scale < 1e-60 or unit_scale > 1e60:
-            # A change of speed units keeps elimination products near one.
-            # Normalize limits before division rather than rescaling already
-            # overflowing/underflowing half-plane coefficients.
+        with np.errstate(over="ignore", under="ignore"):
             velocity_scale = np.max(np.abs(derivative) / self.max_velocity)
             acceleration_scale = np.max(
                 np.sqrt(np.maximum(np.abs(acceleration_x), np.abs(acceleration_y)))
                 / np.sqrt(self.max_acceleration)
             )
-            self._speed_scale = 1.0 / max(velocity_scale, acceleration_scale)
+        inverse_speed_scale = max(velocity_scale, acceleration_scale)
+        if (
+            unit_scale < 1e-60
+            or unit_scale > 1e60
+            or inverse_speed_scale < 1e-60
+            or inverse_speed_scale > 1e60
+        ):
+            # A change of speed units keeps elimination products near one.
+            # Normalize limits before division rather than rescaling already
+            # overflowing/underflowing half-plane coefficients.
+            self._speed_scale = 1.0 / inverse_speed_scale
             if not np.isfinite(self._speed_scale) or self._speed_scale <= 0.0:
                 raise ValueError("path speed scale is not representable")
             with np.errstate(over="ignore", under="ignore"):
@@ -496,6 +529,9 @@ class ToppraTrajectory:
         )
         maximum = np.maximum(np.maximum(np.abs(p0), np.abs(p2)), np.abs(extremum))
         inverse_cap = np.max(maximum**2, axis=1)[:, None]
+        # Such a bound cannot restrict any finite squared speed. Dropping it
+        # also avoids overflowing redundant projection and reciprocal caps.
+        inverse_cap[inverse_cap < _MIN_INVERSE_CAP] = 0.0
         count = ds.size
         a = np.concatenate(
             (

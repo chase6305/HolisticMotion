@@ -1,5 +1,7 @@
 """Retiming should preserve endpoint and dynamics contracts across time units."""
 
+import warnings
+
 import numpy as np
 import pytest
 from holistic_motion.trajectory import ToppraResult, ToppraTrajectory
@@ -207,3 +209,144 @@ def test_inactive_joint_limits_do_not_break_speed_normalization(
         for reference, sampled in zip(expected.sample(times), actual.sample(times)):
             np.testing.assert_allclose(sampled[:, :1], reference, rtol=1e-12, atol=0)
             np.testing.assert_array_equal(sampled[:, 1], 0.0)
+
+
+@pytest.mark.parametrize("spatial_scale", [1e200, 1e250, 1e300])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.05])
+def test_large_finite_chords_preserve_retiming_and_sampling(
+    spatial_scale, end_velocity
+):
+    points = np.array([[0.0, 0.0], [1.0, 0.25], [2.0, -0.25]])
+    reference = ToppraTrajectory(
+        points,
+        [1.0, 0.8],
+        [2.0, 1.5],
+        grid_size=25,
+        end_path_velocity=end_velocity,
+    )
+    with np.errstate(all="raise"):
+        actual = ToppraTrajectory(
+            points * spatial_scale,
+            np.array([1.0, 0.8]) * spatial_scale,
+            np.array([2.0, 1.5]) * spatial_scale,
+            grid_size=25,
+            end_path_velocity=end_velocity,
+        )
+        assert actual.duration == pytest.approx(reference.duration, rel=1e-10)
+        times = np.linspace(0.0, reference.duration, 301)
+        for before, after in zip(reference.sample(times), actual.sample(times)):
+            assert np.isfinite(after).all()
+            np.testing.assert_allclose(
+                after / spatial_scale, before, rtol=1e-9, atol=1e-10
+            )
+
+
+@pytest.mark.parametrize(
+    "points, message",
+    [
+        ([[1e308], [-1e308]], "differences"),
+        ([[0.0, 0.0], [1.7e308, 1.7e308]], "finite chord lengths"),
+        ([[1e200], [1e200]], "distinct"),
+    ],
+)
+def test_unrepresentable_or_duplicate_chords_raise_validation_error(points, message):
+    dof = len(points[0])
+    with np.errstate(all="raise"), pytest.raises(ValueError, match=message):
+        ToppraTrajectory(points, np.ones(dof), np.ones(dof))
+
+
+@pytest.mark.parametrize("velocity_limit", [1e155, 1e200, 1e300])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.2])
+def test_loose_finite_velocity_caps_do_not_warn(velocity_limit, end_velocity):
+    expected = ToppraTrajectory(
+        [[0.0], [1.0]],
+        [10.0],
+        [1.0],
+        grid_size=25,
+        end_path_velocity=end_velocity,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        actual = ToppraTrajectory(
+            [[0.0], [1.0]],
+            [velocity_limit],
+            [1.0],
+            grid_size=25,
+            end_path_velocity=end_velocity,
+        )
+        assert actual.duration == pytest.approx(expected.duration, rel=1e-10)
+        times = np.linspace(0.0, expected.duration, 129)
+        for before, after in zip(expected.sample(times), actual.sample(times)):
+            np.testing.assert_allclose(after, before, rtol=1e-9, atol=1e-10)
+
+
+@pytest.mark.parametrize("spatial_scale", [1e100, 1e155, 1e200, 1e300])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.2])
+def test_large_geometry_with_ordinary_limits_preserves_finite_sampling(
+    spatial_scale, end_velocity
+):
+    # Both paths are velocity-limited on this grid. A unit acceleration is
+    # effectively unbounded after scaling the path and its duration together.
+    expected = ToppraTrajectory(
+        [[0.0], [1.0]],
+        [1.0],
+        [1e20],
+        grid_size=25,
+        end_path_velocity=end_velocity,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        actual = ToppraTrajectory(
+            [[0.0], [spatial_scale]],
+            [1.0],
+            [1.0],
+            grid_size=25,
+            end_path_velocity=end_velocity / spatial_scale,
+        )
+        assert actual.duration / spatial_scale == pytest.approx(expected.duration)
+        times = np.linspace(0.0, expected.duration, 129)
+        q, velocity, acceleration = actual.sample(times * spatial_scale)
+        reference_q, reference_v, reference_a = expected.sample(times)
+        np.testing.assert_allclose(
+            q / spatial_scale, reference_q, rtol=1e-9, atol=1e-10
+        )
+        np.testing.assert_allclose(velocity, reference_v, rtol=1e-9, atol=1e-10)
+        np.testing.assert_allclose(
+            acceleration * spatial_scale, reference_a, rtol=1e-9, atol=1e-10
+        )
+        assert np.isfinite([q, velocity, acceleration]).all()
+        assert np.max(np.abs(velocity)) <= 1.0 + 1e-10
+        assert np.max(np.abs(acceleration)) <= 1.0
+
+
+@pytest.mark.parametrize("end_velocity", [0.0, 0.05])
+def test_combined_space_and_time_units_normalize_geometry_to_limit_ratios(end_velocity):
+    points = np.array([[0.0, 0.0], [0.2, -0.3], [0.7, 0.1], [1.0, 0.0]])
+    limits = np.array([1.0, 0.7])
+    expected = ToppraTrajectory(
+        points,
+        limits,
+        np.ones(2),
+        grid_size=31,
+        end_path_velocity=end_velocity,
+    )
+    geometry_scale, time_scale = 1e40, 1e-80
+    with np.errstate(all="raise"):
+        actual = ToppraTrajectory(
+            points * geometry_scale,
+            limits * geometry_scale * time_scale,
+            np.ones(2) * geometry_scale * time_scale**2,
+            grid_size=31,
+            end_path_velocity=end_velocity * time_scale,
+        )
+        assert actual.duration * time_scale == pytest.approx(expected.duration)
+        times = np.linspace(0.0, expected.duration, 129)
+        for order, (before, after) in enumerate(
+            zip(expected.sample(times), actual.sample(times / time_scale))
+        ):
+            np.testing.assert_allclose(
+                after / (geometry_scale * time_scale**order),
+                before,
+                rtol=1e-9,
+                atol=1e-10,
+            )
