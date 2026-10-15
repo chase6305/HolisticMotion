@@ -184,7 +184,9 @@ python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
 原生 `JointTrajectoryN`、`JointTrajectory`、`RnTrajectory` 和
 `BaseTrajectory` 构造器的路点、限值，以及 `sample(times)` 的时间必须为实数。
 `CartesianLineTrajectory` 的起止位姿和限值同样必须为实数。
-复数 NumPy 数组、对象数组和列表会在转换前抛出 `TypeError`。
+标量查询时间、圆滑容差、最短时长及 `TrajectoryConstraints` 限值同样必须为实数。
+复数 NumPy 数组、对象数组、列表和标量会在转换前抛出 `TypeError`；
+`set_minimum_duration` 赋值失败时保留原有时间参数。
 
 原生 Bezier 路径遇到掉头路点时，即使启用了圆滑过渡，也保留准确路点和直线
 连接；Double-S 和梯形时间参数化会先停下再反向。二次曲线使用当前拐点的

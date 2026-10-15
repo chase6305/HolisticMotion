@@ -97,6 +97,20 @@ using holistic_motion::python::ReadParameter;
 using holistic_motion::python::RequireRealInput;
 using holistic_motion::python::WriteRealParameter;
 
+template <class Class, class Result>
+auto WithRealScalar(Result (Class::*method)(double) const, const char *name) {
+    return [method, name](const Class &self, const py::object &input) {
+        return (self.*method)(CheckedRealEigen<double>(input, name));
+    };
+}
+
+template <class Class, class Result>
+auto WithRealScalar(Result (Class::*method)(double), const char *name) {
+    return [method, name](Class &self, const py::object &input) {
+        return (self.*method)(CheckedRealEigen<double>(input, name));
+    };
+}
+
 void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
     if (samples < 2) {
         throw std::invalid_argument(
@@ -350,8 +364,10 @@ void BindJointTrajectory(py::module_ &module, const char *name,
         .def(py::init([](const py::object &waypoints,
                          const py::object &max_velocity,
                          const py::object &max_acceleration,
-                         const py::object &max_jerk, double blend_tolerance,
-                         double minimum_duration, const std::string &profile) {
+                         const py::object &max_jerk,
+                         const py::object &blend_tolerance,
+                         const py::object &minimum_duration,
+                         const std::string &profile) {
                  return std::make_unique<JointTrajectory<N>>(
                      CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
                      CheckedRealEigen<Eigen::VectorXd>(max_velocity,
@@ -359,7 +375,11 @@ void BindJointTrajectory(py::module_ &module, const char *name,
                      CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
                                                        "max_acceleration"),
                      CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-                     blend_tolerance, minimum_duration, profile);
+                     CheckedRealEigen<double>(blend_tolerance,
+                                              "blend_tolerance"),
+                     CheckedRealEigen<double>(minimum_duration,
+                                              "minimum_duration"),
+                     profile);
              }),
              py::arg("waypoints"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
@@ -378,19 +398,23 @@ void BindJointTrajectory(py::module_ &module, const char *name,
         .def_property_readonly("max_jerk", &JointTrajectory<N>::MaxJerk)
         .def_property_readonly("path_length", &JointTrajectory<N>::PathLength)
         .def_property_readonly("waypoints", &JointTrajectory<N>::Waypoints)
-        .def("position", &JointTrajectory<N>::Position, py::arg("time"),
+        .def("position", WithRealScalar(&JointTrajectory<N>::Position, "time"),
+             py::arg("time"),
              "Evaluate joint position; finite times are clamped to the "
              "trajectory.")
-        .def("velocity", &JointTrajectory<N>::Velocity, py::arg("time"),
-             "Evaluate joint velocity at a finite time.")
-        .def("acceleration", &JointTrajectory<N>::Acceleration, py::arg("time"),
-             "Evaluate joint acceleration at a finite time.")
-        .def("jerk", &JointTrajectory<N>::Jerk, py::arg("time"),
-             "Evaluate joint jerk at a finite time.")
-        .def("set_minimum_duration", &JointTrajectory<N>::SetMinimumDuration,
-             py::arg("duration"),
-             "Slow the trajectory to at least duration seconds; never speeds "
-             "it up.")
+        .def("velocity", WithRealScalar(&JointTrajectory<N>::Velocity, "time"),
+             py::arg("time"), "Evaluate joint velocity at a finite time.")
+        .def("acceleration",
+             WithRealScalar(&JointTrajectory<N>::Acceleration, "time"),
+             py::arg("time"), "Evaluate joint acceleration at a finite time.")
+        .def("jerk", WithRealScalar(&JointTrajectory<N>::Jerk, "time"),
+             py::arg("time"), "Evaluate joint jerk at a finite time.")
+        .def(
+            "set_minimum_duration",
+            WithRealScalar(&JointTrajectory<N>::SetMinimumDuration, "duration"),
+            py::arg("duration"),
+            "Slow the trajectory to at least duration seconds; never speeds "
+            "it up.")
         .def(
             "sample",
             [](const JointTrajectory<N> &trajectory, const py::object &times) {
@@ -404,7 +428,8 @@ void BindJointTrajectory(py::module_ &module, const char *name,
              py::arg("samples") = 1001,
              "Uniformly sample the inclusive [0, duration] interval and "
              "return time plus four state matrices.")
-        .def("state", &JointTrajectory<N>::State, py::arg("time"),
+        .def("state", WithRealScalar(&JointTrajectory<N>::State, "time"),
+             py::arg("time"),
              "Return position, velocity, acceleration, and jerk at one time.")
         .def(
             "constraint_report",
@@ -624,19 +649,21 @@ private:
 namespace {
 
 template <typename Factory> auto CheckedTrajectoryFactory(Factory factory) {
-    return
-        [factory](const py::object &waypoints, const py::object &max_velocity,
-                  const py::object &max_acceleration,
-                  const py::object &max_jerk, double blend_tolerance,
-                  double minimum_duration, const std::string &profile) {
-            return factory(
-                CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
-                CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity"),
-                CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
-                                                  "max_acceleration"),
-                CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-                blend_tolerance, minimum_duration, profile);
-        };
+    return [factory](
+               const py::object &waypoints, const py::object &max_velocity,
+               const py::object &max_acceleration, const py::object &max_jerk,
+               const py::object &blend_tolerance,
+               const py::object &minimum_duration, const std::string &profile) {
+        return factory(
+            CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
+            CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity"),
+            CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                              "max_acceleration"),
+            CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+            CheckedRealEigen<double>(blend_tolerance, "blend_tolerance"),
+            CheckedRealEigen<double>(minimum_duration, "minimum_duration"),
+            profile);
+    };
 }
 
 } // namespace
@@ -649,10 +676,13 @@ PYBIND11_MODULE(_holistic_motion, module) {
     holistic_motion::python::BindSamplingPlanning(module);
 
     py::class_<SE3d>(module, "SE3")
-            .def(py::init<>())
-            .def(py::init<const Eigen::Matrix4d&>())
-            .def("matrix", &SE3d::GetTransform)
-            .def("inverse", &SE3d::Inverse);
+        .def(py::init<>())
+        .def(py::init([](const py::object &transform) {
+            return SE3d(
+                CheckedRealEigen<Eigen::Matrix4d>(transform, "transform"));
+        }))
+        .def("matrix", &SE3d::GetTransform)
+        .def("inverse", &SE3d::Inverse);
 
     py::enum_<JointType>(module, "JointType")
             .value("UNKNOWN", JointType::UNKNOWN)
@@ -1493,12 +1523,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .def("load_visuals", &Robot::LoadVisuals);
 
     py::class_<TrajectoryConstraints, std::shared_ptr<TrajectoryConstraints>>(
-            module, "TrajectoryConstraints")
-            .def(py::init<const Eigen::VectorXd&, const Eigen::VectorXd&,
-                          const Eigen::VectorXd&>(),
-                 py::arg("max_velocity"), py::arg("max_acceleration"),
-                 py::arg("max_jerk"))
-            .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
+        module, "TrajectoryConstraints")
+        .def(
+            py::init([](const py::object &velocity,
+                        const py::object &acceleration,
+                        const py::object &jerk) {
+                return std::make_shared<TrajectoryConstraints>(
+                    CheckedRealEigen<Eigen::VectorXd>(velocity, "max_velocity"),
+                    CheckedRealEigen<Eigen::VectorXd>(acceleration,
+                                                      "max_acceleration"),
+                    CheckedRealEigen<Eigen::VectorXd>(jerk, "max_jerk"));
+            }),
+            py::arg("max_velocity"), py::arg("max_acceleration"),
+            py::arg("max_jerk"))
+        .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
 
     const auto report_keys = std::make_shared<const ReportKeys>();
     BindJointTrajectory<1>(module, "JointTrajectory1", report_keys);
@@ -1561,7 +1599,8 @@ PYBIND11_MODULE(_holistic_motion, module) {
         .def(py::init([](const py::object &start, const py::object &end,
                          const py::object &max_velocity,
                          const py::object &max_acceleration,
-                         const py::object &max_jerk, double minimum_duration,
+                         const py::object &max_jerk,
+                         const py::object &minimum_duration,
                          const std::string &profile) {
                  return std::make_unique<CartesianLineTrajectory>(
                      CheckedRealEigen<Eigen::Matrix4d>(start, "start"),
@@ -1571,15 +1610,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
                      CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
                                                        "max_acceleration"),
                      CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-                     minimum_duration, profile);
+                     CheckedRealEigen<double>(minimum_duration,
+                                              "minimum_duration"),
+                     profile);
              }),
              py::arg("start"), py::arg("end"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
              py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
         .def_property_readonly("duration", &CartesianLineTrajectory::Duration)
         .def_property_readonly("profile", &CartesianLineTrajectory::Profile)
-        .def("position", &CartesianLineTrajectory::Position, py::arg("time"))
-        .def("state", &CartesianLineTrajectory::State, py::arg("time"))
+        .def("position",
+             WithRealScalar(&CartesianLineTrajectory::Position, "time"),
+             py::arg("time"))
+        .def("state", WithRealScalar(&CartesianLineTrajectory::State, "time"),
+             py::arg("time"))
         .def("sample_uniform", &CartesianLineTrajectory::SampleUniform,
              py::arg("samples") = 1001)
         .def(

@@ -229,8 +229,10 @@ only NumPy; no robot assets or compiled extension are needed.
 Native `JointTrajectoryN`, `JointTrajectory`, `RnTrajectory`, and
 `BaseTrajectory` constructors require real waypoint and limit arrays.
 `CartesianLineTrajectory` likewise requires real start/end poses and limits.
-Joint/configuration `sample(times)` methods also require real times; complex NumPy arrays,
-object arrays, and lists raise `TypeError` before conversion.
+Scalar query times, blend tolerances, minimum durations, and
+`TrajectoryConstraints` limits must also be real. Complex NumPy arrays,
+object arrays, lists, and scalars raise `TypeError` before conversion. Rejected
+`set_minimum_duration` calls preserve existing timing.
 
 Native Bezier paths retain a reversing waypoint as a sharp linear join, even
 with a positive blend tolerance. Double-S and trapezoidal timing stop there
