@@ -45,14 +45,13 @@ class OptimizationContext {
         return detail::Difference(from, to, continuous_);
     }
 
-    bool IsSmallMotion(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
-                       double tolerance) const {
+    bool SameState(const Eigen::VectorXd &from, const Eigen::VectorXd &to) const {
         for (Eigen::Index i = 0; i < from.size(); ++i) {
             const double delta = to[i] - from[i];
             const double difference = continuous_[static_cast<std::size_t>(i)]
                                           ? detail::WrappedDifference(delta)
                                           : delta;
-            if (!(std::abs(difference) <= tolerance)) return false;
+            if (difference != 0.0) return false;
         }
         return true;
     }
@@ -580,7 +579,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 ++result.statistics.line_search_evaluations;
                 candidate = previous + step * direction;
                 context.Normalize(candidate);
-                if (context.IsSmallMotion(previous, candidate, 1e-15))
+                // A caller-selected finite step may be much smaller than an
+                // absolute coordinate epsilon. Stop only if it changes no state.
+                if (context.SameState(previous, candidate))
                     break;
                 result.path[i] = candidate;
                 const double candidate_geometry = geometry.CandidateObjective(

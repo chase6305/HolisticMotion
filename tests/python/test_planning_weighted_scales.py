@@ -97,3 +97,21 @@ def test_length_optimization_retains_descent_under_global_weight_scaling(weight)
     assert result.success
     assert result.statistics.accepted_updates > 0
     assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-10, 1e-16, 1e-100, 1e-150])
+def test_optimizer_respects_representable_steps_at_small_coordinate_scales(scale):
+    optimizer = hm.PathOptimizer([-2 * scale] * 2, [2 * scale] * 2)
+    options = hm.PathOptimizationOptions()
+    options.smoothness_weight = 0.0
+    options.minimum_improvement = 0.0
+    options.step_size = 0.35 * scale
+    options.edge_resolution = scale
+    options.max_iterations = 10
+    path = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]) * scale
+    result = optimizer.optimize(path, options)
+    assert result.success
+    assert result.statistics.accepted_updates > 0
+    assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
+    np.testing.assert_array_equal(result.path[0], path[0])
+    np.testing.assert_array_equal(result.path[-1], path[-1])
