@@ -113,7 +113,8 @@ Streaming offset-arm targets can use `FEPContinuousTracker` with the same
 options and diagnostics as the SRS tracker. Both trackers solve the current
 branch on every frame, refresh all branches periodically, and immediately
 enumerate all candidates if the current branch fails or approaches a
-singularity. Malformed candidates are filtered before branch metadata queries.
+singularity. Malformed candidates, including nested complex values and cyclic
+object containers, are filtered before branch metadata queries.
 An unusable seeded result, including one rejected by pose or dynamics checks,
 also triggers a refresh between periodic refreshes. Each frame enumerates all
 branches at most once; a failed refresh leaves tracker history intact.

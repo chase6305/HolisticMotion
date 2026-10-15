@@ -447,11 +447,10 @@ class SRSContinuousTracker:
         for candidate in candidates:
             try:
                 values = np.asarray(candidate)
-                if np.iscomplexobj(values) or (
-                    values.dtype.kind == "O"
-                    and any(np.iscomplexobj(item) for item in values.flat)
-                ):
-                    continue
+                # Native real numeric arrays need only the shape/finiteness
+                # checks below; object containers need recursive real guards.
+                if values.dtype.kind not in "biuf":
+                    values = require_real(values, name="solver candidate")
                 values = np.asarray(values, dtype=float)
             except (TypeError, ValueError, OverflowError):
                 continue
