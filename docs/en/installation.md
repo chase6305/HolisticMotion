@@ -26,6 +26,18 @@ Older installs and other platforms use the Conan runtime environment. Exported
 Conan packages retain their standard configuration; the local search-path
 setting is enabled by `scripts/build.sh`.
 
+Conan's global runtime environment can shadow libraries used by Python
+Pinocchio. For a Linux cache-local Python package with per-library search paths:
+
+```bash
+conan create . --no-remote -o '&:with_python=True' -o '&:shared=True' \
+  -c tools.build:jobs=2 \
+  -c 'tools.cmake.cmaketoolchain:extra_variables={"CMAKE_INSTALL_RPATH_USE_LINK_PATH": True}'
+```
+
+This mode records absolute Conan cache paths; rebuild after moving that cache.
+Use the default configuration for relocatable Conan packages.
+
 Run the installed bindings rather than importing stale files from the source
 tree:
 

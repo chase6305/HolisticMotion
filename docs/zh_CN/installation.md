@@ -24,6 +24,18 @@ Linux 本地构建会将 Conan 依赖目录写入各库的运行时搜索路径�
 旧安装和其他平台继续使用 Conan 运行环境。导出的 Conan 包保留标准配置；
 本地搜索路径设置由 `scripts/build.sh` 启用。
 
+Conan 的全局运行环境可能覆盖 Python Pinocchio 所需的动态库。Linux 下仅供本机
+缓存使用的 Python 导出包，可启用各库独立的搜索路径：
+
+```bash
+conan create . --no-remote -o '&:with_python=True' -o '&:shared=True' \
+  -c tools.build:jobs=2 \
+  -c 'tools.cmake.cmaketoolchain:extra_variables={"CMAKE_INSTALL_RPATH_USE_LINK_PATH": True}'
+```
+
+此模式会记录 Conan 缓存的绝对路径，移动缓存后需重新构建。
+需要可迁移的 Conan 包时使用默认配置。
+
 应针对安装目录运行测试，避免从源码目录导入旧文件：
 
 ```bash
