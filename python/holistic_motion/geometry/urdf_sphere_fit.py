@@ -155,9 +155,9 @@ def _load_urdf_collision_meshes(
             shape = geometry[0]
             if shape.tag == "mesh":
                 uri = shape.get("filename", "")
-                mesh_path = _resolve_mesh_uri(uri, urdf.parent, roots)
                 mesh = mesh_cache.get(uri)
                 if mesh is None:
+                    mesh_path = _resolve_mesh_uri(uri, urdf.parent, roots)
                     mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
                 remaining_meshes[uri] -= 1
                 if remaining_meshes[uri]:
