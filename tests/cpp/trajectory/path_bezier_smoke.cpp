@@ -215,6 +215,51 @@ void CheckLargeCurveDerivatives() {
     check(quintic, large_quintic, 400);
 }
 
+void CheckExtremeWeightedNormsAndQuadraticCurvature() {
+    for (const auto &parameters :
+         {std::array<double, 5>{1e-200, 0.0, 1.0, 1.0, 1e-200},
+          std::array<double, 5>{1e200, 0.0, 1.0, 1.0, 1e200},
+          std::array<double, 5>{1e-180, 1e-100, 1e300, 1e100, 1e-30},
+          std::array<double, 5>{1e160, 0.0, 1e-320, 1.0,
+                                1e160 * std::sqrt(1e-320)}}) {
+        Eigen::VectorXd values(2), weights(2);
+        values << parameters[0], parameters[1];
+        weights << parameters[2], parameters[3];
+        Group group;
+        group.Coeffs() = values;
+        const Eigen::MatrixBase<Eigen::VectorXd> &base = values;
+        for (double norm :
+             {WeightedNorm(values, weights), WeightedNorm(base, weights),
+              WeightedNorm(group, weights)}) {
+            if (!std::isfinite(norm) ||
+                std::abs(norm / parameters[4] - 1.0) > 1e-13)
+                throw std::runtime_error("weighted norm lost a finite length");
+        }
+    }
+    for (double scale : {1e-200, 1e-170, 1e-160, 1e-150, 1e200}) {
+        std::array<Group, 3> points;
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << scale, 0.0;
+        points[2].Coeffs() << scale, scale;
+        PathSegBezierCurve2nd<Group> curve(points);
+        if (!curve.IsValid() ||
+            std::abs(curve.GetLength() / scale - 2.0) > 1e-13)
+            throw std::runtime_error("quadratic lost its finite length");
+        const double s = 0.5 * curve.GetLength();
+        const Eigen::Vector2d curvature =
+            curve.GetCurvature(s).Coeffs() * scale;
+        if (!curvature.allFinite() ||
+            (curvature - Eigen::Vector2d(-0.5, 0.5)).cwiseAbs().maxCoeff() >
+                1e-13)
+            throw std::runtime_error("quadratic lost finite curvature");
+        const Eigen::Vector2d position = curve.GetConfig(s).Coeffs() / scale;
+        if ((position - Eigen::Vector2d(0.75, 0.25)).cwiseAbs().maxCoeff() >
+            1e-13)
+            throw std::runtime_error(
+                "quadratic position changed at extreme scale");
+    }
+}
+
 void CheckCubicSegmentDerivatives() {
     struct CubicSegment : PathSegBezierCurve5th<Group> {
         static std::array<Group, 3> StraightPoints() {
@@ -380,6 +425,7 @@ int main() {
         CheckStraightSegmentDerivatives();
         CheckCurveLengthNearLinearEquation();
         CheckLargeCurveDerivatives();
+        CheckExtremeWeightedNormsAndQuadraticCurvature();
         CheckCubicSegmentDerivatives();
         CheckSegmentQueryValidation();
     } catch (const std::exception &error) {

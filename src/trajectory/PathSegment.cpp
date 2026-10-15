@@ -182,9 +182,10 @@ PathSegBezierCurve2nd<LieGroup>::GetCurvature(double s) const {
     auto ret = 2.0 * ((this->control_points_[2] - this->control_points_[1]) -
                       (this->control_points_[1] - this->control_points_[0]));
     const double length_squared = this->length_ * this->length_;
-    if (std::isfinite(length_squared))
+    if (std::isnormal(length_squared))
         return ret / length_squared;
-    // The derivative can remain representable when the denominator overflows.
+    // Successive divisions retain finite derivatives after denominator
+    // overflow, underflow, or subnormal rounding.
     return (ret / this->length_) / this->length_;
 }
 

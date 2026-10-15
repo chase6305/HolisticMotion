@@ -536,6 +536,9 @@ constructor also accepts distinct two-point motions below that tolerance;
 exactly repeated points still do not define a moving trajectory. Blends
 smaller than that tolerance are disabled before trimming either neighboring
 line, so suppressing a blend does not leave a positional gap.
+Path-length norms use a stable weighted fallback when intermediate squares lose
+range. Quadratic curvature likewise uses successive divisions when length squared
+overflows, underflows, or becomes subnormal, retaining representable derivatives.
 
 For time phases contained in one linear geometric segment, limit enforcement
 evaluates the endpoints and any interior zero of scalar acceleration. These
