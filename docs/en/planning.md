@@ -235,7 +235,8 @@ finite and positive; ranges whose default weights cannot be represented are
 rejected during construction.
 
 Python planning inputs must be real. Complex limits, states, weights, option
-values, and cost callback results raise `TypeError` before conversion can discard
+values (including iteration counts, flags, and joint indices), and cost callback
+results raise `TypeError` before conversion can discard
 their imaginary components. Real integer arrays and noncontiguous slices are
 supported.
 

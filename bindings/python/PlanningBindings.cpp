@@ -84,7 +84,10 @@ void BindSamplingPlanning(pybind11::module_ &module) {
       .value("INVALID_PATH", PathOptimizationStatus::INVALID_PATH);
   py::class_<PathOptimizationOptions>(module, "PathOptimizationOptions")
       .def(py::init<>())
-      .def_readwrite("max_iterations", &PathOptimizationOptions::max_iterations)
+      .def_property("max_iterations",
+                    ReadParameter(&PathOptimizationOptions::max_iterations),
+                    WriteRealParameter(&PathOptimizationOptions::max_iterations,
+                                       "max_iterations"))
       .def_property(
           "timeout_seconds",
           ReadParameter(&PathOptimizationOptions::timeout_seconds),
@@ -93,8 +96,11 @@ void BindSamplingPlanning(pybind11::module_ &module) {
       .def_property(
           "step_size", ReadParameter(&PathOptimizationOptions::step_size),
           WriteRealParameter(&PathOptimizationOptions::step_size, "step_size"))
-      .def_readwrite("line_search_steps",
-                     &PathOptimizationOptions::line_search_steps)
+      .def_property(
+          "line_search_steps",
+          ReadParameter(&PathOptimizationOptions::line_search_steps),
+          WriteRealParameter(&PathOptimizationOptions::line_search_steps,
+                             "line_search_steps"))
       .def_property(
           "line_search_decay",
           ReadParameter(&PathOptimizationOptions::line_search_decay),
@@ -217,8 +223,14 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                       CheckedRealEigen<Eigen::VectorXd>(weights, "weights"));
               },
               py::arg("weights"))
-          .def("set_continuous_joints", &PathOptimizer::SetContinuousJoints,
-               py::arg("indices"))
+          .def(
+              "set_continuous_joints",
+              [](PathOptimizer &self, const py::object &indices) {
+                  self.SetContinuousJoints(
+                      CheckedRealEigen<std::vector<std::size_t>>(indices,
+                                                                 "indices"));
+              },
+              py::arg("indices"))
           .def(
               "optimize",
               [](const PathOptimizer &self, const py::object &path,
@@ -378,7 +390,10 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                     ReadParameter(&PlanningOptions::timeout_seconds),
                     WriteRealParameter(&PlanningOptions::timeout_seconds,
                                        "timeout_seconds"))
-      .def_readwrite("max_iterations", &PlanningOptions::max_iterations)
+      .def_property("max_iterations",
+                    ReadParameter(&PlanningOptions::max_iterations),
+                    WriteRealParameter(&PlanningOptions::max_iterations,
+                                       "max_iterations"))
       .def_property("extension_range",
                     ReadParameter(&PlanningOptions::extension_range),
                     WriteRealParameter(&PlanningOptions::extension_range,
@@ -390,12 +405,24 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                     ReadParameter(&PlanningOptions::edge_resolution),
                     WriteRealParameter(&PlanningOptions::edge_resolution,
                                        "edge_resolution"))
-      .def_readwrite("simplify_path", &PlanningOptions::simplify_path)
-      .def_readwrite("shortcut_attempts", &PlanningOptions::shortcut_attempts)
-      .def_readwrite("interpolate_path", &PlanningOptions::interpolate_path)
-      .def_readwrite("interpolation_points",
-                     &PlanningOptions::interpolation_points)
-      .def_readwrite("random_seed", &PlanningOptions::random_seed);
+      .def_property(
+          "simplify_path", ReadParameter(&PlanningOptions::simplify_path),
+          WriteRealParameter(&PlanningOptions::simplify_path, "simplify_path"))
+      .def_property("shortcut_attempts",
+                    ReadParameter(&PlanningOptions::shortcut_attempts),
+                    WriteRealParameter(&PlanningOptions::shortcut_attempts,
+                                       "shortcut_attempts"))
+      .def_property("interpolate_path",
+                    ReadParameter(&PlanningOptions::interpolate_path),
+                    WriteRealParameter(&PlanningOptions::interpolate_path,
+                                       "interpolate_path"))
+      .def_property("interpolation_points",
+                    ReadParameter(&PlanningOptions::interpolation_points),
+                    WriteRealParameter(&PlanningOptions::interpolation_points,
+                                       "interpolation_points"))
+      .def_property(
+          "random_seed", ReadParameter(&PlanningOptions::random_seed),
+          WriteRealParameter(&PlanningOptions::random_seed, "random_seed"));
   py::class_<PlanningStatistics>(module, "PlanningStatistics")
       .def_readonly("iterations", &PlanningStatistics::iterations)
       .def_readonly("sampled_states", &PlanningStatistics::sampled_states)
@@ -433,8 +460,14 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                       CheckedRealEigen<Eigen::VectorXd>(weights, "weights"));
               },
               py::arg("weights"))
-          .def("set_continuous_joints", &SamplingPlanner::SetContinuousJoints,
-               py::arg("indices"))
+          .def(
+              "set_continuous_joints",
+              [](SamplingPlanner &self, const py::object &indices) {
+                  self.SetContinuousJoints(
+                      CheckedRealEigen<std::vector<std::size_t>>(indices,
+                                                                 "indices"));
+              },
+              py::arg("indices"))
           .def(
               "plan",
               [](const SamplingPlanner &self, const py::object &start,
@@ -479,8 +512,10 @@ void BindSamplingPlanning(pybind11::module_ &module) {
       "from_collision_model",
       [](const py::object &lower_input, const py::object &upper_input,
          robotics::collision::CollisionModel &collision_model,
-         std::vector<std::size_t> active_indices,
-         const py::object &context_input) {
+         const py::object &indices_input, const py::object &context_input) {
+          std::vector<std::size_t> active_indices =
+              CheckedRealEigen<std::vector<std::size_t>>(indices_input,
+                                                         "active_indices");
           Eigen::VectorXd context_configuration =
               CheckedRealEigen<Eigen::VectorXd>(context_input,
                                                 "context_configuration");

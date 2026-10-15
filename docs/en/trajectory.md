@@ -230,7 +230,8 @@ Native `JointTrajectoryN`, `JointTrajectory`, `RnTrajectory`, and
 `BaseTrajectory` constructors require real waypoint and limit arrays.
 `CartesianLineTrajectory` likewise requires real start/end poses and limits.
 Scalar query times, blend tolerances, minimum durations, and
-`TrajectoryConstraints` limits must also be real. Complex NumPy arrays,
+`TrajectoryConstraints` limits must also be real. Sampling and report counts
+reject complex inputs before integer conversion. Complex NumPy arrays,
 object arrays, lists, and scalars raise `TypeError` before conversion. Rejected
 `set_minimum_duration` calls preserve existing timing.
 

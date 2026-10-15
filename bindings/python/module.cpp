@@ -97,17 +97,17 @@ using holistic_motion::python::ReadParameter;
 using holistic_motion::python::RequireRealInput;
 using holistic_motion::python::WriteRealParameter;
 
-template <class Class, class Result>
-auto WithRealScalar(Result (Class::*method)(double) const, const char *name) {
+template <class Class, class Result, class Value>
+auto WithRealScalar(Result (Class::*method)(Value) const, const char *name) {
     return [method, name](const Class &self, const py::object &input) {
-        return (self.*method)(CheckedRealEigen<double>(input, name));
+        return (self.*method)(CheckedRealEigen<Value>(input, name));
     };
 }
 
-template <class Class, class Result>
-auto WithRealScalar(Result (Class::*method)(double), const char *name) {
+template <class Class, class Result, class Value>
+auto WithRealScalar(Result (Class::*method)(Value), const char *name) {
     return [method, name](Class &self, const py::object &input) {
-        return (self.*method)(CheckedRealEigen<double>(input, name));
+        return (self.*method)(CheckedRealEigen<Value>(input, name));
     };
 }
 
@@ -424,7 +424,8 @@ void BindJointTrajectory(py::module_ &module, const char *name,
             py::arg("times"),
             "Return position, velocity, acceleration, and jerk matrices for "
             "1-D times.")
-        .def("sample_uniform", &JointTrajectory<N>::SampleUniform,
+        .def("sample_uniform",
+             WithRealScalar(&JointTrajectory<N>::SampleUniform, "samples"),
              py::arg("samples") = 1001,
              "Uniformly sample the inclusive [0, duration] interval and "
              "return time plus four state matrices.")
@@ -434,8 +435,10 @@ void BindJointTrajectory(py::module_ &module, const char *name,
         .def(
             "constraint_report",
             [report_keys](const JointTrajectory<N> &trajectory,
-                          std::size_t samples) {
-                return trajectory.ConstraintReport(samples, *report_keys);
+                          const py::object &samples) {
+                return trajectory.ConstraintReport(
+                    CheckedRealEigen<std::size_t>(samples, "samples"),
+                    *report_keys);
             },
             py::arg("samples") = 2001,
             "Return sampled per-joint peaks, limit utilization, and "
@@ -1481,12 +1484,13 @@ PYBIND11_MODULE(_holistic_motion, module) {
             "plan",
             [](const planning::NullSpacePlanner &self,
                const py::object &start_input, const py::object &direction_input,
-               int steps, const py::object &step_input) {
+               const py::object &steps_input, const py::object &step_input) {
                 const Eigen::VectorXd start =
                     CheckedRealEigen<Eigen::VectorXd>(start_input, "start");
                 const Eigen::VectorXd direction =
                     CheckedRealEigen<Eigen::VectorXd>(direction_input,
                                                       "preferred_direction");
+                const int steps = CheckedRealEigen<int>(steps_input, "steps");
                 const double step_size =
                     CheckedRealEigen<double>(step_input, "step_size");
                 std::vector<Eigen::VectorXd> path;
@@ -1624,13 +1628,16 @@ PYBIND11_MODULE(_holistic_motion, module) {
              py::arg("time"))
         .def("state", WithRealScalar(&CartesianLineTrajectory::State, "time"),
              py::arg("time"))
-        .def("sample_uniform", &CartesianLineTrajectory::SampleUniform,
+        .def("sample_uniform",
+             WithRealScalar(&CartesianLineTrajectory::SampleUniform, "samples"),
              py::arg("samples") = 1001)
         .def(
             "constraint_report",
             [report_keys](const CartesianLineTrajectory &trajectory,
-                          std::size_t samples) {
-                return trajectory.ConstraintReport(samples, *report_keys);
+                          const py::object &samples) {
+                return trajectory.ConstraintReport(
+                    CheckedRealEigen<std::size_t>(samples, "samples"),
+                    *report_keys);
             },
             py::arg("samples") = 2001);
 }
