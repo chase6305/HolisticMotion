@@ -125,6 +125,8 @@ gradient arithmetic also raises `OverflowError` rather than returning NaN or Inf
 An unrepresentably large positive clearance does not hide a finite minimum and
 is excluded by finite distance filters. A minimum query still raises when its
 final distance is unrepresentable, including for a batch row.
+Batch queries reuse consecutive exactly equal configurations within that call;
+distinct small movements are evaluated separately, and no cache survives the call.
 `PathOptimizer.from_sphere_collision_model` automatically uses this gradient
 for vector-space configurations when a positive soft `clearance` is requested;
 its manifold configuration updates still fall back to finite differences.

@@ -101,6 +101,8 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 不会返回 NaN 或 Inf。
 超出表示范围的正间距不会掩盖可表示的最小距离，也不会进入有限距离阈值的返回结果。
 最终最小距离仍无法表示时，标量查询及对应批量行仍会抛出异常。
+批量查询仅在本次调用内复用连续且逐元素完全相等的构型；微小但非零的移动仍独立计算，
+缓存不会保留到后续调用。
 `PathOptimizer.from_sphere_collision_model` 对向量空间
 构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
 碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此

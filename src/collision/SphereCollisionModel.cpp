@@ -472,6 +472,15 @@ Eigen::VectorXd SphereCollisionModel::BatchMinimumDistances(
     Eigen::VectorXd output(configurations.rows());
     Eigen::VectorXd configuration(impl_->model.nq);
     for (Eigen::Index row = 0; row < configurations.rows(); ++row) {
+        // Pauses and concatenated paths often repeat adjacent states. Keep
+        // the cache local to this batch and compare every coefficient exactly:
+        // a norm-based equality test can erase small collision-relevant moves.
+        if (row > 0 &&
+            (configurations.row(row).transpose().array() ==
+             configuration.array()).all()) {
+            output[row] = output[row - 1];
+            continue;
+        }
         configuration = configurations.row(row).transpose();
         impl_->Update(configuration);
         output[row] = impl_->MinimumDistanceValue();
