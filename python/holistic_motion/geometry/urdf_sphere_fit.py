@@ -105,6 +105,15 @@ def load_urdf_collision_meshes(
     Mesh, box, cylinder, and sphere elements are supported. Returned values are
     ``trimesh.Trimesh`` objects, but trimesh remains an optional dependency.
     """
+    return _load_urdf_collision_meshes(urdf_path, package_dirs=package_dirs)
+
+
+def _load_urdf_collision_meshes(
+    urdf_path: PathLike,
+    *,
+    package_dirs: Iterable[PathLike],
+    selected_links: frozenset[str] | None = None,
+) -> dict[str, object]:
     import trimesh
 
     urdf = Path(urdf_path).resolve()
@@ -128,6 +137,8 @@ def load_urdf_collision_meshes(
         if link_name in seen_links:
             raise ValueError(f"URDF contains duplicate link name {link_name!r}")
         seen_links.add(link_name)
+        if selected_links is not None and link_name not in selected_links:
+            continue
         geometries = []
         for collision in link.findall("collision"):
             geometry = collision.find("geometry")
@@ -169,7 +180,7 @@ def load_urdf_collision_meshes(
             geometries.append(mesh)
         if geometries:
             result[link_name] = trimesh.util.concatenate(geometries)
-    if not result:
+    if not result and selected_links is None:
         raise ValueError("URDF contains no supported collision geometry")
     return result
 
@@ -184,17 +195,24 @@ def fit_urdf_collision_spheres(
     surface_samples: int = 5000,
     random_seed: int = 0,
 ) -> dict[str, SphereFitResult]:
-    """Fit selected URDF links and return one result per link."""
+    """Load and fit only selected URDF links, in the requested order."""
     if isinstance(links, str):
         raise TypeError("links must be an iterable of link names, not a string")
-    meshes = load_urdf_collision_meshes(urdf_path, package_dirs=package_dirs)
-    selected = tuple(links) if links is not None else tuple(meshes)
-    if not selected:
-        raise ValueError("links must not be empty")
-    if len(set(selected)) != len(selected):
-        raise ValueError("links must contain unique names")
-    if any(not isinstance(link, str) or not link for link in selected):
-        raise ValueError("links must contain non-empty string names")
+    selected = tuple(links) if links is not None else None
+    if selected is not None:
+        if not selected:
+            raise ValueError("links must not be empty")
+        if any(not isinstance(link, str) or not link for link in selected):
+            raise ValueError("links must contain non-empty string names")
+        if len(set(selected)) != len(selected):
+            raise ValueError("links must contain unique names")
+    meshes = _load_urdf_collision_meshes(
+        urdf_path,
+        package_dirs=package_dirs,
+        selected_links=frozenset(selected) if selected is not None else None,
+    )
+    if selected is None:
+        selected = tuple(meshes)
     unknown = sorted(set(selected) - set(meshes))
     if unknown:
         raise ValueError("links have no collision geometry: " + ", ".join(unknown))

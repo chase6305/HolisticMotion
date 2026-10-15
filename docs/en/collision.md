@@ -186,7 +186,9 @@ gap, and the Viser overlay before using a generated model for planning.
 For a complete robot, the batch tool reads every URDF `<collision>` element,
 including mesh scale and collision origin. Mesh, box, cylinder, and sphere
 geometry are supported; repeat `--package-dir` for `package://` resources and
-repeat `--link` to fit only selected links:
+repeat `--link` to fit only selected links. This loads geometry only for the
+requested links, so unrelated meshes need not be present. URDF link names are
+still checked for duplicates.
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \

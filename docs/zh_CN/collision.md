@@ -157,7 +157,9 @@ python -m pip install '.[examples]' 'scipy>=1.10'
 
 整机批处理工具会读取全部 URDF `<collision>` 元素，并应用 mesh scale 与 collision
 origin。支持 mesh、box、cylinder 和 sphere；`package://` 资源可重复传入
-`--package-dir`，只拟合部分 link 时可重复传入 `--link`：
+`--package-dir`，只拟合部分 link 时可重复传入 `--link`。
+指定 link 时只加载这些 link 的几何，无关网格可以不在本机；URDF 中重复的
+link 名称仍会被拒绝。
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \
