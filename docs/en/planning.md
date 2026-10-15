@@ -228,6 +228,11 @@ Default inverse-range-squared weights must be
 finite and positive; ranges whose default weights cannot be represented are
 rejected during construction.
 
+Python planning inputs must be real. Complex limits, states, weights, option
+values, and cost callback results raise `TypeError` before conversion can discard
+their imaginary components. Real integer arrays and noncontiguous slices are
+supported.
+
 ## Resolution and safety
 
 RRT* and Informed RRT* refresh the best goal cost after rewiring, including

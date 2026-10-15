@@ -12,6 +12,7 @@
 
 #include "../../src/trajectory/TrajectoryStateSampler.h"
 #include "Bindings.h"
+#include "RealInputs.h"
 #include "holistic_motion/kinematics/OPWKinematics.h"
 #include "holistic_motion/kinematics/URKinematics.h"
 #include "holistic_motion/kinematics/fep/FEPKinematics.h"
@@ -91,74 +92,10 @@ void RequireRigidTransform(const Eigen::Matrix4d& transform,
     }
 }
 
-void RequireRealInput(const py::handle &value, const char *name,
-                      unsigned depth = 0) {
-    if (PyFloat_Check(value.ptr()) || PyLong_Check(value.ptr()))
-        return;
-    if (PyComplex_Check(value.ptr())) {
-        throw py::type_error(std::string(name) + " must contain real values");
-    }
-    if (PyList_Check(value.ptr()) || PyTuple_Check(value.ptr())) {
-        if (depth >= 2) {
-            throw py::type_error(std::string(name) + " has an invalid array shape");
-        }
-        for (auto item : py::reinterpret_borrow<py::sequence>(value)) {
-            RequireRealInput(item, name, depth + 1);
-        }
-        return;
-    }
-    auto array = py::isinstance<py::array>(value)
-                     ? py::reinterpret_borrow<py::array>(value)
-                     : py::array::ensure(value);
-    if (!array) {
-        throw py::type_error(std::string(name) +
-                             " must contain real numeric values");
-    }
-    const char kind = array.dtype().kind();
-    bool complex = kind == 'c';
-    if (!complex && kind == 'O') {
-        auto is_complex = py::module_::import("numpy").attr("iscomplexobj");
-        for (auto item : array.attr("flat")) {
-            if (is_complex(item).cast<bool>()) {
-                complex = true;
-                break;
-            }
-        }
-    }
-    if (complex) {
-        throw py::type_error(std::string(name) + " must contain real values");
-    }
-}
-
-template <typename Matrix>
-Matrix CheckedRealEigen(const py::handle &value, const char *name) {
-    RequireRealInput(value, name);
-    try {
-        return py::cast<Matrix>(value);
-    } catch (const py::cast_error &) {
-        throw py::type_error(std::string(name) +
-                             " has an invalid array shape or type");
-    }
-}
-
-template <typename Class, typename Value>
-auto ReadParameter(Value Class::*member) {
-    return [member](const Class &self) { return self.*member; };
-}
-
-template <typename Class, typename Value>
-auto WriteRealParameter(Value Class::*member, const char *name) {
-    return [member, name](Class &self, const py::object &input) {
-        RequireRealInput(input, name);
-        try {
-            Value value = py::cast<Value>(input);
-            self.*member = std::move(value);
-        } catch (const py::cast_error &) {
-            throw py::type_error(std::string(name) +
-                                 " has an unsupported type or shape");
-        }
-    };
-}
+using holistic_motion::python::CheckedRealEigen;
+using holistic_motion::python::ReadParameter;
+using holistic_motion::python::RequireRealInput;
+using holistic_motion::python::WriteRealParameter;
 
 void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
     if (samples < 2) {
@@ -1509,19 +1446,27 @@ PYBIND11_MODULE(_holistic_motion, module) {
             py::arg("target"), py::arg("configuration"), py::arg("seed"));
 
     py::class_<planning::NullSpacePlanner>(module, "NullSpacePlanner")
-            .def(py::init<std::shared_ptr<SRSKinematics>>(),
-                 py::arg("kinematics"))
-            .def("plan", [](const planning::NullSpacePlanner& self,
-                            const Eigen::VectorXd& start,
-                            const Eigen::VectorXd& direction,
-                            int steps, double step_size) {
+        .def(py::init<std::shared_ptr<SRSKinematics>>(), py::arg("kinematics"))
+        .def(
+            "plan",
+            [](const planning::NullSpacePlanner &self,
+               const py::object &start_input, const py::object &direction_input,
+               int steps, const py::object &step_input) {
+                const Eigen::VectorXd start =
+                    CheckedRealEigen<Eigen::VectorXd>(start_input, "start");
+                const Eigen::VectorXd direction =
+                    CheckedRealEigen<Eigen::VectorXd>(direction_input,
+                                                      "preferred_direction");
+                const double step_size =
+                    CheckedRealEigen<double>(step_input, "step_size");
                 std::vector<Eigen::VectorXd> path;
                 if (!self.Plan(start, direction, steps, step_size, path)) {
                     throw py::value_error("null-space planning failed");
                 }
                 return path;
-            }, py::arg("start"), py::arg("preferred_direction"),
-               py::arg("steps"), py::arg("step_size") = 0.05);
+            },
+            py::arg("start"), py::arg("preferred_direction"), py::arg("steps"),
+            py::arg("step_size") = 0.05);
 
     py::class_<Robot, std::shared_ptr<Robot>>(module, "Robot")
             .def(py::init<const std::string&, bool>(), py::arg("urdf_path"),
