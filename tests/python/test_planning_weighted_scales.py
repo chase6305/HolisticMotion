@@ -1,6 +1,7 @@
 """Weighted distances must not lose finite motion to intermediate squares."""
 
 import math
+from decimal import Decimal, localcontext
 
 import holistic_motion as hm
 import numpy as np
@@ -307,9 +308,14 @@ def test_scaled_smoothness_retains_representable_objective(
     options.max_iterations = 10
     path = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]) * scale
     result = optimizer.optimize(path, options)
-    expected = float(
-        np.longdouble(4) * scale * scale * np.longdouble(weight) * smoothness_weight
-    )
+    with localcontext() as context:
+        context.prec = 80
+        expected = float(
+            Decimal(4)
+            * Decimal.from_float(scale) ** 2
+            * Decimal.from_float(weight)
+            * Decimal.from_float(smoothness_weight)
+        )
     assert result.success
     assert result.statistics.initial_objective == pytest.approx(
         expected, rel=1e-12, abs=0.0
@@ -337,8 +343,14 @@ def test_scaled_smoothness_accumulates_all_waypoints(
     options.step_size = 0.1 * scale
     options.max_iterations = 2
     path = np.column_stack((np.linspace(0.0, 1.0, count), np.arange(count) % 2)) * scale
-    acceleration = np.diff(path.astype(np.longdouble), n=2, axis=0)
-    expected = float(np.sum(acceleration * acceleration) * weight * smoothness_weight)
+    acceleration = np.diff(path, n=2, axis=0)
+    with localcontext() as context:
+        context.prec = 80
+        expected = float(
+            sum(Decimal.from_float(float(value)) ** 2 for value in acceleration.flat)
+            * Decimal.from_float(weight)
+            * Decimal.from_float(smoothness_weight)
+        )
     result = optimizer.optimize(path, options)
     assert result.success
     assert result.statistics.initial_objective == pytest.approx(

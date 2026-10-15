@@ -163,10 +163,10 @@ int main() {
     }
     // Apply the objective coefficient before a squared norm can lose range.
     for (const auto &parameters :
-         {std::array<double, 3>{1.0, 1e308, 1e-308},
-          std::array<double, 3>{1e-100, 1e-300, 1e300},
-          std::array<double, 3>{1e-10, 1e-300, 1e300}}) {
-        const auto [scale, weight, coefficient] = parameters;
+         {std::array<double, 4>{1.0, 1e308, 1e-308, 4.0},
+          std::array<double, 4>{1e-100, 1e-300, 1e300, 4e-200},
+          std::array<double, 4>{1e-10, 1e-300, 1e300, 4e-20}}) {
+        const auto [scale, weight, coefficient, expected] = parameters;
         auto path = bent;
         for (auto &state : path)
             state *= scale;
@@ -182,8 +182,6 @@ int main() {
         const double candidate =
             workspace.CandidateObjective(path.front(), trial, path.back());
         Eigen::internal::set_is_malloc_allowed(true);
-        const double expected =
-            static_cast<double>(4.0L * scale * scale * weight * coefficient);
         if (!std::isfinite(objective) || !std::isfinite(candidate) ||
             std::abs(objective / expected - 1.0) > 1e-13 ||
             std::abs(candidate / expected - 0.25) > 1e-13) {
