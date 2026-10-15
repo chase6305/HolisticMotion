@@ -30,8 +30,10 @@ interpolation remains inside its limits and continuous joints wrap normally.
 remains zero. Configure a validator to check obstacles or additional constraints.
 
 Continuous-joint limits must span `2*pi` and resolve distinct floating-point
-coordinates within one revolution. If spacing at either limit is at least
-`2*pi`, the configuration rejects during `set_continuous_joints`; failed changes preserve prior topology.
+coordinates within a revolution. `set_continuous_joints` rejects bounds whose
+spacing at either endpoint is at least `2*pi`; failed changes preserve prior topology.
+With coarser spacing, interpolated validation samples can collapse even when
+the original endpoints are distinct.
 
 Joint weights control search distances, not a goal tolerance. A direct solution
 preserves distinct endpoints even with very small weights. RRT-Connect joins
