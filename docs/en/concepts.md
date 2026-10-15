@@ -32,8 +32,10 @@ kinematics users do not acquire Pinocchio and Coal unnecessarily.
 - Applications should perform any controller-specific joint reordering at
   their integration boundary.
 
-The C++ `SO3` constructor with `EulerAnglesType::rota_vec` retains rotations
-whose vector norm is representable even when its square overflows or underflows.
+For built-in floating-point scalars, the C++ `SO3` constructor with
+`EulerAnglesType::rota_vec` retains rotations whose vector norm is representable
+even when its square overflows or underflows. Autodiff scalars keep their
+existing computation path.
 
 ## Initialization and runtime phases
 

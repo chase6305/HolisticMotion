@@ -26,8 +26,8 @@ HolisticMotion 不捆绑机器人资源。请向 `Robot`、`CollisionModel` 和 
 - 通用 retargeting 结果采用 Pinocchio 模型关节顺序。
 - 控制器特定的关节重排应在应用集成边界完成。
 
-C++ `SO3` 的 `EulerAnglesType::rota_vec` 构造器会保留范数可表示的旋转，
-即使范数平方发生溢出或下溢。
+对于内置浮点标量，C++ `SO3` 的 `EulerAnglesType::rota_vec` 构造器会保留
+范数可表示的旋转，即使范数平方发生溢出或下溢；自动微分标量保持原有计算路径。
 
 ## 初始化阶段与运行阶段
 
