@@ -545,7 +545,12 @@ range. Exceptional weighted components are accumulated at a common binary scale
 before rounding, retaining a representable norm even if individual components
 would round to zero. Quadratic curvature likewise uses successive divisions when
 length squared overflows, underflows, or becomes subnormal, retaining representable
-derivatives.
+derivatives. Bezier construction also rescales exceptional direction and
+coordinate norms, and solves the quintic length equation in chord-length units
+when its raw coefficients overflow. Connection roundoff is scaled before
+restoring a coordinate norm that would overflow. This preserves finite path segments and
+the requested endpoints at large coordinate scales. Quintic curvature controls
+apply the curvature before a potentially overflowing length square.
 
 For time phases contained in one linear geometric segment, limit enforcement
 evaluates the endpoints and any interior zero of scalar acceleration. These

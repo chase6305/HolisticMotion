@@ -427,8 +427,82 @@ void CheckShortFinalLeg() {
         throw std::runtime_error("short linear segment is not normalized");
 }
 
+void CheckLargePathConstruction() {
+    for (int degree : {2, 5}) {
+        for (double blend : {0.0, 0.01}) {
+            const PathBezierCurve<Group> reference(Corners(), degree, false,
+                                                   blend);
+            for (double scale : {1e155, 1e200, 1e300}) {
+                const PathBezierCurve<Group> path(Corners(scale), degree, false,
+                                                  blend * scale);
+                if (!path.IsValid() || std::abs(path.GetLength() / scale -
+                                                reference.GetLength()) > 1e-12)
+                    throw std::runtime_error(
+                        "large path lost a finite segment");
+                for (int sample = 0; sample <= 100; ++sample) {
+                    const double fraction = sample / 100.0;
+                    const double parameter = fraction * path.GetLength();
+                    const Eigen::Vector2d point =
+                        path.GetConfig(parameter).Coeffs() / scale;
+                    const Eigen::Vector2d expected =
+                        reference.GetConfig(fraction * reference.GetLength())
+                            .Coeffs();
+                    if (!point.allFinite() || (point - expected).norm() > 1e-12)
+                        throw std::runtime_error(
+                            "large path changed its geometry or endpoint");
+                }
+            }
+        }
+    }
+    for (double curvature : {0.0, 0.2}) {
+        const auto points = Corners();
+        const PathSegBezierCurve5th<Group> reference(
+            {points[0], points[1], points[2]}, 0.0, 1.0, curvature, 1.0,
+            curvature, false);
+        for (double scale : {1e155, 1e200, 1e300}) {
+            const auto scaled = Corners(scale);
+            const PathSegBezierCurve5th<Group> segment(
+                {scaled[0], scaled[1], scaled[2]}, 0.0, 1.0, curvature / scale,
+                1.0, curvature / scale, false);
+            if (!segment.IsValid() || std::abs(segment.GetLength() / scale -
+                                               reference.GetLength()) > 1e-12)
+                throw std::runtime_error("quintic lost a finite scaled root");
+            for (int sample = 0; sample <= 100; ++sample) {
+                const double fraction = sample / 100.0;
+                const Eigen::Vector2d point =
+                    segment.GetConfig(fraction * segment.GetLength()).Coeffs() /
+                    scale;
+                const Eigen::Vector2d expected =
+                    reference.GetConfig(fraction * reference.GetLength())
+                        .Coeffs();
+                if (!point.allFinite() || (point - expected).norm() > 1e-12)
+                    throw std::runtime_error(
+                        "scaled quintic curvature control overflowed");
+            }
+        }
+    }
+    for (int degree : {2, 5}) {
+        auto points = Corners(1e306);
+        for (auto &point : points)
+            point.Coeffs().array() += 1.3e308;
+        const PathBezierCurve<Group> path(points, degree, false, 1e304);
+        if (!path.IsValid() || path.GetLength() / 1e306 < 2.9 ||
+            (path.GetConfig(0.0).Coeffs().array() !=
+             points.front().Coeffs().array())
+                .any())
+            throw std::runtime_error(
+                "coordinate norm overflow discarded a path segment");
+        const Eigen::Vector2d end =
+            path.GetConfig(path.GetLength()).Coeffs() / 1e308;
+        if (!end.allFinite() ||
+            (end - points.back().Coeffs() / 1e308).norm() > 1e-13)
+            throw std::runtime_error(
+                "large coordinate offset lost the final endpoint");
+    }
+}
 int main() {
     try {
+        CheckLargePathConstruction();
         CheckShortFinalLeg();
         CheckQuadraticCorners();
         CheckReversal(2);
