@@ -201,7 +201,9 @@ costs.
 A workspace local to each `optimize()` call reuses edge, acceleration, gradient,
 direction, and candidate buffers. The two outer neighboring edges remain cached
 during one waypoint's backtracking search and refresh before the next waypoint,
-including reverse sweeps. Local geometry and gradient evaluation allocate no
+including reverse sweeps. Adjacent edge lengths are reused between gradient and
+cost evaluation and invalidated whenever the waypoint or its candidate changes.
+Local geometry and gradient evaluation allocate no
 Eigen heap storage after workspace/output initialization. The complete optimizer
 still allocates its path, validation samples, and optional state-cost buffers.
 

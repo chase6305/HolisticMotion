@@ -29,6 +29,7 @@ class PathGeometryWorkspace {
           acceleration_(weights.size()) {}
 
     void SetWaypoint(const std::vector<Eigen::VectorXd> &path, std::size_t index) {
+        lengths_valid_ = false;
         if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
             return;
         DifferenceInto(path[index - 1], path[index], left_);
@@ -44,8 +45,10 @@ class PathGeometryWorkspace {
     double LocalObjective() {
         double length = 0.0;
         double smoothness = 0.0;
-        if (length_weight_ > 0.0)
-            length = geometry_.Norm(left_) + geometry_.Norm(right_);
+        if (length_weight_ > 0.0) {
+            RefreshLengths();
+            length = left_length_ + right_length_;
+        }
         if (smoothness_weight_ > 0.0) {
             acceleration_ = right_ - left_;
             smoothness = SquaredNorm(acceleration_);
@@ -82,6 +85,7 @@ class PathGeometryWorkspace {
                               const Eigen::VectorXd &after) {
         if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
             return 0.0;
+        lengths_valid_ = false;
         DifferenceInto(before, candidate, left_);
         DifferenceInto(candidate, after, right_);
         return LocalObjective();
@@ -92,8 +96,9 @@ class PathGeometryWorkspace {
         double left_length = 0.0;
         double right_length = 0.0;
         if (length_weight_ > 0.0) {
-            left_length = geometry_.Norm(left_);
-            right_length = geometry_.Norm(right_);
+            RefreshLengths();
+            left_length = left_length_;
+            right_length = right_length_;
             if (left_length > 0.0)
                 gradient.array() +=
                     length_weight_ * weights_.array() * left_.array() / left_length;
@@ -157,6 +162,14 @@ class PathGeometryWorkspace {
     }
 
   private:
+    void RefreshLengths() {
+        if (!lengths_valid_) {
+            left_length_ = geometry_.Norm(left_);
+            right_length_ = geometry_.Norm(right_);
+            lengths_valid_ = true;
+        }
+    }
+
     bool NeedsScaledLength(const Eigen::VectorXd &difference) const {
         return ((difference.array().abs() < length_underflow_threshold_) &&
                 (difference.array() != 0.0))
@@ -186,6 +199,8 @@ class PathGeometryWorkspace {
     const double length_underflow_threshold_;
     const bool smoothness_product_exceptional_;
     Eigen::VectorXd left_, right_, previous_, next_, acceleration_;
+    double left_length_{0.0}, right_length_{0.0};
+    bool lengths_valid_{false};
     bool has_previous_{false};
     bool has_next_{false};
 };
