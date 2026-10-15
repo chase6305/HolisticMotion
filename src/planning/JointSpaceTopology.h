@@ -17,13 +17,76 @@ inline double WrappedDifference(double difference) {
   return std::remainder(difference, 2.0 * kPi);
 }
 
+// Ordinary sums retain their original evaluation order. Below this bound,
+// rounding an unweighted square to zero/subnormal can affect the weighted
+// answer, so scale before taking a stable norm. The bound accounts for both
+// unweighted-square and weighted-product underflow without squaring weights.
+class WeightedGeometry {
+  public:
+    explicit WeightedGeometry(const Eigen::VectorXd &weights)
+        : weights_(weights),
+          minimum_squared_(
+              (weights.array() * std::numeric_limits<double>::min()).sum() +
+              weights.size() * std::numeric_limits<double>::min()) {}
+
+    template <class Derived>
+    double SquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
+        const double squared = RawSquaredNorm(value);
+        if (UseOrdinary(squared) ||
+            (squared == 0.0 && (value.array() == 0.0).all()))
+            return squared;
+        const double norm = ScaledNorm(value);
+        return norm * norm;
+    }
+
+    template <class Derived>
+    double Norm(const Eigen::MatrixBase<Derived> &value) const {
+        const double squared = RawSquaredNorm(value);
+        if (UseOrdinary(squared) ||
+            (squared == 0.0 && (value.array() == 0.0).all()))
+            return std::sqrt(squared);
+        return ScaledNorm(value);
+    }
+
+    bool UseOrdinary(double squared) const {
+        return std::isfinite(squared) && squared > minimum_squared_;
+    }
+
+  private:
+    template <class Derived>
+    double RawSquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
+        return (weights_.array() * value.array().square()).sum();
+    }
+
+    template <class Derived>
+    double ScaledNorm(const Eigen::MatrixBase<Derived> &value) const {
+        double norm = 0.0;
+        for (Eigen::Index i = 0; i < value.size(); ++i)
+            norm = std::hypot(norm, std::sqrt(weights_[i]) * value[i]);
+        return norm;
+    }
+
+    const Eigen::VectorXd &weights_;
+    const double minimum_squared_;
+};
+
+inline Eigen::VectorXd DefaultJointWeights(const Eigen::VectorXd &ranges) {
+    Eigen::VectorXd weights = ranges.array().square().inverse().matrix();
+    for (Eigen::Index i = 0; i < ranges.size(); ++i) {
+        if (!(weights[i] > 0.0) || !std::isfinite(weights[i]))
+            weights[i] = (1.0 / ranges[i]) / ranges[i];
+    }
+    return weights;
+}
+
 // Cache the topology once per planning request. Distance-only queries must not
 // allocate a dynamic Eigen vector for each node in the search tree.
 class JointSpaceMetric {
   public:
     JointSpaceMetric(const Eigen::VectorXd &weights,
                      const std::vector<bool> &continuous)
-        : weights_(weights), continuous_(continuous.begin(), continuous.end()),
+        : weights_(weights), geometry_(weights),
+          continuous_(continuous.begin(), continuous.end()),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })) {}
 
@@ -33,13 +96,17 @@ class JointSpaceMetric {
         return continuous_[static_cast<std::size_t>(index)];
     }
     double SquaredAxisDistance(double delta, Eigen::Index index) const {
-        return weights_[index] * (delta * delta);
+        const double squared = delta * delta;
+        if (std::isnormal(squared) || delta == 0.0)
+            return weights_[index] * squared;
+        const double scaled = std::sqrt(weights_[index]) * delta;
+        return scaled * scaled;
     }
 
     double SquaredDistance(const Eigen::VectorXd &from,
                            const Eigen::VectorXd &to) const {
         if (!has_continuous_)
-            return (weights_.array() * (to - from).array().square()).sum();
+            return geometry_.SquaredNorm(to - from);
 
         double squared_distance = 0.0;
         for (Eigen::Index index = 0; index < from.size(); ++index) {
@@ -50,13 +117,39 @@ class JointSpaceMetric {
             if (continuous_[static_cast<std::size_t>(index)] &&
                 (delta < -kPi || delta > kPi))
                 delta = WrappedDifference(delta);
-            squared_distance += weights_[index] * (delta * delta);
+            squared_distance += SquaredAxisDistance(delta, index);
         }
-        return squared_distance;
+        if (geometry_.UseOrdinary(squared_distance))
+            return squared_distance;
+        const double norm = ScaledDistance(from, to);
+        return norm * norm;
+    }
+
+    double Distance(const Eigen::VectorXd &from,
+                    const Eigen::VectorXd &to) const {
+        if (!has_continuous_)
+            return geometry_.Norm(to - from);
+        const double squared = SquaredDistance(from, to);
+        if (std::isnormal(squared))
+            return std::sqrt(squared);
+        return ScaledDistance(from, to);
     }
 
   private:
+    double ScaledDistance(const Eigen::VectorXd &from,
+                          const Eigen::VectorXd &to) const {
+        double norm = 0.0;
+        for (Eigen::Index i = 0; i < from.size(); ++i) {
+            double delta = to[i] - from[i];
+            if (continuous_[static_cast<std::size_t>(i)])
+                delta = WrappedDifference(delta);
+            norm = std::hypot(norm, std::sqrt(weights_[i]) * delta);
+        }
+        return norm;
+    }
+
     const Eigen::VectorXd &weights_;
+    const WeightedGeometry geometry_;
     // Distance queries visit every joint for every candidate. Cache bytes to
     // avoid unpacking vector<bool> bits in that inner loop.
     const std::vector<std::uint8_t> continuous_;
@@ -66,12 +159,12 @@ class JointSpaceMetric {
 inline Eigen::VectorXd Difference(const Eigen::VectorXd &from,
                                   const Eigen::VectorXd &to,
                                   const std::vector<bool> &continuous) {
-  Eigen::VectorXd difference = to - from;
-  for (Eigen::Index index = 0; index < difference.size(); ++index) {
-    if (continuous[static_cast<std::size_t>(index)])
-      difference[index] = WrappedDifference(difference[index]);
-  }
-  return difference;
+    Eigen::VectorXd difference = to - from;
+    for (Eigen::Index index = 0; index < difference.size(); ++index) {
+        if (continuous[static_cast<std::size_t>(index)])
+            difference[index] = WrappedDifference(difference[index]);
+    }
+    return difference;
 }
 
 inline double NormalizeCoordinate(double value, Eigen::Index index,

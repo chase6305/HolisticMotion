@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <utility>
 
 #include "JointSpaceTopology.h"
 
@@ -15,6 +16,35 @@ using holistic_motion::robotics::planning::detail::JointSpaceMetric;
 using holistic_motion::robotics::planning::detail::kPi;
 
 int main() {
+    // Weighted answers can remain representable after an unweighted square
+    // underflows or overflows. Compare against extended-precision arithmetic.
+    for (const auto &entry : {std::pair<double, double>{1e-180, 1e300},
+                              {1e-160, 1e300},
+                              {1e160, 1e-320},
+                              {1e-180, 1.0},
+                              {1e200, 1.0}}) {
+        const Eigen::VectorXd weight =
+            Eigen::VectorXd::Constant(1, entry.second);
+        const Eigen::VectorXd zero = Eigen::VectorXd::Zero(1);
+        const Eigen::VectorXd point = Eigen::VectorXd::Constant(1, entry.first);
+        const JointSpaceMetric metric(weight, std::vector<bool>{false});
+        const double expected = static_cast<double>(
+            std::sqrt(static_cast<long double>(entry.second)) * entry.first);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const double actual = metric.Distance(zero, point);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (std::abs(actual / expected - 1.0) > 8e-15)
+            return 4;
+    }
+    const Eigen::VectorXd tiny = Eigen::VectorXd::Constant(32, 1e-162);
+    const Eigen::VectorXd equal_weights = Eigen::VectorXd::Ones(32);
+    const holistic_motion::robotics::planning::detail::WeightedGeometry
+        geometry(equal_weights);
+    const double expected_square =
+        static_cast<double>(32.0L * 1e-162L * 1e-162L);
+    if (std::abs(geometry.SquaredNorm(tiny) - expected_square) >
+        std::numeric_limits<double>::denorm_min())
+        return 5;
     const Eigen::VectorXd unit = Eigen::VectorXd::Ones(1);
     const Eigen::VectorXd origin = Eigen::VectorXd::Zero(1);
     Eigen::VectorXd query(1);

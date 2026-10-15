@@ -28,6 +28,7 @@ class OptimizationContext {
         std::chrono::steady_clock::time_point deadline)
         : lower_(lower), upper_(upper), weights_(weights),
           metric_(weights, continuous),
+          geometry_metric_(weights),
           inverse_weights_(weights.cwiseInverse()),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
@@ -79,12 +80,12 @@ class OptimizationContext {
 
     template <class Derived>
     double SquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
-        return (weights_.array() * value.array().square()).sum();
+        return geometry_metric_.SquaredNorm(value);
     }
 
     double Distance(const Eigen::VectorXd &first,
                     const Eigen::VectorXd &second) const {
-        return std::sqrt(metric_.SquaredDistance(first, second));
+        return metric_.Distance(first, second);
     }
 
     double PathLength(const std::vector<Eigen::VectorXd> &path) const {
@@ -100,12 +101,12 @@ class OptimizationContext {
         Eigen::VectorXd previous(lower_.size()), next(lower_.size());
         DifferenceInto(path[0], path[1], previous);
         double length =
-            options_.length_weight > 0.0 ? std::sqrt(SquaredNorm(previous)) : 0.0;
+            options_.length_weight > 0.0 ? geometry_metric_.Norm(previous) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
             DifferenceInto(path[i], path[i + 1], next);
             if (options_.length_weight > 0.0)
-                length += std::sqrt(SquaredNorm(next));
+                length += geometry_metric_.Norm(next);
             if (options_.smoothness_weight > 0.0)
                 smoothness += SquaredNorm(next - previous);
             previous.swap(next);
@@ -321,6 +322,7 @@ class OptimizationContext {
     const Eigen::VectorXd &upper_;
     const Eigen::VectorXd &weights_;
     detail::JointSpaceMetric metric_;
+    detail::WeightedGeometry geometry_metric_;
     Eigen::VectorXd inverse_weights_;
     bool has_continuous_{false};
     const std::vector<bool> &continuous_;
@@ -348,7 +350,7 @@ PathOptimizer::PathOptimizer(Eigen::VectorXd lower_limits,
             "joint limits must be finite, ordered, and non-empty");
     }
     const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = ranges.array().square().inverse().matrix();
+    weights_ = detail::DefaultJointWeights(ranges);
     if (!ranges.allFinite() || !weights_.allFinite() ||
         (weights_.array() <= 0.0).any())
         throw std::invalid_argument(

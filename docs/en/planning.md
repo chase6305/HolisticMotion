@@ -220,8 +220,11 @@ second-difference terms, combined with the optional state-cost gradient.
 Inverse joint weights precondition that gradient before its largest component
 is normalized, so objective weights affect both the search direction and the
 acceptance test.
-Default inverse-range-squared weights must be finite and positive; numerically
-unrepresentable joint ranges are rejected during construction.
+Weighted path lengths and geometric costs retain representable results even
+when an unweighted square would overflow or underflow. Ordinary-scale queries
+keep their original arithmetic. Default inverse-range-squared weights must be
+finite and positive; ranges whose default weights cannot be represented are
+rejected during construction.
 
 ## Resolution and safety
 

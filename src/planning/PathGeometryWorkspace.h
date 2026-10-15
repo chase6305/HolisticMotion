@@ -12,7 +12,7 @@ class PathGeometryWorkspace {
     PathGeometryWorkspace(const Eigen::VectorXd &weights,
                           const std::vector<bool> &continuous, double length_weight,
                           double smoothness_weight)
-        : weights_(weights), continuous_(continuous),
+        : weights_(weights), geometry_(weights), continuous_(continuous),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
           length_weight_(length_weight), smoothness_weight_(smoothness_weight),
@@ -36,7 +36,7 @@ class PathGeometryWorkspace {
         double length = 0.0;
         double smoothness = 0.0;
         if (length_weight_ > 0.0)
-            length = std::sqrt(SquaredNorm(left_)) + std::sqrt(SquaredNorm(right_));
+            length = geometry_.Norm(left_) + geometry_.Norm(right_);
         if (smoothness_weight_ > 0.0) {
             acceleration_ = right_ - left_;
             smoothness = SquaredNorm(acceleration_);
@@ -67,8 +67,8 @@ class PathGeometryWorkspace {
         double left_length = 0.0;
         double right_length = 0.0;
         if (length_weight_ > 0.0) {
-            left_length = std::sqrt(SquaredNorm(left_));
-            right_length = std::sqrt(SquaredNorm(right_));
+            left_length = geometry_.Norm(left_);
+            right_length = geometry_.Norm(right_);
             if (left_length > 1e-15)
                 gradient.array() +=
                     length_weight_ * weights_.array() * left_.array() / left_length;
@@ -133,10 +133,11 @@ class PathGeometryWorkspace {
     }
 
     double SquaredNorm(const Eigen::VectorXd &value) const {
-        return (weights_.array() * value.array().square()).sum();
+        return geometry_.SquaredNorm(value);
     }
 
     const Eigen::VectorXd &weights_;
+    const WeightedGeometry geometry_;
     const std::vector<bool> &continuous_;
     const bool has_continuous_;
     const double length_weight_;

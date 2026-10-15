@@ -64,7 +64,7 @@ class PlanningContext {
 
     double Distance(const Eigen::VectorXd &first,
                     const Eigen::VectorXd &second) const {
-        return std::sqrt(metric_.SquaredDistance(first, second));
+        return metric_.Distance(first, second);
     }
 
     bool SameState(const Eigen::VectorXd &first, const Eigen::VectorXd &second) const {
@@ -579,7 +579,7 @@ SamplingPlanner::SamplingPlanner(Eigen::VectorXd lower_limits,
             "joint limits must be finite, ordered, and non-empty");
     }
     const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = ranges.array().square().inverse().matrix();
+    weights_ = detail::DefaultJointWeights(ranges);
     if (!ranges.allFinite() || !weights_.allFinite() ||
         (weights_.array() <= 0.0).any())
         throw std::invalid_argument(
