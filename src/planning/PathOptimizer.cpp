@@ -15,6 +15,18 @@
 namespace holistic_motion::robotics::planning {
 namespace {
 
+double WeightedStateCostSum(const std::vector<double> &costs, double weight,
+                            double raw_sum) {
+    if (std::isfinite(raw_sum))
+        return weight * raw_sum;
+    // All costs are non-negative. Scale cached values before adding when the
+    // raw total alone overflows; no additional callback evaluations are needed.
+    double weighted_sum = 0.0;
+    for (double cost : costs)
+        weighted_sum += weight * cost;
+    return weighted_sum;
+}
+
 class OptimizationContext {
   public:
     OptimizationContext(
@@ -548,7 +560,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     }
     result.statistics.initial_objective =
         context.GeometryObjective(result.path) +
-        options.state_cost_weight * total_state_cost;
+        WeightedStateCostSum(state_costs, options.state_cost_weight,
+                             total_state_cost);
     if (!std::isfinite(result.statistics.initial_objective)) {
         result.path.clear();
         result.feasible = false;
@@ -655,8 +668,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     }
     result.statistics.final_objective =
         context.GeometryObjective(result.path) +
-        options.state_cost_weight *
-            std::accumulate(state_costs.begin(), state_costs.end(), 0.0);
+        WeightedStateCostSum(
+            state_costs, options.state_cost_weight,
+            std::accumulate(state_costs.begin(), state_costs.end(), 0.0));
     result.statistics.final_path_length = context.PathLength(result.path);
     if (context.TimedOut())
         return finish(PathOptimizationStatus::TIMEOUT,
