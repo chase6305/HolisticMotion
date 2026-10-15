@@ -15,11 +15,50 @@ def require_real(value, *, name: str):
     if isinstance(value, (float, int, np.floating, np.integer)):
         return value
     array = np.asarray(value)
-    if np.iscomplexobj(array) or (
-        array.dtype.kind == "O" and any(np.iscomplexobj(item) for item in array.flat)
-    ):
-        raise TypeError(f"{name} must contain real values")
+    if np.iscomplexobj(array):
+        raise TypeError(f"{name} must be real")
+    if array.dtype.kind == "O":
+        _require_real_objects(array, name)
     return array
+
+
+def _require_real_objects(array: np.ndarray, name: str) -> None:
+    # Object arrays may hold further arrays, including zero-dimensional
+    # wrappers that float() would silently convert from NumPy complex
+    # scalars. Traverse iteratively, retaining only the active iterators.
+    active = {id(array)}
+    visited = {}
+    pending = [(id(array), array, iter(array.flat))]
+    while pending:
+        identity, container, items = pending[-1]
+        try:
+            item = next(items)
+        except StopIteration:
+            pending.pop()
+            active.remove(identity)
+            visited[identity] = container
+            continue
+        if isinstance(item, (float, int, np.floating, np.integer)):
+            continue
+        identity = id(item)
+        if identity in active:
+            raise TypeError(f"{name} must not contain cyclic objects")
+        if identity in visited:
+            continue
+        nested = np.asarray(item)
+        if np.iscomplexobj(nested):
+            raise TypeError(f"{name} must be real")
+        if nested.dtype.kind == "O":
+            # Ordinary scalar objects (for example Decimal) wrap themselves
+            # in an object array; their numeric conversion is left intact.
+            if (
+                nested.ndim == 0
+                and nested.item() is item
+                and not isinstance(item, np.ndarray)
+            ):
+                continue
+            active.add(identity)
+            pending.append((identity, item, iter(nested.flat)))
 
 
 def real_array(value, *, name: str, copy: bool = False) -> np.ndarray:

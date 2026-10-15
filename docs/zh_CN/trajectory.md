@@ -20,6 +20,7 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 `sample_uniform()` 返回新的数组，应用可以自由修改而不会影响轨迹对象。
 两种时间参数化后端均要求实数输入；复数数组和标量参数会抛出 `TypeError`，
 即使虚部为零也不例外。
+NumPy 校验也会检查嵌套对象数组，并在转换前拒绝循环引用；无环共享的实数对象仍可使用。
 
 NumPy 在有限坐标平方会溢出时使用缩放后的弦长计算；无法表示的路点差值或
 弦长会抛出 `ValueError`。

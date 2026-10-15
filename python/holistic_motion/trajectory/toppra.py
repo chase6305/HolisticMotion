@@ -14,6 +14,8 @@ from numbers import Integral
 
 import numpy as np
 
+from .._validation import real_array
+
 _MAX_PATH_SPEED = np.sqrt(np.finfo(float).max)
 _MIN_INVERSE_CAP = 1.0 / float(np.finfo(float).max)
 
@@ -88,14 +90,7 @@ class _NaturalCubicPath:
 
 
 def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
-    array = np.asarray(value)
-    if np.iscomplexobj(array) or (
-        array.dtype.kind == "O" and any(np.iscomplexobj(item) for item in array.flat)
-    ):
-        raise TypeError(f"{name} must be real")
-    if copy:
-        return np.array(array, dtype=float, copy=True)
-    return np.asarray(array, dtype=float)
+    return real_array(value, name=name, copy=copy)
 
 
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:

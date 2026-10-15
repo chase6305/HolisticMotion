@@ -22,6 +22,8 @@ Waypoint, limit, and timing-result arrays are immutable owned snapshots.
 modify freely without changing the trajectory object.
 Both timing backends require real inputs; complex arrays and scalar parameters
 raise `TypeError`, including complex values with zero imaginary components.
+NumPy validation also checks nested object arrays and rejects cyclic objects
+before conversion; shared acyclic real objects remain supported.
 
 NumPy uses scaled chord norms when squaring finite coordinates would overflow.
 Unrepresentable waypoint differences or chord lengths raise `ValueError`.
