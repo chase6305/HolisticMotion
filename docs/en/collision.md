@@ -31,6 +31,11 @@ python3 examples/python/collision/basic_query.py \
 Adjacent-link pairs are excluded by default. Use `--include-adjacent` when
 they should participate in the query. Run `--help` for all options.
 
+Python configurations, geometry, and distance thresholds must be real. Complex
+inputs raise `TypeError` before queries or geometry updates; rejected sphere
+assignments retain their previous values. Real integer arrays and strided views
+remain supported.
+
 ## Collision-pair groups
 
 For a dual-arm robot, define each arm as a link group and enable only the

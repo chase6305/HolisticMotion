@@ -29,6 +29,9 @@ python3 examples/python/collision/basic_query.py \
 默认排除相邻连杆的碰撞对；需要检测它们时加入 `--include-adjacent`。使用
 `--help` 查看全部参数。
 
+Python 构型、几何和距离阈值必须为实数。复数输入在查询或修改几何前抛出
+`TypeError`，球体属性赋值失败时保留原值；实数整数数组和非连续视图仍受支持。
+
 ## 碰撞对分组管理
 
 对于双臂机器人，可以把左右臂分别定义成 link 组，并且只启用左右臂组间的
