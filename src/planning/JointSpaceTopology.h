@@ -17,11 +17,14 @@ inline double WrappedDifference(double difference) {
   return std::remainder(difference, 2.0 * kPi);
 }
 
-// Canonical periodic states occupy [lower, lower + 2*pi). At a coarse
-// floating-point origin this interval can contain only one coordinate.
+// Interpolation must resolve distinct phases near either joint limit.
+// A coarse floating-point endpoint can span a whole period in one step.
 inline bool HasRepresentablePeriod(double lower, double upper) {
-    return std::abs(lower) < 2.0 * kPi ||
-           std::nextafter(lower, upper) - lower < 2.0 * kPi;
+    const double period = 2.0 * kPi;
+    return (std::abs(lower) < period ||
+            std::nextafter(lower, upper) - lower < period) &&
+           (std::abs(upper) < period ||
+            upper - std::nextafter(upper, lower) < period);
 }
 
 // Ordinary sums retain their original evaluation order. Below this bound,

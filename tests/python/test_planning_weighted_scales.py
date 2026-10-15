@@ -201,3 +201,30 @@ def test_rejected_continuous_origin_preserves_the_previous_topology(factory):
         result = planner.plan(*path)
     assert result.success
     assert result.statistics.final_path_length == pytest.approx(0.2 / (2 * math.pi))
+
+
+@pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
+@pytest.mark.parametrize("upper", [1e20, 1e100, 1e150])
+def test_continuous_limits_reject_an_unresolved_upper_endpoint(factory, upper):
+    planner = factory([0.0], [upper])
+    with pytest.raises(ValueError, match="represent"):
+        planner.set_continuous_joints([0])
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[0.0], [1.0]])
+    else:
+        result = planner.plan([0.0], [1.0])
+    assert result.success
+    np.testing.assert_array_equal(result.path[-1], [1.0])
+
+
+@pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
+def test_continuous_limits_allow_a_wide_range_with_resolved_endpoints(factory):
+    planner = factory([0.0], [1e10])
+    planner.set_continuous_joints([0])
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[0.0], [0.5]])
+    else:
+        result = planner.plan([0.0], [0.5])
+    assert result.success
+    assert result.statistics.final_path_length > 0.0
+    np.testing.assert_array_equal(result.path[-1], [0.5])
