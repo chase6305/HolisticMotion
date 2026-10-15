@@ -35,6 +35,25 @@ int main() {
         Eigen::internal::set_is_malloc_allowed(true);
         if (std::abs(actual / expected - 1.0) > 8e-15)
             return 4;
+        for (bool coincident : {false, true}) {
+            const auto &state = coincident ? zero : point;
+            const double distance = coincident ? 0.0 : expected;
+            for (double radius :
+                 {0.0, -0.0, 0.5 * expected, 1.5 * expected, -1.5 * expected,
+                  std::numeric_limits<double>::infinity(),
+                  -std::numeric_limits<double>::infinity(),
+                  std::numeric_limits<double>::quiet_NaN()}) {
+                Eigen::internal::set_is_malloc_allowed(false);
+                const bool inside = metric.WithinRadius(
+                    state, zero, metric.SquaredDistance(state, zero), radius,
+                    radius * radius);
+                Eigen::internal::set_is_malloc_allowed(true);
+                if (inside != (distance <= radius)) {
+                    std::cerr << "exceptional radius changed membership\n";
+                    return 4;
+                }
+            }
+        }
     }
     const Eigen::VectorXd tiny = Eigen::VectorXd::Constant(32, 1e-162);
     const Eigen::VectorXd equal_weights = Eigen::VectorXd::Ones(32);

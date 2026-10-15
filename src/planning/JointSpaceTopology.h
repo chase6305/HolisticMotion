@@ -155,10 +155,10 @@ class JointSpaceMetric {
     bool WithinRadius(const Eigen::VectorXd &state,
                       const Eigen::VectorXd &query, double squared_distance,
                       double radius, double squared_radius) const {
-        if (!(radius >= 0.0))
-            return false;
-        if (std::isnormal(squared_radius) && std::isfinite(squared_distance))
-            return squared_distance <= squared_radius;
+        // A normal squared radius is finite; comparison already rejects
+        // infinite or NaN distances. Exceptional radii use actual norms.
+        if (std::isnormal(squared_radius))
+            return squared_distance <= squared_radius && radius >= 0.0;
         return Distance(state, query) <= radius;
     }
 
