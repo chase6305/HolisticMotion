@@ -493,15 +493,16 @@ class SRSContinuousTracker:
         return best
 
     def _score(self, joints, velocity, acceleration, predicted, branch, dt) -> float:
+        options = self._options
         limit_distance = np.minimum(joints - self._lower, self._upper - joints)
         finite = np.isfinite(limit_distance)
-        limit_penalty = np.sum(1.0 / np.maximum(limit_distance[finite], 1e-6) ** 2)
+        limit_penalty = (1.0 / np.maximum(limit_distance[finite], 1e-6) ** 2).sum()
         return float(
-            self.options.position_weight * np.sum((joints - predicted) ** 2)
-            + self.options.velocity_weight * np.sum((velocity * dt) ** 2)
-            + self.options.acceleration_weight * np.sum((acceleration * dt * dt) ** 2)
-            + self.options.branch_switch_penalty * (branch != self._configuration)
-            + self.options.joint_limit_weight * limit_penalty
+            options.position_weight * ((joints - predicted) ** 2).sum()
+            + options.velocity_weight * ((velocity * dt) ** 2).sum()
+            + options.acceleration_weight * ((acceleration * dt * dt) ** 2).sum()
+            + options.branch_switch_penalty * (branch != self._configuration)
+            + options.joint_limit_weight * limit_penalty
         )
 
     def _unwrap(self, candidate: np.ndarray, reference: np.ndarray) -> np.ndarray:
