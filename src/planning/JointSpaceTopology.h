@@ -17,6 +17,13 @@ inline double WrappedDifference(double difference) {
   return std::remainder(difference, 2.0 * kPi);
 }
 
+// Canonical periodic states occupy [lower, lower + 2*pi). At a coarse
+// floating-point origin this interval can contain only one coordinate.
+inline bool HasRepresentablePeriod(double lower, double upper) {
+    return std::abs(lower) < 2.0 * kPi ||
+           std::nextafter(lower, upper) - lower < 2.0 * kPi;
+}
+
 // Ordinary sums retain their original evaluation order. Below this bound,
 // rounding an unweighted square to zero/subnormal can affect the weighted
 // answer, so scale before taking a stable norm. The bound accounts for both

@@ -616,6 +616,11 @@ void SamplingPlanner::SetContinuousJoints(
             throw std::invalid_argument(
                 "continuous joints require a range of at least 2*pi");
         }
+        const Eigen::Index axis = static_cast<Eigen::Index>(index);
+        if (!detail::HasRepresentablePeriod(lower_limits_[axis],
+                                            upper_limits_[axis]))
+            throw std::invalid_argument(
+                "continuous joint limits cannot represent a full revolution");
         continuous[index] = true;
     }
     continuous_ = std::move(continuous);

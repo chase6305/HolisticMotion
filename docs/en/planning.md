@@ -29,6 +29,10 @@ interpolation remains inside its limits and continuous joints wrap normally.
 `edge_resolution` then has no validation work to control, and `collision_checks`
 remains zero. Configure a validator to check obstacles or additional constraints.
 
+Continuous-joint limits must span `2*pi` and resolve distinct floating-point
+coordinates within one revolution. Origins whose spacing is at least `2*pi`
+reject during `set_continuous_joints`; failed changes preserve prior topology.
+
 Joint weights control search distances, not a goal tolerance. A direct solution
 preserves distinct endpoints even with very small weights. RRT-Connect joins
 its trees only after a validated extension actually reaches the target state;

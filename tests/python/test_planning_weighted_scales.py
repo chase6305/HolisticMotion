@@ -154,3 +154,50 @@ def test_preconditioned_direction_keeps_subnormal_component_ratios(weight):
     assert result.success
     assert result.statistics.accepted_updates == 1
     np.testing.assert_allclose(result.path[1], [-0.14, -0.2], rtol=1e-14, atol=0.0)
+
+
+@pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
+@pytest.mark.parametrize("lower", [1e20, -1e20, float(2**56), -float(2**56)])
+def test_continuous_limits_reject_origins_that_collapse_a_revolution(factory, lower):
+    upper = lower + 1e6
+    goal = np.nextafter(lower, upper)
+    planner = factory([lower], [upper])
+    with pytest.raises(ValueError, match="represent"):
+        planner.set_continuous_joints([0])
+    # A failed topology assignment leaves the ordinary bounded joint usable.
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[lower], [goal]])
+    else:
+        result = planner.plan([lower], [goal])
+    assert result.success
+    assert result.statistics.final_path_length > 0.0
+    np.testing.assert_array_equal(result.path[-1], [goal])
+
+
+@pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
+@pytest.mark.parametrize("lower", [0.0, -math.pi, 1e10])
+def test_continuous_limits_keep_origins_that_resolve_a_revolution(factory, lower):
+    planner = factory([lower], [lower + 2 * math.pi + 1e-6])
+    planner.set_continuous_joints([0])
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[lower], [lower + 0.5]])
+    else:
+        result = planner.plan([lower], [lower + 0.5])
+    assert result.success
+    np.testing.assert_array_equal(result.path[-1], [lower + 0.5])
+
+
+@pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
+def test_rejected_continuous_origin_preserves_the_previous_topology(factory):
+    lower = 1e20
+    planner = factory([-math.pi, lower], [math.pi, lower + 1e6])
+    planner.set_continuous_joints([0])
+    with pytest.raises(ValueError, match="represent"):
+        planner.set_continuous_joints([1])
+    path = [[math.pi - 0.1, lower], [-math.pi + 0.1, lower]]
+    if factory is hm.PathOptimizer:
+        result = planner.optimize(path)
+    else:
+        result = planner.plan(*path)
+    assert result.success
+    assert result.statistics.final_path_length == pytest.approx(0.2 / (2 * math.pi))
