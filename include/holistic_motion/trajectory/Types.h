@@ -11,6 +11,7 @@
 
 #include "holistic_motion/manif/LieGroup.h"
 #include "holistic_motion/utility/Logging.h"
+#include "holistic_motion/utility/ScaledNorm.h"
 #include "holistic_motion/utility/Types.h"
 
 namespace holistic_motion::robotics {
@@ -120,7 +121,12 @@ double WeightedCoefficientNorm(const Eigen::MatrixBase<Derived> &target,
     for (Eigen::Index index = 0; index < target.size(); ++index)
         norm =
             std::hypot(norm, std::sqrt(weights[index]) * target.coeff(index));
-    return norm;
+    if (std::isnormal(norm) || !std::isfinite(norm))
+        return norm;
+    ScaledNormAccumulator accumulated;
+    for (Eigen::Index index = 0; index < target.size(); ++index)
+        accumulated.AddProduct(std::sqrt(weights[index]), target.coeff(index));
+    return accumulated.Value();
 }
 } // namespace detail
 

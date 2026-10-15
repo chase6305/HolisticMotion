@@ -216,6 +216,19 @@ void CheckLargeCurveDerivatives() {
 }
 
 void CheckExtremeWeightedNormsAndQuadraticCurvature() {
+    const Eigen::VectorXd subnormal_values =
+        Eigen::VectorXd::Constant(4, std::scalbn(1.0, -575));
+    const Eigen::VectorXd subnormal_weights =
+        Eigen::VectorXd::Constant(4, std::scalbn(1.0, -1000));
+    const Eigen::MatrixBase<Eigen::VectorXd> &subnormal_base = subnormal_values;
+    R4d subnormal_group;
+    subnormal_group.Coeffs() = subnormal_values;
+    for (double norm : {WeightedNorm(subnormal_values, subnormal_weights),
+                        WeightedNorm(subnormal_base, subnormal_weights),
+                        WeightedNorm(subnormal_group, subnormal_weights)}) {
+        if (norm != std::numeric_limits<double>::denorm_min())
+            throw std::runtime_error("weighted components rounded before accumulation");
+    }
     for (const auto &parameters :
          {std::array<double, 5>{1e-200, 0.0, 1.0, 1.0, 1e-200},
           std::array<double, 5>{1e200, 0.0, 1.0, 1.0, 1e200},

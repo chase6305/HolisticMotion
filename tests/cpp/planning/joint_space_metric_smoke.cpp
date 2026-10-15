@@ -16,6 +16,39 @@ using holistic_motion::robotics::planning::detail::JointSpaceMetric;
 using holistic_motion::robotics::planning::detail::kPi;
 
 int main() {
+    // Each weighted component is exactly half of the smallest subnormal;
+    // four together have a representable norm. Do not round each one first.
+    for (const auto &parameters :
+         {std::pair<int, int>{-575, 0}, {-75, -1000}}) {
+        const Eigen::VectorXd weight =
+            Eigen::VectorXd::Constant(4, std::scalbn(1.0, -1000));
+        const Eigen::VectorXd point =
+            Eigen::VectorXd::Constant(4, std::scalbn(1.0, parameters.first));
+        const Eigen::VectorXd zero = Eigen::VectorXd::Zero(4);
+        const double expected = std::numeric_limits<double>::denorm_min();
+        const holistic_motion::robotics::planning::detail::WeightedGeometry
+            geometry(weight);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const double scaled =
+            geometry.ScaledNorm(point, std::scalbn(1.0, parameters.second));
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (scaled != expected)
+            return 6;
+        if (parameters.second != 0)
+            continue;
+        for (bool periodic : {false, true}) {
+            const JointSpaceMetric metric(weight, std::vector<bool>(4, periodic));
+            Eigen::internal::set_is_malloc_allowed(false);
+            const double actual = metric.Distance(zero, point);
+            const bool within_zero =
+                metric.WithinRadius(point, zero, 0.0, 0.0, 0.0);
+            const bool within_radius =
+                metric.WithinRadius(point, zero, 0.0, expected, 0.0);
+            Eigen::internal::set_is_malloc_allowed(true);
+            if (actual != expected || within_zero || !within_radius)
+                return 6;
+        }
+    }
     // Weighted answers can remain representable after an unweighted square
     // underflows or overflows. Compare against extended-precision arithmetic.
     for (const auto &entry : {std::pair<double, double>{1e-180, 1e300},

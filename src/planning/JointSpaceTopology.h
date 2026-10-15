@@ -9,6 +9,8 @@
 
 #include <Eigen/Core>
 
+#include "holistic_motion/utility/ScaledNorm.h"
+
 namespace holistic_motion::robotics::planning::detail {
 
 constexpr double kPi = 3.14159265358979323846;
@@ -86,7 +88,14 @@ class WeightedGeometry {
                 coefficient_exponent + weight_exponent + value_exponent);
             norm = std::hypot(norm, scaled);
         }
-        return norm;
+        if (std::isnormal(norm) || !std::isfinite(norm))
+            return norm;
+        ::holistic_motion::robotics::detail::ScaledNormAccumulator accumulated;
+        const double coefficient_scale = std::sqrt(coefficient);
+        for (Eigen::Index i = 0; i < value.size(); ++i)
+            accumulated.AddProduct(coefficient_scale, std::sqrt(weights_[i]),
+                                   value[i]);
+        return accumulated.Value();
     }
 
   private:
@@ -100,7 +109,12 @@ class WeightedGeometry {
         double norm = 0.0;
         for (Eigen::Index i = 0; i < value.size(); ++i)
             norm = std::hypot(norm, std::sqrt(weights_[i]) * value[i]);
-        return norm;
+        if (std::isnormal(norm) || !std::isfinite(norm))
+            return norm;
+        ::holistic_motion::robotics::detail::ScaledNormAccumulator accumulated;
+        for (Eigen::Index i = 0; i < value.size(); ++i)
+            accumulated.AddProduct(std::sqrt(weights_[i]), value[i]);
+        return accumulated.Value();
     }
 
     const Eigen::VectorXd &weights_;
@@ -209,7 +223,16 @@ class JointSpaceMetric {
                 delta = WrappedDifference(delta);
             norm = std::hypot(norm, std::sqrt(weights_[i]) * delta);
         }
-        return norm;
+        if (std::isnormal(norm) || !std::isfinite(norm))
+            return norm;
+        ::holistic_motion::robotics::detail::ScaledNormAccumulator accumulated;
+        for (Eigen::Index i = 0; i < from.size(); ++i) {
+            double delta = to[i] - from[i];
+            if (continuous_[static_cast<std::size_t>(i)])
+                delta = WrappedDifference(delta);
+            accumulated.AddProduct(std::sqrt(weights_[i]), delta);
+        }
+        return accumulated.Value();
     }
 
     const Eigen::VectorXd &weights_;
