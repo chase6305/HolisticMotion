@@ -18,10 +18,13 @@ from typing import Optional, Union
 
 import numpy as np
 
+from .._validation import real_array, require_real
+
 PathLike = Union[str, Path]
 
 
 def _finite_float(value, name: str) -> float:
+    value = require_real(value, name=name)
     try:
         result = float(value)
     except (TypeError, ValueError) as error:
@@ -71,7 +74,7 @@ def _validated_options(options) -> SphereFitOptions:
 
 
 def _points(value, name: str, *, allow_empty: bool = False) -> np.ndarray:
-    points = np.asarray(value, dtype=float)
+    points = real_array(value, name=name)
     if points.ndim != 2 or points.shape[1:] != (3,):
         raise ValueError(f"{name} must have shape (N, 3)")
     if not allow_empty and len(points) == 0:
@@ -134,7 +137,7 @@ class SphereSpec:
     radius: float
 
     def __post_init__(self):
-        center = np.asarray(self.center, dtype=float)
+        center = real_array(self.center, name="sphere center")
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             raise ValueError("sphere center must contain three finite values")
         radius = _finite_float(self.radius, "sphere radius")
@@ -387,7 +390,7 @@ def fit_trimesh(
         or surface_samples < 4
     ):
         raise ValueError("surface_samples must be at least four")
-    extents = np.asarray(mesh.extents, dtype=float)
+    extents = real_array(mesh.extents, name="mesh extents")
     if (
         extents.shape != (3,)
         or not np.all(np.isfinite(extents))
@@ -396,11 +399,13 @@ def fit_trimesh(
         raise ValueError("mesh must have finite, non-zero extents")
     if pitch is None:
         pitch = float(np.max(extents) / 32.0)
+    else:
+        pitch = _finite_float(pitch, "pitch")
     if not np.isfinite(pitch) or pitch <= 0.0:
         raise ValueError("pitch must be finite and positive")
 
     voxels = mesh.voxelized(pitch).fill()
-    interior = np.asarray(voxels.points, dtype=float)
+    interior = real_array(voxels.points, name="voxel points")
     if len(interior) == 0:
         raise ValueError("mesh voxelization produced no interior samples")
     # Use the module-level sampler because it exposes an explicit seed across

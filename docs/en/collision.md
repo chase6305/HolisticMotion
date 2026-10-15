@@ -158,6 +158,8 @@ metrics process blocks without creating an all-samples distance matrix.
 Coordinate differences are computed directly, preserving small separations
 when the model is far from the origin, within floating-point input precision.
 This preprocessing uses NumPy and does not require the native collision component.
+Coordinates, radii, fit metrics, and floating-point options must be real; complex values
+raise `TypeError` before conversion, including values with zero imaginary part.
 
 ```bash
 python -m pip install '.[examples]' 'scipy>=1.10'
