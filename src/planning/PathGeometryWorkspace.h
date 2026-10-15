@@ -10,14 +10,23 @@ namespace holistic_motion::robotics::planning::detail {
 class PathGeometryWorkspace {
   public:
     PathGeometryWorkspace(const Eigen::VectorXd &weights,
-                          const std::vector<bool> &continuous, double length_weight,
-                          double smoothness_weight)
+                          const std::vector<bool> &continuous,
+                          double length_weight, double smoothness_weight)
         : weights_(weights), geometry_(weights), continuous_(continuous),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
           length_weight_(length_weight), smoothness_weight_(smoothness_weight),
-          left_(weights.size()), right_(weights.size()), previous_(weights.size()),
-          next_(weights.size()), acceleration_(weights.size()) {}
+          length_product_(length_weight * weights.minCoeff()),
+          length_underflow_threshold_(std::isnormal(length_product_)
+                                          ? std::numeric_limits<double>::min() /
+                                                length_product_
+                                          : 0.0),
+          smoothness_product_exceptional_(
+              smoothness_weight > 0.0 &&
+              !std::isnormal(smoothness_weight * weights.minCoeff())),
+          left_(weights.size()), right_(weights.size()),
+          previous_(weights.size()), next_(weights.size()),
+          acceleration_(weights.size()) {}
 
     void SetWaypoint(const std::vector<Eigen::VectorXd> &path, std::size_t index) {
         if (length_weight_ == 0.0 && smoothness_weight_ == 0.0)
@@ -91,13 +100,22 @@ class PathGeometryWorkspace {
                     2.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
             }
         }
-        if (!gradient.allFinite()) {
+        const bool underflowed_length =
+            length_weight_ > 0.0 &&
+            (!std::isnormal(length_product_) ||
+             (left_length > 0.0 && NeedsScaledLength(left_)) ||
+             (right_length > 0.0 && NeedsScaledLength(right_)));
+        if (!gradient.allFinite() || underflowed_length ||
+            smoothness_product_exceptional_) {
             // Finite terms can overflow before multiplication by a small (or
             // zero) edge difference, or cancel only after their accumulation.
             // Retain the ordinary vectorized path and recover these exceptional
             // components before the optimizer preconditions the gradient.
+            // A finite zero can also hide an underflowed weighted difference
+            // that division by a small edge length would have recovered.
             for (Eigen::Index i = 0; i < gradient.size(); ++i) {
-                if (std::isfinite(gradient[i]))
+                if (std::isfinite(gradient[i]) && !underflowed_length &&
+                    !smoothness_product_exceptional_)
                     continue;
                 long double value = 0.0L;
                 if (left_length > 0.0)
@@ -123,6 +141,12 @@ class PathGeometryWorkspace {
     }
 
   private:
+    bool NeedsScaledLength(const Eigen::VectorXd &difference) const {
+        return ((difference.array().abs() < length_underflow_threshold_) &&
+                (difference.array() != 0.0))
+            .any();
+    }
+
     void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
                         Eigen::VectorXd &difference) const {
         difference = to - from;
@@ -142,6 +166,9 @@ class PathGeometryWorkspace {
     const bool has_continuous_;
     const double length_weight_;
     const double smoothness_weight_;
+    const double length_product_;
+    const double length_underflow_threshold_;
+    const bool smoothness_product_exceptional_;
     Eigen::VectorXd left_, right_, previous_, next_, acceleration_;
     bool has_previous_{false};
     bool has_next_{false};

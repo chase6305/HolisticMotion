@@ -3,6 +3,7 @@
 #endif
 #define EIGEN_RUNTIME_NO_MALLOC
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <utility>
@@ -109,6 +110,54 @@ int main() {
         if (!gradient.allFinite() || gradient[0] != 0.0 ||
             std::abs(gradient[1] / std::sqrt(scale) - expected) > 1e-13) {
             std::cerr << "global weight scale erased a length derivative\n";
+            return 1;
+        }
+    }
+    // Tiny coordinates and weights can erase an intermediate product even
+    // though division by the edge length leaves a representable derivative.
+    for (const auto &parameters :
+         {std::array<double, 3>{1e-100, 1e-300, 1.0},
+          std::array<double, 3>{1e-150, 1e-200, 1.0},
+          std::array<double, 3>{1e-20, 1e-310, 1.0},
+          std::array<double, 3>{1.0, 1e-200, 1e-200}}) {
+        const auto [scale, weight, coefficient] = parameters;
+        auto path = bent;
+        for (auto &state : path)
+            state *= scale;
+        const Eigen::VectorXd tiny_weights = Eigen::Vector2d::Constant(weight);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(tiny_weights, topology, coefficient,
+                                        0.0);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double expected =
+            coefficient * std::sqrt(weight) * (2.0 / std::sqrt(1.25));
+        if (gradient[0] != 0.0 || !gradient.allFinite() ||
+            std::abs(gradient[1] / expected - 1.0) > 1e-13) {
+            std::cerr
+                << "weighted product underflow erased a length derivative\n";
+            return 1;
+        }
+    }
+    {
+        auto path = bent;
+        for (auto &state : path)
+            state *= 1e100;
+        const Eigen::VectorXd tiny_weights = Eigen::Vector2d::Constant(1e-200);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(tiny_weights, topology, 0.0, 1e-200);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (gradient[0] != 0.0 || !gradient.allFinite() ||
+            std::abs(gradient[1] / 8e-300 - 1.0) > 1e-13) {
+            std::cerr << "weighted product underflow erased a smoothness "
+                         "derivative\n";
             return 1;
         }
     }

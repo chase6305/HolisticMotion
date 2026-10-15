@@ -228,3 +228,32 @@ def test_continuous_limits_allow_a_wide_range_with_resolved_endpoints(factory):
     assert result.success
     assert result.statistics.final_path_length > 0.0
     np.testing.assert_array_equal(result.path[-1], [0.5])
+
+
+@pytest.mark.parametrize(
+    "scale,weight,length_weight",
+    [
+        (1e-100, 1e-300, 1.0),
+        (1e-150, 1e-200, 1.0),
+        (1e-20, 1e-310, 1.0),
+        (1.0, 1e-200, 1e-200),
+    ],
+)
+def test_length_descent_recovers_underflowed_weighted_gradient(
+    scale, weight, length_weight
+):
+    optimizer = hm.PathOptimizer([-2.0, -2.0], [2.0, 2.0])
+    optimizer.set_joint_weights([weight, weight])
+    options = hm.PathOptimizationOptions()
+    options.length_weight = length_weight
+    options.smoothness_weight = 0.0
+    options.minimum_improvement = 0.0
+    options.step_size = 0.35 * scale
+    options.max_iterations = 10
+    path = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]) * scale
+    result = optimizer.optimize(path, options)
+    assert result.success
+    assert result.statistics.accepted_updates > 0
+    assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
+    np.testing.assert_array_equal(result.path[0], path[0])
+    np.testing.assert_array_equal(result.path[-1], path[-1])

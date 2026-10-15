@@ -232,6 +232,8 @@ weights affect both the search direction and the
 acceptance test. Positive representable edge lengths contribute to this gradient
 regardless of their absolute magnitude. `minimum_improvement` remains an absolute
 objective threshold; adjust it when changing objective scales.
+Geometric gradients also recover weighted intermediate products that underflow
+before division by a small edge length or multiplication by a large difference.
 Weighted path lengths and geometric costs retain representable results even
 when an unweighted square would overflow or underflow. Ordinary-scale queries
 keep their original arithmetic. Nearest and radius queries compare actual norms
