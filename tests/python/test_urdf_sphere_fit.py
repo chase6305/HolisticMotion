@@ -124,3 +124,67 @@ def test_urdf_sphere_fit_rejects_ambiguous_string_iterables(tmp_path):
         fit_urdf_collision_spheres(urdf, links="box_link")
     with pytest.raises(TypeError, match="not one path"):
         load_urdf_collision_meshes(urdf, package_dirs=str(tmp_path))
+
+
+def test_repeated_mesh_loads_once_with_independent_scale_and_origin(
+    tmp_path, monkeypatch
+):
+    mesh_path = tmp_path / "box.stl"
+    trimesh.creation.box().export(mesh_path)
+    urdf = tmp_path / "repeated.urdf"
+    urdf.write_text(
+        '<robot name="repeated">'
+        + "".join(
+            f'<link name="link{index}"><collision><origin xyz="{index * 10} 0 0"/>'
+            f'<geometry><mesh filename="box.stl" scale="{scale} {scale} {scale}"/>'
+            "</geometry></collision></link>"
+            for index, scale in enumerate((2, 3, 4))
+        )
+        + "</robot>"
+    )
+    calls = []
+    original_load = trimesh.load
+
+    def load(*args, **kwargs):
+        calls.append(args[0])
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(trimesh, "load", load)
+    meshes = load_urdf_collision_meshes(urdf)
+    assert len(calls) == 1
+    for index, scale in enumerate((2, 3, 4)):
+        np.testing.assert_allclose(meshes[f"link{index}"].extents, [scale] * 3)
+        np.testing.assert_allclose(
+            meshes[f"link{index}"].centroid, [index * 10, 0, 0], atol=1e-12
+        )
+    meshes["link0"].apply_scale(10)
+    np.testing.assert_allclose(meshes["link1"].extents, [3] * 3)
+
+
+def test_unique_mesh_uris_are_each_loaded_once(tmp_path, monkeypatch):
+    urdf = tmp_path / "unique.urdf"
+    for index in range(3):
+        trimesh.creation.box(extents=[index + 1] * 3).export(
+            tmp_path / f"box{index}.stl"
+        )
+    urdf.write_text(
+        '<robot name="unique">'
+        + "".join(
+            f'<link name="link{index}"><collision><geometry>'
+            f'<mesh filename="box{index}.stl"/></geometry></collision></link>'
+            for index in range(3)
+        )
+        + "</robot>"
+    )
+    calls = []
+    original_load = trimesh.load
+
+    def load(*args, **kwargs):
+        calls.append(args[0])
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(trimesh, "load", load)
+    meshes = load_urdf_collision_meshes(urdf)
+    assert len(calls) == 3
+    for index in range(3):
+        np.testing.assert_allclose(meshes[f"link{index}"].extents, [index + 1] * 3)

@@ -189,6 +189,9 @@ geometry are supported; repeat `--package-dir` for `package://` resources and
 repeat `--link` to fit only selected links. This loads geometry only for the
 requested links, so unrelated meshes need not be present. URDF link names are
 still checked for duplicates.
+Repeated mesh URIs are read once per call, with independent scale/origin
+transforms. Cached untransformed geometry is released at its last use; unique
+meshes do not require extra copies.
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \

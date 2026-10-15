@@ -95,3 +95,39 @@ def test_duplicate_unselected_link_names_are_still_rejected(tmp_path, mesh_adapt
     path = _urdf(tmp_path, '<link name="other"/><link name="other"/>')
     with pytest.raises(ValueError, match="duplicate link name"):
         fitting.fit_urdf_collision_spheres(path, links=["wanted"])
+
+
+def test_mesh_reuse_does_not_copy_unique_or_final_instances(
+    tmp_path, mesh_adapter, monkeypatch
+):
+    adapter = sys.modules["trimesh"]
+    loads, copies = [], []
+
+    def load(path, **_kwargs):
+        loads.append(path)
+        return adapter.Trimesh()
+
+    def copy(mesh):
+        copies.append(mesh)
+        return adapter.Trimesh()
+
+    monkeypatch.setattr(adapter, "load", load, raising=False)
+    monkeypatch.setattr(adapter.Trimesh, "copy", copy, raising=False)
+    monkeypatch.setattr(
+        adapter.Trimesh, "apply_scale", lambda *_args: None, raising=False
+    )
+    for name in ("repeated.stl", "unique.stl"):
+        (tmp_path / name).touch()
+    path = _urdf(
+        tmp_path,
+        "".join(
+            f'<link name="mesh{index}"><collision><geometry>'
+            f'<mesh filename="{name}"/></geometry></collision></link>'
+            for index, name in enumerate(
+                ("repeated.stl", "repeated.stl", "repeated.stl", "unique.stl")
+            )
+        ),
+    )
+    assert len(fitting.load_urdf_collision_meshes(path)) == 5
+    assert len(loads) == 2
+    assert len(copies) == 2

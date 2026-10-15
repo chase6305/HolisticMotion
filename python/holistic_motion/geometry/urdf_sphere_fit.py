@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional, Union
@@ -128,6 +129,13 @@ def _load_urdf_collision_meshes(
     root = ET.parse(urdf).getroot()
     if root.tag != "robot":
         raise ValueError("URDF root element must be <robot>")
+    remaining_meshes = Counter(
+        mesh.get("filename", "")
+        for link in root.findall("link")
+        if selected_links is None or link.get("name") in selected_links
+        for mesh in link.findall("collision/geometry/mesh")
+    )
+    mesh_cache = {}
     result = {}
     seen_links = set()
     for link in root.findall("link"):
@@ -146,10 +154,20 @@ def _load_urdf_collision_meshes(
                 raise ValueError(f"link {link_name} has invalid collision geometry")
             shape = geometry[0]
             if shape.tag == "mesh":
-                mesh_path = _resolve_mesh_uri(
-                    shape.get("filename", ""), urdf.parent, roots
-                )
-                mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
+                uri = shape.get("filename", "")
+                mesh_path = _resolve_mesh_uri(uri, urdf.parent, roots)
+                mesh = mesh_cache.get(uri)
+                if mesh is None:
+                    mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
+                remaining_meshes[uri] -= 1
+                if remaining_meshes[uri]:
+                    # Keep an untransformed base only while another requested
+                    # instance needs it. The final instance takes ownership,
+                    # and unique meshes require neither a copy nor a cache.
+                    mesh_cache[uri] = mesh
+                    mesh = mesh.copy()
+                else:
+                    mesh_cache.pop(uri, None)
                 scale = _vector(shape.get("scale"), 3, [1, 1, 1])
                 if np.any(scale <= 0.0):
                     raise ValueError(f"link {link_name} mesh scale must be positive")
