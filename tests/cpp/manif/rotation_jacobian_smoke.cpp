@@ -81,12 +81,57 @@ template <typename Scalar> void CheckAntipodalSmallRotations() {
     }
 }
 
+template <typename Scalar> void CheckRotationVectorScales() {
+    const int exponent = std::numeric_limits<Scalar>::max_exponent10 - 8;
+    const Scalar large = std::pow(Scalar(10), Scalar(exponent));
+    const Scalar small = Scalar(1) / large;
+    const Scalar subnormal_square =
+        std::sqrt(std::numeric_limits<Scalar>::min()) / Scalar(10);
+    const Scalar tolerance =
+        Scalar(32) * std::numeric_limits<Scalar>::epsilon();
+    for (Scalar angle : {Scalar(0), Scalar(0.2), -Scalar(0.7), small, -small,
+                         subnormal_square, -subnormal_square, large, -large}) {
+        const SO3<Scalar> rotation(Scalar(0), Scalar(0), angle,
+                                   EulerAnglesType::rota_vec);
+        const Scalar expected_z = std::sin(angle / Scalar(2));
+        const Scalar expected_w = std::cos(angle / Scalar(2));
+        if (!rotation.Coeffs().allFinite() ||
+            rotation.Coeffs()[0] != Scalar(0) ||
+            rotation.Coeffs()[1] != Scalar(0) ||
+            std::abs(rotation.Coeffs()[3] - expected_w) > tolerance ||
+            (expected_z == Scalar(0)
+                 ? rotation.Coeffs()[2] != Scalar(0)
+                 : std::abs(rotation.Coeffs()[2] / expected_z - Scalar(1)) >
+                       tolerance))
+            throw std::runtime_error(
+                "rotation vector norm lost a finite rotation");
+    }
+    const SO3<Scalar> tiny_rotation(small, Scalar(2) * small,
+                                    -Scalar(3) * small,
+                                    EulerAnglesType::rota_vec);
+    const Eigen::Matrix<Scalar, 3, 1> expected(small / Scalar(2), small,
+                                               -Scalar(1.5) * small);
+    for (int axis = 0; axis < 3; ++axis)
+        if (std::abs(tiny_rotation.Coeffs()[axis] / expected[axis] -
+                     Scalar(1)) > tolerance)
+            throw std::runtime_error("tiny rotation vector lost its axis");
+    const Scalar subnormal_angle =
+        Scalar(16) * std::numeric_limits<Scalar>::denorm_min();
+    const SO3<Scalar> denormal(Scalar(0), Scalar(0), subnormal_angle,
+                               EulerAnglesType::rota_vec);
+    if (!denormal.Coeffs().allFinite() ||
+        denormal.Coeffs()[2] != subnormal_angle / Scalar(2))
+        throw std::runtime_error("subnormal rotation vector lost its phase");
+}
+
 int main() {
     try {
         CheckHalfTurns<double>();
         CheckHalfTurns<float>();
         CheckAntipodalSmallRotations<double>();
         CheckAntipodalSmallRotations<float>();
+        CheckRotationVectorScales<double>();
+        CheckRotationVectorScales<float>();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

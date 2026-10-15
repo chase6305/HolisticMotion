@@ -32,6 +32,9 @@ kinematics users do not acquire Pinocchio and Coal unnecessarily.
 - Applications should perform any controller-specific joint reordering at
   their integration boundary.
 
+The C++ `SO3` constructor with `EulerAnglesType::rota_vec` retains rotations
+whose vector norm is representable even when its square overflows or underflows.
+
 ## Initialization and runtime phases
 
 Keep model construction and configuration outside real-time loops. `Robot`,
