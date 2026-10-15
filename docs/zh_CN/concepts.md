@@ -28,6 +28,9 @@ HolisticMotion 不捆绑机器人资源。请向 `Robot`、`CollisionModel` 和 
 
 对于内置浮点标量，C++ `SO3` 的 `EulerAnglesType::rota_vec` 构造器会保留
 范数可表示的旋转，即使范数平方发生溢出或下溢；自动微分标量保持原有计算路径。
+内置浮点类型的 SO3 切向量指数映射和 Jacobian 在大角度下使用单位轴公式，
+避免中间幂次溢出和小横向导数被相消。逆 Jacobian 的条目仍须可表示，整圈旋转处仍有
+奇异性。Eigen 自动微分标量的指数映射与 Jacobian 通过有限差分核对。
 
 ## 初始化阶段与运行阶段
 

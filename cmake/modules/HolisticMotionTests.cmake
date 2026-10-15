@@ -26,6 +26,10 @@ function(holistic_motion_register_tests)
         tests/cpp/manif/rotation_jacobian_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        rotation_autodiff_smoke_test
+        tests/cpp/manif/rotation_autodiff_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
         holistic_motion)

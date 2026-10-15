@@ -36,6 +36,11 @@ For built-in floating-point scalars, the C++ `SO3` constructor with
 `EulerAnglesType::rota_vec` retains rotations whose vector norm is representable
 even when its square overflows or underflows. Autodiff scalars keep their
 existing computation path.
+Native floating-point SO3 tangent exponentials and Jacobians use unit-axis
+formulas for large angles, avoiding overflowing powers and cancellation of
+small transverse derivatives. Inverse Jacobians still require representable
+entries and remain singular at full turns. Eigen autodiff scalar exponentials
+and Jacobians are checked against finite differences.
 
 ## Initialization and runtime phases
 
