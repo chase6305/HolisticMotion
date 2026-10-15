@@ -42,3 +42,29 @@ def test_tracker_scalar_options_keep_real_scalar_inputs(options_type, value):
     options = options_type(position_weight=value)
     assert options.position_weight == 0.25
     assert isinstance(options.position_weight, float)
+
+
+@pytest.mark.parametrize("kind", ["SRS", "FEP"])
+def test_scoring_observes_the_public_options_property(kind):
+    from holistic_motion import kinematics
+
+    tracker_type = getattr(kinematics, kind + "ContinuousTracker")
+    options_type = getattr(kinematics, kind + "ContinuousOptions")
+    effective = options_type(
+        position_weight=6.0,
+        velocity_weight=0.0,
+        acceleration_weight=0.0,
+        joint_limit_weight=0.0,
+    )
+
+    class Tracker(tracker_type):
+        @property
+        def options(self):
+            return effective
+
+    tracker = object.__new__(Tracker)
+    tracker._options = options_type()
+    tracker._lower, tracker._upper = np.full(7, -3.0), np.full(7, 3.0)
+    tracker._configuration = (1, 1, 1)
+    zero = np.zeros(7)
+    assert tracker._score(np.ones(7), zero, zero, zero, (1, 1, 1), 1.0) == 42.0

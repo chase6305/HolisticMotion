@@ -493,7 +493,7 @@ class SRSContinuousTracker:
         return best
 
     def _score(self, joints, velocity, acceleration, predicted, branch, dt) -> float:
-        options = self._options
+        options = self.options
         limit_distance = np.minimum(joints - self._lower, self._upper - joints)
         finite = np.isfinite(limit_distance)
         limit_penalty = (1.0 / np.maximum(limit_distance[finite], 1e-6) ** 2).sum()
