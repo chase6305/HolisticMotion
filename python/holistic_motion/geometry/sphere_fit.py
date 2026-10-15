@@ -372,7 +372,9 @@ def _evaluate_point_sets(
             maximum = float(np.max(gaps))
             if not np.isfinite(maximum):
                 raise ValueError("uncovered distances must be finite")
-            if maximum > np.finfo(float).max / len(gaps):
+            # Leave headroom for reduction rounding: even max/count or its
+            # neighbouring smaller float can overflow when summed count times.
+            if maximum >= np.finfo(float).max / (2 * len(gaps)):
                 block_mean = float(np.mean(gaps / maximum)) * maximum
             else:
                 block_mean = float(np.mean(gaps))

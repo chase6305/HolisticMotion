@@ -161,3 +161,19 @@ def test_distance_range_classification_workspace_is_bounded():
     finally:
         tracemalloc.stop()
     assert peak < 1024 * 1024
+
+
+@pytest.mark.parametrize("count", [3, 11, 21, 512])
+@pytest.mark.parametrize("below", [False, True])
+def test_finite_gap_mean_keeps_sum_rounding_headroom(count, below):
+    value = np.finfo(float).max / count
+    if below:
+        value = np.nextafter(value, 0.0)
+    points = np.zeros((count, 3))
+    points[:, 0] = value
+    with np.errstate(over="raise", invalid="raise"):
+        result = evaluate_sphere_fit(
+            points, [SphereSpec((0.0, 0.0, 0.0), 1.0)], chunk_size=count
+        )
+    assert math.isclose(result.mean_uncovered_distance, value, rel_tol=2e-15)
+    assert result.maximum_uncovered_distance == value
