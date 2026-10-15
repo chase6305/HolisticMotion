@@ -123,6 +123,9 @@ rotation angles. Candidates with non-finite dynamics, FK poses or scores are
 discarded before ranking; an unrepresentable prediction leaves history intact.
 Initial joints, dynamic limits, weights and result snapshots must contain real
 values. Complex inputs raise `TypeError` before conversion.
+Scalar tracker weights and thresholds are stored as owned floats; modifying a
+caller-provided zero-dimensional array cannot change validated options.
+Non-scalar arrays are rejected for these scalar fields.
 
 Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
 An already converged seed skips these buffers. The workspace is local to the

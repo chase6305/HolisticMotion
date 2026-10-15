@@ -46,10 +46,20 @@ class SRSContinuousOptions:
         scalars = tuple(
             require_real(getattr(self, name), name=name) for name in scalar_names
         )
+        if any(np.ndim(value) != 0 for value in scalars):
+            raise ValueError("tracker weights and thresholds must be scalars")
+        try:
+            scalars = tuple(float(value) for value in scalars)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                "tracker weights and thresholds must be finite and non-negative"
+            ) from error
         if not all(np.isfinite(value) and value >= 0.0 for value in scalars):
             raise ValueError(
                 "tracker weights and thresholds must be finite and non-negative"
             )
+        for name, value in zip(scalar_names, scalars):
+            object.__setattr__(self, name, value)
         if not isinstance(self.branch_hysteresis_frames, Integral) or isinstance(
             self.branch_hysteresis_frames, bool
         ):
