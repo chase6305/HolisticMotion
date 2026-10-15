@@ -157,6 +157,10 @@ temporary distance blocks. Radius fitting, sampled expansion, and coverage
 metrics process blocks without creating an all-samples distance matrix.
 Coordinate differences are computed directly, preserving small separations
 when the model is far from the origin, within floating-point input precision.
+Exceptional coordinate ranges use stable norms to retain finite radii and gaps
+when intermediate squares overflow or underflow. Gap evaluation also subtracts
+the radius before restoring an overflowing distance's scale. Unrepresentable
+final gaps are rejected; sampled coverage keeps its absolute `1e-12` tolerance.
 This preprocessing uses NumPy and does not require the native collision component.
 Coordinates, radii, fit metrics, and floating-point options must be real; complex values
 raise `TypeError` before conversion, including values with zero imaginary part.
