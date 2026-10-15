@@ -267,7 +267,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
             cumulative[i] =
                 cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
         }
-        if (cumulative.back() <= 1e-12)
+        if (!(cumulative.back() > 0.0) || !std::isfinite(cumulative.back()))
             return;
 
         std::uniform_real_distribution<double> distribution(0.0,
@@ -276,7 +276,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         double second_distance = distribution(context.Generator());
         if (first_distance > second_distance)
             std::swap(first_distance, second_distance);
-        if (second_distance - first_distance <= 1e-9)
+        if (second_distance <= first_distance)
             continue;
 
         const auto sample_at = [&](double distance, std::size_t &segment) {
@@ -287,7 +287,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
                 path.size() - 2);
             const double span = cumulative[segment + 1] - cumulative[segment];
             const double ratio =
-                span <= 1e-12 ? 0.0 : (distance - cumulative[segment]) / span;
+                span <= 0.0 ? 0.0 : (distance - cumulative[segment]) / span;
             return context.Interpolate(path[segment], path[segment + 1], ratio);
         };
 
@@ -297,7 +297,10 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         const Eigen::VectorXd second =
             sample_at(second_distance, second_segment);
         const double direct_length = context.Distance(first, second);
-        if (direct_length + 1e-9 >= second_distance - first_distance ||
+        const double arc_length = second_distance - first_distance;
+        const double roundoff =
+            64.0 * std::numeric_limits<double>::epsilon() * arc_length;
+        if (direct_length + roundoff >= arc_length ||
             !context.IsMotionValid(first, second) ||
             // Splitting the retained edges changes their collision sample grid.
             // Check both fragments, including the newly introduced first

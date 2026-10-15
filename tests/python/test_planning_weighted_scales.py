@@ -257,3 +257,30 @@ def test_length_descent_recovers_underflowed_weighted_gradient(
     assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
     np.testing.assert_array_equal(result.path[0], path[0])
     np.testing.assert_array_equal(result.path[-1], path[-1])
+
+
+@pytest.mark.parametrize("weight", [1.0, 1e-18, 1e-30, 1e-300, 1e300])
+def test_shortcut_quality_survives_global_metric_scaling(weight):
+    def valid(state):
+        return not (-0.2 < state[0] < 0.2 and -0.75 < state[1] < 0.75)
+
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], valid)
+    planner.set_joint_weights([weight, weight])
+    options = hm.PlanningOptions()
+    options.timeout_seconds = 3.0
+    options.max_iterations = 4000
+    options.extension_range = 0.15 * math.sqrt(weight)
+    options.edge_resolution = 0.01
+    options.random_seed = 4333
+    options.shortcut_attempts = 200
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success
+    assert (
+        result.statistics.final_path_length
+        < 0.65 * result.statistics.initial_path_length
+    )
+    np.testing.assert_array_equal(result.path[0], [-0.8, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [0.8, 0.0])
+    for first, second in zip(result.path[:-1], result.path[1:]):
+        count = max(1, math.ceil(np.max(np.abs(second - first)) / 0.005))
+        assert all(valid(state) for state in np.linspace(first, second, count + 1))

@@ -260,7 +260,9 @@ The planner validates each edge at intervals no larger than
 `edge_resolution` in any active joint. Smaller values improve collision
 coverage but increase Coal queries. Endpoints and every shortcut are checked.
 Shortcuts also revalidate the retained edge fragments because splitting an edge
-changes its collision sample grid. Optional path interpolation preserves every
+changes its collision sample grid. Shortcut improvement uses a relative roundoff
+tolerance so positive representable path lengths remain eligible after global
+joint-weight scaling. Optional path interpolation preserves every
 original corner and subdivides the longest segments to approach even spacing.
 `interpolation_points` is the target count when adding points; existing points
 are never removed. New subsegments are checked before accepting the interpolated
