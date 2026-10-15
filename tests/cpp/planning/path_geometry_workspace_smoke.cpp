@@ -91,6 +91,27 @@ int main() {
             return 1;
         }
     }
+    // A representable positive edge keeps its derivative even when global
+    // weighting makes its norm much smaller than an absolute epsilon.
+    const std::vector<Eigen::VectorXd> bent{Eigen::Vector2d(0.0, 0.0),
+                                            Eigen::Vector2d(0.5, 1.0),
+                                            Eigen::Vector2d(1.0, 0.0)};
+    for (double scale : {1.0, 1e-40, 1e40, 1e-300, 1e300}) {
+        const Eigen::VectorXd scaled_weights = Eigen::Vector2d::Constant(scale);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(scaled_weights, topology, 1.0, 0.0);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(bent, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double expected = 2.0 / std::sqrt(1.25);
+        if (!gradient.allFinite() || gradient[0] != 0.0 ||
+            std::abs(gradient[1] / std::sqrt(scale) - expected) > 1e-13) {
+            std::cerr << "global weight scale erased a length derivative\n";
+            return 1;
+        }
+    }
     for (int dof : {2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =

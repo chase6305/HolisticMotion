@@ -69,10 +69,10 @@ class PathGeometryWorkspace {
         if (length_weight_ > 0.0) {
             left_length = geometry_.Norm(left_);
             right_length = geometry_.Norm(right_);
-            if (left_length > 1e-15)
+            if (left_length > 0.0)
                 gradient.array() +=
                     length_weight_ * weights_.array() * left_.array() / left_length;
-            if (right_length > 1e-15)
+            if (right_length > 0.0)
                 gradient.array() -=
                     length_weight_ * weights_.array() * right_.array() / right_length;
         }
@@ -100,10 +100,10 @@ class PathGeometryWorkspace {
                 if (std::isfinite(gradient[i]))
                     continue;
                 long double value = 0.0L;
-                if (left_length > 1e-15)
+                if (left_length > 0.0)
                     value += static_cast<long double>(length_weight_) * left_[i] /
                              left_length;
-                if (right_length > 1e-15)
+                if (right_length > 0.0)
                     value -= static_cast<long double>(length_weight_) * right_[i] /
                              right_length;
                 if (smoothness_weight_ > 0.0) {

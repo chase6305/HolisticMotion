@@ -219,7 +219,9 @@ The update direction is the analytic gradient of the enabled length and
 second-difference terms, combined with the optional state-cost gradient.
 Inverse joint weights precondition that gradient before its largest component
 is normalized, so objective weights affect both the search direction and the
-acceptance test.
+acceptance test. Positive representable edge lengths contribute to this gradient
+regardless of their absolute magnitude. `minimum_improvement` remains an absolute
+objective threshold; adjust it when changing objective scales.
 Weighted path lengths and geometric costs retain representable results even
 when an unweighted square would overflow or underflow. Ordinary-scale queries
 keep their original arithmetic. Nearest and radius queries compare actual norms

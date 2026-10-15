@@ -162,7 +162,8 @@ class OptimizationContext {
             return;
         }
         const double maximum = direction.cwiseAbs().maxCoeff();
-        if (maximum > 1e-15)
+        // Global weight scaling changes the magnitude, not the direction.
+        if (maximum > 0.0)
             direction /= maximum;
     }
 

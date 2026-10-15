@@ -83,3 +83,17 @@ def test_sampling_can_detour_when_squared_distances_overflow(scale, weight):
     assert result.statistics.final_path_length > scale * math.sqrt(weight)
     np.testing.assert_array_equal(result.path[0], [0.0, 0.0])
     np.testing.assert_array_equal(result.path[-1], [scale, 0.0])
+
+
+@pytest.mark.parametrize("weight", [1.0, 1e-40, 1e40, 1e-300, 1e300])
+def test_length_optimization_retains_descent_under_global_weight_scaling(weight):
+    optimizer = hm.PathOptimizer([-2.0, -2.0], [2.0, 2.0])
+    optimizer.set_joint_weights([weight, weight])
+    options = hm.PathOptimizationOptions()
+    options.smoothness_weight = 0.0
+    options.minimum_improvement = 0.0
+    options.max_iterations = 10
+    result = optimizer.optimize([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]], options)
+    assert result.success
+    assert result.statistics.accepted_updates > 0
+    assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
