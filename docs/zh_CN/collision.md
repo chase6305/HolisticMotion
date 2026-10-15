@@ -99,6 +99,8 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 平方长度溢出或下溢时，距离与碰撞判定会回退到扩展精度计算；世界坐标或有符号
 距离仍无法表示时抛出 `OverflowError`。梯度运算溢出同样抛出 `OverflowError`，
 不会返回 NaN 或 Inf。
+超出表示范围的正间距不会掩盖可表示的最小距离，也不会进入有限距离阈值的返回结果。
+最终最小距离仍无法表示时，标量查询及对应批量行仍会抛出异常。
 `PathOptimizer.from_sphere_collision_model` 对向量空间
 构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
 碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此

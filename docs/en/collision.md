@@ -122,6 +122,9 @@ collision predicates fall back to extended
 precision when squared lengths overflow or underflow. World coordinates or
 signed distances that remain unrepresentable raise `OverflowError`; overflowing
 gradient arithmetic also raises `OverflowError` rather than returning NaN or Inf.
+An unrepresentably large positive clearance does not hide a finite minimum and
+is excluded by finite distance filters. A minimum query still raises when its
+final distance is unrepresentable, including for a batch row.
 `PathOptimizer.from_sphere_collision_model` automatically uses this gradient
 for vector-space configurations when a positive soft `clearance` is requested;
 its manifold configuration updates still fall back to finite differences.

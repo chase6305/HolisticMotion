@@ -31,7 +31,8 @@ long double ExtendedCenterDistance(const Eigen::Vector3d &first,
 double ExtendedSignedDistance(const Eigen::Vector3d &first,
                               const Eigen::Vector3d &second,
                               double first_radius, double second_radius,
-                              Eigen::Vector3d *normal) {
+                              Eigen::Vector3d *normal,
+                              bool allow_positive_overflow) {
     // Avoid squared-length overflow/underflow and preserve clearance when a
     // large center distance only becomes representable after subtracting radii.
     const long double distance = ExtendedCenterDistance(first, second);
@@ -43,14 +44,16 @@ double ExtendedSignedDistance(const Eigen::Vector3d &first,
     }
     const double signed_distance =
         static_cast<double>(distance - first_radius - second_radius);
-    if (!std::isfinite(signed_distance))
+    if (!std::isfinite(signed_distance) &&
+        !(allow_positive_overflow && signed_distance > 0.0))
         throw std::overflow_error("sphere distance is not finite");
     return signed_distance;
 }
 
 double SignedDistance(const Eigen::Vector3d &first,
                       const Eigen::Vector3d &second, double first_radius,
-                      double second_radius, Eigen::Vector3d *normal = nullptr) {
+                      double second_radius, Eigen::Vector3d *normal = nullptr,
+                      bool allow_positive_overflow = false) {
     const Eigen::Vector3d delta = second - first;
     const double squared_distance = delta.squaredNorm();
     if (std::isnormal(squared_distance)) {
@@ -62,7 +65,7 @@ double SignedDistance(const Eigen::Vector3d &first,
             return signed_distance;
     }
     return ExtendedSignedDistance(first, second, first_radius, second_radius,
-                                  normal);
+                                  normal, allow_positive_overflow);
 }
 
 } // namespace
@@ -208,16 +211,21 @@ class SphereCollisionModel::Impl {
 
     double DistanceValue(std::size_t pair_index) const {
         const auto [first, second] = pairs[pair_index];
+        // Positive overflow cannot win a finite minimum or pass a finite
+        // clearance filter. Keep it as an internal sentinel until the query
+        // knows whether an unrepresentable result would actually be returned.
         return SignedDistance(
             world_spheres.row(static_cast<Eigen::Index>(first)).head<3>(),
             world_spheres.row(static_cast<Eigen::Index>(second)).head<3>(),
-            spheres[first].radius, spheres[second].radius);
+            spheres[first].radius, spheres[second].radius, nullptr, true);
     }
 
     double MinimumDistanceValue() const {
         double best = std::numeric_limits<double>::infinity();
         for (std::size_t i = 0; i < pairs.size(); ++i)
             best = std::min(best, DistanceValue(i));
+        if (!std::isfinite(best))
+            throw std::overflow_error("sphere distance is not finite");
         return best;
     }
 
