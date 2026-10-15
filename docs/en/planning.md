@@ -236,6 +236,8 @@ regardless of their absolute magnitude. `minimum_improvement` remains an absolut
 objective threshold; adjust it when changing objective scales.
 Geometric gradients also recover weighted intermediate products that underflow
 before division by a small edge length or multiplication by a large difference.
+For a single joint, same-direction adjacent edges cancel their length derivatives
+before scaling, keeping a constant local length free of amplified roundoff.
 Weighted path lengths and geometric costs retain representable results even
 when an unweighted square would overflow or underflow. Ordinary-scale queries
 keep their original arithmetic. Smoothness coefficients are included before

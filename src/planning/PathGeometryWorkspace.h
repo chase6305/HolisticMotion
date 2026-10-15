@@ -95,34 +95,43 @@ class PathGeometryWorkspace {
         gradient.setZero(weights_.size());
         double left_length = 0.0;
         double right_length = 0.0;
+        bool scalar_cancellation = false;
         if (length_weight_ > 0.0) {
             RefreshLengths();
             left_length = left_length_;
             right_length = right_length_;
-            if (left_length > 0.0)
-                gradient.array() +=
-                    length_weight_ * weights_.array() * left_.array() / left_length;
-            if (right_length > 0.0)
-                gradient.array() -=
-                    length_weight_ * weights_.array() * right_.array() / right_length;
+            // Along a single joint, two nonzero edges with equal signs have
+            // exactly cancelling length derivatives. Cancel before scaling:
+            // individually unrepresentable terms can otherwise leave NaN or
+            // an amplified roundoff residual on a locally constant objective.
+            scalar_cancellation =
+                weights_.size() == 1 && left_length > 0.0 &&
+                right_length > 0.0 &&
+                std::signbit(left_[0]) == std::signbit(right_[0]);
+            if (left_length > 0.0 && !scalar_cancellation)
+                gradient.array() += length_weight_ * weights_.array() *
+                                    left_.array() / left_length;
+            if (right_length > 0.0 && !scalar_cancellation)
+                gradient.array() -= length_weight_ * weights_.array() *
+                                    right_.array() / right_length;
         }
         if (smoothness_weight_ > 0.0) {
             if (has_previous_) {
                 acceleration_ = left_ - previous_;
-                gradient.array() +=
-                    2.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
+                gradient.array() += 2.0 * smoothness_weight_ *
+                                    weights_.array() * acceleration_.array();
             }
             acceleration_ = right_ - left_;
-            gradient.array() -=
-                4.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
+            gradient.array() -= 4.0 * smoothness_weight_ * weights_.array() *
+                                acceleration_.array();
             if (has_next_) {
                 acceleration_ = next_ - right_;
-                gradient.array() +=
-                    2.0 * smoothness_weight_ * weights_.array() * acceleration_.array();
+                gradient.array() += 2.0 * smoothness_weight_ *
+                                    weights_.array() * acceleration_.array();
             }
         }
         const bool underflowed_length =
-            length_weight_ > 0.0 &&
+            length_weight_ > 0.0 && !scalar_cancellation &&
             (!std::isnormal(length_product_) ||
              (left_length > 0.0 && NeedsScaledLength(left_)) ||
              (right_length > 0.0 && NeedsScaledLength(right_)));
@@ -139,22 +148,26 @@ class PathGeometryWorkspace {
                     !smoothness_product_exceptional_)
                     continue;
                 long double value = 0.0L;
-                if (left_length > 0.0)
-                    value += static_cast<long double>(length_weight_) * left_[i] /
-                             left_length;
-                if (right_length > 0.0)
-                    value -= static_cast<long double>(length_weight_) * right_[i] /
-                             right_length;
+                if (left_length > 0.0 && !scalar_cancellation)
+                    value += static_cast<long double>(length_weight_) *
+                             left_[i] / left_length;
+                if (right_length > 0.0 && !scalar_cancellation)
+                    value -= static_cast<long double>(length_weight_) *
+                             right_[i] / right_length;
                 if (smoothness_weight_ > 0.0) {
                     long double smoothness =
-                        -4.0L * (static_cast<long double>(right_[i]) - left_[i]);
+                        -4.0L *
+                        (static_cast<long double>(right_[i]) - left_[i]);
                     if (has_previous_)
                         smoothness +=
-                            2.0L * (static_cast<long double>(left_[i]) - previous_[i]);
+                            2.0L *
+                            (static_cast<long double>(left_[i]) - previous_[i]);
                     if (has_next_)
                         smoothness +=
-                            2.0L * (static_cast<long double>(next_[i]) - right_[i]);
-                    value += static_cast<long double>(smoothness_weight_) * smoothness;
+                            2.0L *
+                            (static_cast<long double>(next_[i]) - right_[i]);
+                    value += static_cast<long double>(smoothness_weight_) *
+                             smoothness;
                 }
                 gradient[i] = static_cast<double>(value * weights_[i]);
             }

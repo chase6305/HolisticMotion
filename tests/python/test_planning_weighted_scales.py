@@ -8,6 +8,36 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize("direction", [-1.0, 1.0])
+@pytest.mark.parametrize("middle", [0.3, 1.0, 1.23456789])
+@pytest.mark.parametrize(
+    "coefficient,weight,scale",
+    [(1e300, 1e300, 1e-200), (1e300, 1e-300, 1e-100), (1.0, 1e300, 1e-200)],
+)
+def test_scalar_monotone_length_cancels_before_large_gradient_products(
+    direction, middle, coefficient, weight, scale
+):
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_joint_weights([weight])
+    options = hm.PathOptimizationOptions()
+    options.length_weight = coefficient
+    options.smoothness_weight = 0.0
+    options.minimum_improvement = 0.0
+    options.max_iterations = 2
+    path = np.array([[0.0], [middle], [4.0]]) * (direction * scale)
+    result = optimizer.optimize(path, options)
+    with localcontext() as context:
+        context.prec = 80
+        expected = float(
+            Decimal(coefficient) * Decimal(weight).sqrt() * Decimal(4 * scale)
+        )
+    assert result.success
+    assert result.statistics.initial_objective == pytest.approx(expected, rel=1e-13)
+    assert result.statistics.accepted_updates == 0
+    assert result.statistics.line_search_evaluations == 0
+    np.testing.assert_array_equal(result.path, path)
+
+
 @pytest.mark.parametrize(
     "delta,weight",
     [(1e-180, 1e300), (1e-160, 1e300), (1e-180, 1.0), (1e150, 1e-300), (1e160, 1e-320)],

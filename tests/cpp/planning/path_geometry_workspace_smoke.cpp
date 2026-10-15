@@ -42,6 +42,44 @@ double Objective(const std::vector<Eigen::VectorXd> &path,
 } // namespace
 
 int main() {
+    // A monotone single-joint path has zero local length derivative, even
+    // when its two individual scaled derivatives cannot be represented.
+    for (double direction : {-1.0, 1.0}) {
+        const Eigen::VectorXd weights = Eigen::VectorXd::Constant(1, 1e300);
+        const std::vector<bool> topology(1, false);
+        std::vector<Eigen::VectorXd> path;
+        for (double value : {0.0, 1e-200, 4e-200})
+            path.push_back(Eigen::VectorXd::Constant(1, direction * value));
+        PathGeometryWorkspace workspace(weights, topology, 1e300, 0.0);
+        Eigen::VectorXd gradient(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (gradient[0] != 0.0) {
+            std::cerr << "monotone scalar length derivative did not cancel\n";
+            return 1;
+        }
+    }
+    {
+        const Eigen::VectorXd weights = Eigen::VectorXd::Constant(1, 1e-200);
+        const std::vector<bool> topology(1, false);
+        const std::vector<Eigen::VectorXd> path{
+            Eigen::VectorXd::Constant(1, 0.0),
+            Eigen::VectorXd::Constant(1, 1e100),
+            Eigen::VectorXd::Constant(1, 4e100)};
+        PathGeometryWorkspace workspace(weights, topology, 1e300, 1e-200);
+        Eigen::VectorXd gradient(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!gradient.allFinite() ||
+            std::abs(gradient[0] / -8e-300 - 1.0) > 1e-13) {
+            std::cerr << "scalar cancellation erased the smoothness gradient\n";
+            return 1;
+        }
+    }
     // Large but finite weights must not turn zero or small smoothness
     // derivatives into NaN through a prematurely overflowing coefficient.
     const Eigen::VectorXd large = Eigen::VectorXd::Constant(1, 1e308);
@@ -190,7 +228,7 @@ int main() {
             return 1;
         }
     }
-    for (int dof : {2, 7, 14}) {
+    for (int dof : {1, 2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =
                 Eigen::VectorXd::LinSpaced(dof, 0.5, 2.0);
