@@ -110,6 +110,18 @@ class OptimizationContext {
                 smoothness += SquaredNorm(next - previous);
             previous.swap(next);
         }
+        if (options_.smoothness_weight > 0.0 && !std::isnormal(smoothness)) {
+            DifferenceInto(path[0], path[1], previous);
+            double norm = 0.0;
+            for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+                DifferenceInto(path[i], path[i + 1], next);
+                norm = std::hypot(
+                    norm, geometry_metric_.ScaledNorm(
+                              next - previous, options_.smoothness_weight));
+                previous.swap(next);
+            }
+            return options_.length_weight * length + norm * norm;
+        }
         return options_.length_weight * length +
                options_.smoothness_weight * smoothness;
     }

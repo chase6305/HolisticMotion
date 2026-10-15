@@ -58,6 +58,22 @@ class PathGeometryWorkspace {
                 smoothness += SquaredNorm(acceleration_);
             }
         }
+        if (smoothness_weight_ > 0.0 && !std::isnormal(smoothness)) {
+            acceleration_ = right_ - left_;
+            double norm =
+                geometry_.ScaledNorm(acceleration_, smoothness_weight_);
+            if (has_previous_) {
+                acceleration_ = left_ - previous_;
+                norm = std::hypot(norm, geometry_.ScaledNorm(
+                                            acceleration_, smoothness_weight_));
+            }
+            if (has_next_) {
+                acceleration_ = next_ - right_;
+                norm = std::hypot(norm, geometry_.ScaledNorm(
+                                            acceleration_, smoothness_weight_));
+            }
+            return length_weight_ * length + norm * norm;
+        }
         return length_weight_ * length + smoothness_weight_ * smoothness;
     }
 

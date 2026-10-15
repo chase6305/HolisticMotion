@@ -236,7 +236,9 @@ Geometric gradients also recover weighted intermediate products that underflow
 before division by a small edge length or multiplication by a large difference.
 Weighted path lengths and geometric costs retain representable results even
 when an unweighted square would overflow or underflow. Ordinary-scale queries
-keep their original arithmetic. Nearest and radius queries compare actual norms
+keep their original arithmetic. Smoothness coefficients are included before
+exceptional squared costs are accumulated, preserving finite nonzero objectives.
+Nearest and radius queries compare actual norms
 when squared distances cannot distinguish representable motion.
 Default inverse-range-squared weights must be
 finite and positive; ranges whose default weights cannot be represented are

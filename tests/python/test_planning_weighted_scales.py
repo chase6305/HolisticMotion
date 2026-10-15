@@ -284,3 +284,64 @@ def test_shortcut_quality_survives_global_metric_scaling(weight):
     for first, second in zip(result.path[:-1], result.path[1:]):
         count = max(1, math.ceil(np.max(np.abs(second - first)) / 0.005))
         assert all(valid(state) for state in np.linspace(first, second, count + 1))
+
+
+@pytest.mark.parametrize(
+    "scale,weight,smoothness_weight",
+    [
+        (1.0, 1e308, 1e-308),
+        (1e-100, 1e-300, 1e300),
+        (1e-10, 1e-300, 1e300),
+    ],
+)
+def test_scaled_smoothness_retains_representable_objective(
+    scale, weight, smoothness_weight
+):
+    optimizer = hm.PathOptimizer([-2.0, -2.0], [2.0, 2.0])
+    optimizer.set_joint_weights([weight, weight])
+    options = hm.PathOptimizationOptions()
+    options.length_weight = 0.0
+    options.smoothness_weight = smoothness_weight
+    options.minimum_improvement = 0.0
+    options.step_size = 0.35 * scale
+    options.max_iterations = 10
+    path = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]) * scale
+    result = optimizer.optimize(path, options)
+    expected = float(
+        np.longdouble(4) * scale * scale * np.longdouble(weight) * smoothness_weight
+    )
+    assert result.success
+    assert result.statistics.initial_objective == pytest.approx(
+        expected, rel=1e-12, abs=0.0
+    )
+    assert result.statistics.final_objective < 0.01 * expected
+    assert result.statistics.accepted_updates > 0
+    np.testing.assert_array_equal(result.path[0], path[0])
+    np.testing.assert_array_equal(result.path[-1], path[-1])
+
+
+@pytest.mark.parametrize("count", [7, 32])
+@pytest.mark.parametrize(
+    "scale,weight,smoothness_weight",
+    [(1.0, 1e308, 1e-308), (1e-100, 1e-300, 1e300)],
+)
+def test_scaled_smoothness_accumulates_all_waypoints(
+    count, scale, weight, smoothness_weight
+):
+    optimizer = hm.PathOptimizer([-2.0, -2.0], [2.0, 2.0])
+    optimizer.set_joint_weights([weight, weight])
+    options = hm.PathOptimizationOptions()
+    options.length_weight = 0.0
+    options.smoothness_weight = smoothness_weight
+    options.minimum_improvement = 0.0
+    options.step_size = 0.1 * scale
+    options.max_iterations = 2
+    path = np.column_stack((np.linspace(0.0, 1.0, count), np.arange(count) % 2)) * scale
+    acceleration = np.diff(path.astype(np.longdouble), n=2, axis=0)
+    expected = float(np.sum(acceleration * acceleration) * weight * smoothness_weight)
+    result = optimizer.optimize(path, options)
+    assert result.success
+    assert result.statistics.initial_objective == pytest.approx(
+        expected, rel=1e-12, abs=0.0
+    )
+    assert result.statistics.final_objective < 0.8 * expected

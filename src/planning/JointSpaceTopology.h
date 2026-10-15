@@ -62,6 +62,33 @@ class WeightedGeometry {
         return std::isfinite(squared) && squared > minimum_squared_;
     }
 
+    // Return sqrt(coefficient * sum(weights * value^2)) without first
+    // materializing a possibly unrepresentable unscaled square. Keep the
+    // three factors in mantissa/exponent form until their combined scale is
+    // known, so a small coefficient can offset large joint weights (or vice
+    // versa) on platforms where long double has no extra exponent range.
+    template <class Derived>
+    double ScaledNorm(const Eigen::MatrixBase<Derived> &value,
+                      double coefficient) const {
+        if ((value.array() == 0.0).all())
+            return 0.0;
+        double norm = 0.0;
+        int coefficient_exponent = 0;
+        const double coefficient_mantissa =
+            std::frexp(std::sqrt(coefficient), &coefficient_exponent);
+        for (Eigen::Index i = 0; i < value.size(); ++i) {
+            int weight_exponent = 0, value_exponent = 0;
+            const double weight_mantissa =
+                std::frexp(std::sqrt(weights_[i]), &weight_exponent);
+            const double value_mantissa = std::frexp(value[i], &value_exponent);
+            const double scaled = std::scalbn(
+                coefficient_mantissa * weight_mantissa * value_mantissa,
+                coefficient_exponent + weight_exponent + value_exponent);
+            norm = std::hypot(norm, scaled);
+        }
+        return norm;
+    }
+
   private:
     template <class Derived>
     double RawSquaredNorm(const Eigen::MatrixBase<Derived> &value) const {

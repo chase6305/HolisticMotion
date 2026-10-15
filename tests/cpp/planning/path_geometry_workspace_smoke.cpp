@@ -161,6 +161,37 @@ int main() {
             return 1;
         }
     }
+    // Apply the objective coefficient before a squared norm can lose range.
+    for (const auto &parameters :
+         {std::array<double, 3>{1.0, 1e308, 1e-308},
+          std::array<double, 3>{1e-100, 1e-300, 1e300},
+          std::array<double, 3>{1e-10, 1e-300, 1e300}}) {
+        const auto [scale, weight, coefficient] = parameters;
+        auto path = bent;
+        for (auto &state : path)
+            state *= scale;
+        const Eigen::VectorXd scaled_weights =
+            Eigen::Vector2d::Constant(weight);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(scaled_weights, topology, 0.0,
+                                        coefficient);
+        const Eigen::VectorXd trial = Eigen::Vector2d(0.5 * scale, 0.5 * scale);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        const double objective = workspace.LocalObjective();
+        const double candidate =
+            workspace.CandidateObjective(path.front(), trial, path.back());
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double expected =
+            static_cast<double>(4.0L * scale * scale * weight * coefficient);
+        if (!std::isfinite(objective) || !std::isfinite(candidate) ||
+            std::abs(objective / expected - 1.0) > 1e-13 ||
+            std::abs(candidate / expected - 0.25) > 1e-13) {
+            std::cerr
+                << "smoothness coefficient lost a representable objective\n";
+            return 1;
+        }
+    }
     for (int dof : {2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =
