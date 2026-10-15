@@ -120,10 +120,15 @@ class OptimizationContext {
             throw std::invalid_argument(
                 "combined path objective gradient must be finite");
         direction = (-gradient.array() * inverse_weights_.array()).matrix();
-        if (!direction.allFinite()) {
+        const double maximum = direction.cwiseAbs().maxCoeff();
+        if (!direction.allFinite() ||
+            (maximum < std::numeric_limits<double>::min() &&
+             (gradient.array() != 0.0).any())) {
             // Only the relative ratios matter after normalization. Form them
             // as mantissa/exponent pairs so even a subnormal positive weight
             // cannot overflow its reciprocal or the preconditioned gradient.
+            // Recover underflowed and subnormal ratios before normalization,
+            // too: their true relative components can remain representable.
             // This also works where long double has the range of double.
             const auto ratio = [&](Eigen::Index i, int &exponent) {
                 int gradient_exponent, weight_exponent, ratio_exponent;
@@ -160,7 +165,6 @@ class OptimizationContext {
             }
             return;
         }
-        const double maximum = direction.cwiseAbs().maxCoeff();
         // Global weight scaling changes the magnitude, not the direction.
         if (maximum > 0.0)
             direction /= maximum;

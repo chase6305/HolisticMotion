@@ -220,7 +220,9 @@ waypoints or state costs to optimize.
 The update direction is the analytic gradient of the enabled length and
 second-difference terms, combined with the optional state-cost gradient.
 Inverse joint weights precondition that gradient before its largest component
-is normalized, so objective weights affect both the search direction and the
+is normalized. Exponent-based ratios recover preconditioned directions that
+would overflow, underflow, or lose precision to subnormal rounding. Objective
+weights affect both the search direction and the
 acceptance test. Positive representable edge lengths contribute to this gradient
 regardless of their absolute magnitude. `minimum_improvement` remains an absolute
 objective threshold; adjust it when changing objective scales.

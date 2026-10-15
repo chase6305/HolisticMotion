@@ -115,3 +115,42 @@ def test_optimizer_respects_representable_steps_at_small_coordinate_scales(scale
     assert result.statistics.final_objective < 0.6 * result.statistics.initial_objective
     np.testing.assert_array_equal(result.path[0], path[0])
     np.testing.assert_array_equal(result.path[-1], path[-1])
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-100, 1e-150])
+def test_state_cost_descent_survives_preconditioning_underflow(scale):
+    optimizer = hm.PathOptimizer([-2 * scale] * 2, [2 * scale] * 2)
+    optimizer.set_state_cost(lambda state: float(state @ state))
+    optimizer.set_state_cost_gradient(lambda state: 2 * state)
+    options = hm.PathOptimizationOptions()
+    options.length_weight = 0.0
+    options.smoothness_weight = 0.0
+    options.state_cost_weight = 1.0
+    options.step_size = 0.35 * scale
+    options.edge_resolution = scale
+    options.minimum_improvement = 0.0
+    options.max_iterations = 10
+    result = optimizer.optimize(np.array([[0, 0], [0.5, 1], [1, 0]]) * scale, options)
+    assert result.success
+    assert result.statistics.accepted_updates > 0
+    assert result.statistics.final_objective < 0.1 * result.statistics.initial_objective
+
+
+@pytest.mark.parametrize("weight", [1.0, 1e308])
+def test_preconditioned_direction_keeps_subnormal_component_ratios(weight):
+    optimizer = hm.PathOptimizer([-1.0, -1.0], [1.0, 1.0])
+    optimizer.set_joint_weights([weight, weight])
+    gradient = np.array([0.7e-15, 1e-15])
+    optimizer.set_state_cost(lambda state: float(4e-15 + state @ gradient))
+    optimizer.set_state_cost_gradient(lambda _state: gradient)
+    options = hm.PathOptimizationOptions()
+    options.length_weight = 0.0
+    options.smoothness_weight = 0.0
+    options.state_cost_weight = 1.0
+    options.minimum_improvement = 0.0
+    options.step_size = 0.2
+    options.max_iterations = 1
+    result = optimizer.optimize([[-0.2, 0.0], [0.0, 0.0], [0.2, 0.0]], options)
+    assert result.success
+    assert result.statistics.accepted_updates == 1
+    np.testing.assert_allclose(result.path[1], [-0.14, -0.2], rtol=1e-14, atol=0.0)
