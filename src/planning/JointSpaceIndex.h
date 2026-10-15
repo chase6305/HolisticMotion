@@ -30,7 +30,12 @@ class JointSpaceIndex {
             for (std::size_t i = 0; i < count; ++i) {
                 const double candidate =
                     metric.SquaredDistance(state_at(i), query);
-                if (candidate < distance) {
+                if (candidate < distance ||
+                    (candidate == distance &&
+                     ((!std::isnormal(candidate) &&
+                       metric.IsCloser(state_at(i), state_at(best), query,
+                                       candidate, distance, i < best)) ||
+                      (std::isnormal(candidate) && i < best)))) {
                     distance = candidate;
                     best = i;
                 }
@@ -55,8 +60,8 @@ class JointSpaceIndex {
         const auto collect = [&](std::size_t index) {
             const double distance =
                 metric.SquaredDistance(state_at(index), query);
-            if (distance <= squared_radius &&
-                (std::isfinite(distance) || std::isinf(radius)))
+            if (metric.WithinRadius(state_at(index), query, distance, radius,
+                                    squared_radius))
                 result.push_back(index);
         };
         // Low-dimensional Euclidean radius searches return many neighbors.
@@ -174,7 +179,11 @@ class JointSpaceIndex {
                          double &best_distance) {
         const double distance = metric.SquaredDistance(state_at(index), query);
         if (distance < best_distance ||
-            (distance == best_distance && index < best)) {
+            (distance == best_distance &&
+             (std::isnormal(distance)
+                  ? index < best
+                  : metric.IsCloser(state_at(index), state_at(best), query,
+                                    distance, best_distance, index < best)))) {
             best_distance = distance;
             best = index;
         }
@@ -195,6 +204,10 @@ class JointSpaceIndex {
         }
         // The box omits periodic coordinates. Round its bound down before
         // pruning so a different summation order cannot exclude boundary ties.
+        return ExceedsBound(bound, limit);
+    }
+
+    static bool ExceedsBound(double bound, double limit) {
         const double margin =
             16.0 * std::numeric_limits<double>::epsilon() * bound +
             16.0 * std::numeric_limits<double>::denorm_min();
@@ -218,7 +231,8 @@ class JointSpaceIndex {
         const std::size_t close = delta < 0.0 ? index + 1 : node.right;
         const std::size_t far = delta < 0.0 ? node.right : index + 1;
         SearchNearest(close, state_at, query, metric, best, best_distance);
-        if (!(metric.SquaredAxisDistance(delta, node.axis) > best_distance))
+        if (!ExceedsBound(metric.SquaredAxisDistance(delta, node.axis),
+                          best_distance))
             SearchNearest(far, state_at, query, metric, best, best_distance);
     }
 
@@ -237,7 +251,8 @@ class JointSpaceIndex {
         const std::size_t close = delta < 0.0 ? index + 1 : node.right;
         const std::size_t far = delta < 0.0 ? node.right : index + 1;
         SearchNear(close, query, squared_radius, metric, collect);
-        if (!(metric.SquaredAxisDistance(delta, node.axis) > squared_radius))
+        if (!ExceedsBound(metric.SquaredAxisDistance(delta, node.axis),
+                          squared_radius))
             SearchNear(far, query, squared_radius, metric, collect);
     }
 };

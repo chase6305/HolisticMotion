@@ -60,3 +60,26 @@ def test_mixed_weights_do_not_hide_an_underflowed_dominant_component(factory):
     assert result.statistics.initial_path_length == pytest.approx(
         expected, rel=1e-12, abs=0.0
     )
+
+
+@pytest.mark.parametrize("scale,weight", [(1.0, 1.0), (1e150, 1e300)])
+def test_sampling_can_detour_when_squared_distances_overflow(scale, weight):
+    def valid(state):
+        return not (0.4 * scale < state[0] < 0.6 * scale and state[1] < 0.2 * scale)
+
+    planner = hm.SamplingPlanner([0.0, 0.0], [scale, scale], valid)
+    planner.set_joint_weights([weight, weight])
+    options = hm.PlanningOptions()
+    options.timeout_seconds = 2.0
+    options.max_iterations = 2000
+    options.extension_range = 0.2 * scale * math.sqrt(weight)
+    options.edge_resolution = 0.05 * scale
+    options.goal_bias = 0.25
+    options.random_seed = 7
+    options.simplify_path = False
+    result = planner.plan([0.0, 0.0], [scale, 0.0], options)
+    assert result.success
+    assert all(valid(state) for state in result.path)
+    assert result.statistics.final_path_length > scale * math.sqrt(weight)
+    np.testing.assert_array_equal(result.path[0], [0.0, 0.0])
+    np.testing.assert_array_equal(result.path[-1], [scale, 0.0])

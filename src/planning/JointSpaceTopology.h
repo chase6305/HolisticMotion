@@ -135,6 +135,33 @@ class JointSpaceMetric {
         return ScaledDistance(from, to);
     }
 
+    bool IsCloser(const Eigen::VectorXd &candidate,
+                  const Eigen::VectorXd &selected, const Eigen::VectorXd &query,
+                  double candidate_squared, double selected_squared,
+                  bool prefer_equal = false) const {
+        if (candidate_squared < selected_squared)
+            return true;
+        if (candidate_squared != selected_squared)
+            return false;
+        if (!std::isnormal(candidate_squared)) {
+            const double candidate_distance = Distance(candidate, query);
+            const double selected_distance = Distance(selected, query);
+            if (candidate_distance != selected_distance)
+                return candidate_distance < selected_distance;
+        }
+        return prefer_equal;
+    }
+
+    bool WithinRadius(const Eigen::VectorXd &state,
+                      const Eigen::VectorXd &query, double squared_distance,
+                      double radius, double squared_radius) const {
+        if (!(radius >= 0.0))
+            return false;
+        if (std::isnormal(squared_radius) && std::isfinite(squared_distance))
+            return squared_distance <= squared_radius;
+        return Distance(state, query) <= radius;
+    }
+
   private:
     double ScaledDistance(const Eigen::VectorXd &from,
                           const Eigen::VectorXd &to) const {

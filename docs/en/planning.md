@@ -222,7 +222,9 @@ is normalized, so objective weights affect both the search direction and the
 acceptance test.
 Weighted path lengths and geometric costs retain representable results even
 when an unweighted square would overflow or underflow. Ordinary-scale queries
-keep their original arithmetic. Default inverse-range-squared weights must be
+keep their original arithmetic. Nearest and radius queries compare actual norms
+when squared distances cannot distinguish representable motion.
+Default inverse-range-squared weights must be
 finite and positive; ranges whose default weights cannot be represented are
 rejected during construction.
 
