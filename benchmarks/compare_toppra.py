@@ -9,22 +9,40 @@ Example (no compiled extension required)::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import platform
 import statistics
 import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
 
 
 def load_module(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
+    # Supply package context for relative validation imports without running
+    # holistic_motion.__init__ or loading its optional native extension.
+    root = Path(__file__).resolve().parents[1] / "python/holistic_motion"
+    package_name = f"_holistic_motion_benchmark_{name}"
+    for package, directory in (
+        (package_name, root),
+        (f"{package_name}.trajectory", root / "trajectory"),
+    ):
+        namespace = types.ModuleType(package)
+        namespace.__path__ = [str(directory)]
+        namespace.__package__ = package
+        sys.modules[package] = namespace
+    spec = importlib.util.spec_from_file_location(
+        f"{package_name}.trajectory.{name}", path
+    )
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    source = path.read_bytes()
+    exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
+    module.source_sha256 = hashlib.sha256(source).hexdigest()
     return module
 
 
@@ -121,6 +139,8 @@ def main() -> None:
                 "rounds": args.rounds,
                 "baseline": str(args.baseline.resolve()),
                 "candidate": str(args.candidate.resolve()),
+                "baseline_sha256": modules[0].source_sha256,
+                "candidate_sha256": modules[1].source_sha256,
                 "cases": results,
             },
             indent=2,

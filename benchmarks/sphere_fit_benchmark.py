@@ -58,7 +58,7 @@ def main():
     baseline = None
     if args.baseline:
         spec = importlib.util.spec_from_file_location(
-            "sphere_fit_baseline", args.baseline
+            "holistic_motion.geometry._sphere_fit_baseline", args.baseline
         )
         baseline = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = baseline
