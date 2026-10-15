@@ -40,6 +40,10 @@ solving and sampling, then restore the requested physical units. Positive reacha
 remain valid at small magnitudes; unrepresentable boundary speeds raise
 `ValueError`. Both backends keep inactive joint constraints finite when a
 normalized limit underflows, including their Torch adjoints.
+For very large NumPy geometry, the spline solve scales coordinate differences
+per axis and acceleration constraints normalize before short-interval division.
+Sampling restores physical speed units before multiplying large derivatives.
+Final spline coefficients and physical outputs must still be representable.
 
 When the terminal path speed is zero, rest belongs to every backward
 controllable interval. The solver propagates only its upper bound and checks

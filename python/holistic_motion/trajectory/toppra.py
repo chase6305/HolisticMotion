@@ -25,10 +25,31 @@ class _NaturalCubicPath:
 
     def __init__(self, grid: np.ndarray, values: np.ndarray) -> None:
         self.grid = grid
-        count = grid.size
         h = np.diff(grid)
-        slopes = np.diff(values, axis=0) / h[:, None]
-        second = np.zeros_like(values)
+        if not np.isfinite(h).all() or np.any(h <= 0.0):
+            raise ValueError("waypoint parameters must increase strictly")
+        delta = np.diff(values, axis=0)
+        self.a = values[:-1].copy()
+        with np.errstate(over="ignore", invalid="ignore"):
+            slopes = delta / h[:, None]
+            self.b, self.c, self.d = self._derivative_coefficients(h, slopes)
+        if not all(np.isfinite(block).all() for block in (self.b, self.c, self.d)):
+            # The spline solve is linear in each coordinate. Normalize its
+            # differences, preserving large offsets in a and small axes
+            # independently, before restoring the final coefficients.
+            scale = np.max(np.abs(delta), axis=0)
+            scale = np.where(scale > 0.0, scale, 1.0)
+            with np.errstate(over="ignore", invalid="ignore"):
+                slopes = (delta / scale) / h[:, None]
+                blocks = self._derivative_coefficients(h, slopes)
+                self.b, self.c, self.d = (block * scale for block in blocks)
+            if not all(np.isfinite(block).all() for block in (self.b, self.c, self.d)):
+                raise ValueError("spline derivative coefficients must be finite")
+
+    @staticmethod
+    def _derivative_coefficients(h, slopes):
+        count = h.size + 1
+        second = np.zeros((count, slopes.shape[1]), dtype=slopes.dtype)
         if count > 2:
             # Natural boundaries set the endpoint second derivatives to zero.
             # The interior system is strictly diagonally dominant and
@@ -44,10 +65,11 @@ class _NaturalCubicPath:
                 second[index + 1] = (
                     rhs[index] - h[index + 1] * second[index + 2]
                 ) / diagonal[index]
-        self.a = values[:-1].copy()
-        self.b = slopes - h[:, None] * (2.0 * second[:-1] + second[1:]) / 6.0
-        self.c = second[:-1] / 2.0
-        self.d = np.diff(second, axis=0) / (6.0 * h[:, None])
+        return (
+            slopes - h[:, None] * (2.0 * second[:-1] + second[1:]) / 6.0,
+            second[:-1] / 2.0,
+            np.diff(second, axis=0) / (6.0 * h[:, None]),
+        )
 
     def evaluate(self, value: np.ndarray, order: int = 0) -> np.ndarray:
         index, delta = self._segments(value)
@@ -464,8 +486,14 @@ class ToppraTrajectory:
     def _velocity_caps(self) -> np.ndarray:
         ratios = np.full_like(self._q_s, np.inf)
         moving = np.abs(self._q_s) > 1e-12
-        limits = np.broadcast_to(self._solver_velocity, self._q_s.shape)
-        ratios[moving] = limits[moving] / np.abs(self._q_s[moving])
+        if self._normalized_acceleration_constraints:
+            limits = np.broadcast_to(self.max_velocity, self._q_s.shape)
+            ratios[moving] = (
+                limits[moving] / np.abs(self._q_s[moving])
+            ) / self._speed_scale
+        else:
+            limits = np.broadcast_to(self._solver_velocity, self._q_s.shape)
+            ratios[moving] = limits[moving] / np.abs(self._q_s[moving])
         # A loose velocity bound may exceed representable squared speeds. Its
         # infinite cap is valid; the acceleration constraints still limit x.
         with np.errstate(over="ignore"):
@@ -479,22 +507,55 @@ class ToppraTrajectory:
         # with these Bernstein coefficients, and q_ss is linear.
         derivative = np.stack((first, first + 0.5 * ds * second_first, last), axis=1)
         zero = np.zeros_like(first)
-        acceleration_x = np.stack(
-            (second_first, 0.5 * second_last, zero), axis=1
-        ) - derivative / (2.0 * ds[:, None, :])
-        acceleration_y = np.stack(
-            (zero, 0.5 * second_first, second_last), axis=1
-        ) + derivative / (2.0 * ds[:, None, :])
+        with np.errstate(over="ignore", invalid="ignore"):
+            acceleration_x = np.stack(
+                (second_first, 0.5 * second_last, zero), axis=1
+            ) - derivative / (2.0 * ds[:, None, :])
+            acceleration_y = np.stack(
+                (zero, 0.5 * second_first, second_last), axis=1
+            ) + derivative / (2.0 * ds[:, None, :])
+        self._normalized_acceleration_constraints = not (
+            np.isfinite(acceleration_x).all() and np.isfinite(acceleration_y).all()
+        )
+        if self._normalized_acceleration_constraints:
+            # Dividing by a short interval can overflow before a large joint
+            # acceleration limit restores range. Form those ratios first.
+            with np.errstate(over="ignore", invalid="ignore"):
+                normalized_derivative = derivative / self.max_acceleration
+                acceleration_x = np.stack(
+                    (
+                        second_first / self.max_acceleration,
+                        0.5 * second_last / self.max_acceleration,
+                        zero,
+                    ),
+                    axis=1,
+                ) - normalized_derivative / (2.0 * ds[:, None, :])
+                acceleration_y = np.stack(
+                    (
+                        zero,
+                        0.5 * second_first / self.max_acceleration,
+                        second_last / self.max_acceleration,
+                    ),
+                    axis=1,
+                ) + normalized_derivative / (2.0 * ds[:, None, :])
+            if not (
+                np.isfinite(acceleration_x).all() and np.isfinite(acceleration_y).all()
+            ):
+                raise ValueError(
+                    "normalized path acceleration constraints must be finite"
+                )
         unit_scale = max(
             float(np.max(self.max_velocity)),
             float(np.sqrt(np.max(self.max_acceleration))),
         )
         with np.errstate(over="ignore", under="ignore"):
             velocity_scale = np.max(np.abs(derivative) / self.max_velocity)
-            acceleration_scale = np.max(
-                np.sqrt(np.maximum(np.abs(acceleration_x), np.abs(acceleration_y)))
-                / np.sqrt(self.max_acceleration)
+            acceleration_scale = np.sqrt(
+                np.maximum(np.abs(acceleration_x), np.abs(acceleration_y))
             )
+            if not self._normalized_acceleration_constraints:
+                acceleration_scale = acceleration_scale / np.sqrt(self.max_acceleration)
+            acceleration_scale = np.max(acceleration_scale)
         inverse_speed_scale = max(velocity_scale, acceleration_scale)
         if (
             unit_scale < 1e-60
@@ -522,14 +583,23 @@ class ToppraTrajectory:
             self._solver_acceleration = np.where(
                 self._solver_acceleration > 0.0, self._solver_acceleration, 1.0
             )
-        acceleration_x = acceleration_x / self._solver_acceleration
-        acceleration_y = acceleration_y / self._solver_acceleration
+        if self._normalized_acceleration_constraints:
+            acceleration_x = (acceleration_x * self._speed_scale) * self._speed_scale
+            acceleration_y = (acceleration_y * self._speed_scale) * self._speed_scale
+        else:
+            acceleration_x = acceleration_x / self._solver_acceleration
+            acceleration_y = acceleration_y / self._solver_acceleration
 
         # Bound |q_s| at both endpoints and its quadratic extremum. Applying
         # the resulting velocity cap independently to x and y also bounds
         # their linear interpolation. Independent caps avoid artificial stops
         # caused by maximizing x against a coupled velocity constraint on y.
-        p0, p1, p2 = np.moveaxis(derivative / self._solver_velocity, 1, 0)
+        normalized_velocity = (
+            (derivative / self.max_velocity) * self._speed_scale
+            if self._normalized_acceleration_constraints
+            else derivative / self._solver_velocity
+        )
+        p0, p1, p2 = np.moveaxis(normalized_velocity, 1, 0)
         quadratic = p0 - 2.0 * p1 + p2
         ratio = np.clip(
             np.divide(
@@ -690,6 +760,16 @@ class ToppraTrajectory:
         s = np.clip(s, self._grid[segment], self._grid[segment + 1])
         speed = np.maximum(0.0, initial_speed + accel * elapsed)
         q, q_s, q_ss = self._path_model.evaluate_all(s)
+        if self._normalized_acceleration_constraints:
+            # Large geometric derivatives can overflow against normalized
+            # speeds even though restoring physical speed units is finite.
+            speed = speed * self._speed_scale
+            accel = (accel * self._speed_scale) * self._speed_scale
+            return (
+                q,
+                q_s * speed[..., None],
+                q_ss * speed[..., None] ** 2 + q_s * accel[..., None],
+            )
         result = (
             q,
             q_s * speed[..., None],
