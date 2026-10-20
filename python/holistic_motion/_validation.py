@@ -10,10 +10,70 @@ _HOMOGENEOUS_LAST_ROW = np.array([0.0, 0.0, 0.0, 1.0])
 _HOMOGENEOUS_LAST_ROW.setflags(write=False)
 
 
+def require_real(value, *, name: str):
+    """Reject recognized complex values before a real numeric conversion."""
+    if isinstance(value, (float, int, np.floating, np.integer)):
+        return value
+    array = np.asarray(value)
+    if np.iscomplexobj(array):
+        raise TypeError(f"{name} must be real")
+    if array.dtype.kind == "O":
+        _require_real_objects(array, name)
+    return array
+
+
+def _require_real_objects(array: np.ndarray, name: str) -> None:
+    # Object arrays may hold further arrays, including zero-dimensional
+    # wrappers that float() would silently convert from NumPy complex
+    # scalars. Traverse iteratively, retaining only the active iterators.
+    active = {id(array)}
+    visited = {}
+    pending = [(id(array), array, iter(array.flat))]
+    while pending:
+        identity, container, items = pending[-1]
+        try:
+            item = next(items)
+        except StopIteration:
+            pending.pop()
+            active.remove(identity)
+            visited[identity] = container
+            continue
+        if isinstance(item, (float, int, np.floating, np.integer)):
+            continue
+        identity = id(item)
+        if identity in active:
+            raise TypeError(f"{name} must not contain cyclic objects")
+        if identity in visited:
+            continue
+        nested = np.asarray(item)
+        if np.iscomplexobj(nested):
+            raise TypeError(f"{name} must be real")
+        if nested.dtype.kind == "O":
+            # Ordinary scalar objects (for example Decimal) wrap themselves
+            # in an object array; their numeric conversion is left intact.
+            if (
+                nested.ndim == 0
+                and nested.item() is item
+                and not isinstance(item, np.ndarray)
+            ):
+                continue
+            active.add(identity)
+            pending.append((identity, item, iter(nested.flat)))
+
+
+def real_array(value, *, name: str, copy: bool = False) -> np.ndarray:
+    array = require_real(value, name=name)
+    return (
+        np.array(array, dtype=float, copy=True)
+        if copy
+        else np.asarray(array, dtype=float)
+    )
+
+
 def validated_transform(value, *, name: str, readonly: bool = False) -> np.ndarray:
     """Return an owned, validated homogeneous SE(3) transform."""
 
-    transform = np.array(value, dtype=float, copy=True)
+    transform = real_array(value, name=name, copy=True)
     if transform.shape != (4, 4) or not np.isfinite(transform).all():
         raise ValueError(f"{name} must be a finite 4x4 matrix")
     if not np.allclose(transform[3], _HOMOGENEOUS_LAST_ROW, rtol=0.0, atol=1e-8):

@@ -1,11 +1,45 @@
 #ifndef _HOLISTIC_MOTION_HOLISTIC_MOTION_SO3TANGENT_BASE_H_
 #define _HOLISTIC_MOTION_HOLISTIC_MOTION_SO3TANGENT_BASE_H_
 
+#include <cmath>
+#include <limits>
+#include <type_traits>
+
 #include "holistic_motion/manif/impl/so3/SO3_properties.h"
 #include "holistic_motion/manif/impl/tangent_base.h"
 
 namespace holistic_motion {
 namespace robotics {
+namespace detail {
+
+template <typename Scalar> bool HasLargeSO3Tangent(const Scalar &squared_norm) {
+    // A unit term minus the quadratic correction can erase small transverse
+    // derivatives well before powers of theta overflow.
+    return squared_norm > Scalar(1) / std::numeric_limits<Scalar>::epsilon();
+}
+
+template <typename Derived>
+Eigen::Matrix<typename Derived::Scalar, 3, 3>
+ScaledSO3Jacobian(const Eigen::MatrixBase<Derived> &vector,
+                  typename Derived::Scalar theta, bool inverse) {
+    using Scalar = typename Derived::Scalar;
+    using Matrix = Eigen::Matrix<Scalar, 3, 3>;
+    const Eigen::Matrix<Scalar, 3, 1> axis = vector / theta;
+    const Matrix projection = axis * axis.transpose();
+    const Matrix cross = skew(axis);
+    if (inverse) {
+        const Scalar half = theta / Scalar(2);
+        const Scalar cotangent = std::cos(half) / std::sin(half);
+        return projection +
+               half * (cotangent * (Matrix::Identity() - projection) - cross);
+    }
+    const Scalar sinc = std::sin(theta) / theta;
+    return sinc * Matrix::Identity() + (Scalar(1) - sinc) * projection +
+           ((Scalar(1) - std::cos(theta)) / theta) * cross;
+}
+
+} // namespace detail
+
 //
 // Tangent
 //
@@ -121,6 +155,17 @@ inline typename SO3TangentBase<_Derived>::LieGroup SO3TangentBase<_Derived>::Exp
     const DataType& theta_vec = Coeffs();
     const Scalar theta_sq = theta_vec.squaredNorm();
 
+    if constexpr (std::is_floating_point_v<Scalar>) {
+        if (detail::HasLargeSO3Tangent(theta_sq)) {
+            const Scalar theta = std::isfinite(theta_sq)
+                                         ? sqrt(theta_sq)
+                                         : std::hypot(x(), y(), z());
+            if (J_m_t)
+                *J_m_t = detail::ScaledSO3Jacobian(theta_vec, theta, false).transpose();
+            return LieGroup(Eigen::AngleAxis<Scalar>(theta, theta_vec / theta));
+        }
+    }
+
     if (theta_sq > Constants<Scalar>::eps) {
         const Scalar theta = sqrt(theta_sq);
         if (J_m_t) {
@@ -166,6 +211,15 @@ inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Lja
 
     const Scalar theta_sq = Coeffs().squaredNorm();
 
+    if constexpr (std::is_floating_point_v<Scalar>) {
+        if (detail::HasLargeSO3Tangent(theta_sq)) {
+            const Scalar theta = std::isfinite(theta_sq)
+                                         ? sqrt(theta_sq)
+                                         : std::hypot(x(), y(), z());
+            return detail::ScaledSO3Jacobian(Coeffs(), theta, false);
+        }
+    }
+
     const LieAlg W = Hat();
 
     // Small angle approximation
@@ -193,6 +247,15 @@ inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Lja
 
     const Scalar theta_sq = Coeffs().squaredNorm();
 
+    if constexpr (std::is_floating_point_v<Scalar>) {
+        if (detail::HasLargeSO3Tangent(theta_sq)) {
+            const Scalar theta = std::isfinite(theta_sq)
+                                         ? sqrt(theta_sq)
+                                         : std::hypot(x(), y(), z());
+            return detail::ScaledSO3Jacobian(Coeffs(), theta, true);
+        }
+    }
+
     const LieAlg W = Hat();
 
     if (theta_sq <= Constants<Scalar>::eps)
@@ -202,9 +265,13 @@ inline typename SO3TangentBase<_Derived>::Jacobian SO3TangentBase<_Derived>::Lja
     const Scalar cos_theta = cos(theta);
     // Near a half turn, 1 + cos(theta) loses the small term that cancels
     // sin(theta). The half-angle identity keeps that ratio well conditioned.
-    const Scalar correction = cos_theta < Scalar(0)
-            ? cos(theta / Scalar(2)) / (Scalar(2) * theta * sin(theta / Scalar(2)))
-            : (Scalar(1) + cos_theta) / (Scalar(2) * theta * sin(theta));
+    Scalar correction;
+    if (cos_theta < Scalar(0))
+        correction = cos(theta / Scalar(2)) /
+                     (Scalar(2) * theta * sin(theta / Scalar(2)));
+    else
+        correction = (Scalar(1) + cos_theta) /
+                     (Scalar(2) * theta * sin(theta));
     return Jacobian::Identity() - Scalar(0.5) * W +
            (Scalar(1) / theta_sq - correction) * W * W;
 }

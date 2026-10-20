@@ -116,5 +116,25 @@ int main() {
     if (solver.SetJointNode(nodes) || !solver.IsCompatible()) return 1;
     joints(0, 0) = 0.0;
     if (!Check(solver, joints)) return 1;
+    // Finite inputs and a finite TCP can still overflow the final placement.
+    // A failed batch must clear previously computed rows, like a failed FK.
+    std::vector<JointNode> overflow_nodes;
+    for (int joint = 0; joint < 7; ++joint)
+        overflow_nodes.emplace_back(SE3d(), Eigen::Vector3d::UnitZ(),
+                                    JointType::REVOLUTE, -2.0, 2.0);
+    overflow_nodes.emplace_back();
+    overflow_nodes.back().joint_type = JointType::FIXED;
+    FEPKinematics overflow_solver(overflow_nodes);
+    if (!overflow_solver.SetTCP(
+            SE3d(Eigen::Vector3d(1.5e308, 1.5e308, 0.0), SO3d())))
+        return 1;
+    Eigen::MatrixXd overflow_states = Eigen::MatrixXd::Zero(2, 7);
+    overflow_states(1, 0) = std::acos(-1.0) / 4.0;
+    poses.resize(1);
+    if (overflow_solver.ForwardBatch(overflow_states, FEPBackend::CPU, poses) ||
+        !poses.empty()) {
+        std::cerr << "failed batch FK retained non-finite or partial poses\n";
+        return 1;
+    }
     return 0;
 }

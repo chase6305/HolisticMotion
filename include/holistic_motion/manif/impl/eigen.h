@@ -198,9 +198,17 @@ skew(const Eigen::MatrixBase<_Derived>& v) {
 
     using T = typename _Derived::Scalar;
 
-    return (Eigen::Matrix<T, 3, 3>() << T(0.), -v(2), +v(1), +v(2), T(0.),
-            -v(0), -v(1), +v(0), T(0.))
-            .finished();
+    // Assign coefficients directly: derivative scalar types can overload the
+    // comma operator and intercept Eigen's comma initializer.
+    Eigen::Matrix<T, 3, 3> result;
+    result(0, 0) = result(1, 1) = result(2, 2) = T(0.);
+    result(0, 1) = -v(2);
+    result(0, 2) = v(1);
+    result(1, 0) = v(2);
+    result(1, 2) = -v(0);
+    result(2, 0) = -v(1);
+    result(2, 1) = v(0);
+    return result;
 }
 
 /**

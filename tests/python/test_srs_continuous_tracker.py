@@ -4,6 +4,128 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize(
+    "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
+)
+@pytest.mark.parametrize("kind,amount", [("angle", 1e-8), ("position", 1e-180)])
+@pytest.mark.parametrize("valid_candidate", [False, True])
+def test_strict_pose_tolerance_preserves_small_nonzero_errors(
+    tracker_name, kind, amount, valid_candidate
+):
+    from holistic_motion import kinematics
+
+    target = np.eye(4)
+    if kind == "angle":
+        target[:2, :2] = [
+            [np.cos(amount), -np.sin(amount)],
+            [np.sin(amount), np.cos(amount)],
+        ]
+    else:
+        target[0, 3] = amount
+
+    class PoseSolver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        @staticmethod
+        def configuration(_joints):
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def forward(joints):
+            return target.copy() if joints[0] != 0.0 else np.eye(4)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        @staticmethod
+        def solve(_target, _seed, _method):
+            joints = np.zeros(7)
+            if valid_candidate:
+                joints[0] = amount
+            return [joints]
+
+    options_type = getattr(kinematics, tracker_name.replace("Tracker", "Options"))
+    options = options_type(
+        position_tolerance=amount / 10 if kind == "position" else 1e-12,
+        angle_tolerance=amount / 10 if kind == "angle" else 1e-12,
+    )
+    tracker = getattr(kinematics, tracker_name)(PoseSolver(), np.zeros(7), options)
+    if valid_candidate:
+        result = tracker.solve(target, dt=0.01)
+        assert result.joints[0] == amount
+        assert result.position_error == result.angle_error == 0.0
+    else:
+        with pytest.raises(ValueError):
+            tracker.solve(target, dt=0.01)
+        assert tracker.frame_index == 0
+        np.testing.assert_array_equal(tracker.joints, np.zeros(7))
+
+
+@pytest.mark.parametrize(
+    "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
+)
+@pytest.mark.parametrize("bad_output", ["acceleration", "pose", "prediction"])
+def test_nonfinite_candidate_output_keeps_other_valid_candidates(
+    tracker_name, bad_output
+):
+    from holistic_motion import kinematics
+
+    class OutputSolver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        @staticmethod
+        def configuration(_joints):
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def forward(joints):
+            if bad_output == "pose" and joints[0] == 0.0:
+                return np.full((4, 4), np.nan)
+            return np.eye(4)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        @staticmethod
+        def solve(_target, _seed, _method):
+            if bad_output == "prediction":
+                return [np.full(7, 0.01)]
+            return (
+                [np.full(7, 0.01), np.zeros(7)]
+                if bad_output == "acceleration"
+                else [np.zeros(7), np.full(7, 0.01)]
+            )
+
+    options_type = getattr(kinematics, tracker_name.replace("Tracker", "Options"))
+    tracker = getattr(kinematics, tracker_name)(
+        OutputSolver(), np.zeros(7), options_type(acceleration_weight=0.0)
+    )
+    if bad_output == "prediction":
+        first = tracker.solve(np.eye(4), dt=1e-153)
+        original_joints, original_velocity = (
+            tracker.joints.copy(),
+            first.velocity.copy(),
+        )
+        with pytest.raises(ValueError, match="prediction"):
+            tracker.solve(np.eye(4), dt=1e308)
+        np.testing.assert_array_equal(tracker.joints, original_joints)
+        np.testing.assert_array_equal(tracker._velocity, original_velocity)
+        assert tracker.frame_index == 1
+        return
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = tracker.solve(
+            np.eye(4), dt=1e-300 if bad_output == "acceleration" else 0.01
+        )
+    expected = 0.0 if bad_output == "acceleration" else 0.01
+    np.testing.assert_array_equal(result.joints, np.full(7, expected))
+    assert np.isfinite(result.velocity).all()
+    assert np.isfinite(result.acceleration).all()
+
+
 def _write_srs_urdf(path):
     origins = [
         ("0 0 0", "0 0 0", "0 0 1"),
@@ -89,6 +211,14 @@ def test_srs_tracker_validates_dynamic_limits_and_inputs(tmp_path):
     reflection[0, 0] = -1.0
     with pytest.raises(ValueError, match="proper orthonormal"):
         tracker.solve(reflection, dt=0.01)
+    for dtype in (np.complex64, np.complex128, object):
+        for imaginary in (0.0, 1.0):
+            complex_pose = np.eye(4, dtype=dtype)
+            complex_pose[0, 3] = np.complex128(0.5 + imaginary * 1j)
+            with pytest.raises(TypeError, match="real"):
+                tracker.solve(complex_pose, dt=0.01)
+    assert tracker.frame_index == 0
+    np.testing.assert_array_equal(tracker.joints, initial)
     with pytest.raises(ValueError, match="candidate_refresh_interval"):
         SRSContinuousOptions(candidate_refresh_interval=0)
     with pytest.raises(TypeError, match="branch_hysteresis_frames"):
@@ -123,7 +253,9 @@ def test_srs_tracker_isolates_malformed_native_candidates():
         joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
 
         @staticmethod
-        def configuration(_joints):
+        def configuration(joints):
+            if joints.shape != (7,) or not np.isfinite(joints).all():
+                raise ValueError("invalid native joint configuration")
             return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
 
         @staticmethod
@@ -143,6 +275,142 @@ def test_srs_tracker_isolates_malformed_native_candidates():
 
     assert np.array_equal(result.joints, np.zeros(7))
     assert result.candidate_count == 1
+
+
+@pytest.mark.parametrize(
+    "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
+)
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        np.full(7, np.nan),
+        np.zeros(6),
+        "bad",
+        pytest.param([2**2048] * 7, id="overflowing-integers"),
+        pytest.param(
+            np.full(7, 0.25 + 1j, dtype=np.complex64), id="complex-candidates"
+        ),
+        pytest.param(np.full(7, 0.25 + 0j), id="complex-zero-imaginary"),
+        pytest.param(
+            np.array([np.complex128(0.25 + 1j)] * 7, dtype=object),
+            id="object-complex-candidates",
+        ),
+    ],
+)
+def test_unusable_seed_refreshes_valid_candidates_on_later_frames(
+    tracker_name, malformed
+):
+    import holistic_motion as hm
+    from holistic_motion import kinematics
+
+    methods = hm.SRSSolveMethod if tracker_name.startswith("SRS") else hm.FEPSolveMethod
+
+    class RefreshSolver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        def __init__(self):
+            self.refreshes = 0
+
+        @staticmethod
+        def configuration(joints):
+            if joints.shape != (7,) or not np.isfinite(joints).all():
+                raise ValueError("invalid native joint configuration")
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def forward(_joints):
+            return np.eye(4)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        def solve(self, _target, _seed, method):
+            if method == methods.SEEDED_NUMERICAL:
+                return [malformed]
+            assert method == methods.ALL_CONFIGURATIONS
+            self.refreshes += 1
+            return [np.zeros(7)]
+
+    solver = RefreshSolver()
+    tracker = getattr(kinematics, tracker_name)(solver, np.zeros(7))
+    for _ in range(2):
+        result = tracker.solve(np.eye(4), 0.01)
+        np.testing.assert_array_equal(result.joints, np.zeros(7))
+        assert result.candidate_count == 1
+    assert solver.refreshes == 2
+    assert tracker.frame_index == 2
+
+
+@pytest.mark.parametrize(
+    "tracker_name", ["SRSContinuousTracker", "FEPContinuousTracker"]
+)
+@pytest.mark.parametrize("rejection", ["pose", "velocity"])
+@pytest.mark.parametrize("valid_refresh", [False, True])
+def test_rejected_seed_refreshes_after_candidate_validation(
+    tracker_name, rejection, valid_refresh
+):
+    import holistic_motion as hm
+    from holistic_motion import kinematics
+
+    methods = hm.SRSSolveMethod if tracker_name.startswith("SRS") else hm.FEPSolveMethod
+
+    class Solver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        def __init__(self):
+            self.refreshes = 0
+            self.seeded_calls = 0
+
+        @staticmethod
+        def configuration(_joints):
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        @staticmethod
+        def forward(joints):
+            pose = np.eye(4)
+            pose[0, 3] = joints[0]
+            return pose
+
+        def solve(self, target, _seed, method):
+            joints = np.zeros(7)
+            if method == methods.ALL_CONFIGURATIONS:
+                self.refreshes += 1
+                if valid_refresh:
+                    joints[0] = target[0, 3]
+            else:
+                self.seeded_calls += 1
+                if rejection == "velocity":
+                    joints[0] = 2.0
+            return [joints]
+
+    solver = Solver()
+    options_type = getattr(kinematics, tracker_name.replace("Tracker", "Options"))
+    tracker = getattr(kinematics, tracker_name)(
+        solver, np.zeros(7), options_type(max_velocity=np.ones(7))
+    )
+    tracker.solve(np.eye(4), 0.01)
+    target = np.eye(4)
+    target[0, 3] = 0.001
+    if valid_refresh:
+        result = tracker.solve(target, 0.01)
+        assert result.joints[0] == target[0, 3]
+        assert result.candidate_count == 1
+        assert tracker.frame_index == 2
+    else:
+        with pytest.raises(ValueError, match="continuity limits"):
+            tracker.solve(target, 0.01)
+        np.testing.assert_array_equal(tracker.joints, np.zeros(7))
+        np.testing.assert_array_equal(tracker.velocity, np.zeros(7))
+        assert tracker.frame_index == 1
+    assert solver.refreshes == 2
+    assert solver.seeded_calls == 2
 
 
 def test_srs_tracker_rejects_wrong_options_type(tmp_path):
@@ -291,9 +559,7 @@ def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
         @staticmethod
         def configuration(joints):
             branch = -1 if joints[0] < 0.0 else 1
-            return SimpleNamespace(
-                shoulder=branch, elbow=1, wrist=1, redundancy=0.0
-            )
+            return SimpleNamespace(shoulder=branch, elbow=1, wrist=1, redundancy=0.0)
 
         @staticmethod
         def forward(_joints):

@@ -18,10 +18,19 @@ from typing import Optional, Union
 
 import numpy as np
 
+from .._validation import real_array, require_real
+
 PathLike = Union[str, Path]
+
+# Away from zero, adjacent float64 coordinates are at least roughly eps/2
+# apart in relative terms. These conservative bounds keep both differences
+# and their three squared components in normal range on the ordinary path.
+_SMALL_COORDINATE = 4.0 * np.sqrt(np.finfo(float).tiny) / np.finfo(float).eps
+_LARGE_COORDINATE = np.sqrt(np.finfo(float).max / 16.0)
 
 
 def _finite_float(value, name: str) -> float:
+    value = require_real(value, name=name)
     try:
         result = float(value)
     except (TypeError, ValueError) as error:
@@ -71,7 +80,7 @@ def _validated_options(options) -> SphereFitOptions:
 
 
 def _points(value, name: str, *, allow_empty: bool = False) -> np.ndarray:
-    points = np.asarray(value, dtype=float)
+    points = real_array(value, name=name)
     if points.ndim != 2 or points.shape[1:] != (3,):
         raise ValueError(f"{name} must have shape (N, 3)")
     if not allow_empty and len(points) == 0:
@@ -106,22 +115,106 @@ def _squared_distance_tiles(query: np.ndarray, reference: np.ndarray, chunk_size
             yield start, offset, distances
 
 
+def _requires_stable_distances(*point_sets: np.ndarray) -> bool:
+    for points in point_sets:
+        # Classification must not reserve an all-samples magnitude array.
+        for start in range(0, len(points), 4096):
+            magnitudes = np.abs(points[start : start + 4096])
+            if (
+                np.max(magnitudes, initial=0.0) > _LARGE_COORDINATE
+                or np.min(magnitudes, where=magnitudes != 0.0, initial=np.inf)
+                < _SMALL_COORDINATE
+            ):
+                return True
+    return False
+
+
+def _distance_tiles(
+    query: np.ndarray,
+    reference: np.ndarray,
+    chunk_size: int,
+    *,
+    stable: bool | None = None,
+    radii: np.ndarray | None = None,
+):
+    """Yield norms with bounded storage, protecting exceptional square ranges."""
+    if stable is None:
+        stable = _requires_stable_distances(query, reference)
+    if not stable:
+        for start, offset, distances in _squared_distance_tiles(
+            query, reference, chunk_size
+        ):
+            np.sqrt(distances, out=distances)
+            if radii is not None:
+                distances -= radii[None, offset : offset + distances.shape[1]]
+            yield start, offset, distances
+        return
+    shape = (min(len(query), chunk_size), min(len(reference), chunk_size))
+    norms = np.empty(shape, dtype=float)
+    scratch = np.empty(shape, dtype=float)
+    for start in range(0, len(query), chunk_size):
+        chunk = query[start : start + chunk_size]
+        for offset in range(0, len(reference), chunk_size):
+            other = reference[offset : offset + chunk_size]
+            distances = norms[: len(chunk), : len(other)]
+            delta = scratch[: len(chunk), : len(other)]
+            # A genuinely unrepresentable distance may be infinite; a later
+            # finite reference in this or another tile can still be nearest.
+            with np.errstate(over="ignore", under="ignore"):
+                np.subtract(chunk[:, 0, None], other[None, :, 0], out=distances)
+                for axis in (1, 2):
+                    np.subtract(chunk[:, axis, None], other[None, :, axis], out=delta)
+                    np.hypot(distances, delta, out=distances)
+                if radii is not None:
+                    block_radii = radii[None, offset : offset + distances.shape[1]]
+                    distances -= block_radii
+                    overflowed = np.isposinf(distances)
+                    if np.any(overflowed):
+                        # The distance may exceed float64 while its gap after
+                        # subtracting a finite radius remains representable.
+                        # Halve coordinates before subtraction and apply the
+                        # radius before restoring the scale. Keep ordinary
+                        # finite gaps, including tiny ones, exactly as above.
+                        finite_gaps = distances.copy()
+                        np.subtract(
+                            chunk[:, 0, None] * 0.5,
+                            other[None, :, 0] * 0.5,
+                            out=distances,
+                        )
+                        for axis in (1, 2):
+                            np.subtract(
+                                chunk[:, axis, None] * 0.5,
+                                other[None, :, axis] * 0.5,
+                                out=delta,
+                            )
+                            np.hypot(distances, delta, out=distances)
+                        distances -= block_radii * 0.5
+                        distances *= 2.0
+                        np.copyto(distances, finite_gaps, where=~overflowed)
+            yield start, offset, distances
+
+
 def _minimum_distances(
     query: np.ndarray,
     reference: np.ndarray,
     chunk_size: int,
     radii: Optional[np.ndarray] = None,
+    *,
+    stable: bool | None = None,
 ) -> np.ndarray:
     output = np.full(len(query), np.inf, dtype=float)
-    for start, offset, distances in _squared_distance_tiles(
-        query, reference, chunk_size
-    ):
-        if radii is not None:
-            np.sqrt(distances, out=distances)
-            distances -= radii[None, offset : offset + distances.shape[1]]
+    if stable is None:
+        stable = _requires_stable_distances(query, reference)
+    squared = radii is None and not stable
+    tiles = (
+        _squared_distance_tiles(query, reference, chunk_size)
+        if squared
+        else _distance_tiles(query, reference, chunk_size, stable=stable, radii=radii)
+    )
+    for start, offset, distances in tiles:
         best = output[start : start + len(distances)]
         np.minimum(best, np.min(distances, axis=1), out=best)
-    if radii is None:
+    if squared:
         np.sqrt(output, out=output)
     return output
 
@@ -134,7 +227,7 @@ class SphereSpec:
     radius: float
 
     def __post_init__(self):
-        center = np.asarray(self.center, dtype=float)
+        center = real_array(self.center, name="sphere center")
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             raise ValueError("sphere center must contain three finite values")
         radius = _finite_float(self.radius, "sphere radius")
@@ -256,23 +349,39 @@ def evaluate_sphere_fit(
     return _evaluate_point_sets((points,), spheres, chunk_size)
 
 
-def _evaluate_point_sets(point_sets, spheres, chunk_size: int) -> SphereFitMetrics:
+def _evaluate_point_sets(
+    point_sets, spheres, chunk_size: int, *, stable: bool | None = None
+) -> SphereFitMetrics:
     centers = np.asarray([sphere.center for sphere in spheres], dtype=float)
     radii = np.asarray([sphere.radius for sphere in spheres], dtype=float)
     count = covered = 0
     mean_gap = maximum_gap = 0.0
     for points in point_sets:
+        stable_points = (
+            _requires_stable_distances(points, centers) if stable is None else stable
+        )
         for start in range(0, len(points), chunk_size):
             chunk = points[start : start + chunk_size]
-            gaps = _minimum_distances(chunk, centers, chunk_size, radii)
+            gaps = _minimum_distances(
+                chunk, centers, chunk_size, radii, stable=stable_points
+            )
             np.maximum(gaps, 0.0, out=gaps)
             new_count = count + len(chunk)
             # Combine block means without retaining all gaps or summing a
             # potentially very large number of distances at once.
-            mean_gap += (float(np.mean(gaps)) - mean_gap) * (len(chunk) / new_count)
+            maximum = float(np.max(gaps))
+            if not np.isfinite(maximum):
+                raise ValueError("uncovered distances must be finite")
+            # Leave headroom for reduction rounding: even max/count or its
+            # neighbouring smaller float can overflow when summed count times.
+            if maximum >= np.finfo(float).max / (2 * len(gaps)):
+                block_mean = float(np.mean(gaps / maximum)) * maximum
+            else:
+                block_mean = float(np.mean(gaps))
+            mean_gap += (block_mean - mean_gap) * (len(chunk) / new_count)
             count = new_count
             covered += int(np.count_nonzero(gaps <= 1e-12))
-            maximum_gap = max(maximum_gap, float(np.max(gaps)))
+            maximum_gap = max(maximum_gap, maximum)
     return SphereFitMetrics(
         sampled_coverage=covered / count,
         mean_uncovered_distance=mean_gap,
@@ -296,7 +405,10 @@ def fit_spheres(
     options = _validated_options(options)
     interior = _points(interior_points, "interior_points")
     surface = _points(surface_points, "surface_points")
-    radii = _minimum_distances(interior, surface, options.chunk_size)
+    stable_distances = _requires_stable_distances(interior, surface)
+    radii = _minimum_distances(
+        interior, surface, options.chunk_size, stable=stable_distances
+    )
     eligible = np.flatnonzero(radii >= options.min_radius)
     if len(eligible) == 0:
         raise ValueError("no interior candidate satisfies min_radius")
@@ -304,26 +416,76 @@ def fit_spheres(
     # Prefer large medial candidates while suppressing centers already covered
     # by an earlier sphere. Stable sorting makes equal inputs deterministic.
     order = eligible[np.argsort(-radii[eligible], kind="stable")]
-    selected = []
-    for index in order:
-        center = interior[index]
-        radius = radii[index]
-        if selected:
-            selected_centers = interior[np.asarray(selected)]
-            selected_radii = radii[np.asarray(selected)]
-            if np.any(
-                np.linalg.norm(selected_centers - center, axis=1)
-                <= np.maximum(selected_radii - radius, 0.0)
+    capacity = min(options.max_spheres, len(order), 32)
+    # Grow only when a sphere is accepted; a large max_spheres value should
+    # not reserve storage for thousands of candidates that may be suppressed.
+    selected_centers = np.empty((capacity, 3), dtype=float)
+    selected_radii = np.empty(capacity, dtype=float)
+    count = 0
+    rejected = 0
+    block_size = min(128, max(32, options.chunk_size))
+    for start in range(0, len(order), block_size):
+        block = order[start : start + block_size]
+        if rejected >= 32 and options.chunk_size >= 32:
+            # After many suppressed candidates, eliminate a bounded block
+            # against the already accepted spheres in one NumPy operation.
+            # Surviving candidates still enter the original greedy loop in
+            # stable radius order, including checks against new selections.
+            keep = np.ones(len(block), dtype=bool)
+            block_radii = radii[block]
+            for row, column, distances in _distance_tiles(
+                interior[block],
+                selected_centers[:count],
+                options.chunk_size,
+                stable=stable_distances,
             ):
-                continue
-        selected.append(int(index))
-        if len(selected) == options.max_spheres:
+                limits = np.maximum(
+                    selected_radii[None, column : column + distances.shape[1]]
+                    - block_radii[row : row + len(distances), None],
+                    0.0,
+                )
+                keep[row : row + len(distances)] &= ~np.any(distances <= limits, axis=1)
+            block = block[keep]
+        for index in block:
+            center = interior[index]
+            radius = radii[index]
+            if count:
+                if stable_distances:
+                    with np.errstate(over="ignore", under="ignore"):
+                        delta = selected_centers[:count] - center
+                        distances = np.hypot(
+                            np.hypot(delta[:, 0], delta[:, 1]), delta[:, 2]
+                        )
+                else:
+                    distances = np.linalg.norm(
+                        selected_centers[:count] - center, axis=1
+                    )
+                if np.any(
+                    distances <= np.maximum(selected_radii[:count] - radius, 0.0)
+                ):
+                    rejected += 1
+                    continue
+            if count == capacity:
+                capacity = min(2 * capacity, options.max_spheres, len(order))
+                centers = np.empty((capacity, 3), dtype=float)
+                centers[:count] = selected_centers
+                selected_centers = centers
+                grown_radii = np.empty(capacity, dtype=float)
+                grown_radii[:count] = selected_radii
+                selected_radii = grown_radii
+            selected_centers[count] = center
+            selected_radii[count] = radius
+            count += 1
+            rejected = 0
+            if count == options.max_spheres:
+                break
+        if count == options.max_spheres:
             break
-    if not selected:
+    if not count:
         raise RuntimeError("sphere selection produced no candidates")
 
-    centers = interior[np.asarray(selected)]
-    selected_radii = radii[np.asarray(selected)].copy()
+    centers = selected_centers[:count]
+    selected_radii = selected_radii[:count]
     mode = "inscribed"
     if options.sampled_coverage:
         maximum_assigned = np.zeros(len(centers), dtype=float)
@@ -333,10 +495,9 @@ def fit_spheres(
                 nearest = np.full(len(samples), np.inf)
                 assignments = np.zeros(len(samples), dtype=np.intp)
                 rows = np.arange(len(samples))
-                for _, offset, distances in _squared_distance_tiles(
-                    samples, centers, options.chunk_size
+                for _, offset, distances in _distance_tiles(
+                    samples, centers, options.chunk_size, stable=stable_distances
                 ):
-                    np.sqrt(distances, out=distances)
                     indices = np.argmin(distances, axis=1)
                     candidates = distances[rows, indices]
                     # Strict comparison keeps the first center on equal
@@ -353,7 +514,9 @@ def fit_spheres(
         SphereSpec(tuple(center), radius)
         for center, radius in zip(centers, selected_radii)
     )
-    metrics = _evaluate_point_sets((interior, surface), spheres, options.chunk_size)
+    metrics = _evaluate_point_sets(
+        (interior, surface), spheres, options.chunk_size, stable=stable_distances
+    )
     return SphereFitResult(spheres=spheres, metrics=metrics, mode=mode)
 
 
@@ -375,7 +538,7 @@ def fit_trimesh(
         or surface_samples < 4
     ):
         raise ValueError("surface_samples must be at least four")
-    extents = np.asarray(mesh.extents, dtype=float)
+    extents = real_array(mesh.extents, name="mesh extents")
     if (
         extents.shape != (3,)
         or not np.all(np.isfinite(extents))
@@ -384,11 +547,13 @@ def fit_trimesh(
         raise ValueError("mesh must have finite, non-zero extents")
     if pitch is None:
         pitch = float(np.max(extents) / 32.0)
+    else:
+        pitch = _finite_float(pitch, "pitch")
     if not np.isfinite(pitch) or pitch <= 0.0:
         raise ValueError("pitch must be finite and positive")
 
     voxels = mesh.voxelized(pitch).fill()
-    interior = np.asarray(voxels.points, dtype=float)
+    interior = real_array(voxels.points, name="voxel points")
     if len(interior) == 0:
         raise ValueError("mesh voxelization produced no interior samples")
     # Use the module-level sampler because it exposes an explicit seed across

@@ -41,6 +41,27 @@ def test_fep_batch_fk_matches_scalar_and_validates_input(tmp_path):
             solver.forward_batch(joints, hm.FEPBackend.CUDA)
 
 
+@pytest.mark.parametrize("backend_name", ["CPU", "AUTO", "CUDA"])
+def test_fep_batch_rejects_nonfinite_output_after_finite_input(tmp_path, backend_name):
+    import holistic_motion as hm
+
+    path = tmp_path / "overflow.urdf"
+    path.write_text(_seven_axis_urdf(), encoding="utf-8")
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    if backend_name == "CUDA" and not solver.cuda_available:
+        pytest.skip("native CUDA backend is unavailable")
+    tool = np.eye(4)
+    tool[:2, 3] = 1.5e308
+    assert solver.set_tcp(tool)
+    states = np.zeros((2, 7))
+    states[1, 0] = np.pi / 4.0
+    assert np.isfinite(solver.forward(states[0])).all()
+    with pytest.raises(ValueError):
+        solver.forward(states[1])
+    with pytest.raises(ValueError):
+        solver.forward_batch(states, getattr(hm.FEPBackend, backend_name))
+
+
 @pytest.mark.parametrize("layout", ["C", "F", "strided"])
 @pytest.mark.parametrize("batch_size", [0, 1, 32, 129])
 def test_fep_batch_layouts_and_tcp_updates(tmp_path, layout, batch_size):

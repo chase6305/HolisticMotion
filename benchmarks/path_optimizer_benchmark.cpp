@@ -22,9 +22,19 @@ double Checksum(const std::vector<Eigen::VectorXd> &path) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    std::string cost_mode = "none";
+    if (argc > 1) {
+        const std::string final_argument(argv[argc - 1]);
+        if (final_argument == "--finite-cost" ||
+            final_argument == "--analytic-cost") {
+            cost_mode = final_argument == "--finite-cost" ? "finite" : "analytic";
+            --argc;
+        }
+    }
     if (argc != 1 && argc != 3 && argc != 5 && argc != 7) {
         std::cerr << "usage: path_optimizer_benchmark [dof waypoints "
-                     "continuous validator] [length_weight smoothness_weight]\n";
+                     "continuous validator] [length_weight smoothness_weight] "
+                     "[--finite-cost|--analytic-cost]\n";
         return 2;
     }
     double length_weight = 1.0;
@@ -46,7 +56,8 @@ int main(int argc, char *argv[]) {
     std::cout << "dof,waypoints,continuous,validator,length_weight,smoothness_weight,"
                  "time_us,iterations,attempted,"
                  "line_search,accepted,checks,initial_objective,final_objective,"
-                 "final_length,checksum\n"
+                 "final_length,checksum,cost_mode,state_cost_evaluations,"
+                 "state_cost_gradient_evaluations\n"
               << std::setprecision(17);
     for (int dof : {2, 7, 14}) {
         for (int count : {32, 256}) {
@@ -91,6 +102,17 @@ int main(int argc, char *argv[]) {
                     options.line_search_steps = 6;
                     options.length_weight = length_weight;
                     options.smoothness_weight = smoothness_weight;
+                    if (cost_mode != "none") {
+                        options.state_cost_weight = 0.5;
+                        optimizer.SetStateCost([](const Eigen::VectorXd &q) {
+                            return q.squaredNorm();
+                        });
+                        if (cost_mode == "analytic")
+                            optimizer.SetStateCostGradient(
+                                [](const Eigen::VectorXd &q) {
+                                    return (2.0 * q).eval();
+                                });
+                    }
                     PathOptimizationResult reference =
                         optimizer.Optimize(path, options);
                     if (!reference.Success() ||
@@ -134,7 +156,9 @@ int main(int argc, char *argv[]) {
                               << stats.accepted_updates << ',' << stats.collision_checks
                               << ',' << stats.initial_objective << ','
                               << stats.final_objective << ',' << stats.final_path_length
-                              << ',' << checksum << '\n';
+                              << ',' << checksum << ',' << cost_mode << ','
+                              << stats.state_cost_evaluations << ','
+                              << stats.state_cost_gradient_evaluations << '\n';
                 }
             }
         }

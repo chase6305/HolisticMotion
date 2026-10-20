@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -29,7 +30,12 @@ class JointSpaceIndex {
             for (std::size_t i = 0; i < count; ++i) {
                 const double candidate =
                     metric.SquaredDistance(state_at(i), query);
-                if (candidate < distance) {
+                if (candidate < distance ||
+                    (candidate == distance &&
+                     ((!std::isnormal(candidate) &&
+                       metric.IsCloser(state_at(i), state_at(best), query,
+                                       candidate, distance, i < best)) ||
+                      (std::isnormal(candidate) && i < best)))) {
                     distance = candidate;
                     best = i;
                 }
@@ -54,8 +60,8 @@ class JointSpaceIndex {
         const auto collect = [&](std::size_t index) {
             const double distance =
                 metric.SquaredDistance(state_at(index), query);
-            if (distance <= squared_radius &&
-                (std::isfinite(distance) || std::isinf(radius)))
+            if (metric.WithinRadius(state_at(index), query, distance, radius,
+                                    squared_radius))
                 result.push_back(index);
         };
         // Low-dimensional Euclidean radius searches return many neighbors.
@@ -78,12 +84,15 @@ class JointSpaceIndex {
     }
 
   private:
+    static constexpr Eigen::Index kMaximumDimension = 8;
     struct Node {
         std::size_t begin;
         std::size_t end;
         std::size_t right{0};
         Eigen::Index axis{-1};
         double split{0.0};
+        std::array<double, kMaximumDimension> lower{};
+        std::array<double, kMaximumDimension> upper{};
     };
 
     static constexpr std::size_t kMinimumSize = 128;
@@ -100,7 +109,7 @@ class JointSpaceIndex {
         // In high dimensions the split-plane bounds reject too few leaves to
         // repay traversal and rebuilding. Keep the contiguous insertion-order
         // scan there; benchmarks cover both sides of this dispatch boundary.
-        if (count < kMinimumSize || metric.Dimension() > 8)
+        if (count < kMinimumSize || metric.Dimension() > kMaximumDimension)
             return;
         if (!initialized_) {
             for (Eigen::Index axis = 0; axis < metric.Dimension(); ++axis)
@@ -125,12 +134,11 @@ class JointSpaceIndex {
                       const StateAt &state_at, const JointSpaceMetric &metric) {
         const std::size_t node = nodes_.size();
         nodes_.push_back({begin, end});
-        if (end - begin <= kLeafSize)
-            return node;
-
         Eigen::Index selected = bounded_axes_.front();
         double widest = -1.0;
-        for (Eigen::Index axis : bounded_axes_) {
+        for (std::size_t bound_axis = 0; bound_axis < bounded_axes_.size();
+             ++bound_axis) {
+            const Eigen::Index axis = bounded_axes_[bound_axis];
             double lower = state_at(order_[begin])[axis];
             double upper = lower;
             for (std::size_t i = begin + 1; i < end; ++i) {
@@ -138,6 +146,8 @@ class JointSpaceIndex {
                 lower = std::min(lower, value);
                 upper = std::max(upper, value);
             }
+            nodes_[node].lower[bound_axis] = lower;
+            nodes_[node].upper[bound_axis] = upper;
             const double width =
                 metric.SquaredAxisDistance(upper - lower, axis);
             if (width > widest) {
@@ -145,6 +155,7 @@ class JointSpaceIndex {
                 selected = axis;
             }
         }
+        if (end - begin <= kLeafSize) return node;
         const std::size_t middle = begin + (end - begin) / 2;
         std::nth_element(order_.begin() + begin, order_.begin() + middle,
                          order_.begin() + end,
@@ -168,10 +179,39 @@ class JointSpaceIndex {
                          double &best_distance) {
         const double distance = metric.SquaredDistance(state_at(index), query);
         if (distance < best_distance ||
-            (distance == best_distance && index < best)) {
+            (distance == best_distance &&
+             (std::isnormal(distance)
+                  ? index < best
+                  : metric.IsCloser(state_at(index), state_at(best), query,
+                                    distance, best_distance, index < best)))) {
             best_distance = distance;
             best = index;
         }
+    }
+
+    bool BoundExceeds(std::size_t index, const Eigen::VectorXd &query,
+                      const JointSpaceMetric &metric, double limit) const {
+        double bound = 0.0;
+        const auto &node = nodes_[index];
+        for (std::size_t axis = 0; axis < bounded_axes_.size(); ++axis) {
+            const double value = query[bounded_axes_[axis]];
+            const double lower = node.lower[axis];
+            const double upper = node.upper[axis];
+            const double delta = value < lower   ? lower - value
+                                 : value > upper ? value - upper
+                                                 : 0.0;
+            bound += metric.SquaredAxisDistance(delta, bounded_axes_[axis]);
+        }
+        // The box omits periodic coordinates. Round its bound down before
+        // pruning so a different summation order cannot exclude boundary ties.
+        return ExceedsBound(bound, limit);
+    }
+
+    static bool ExceedsBound(double bound, double limit) {
+        const double margin =
+            16.0 * std::numeric_limits<double>::epsilon() * bound +
+            16.0 * std::numeric_limits<double>::denorm_min();
+        return bound > limit && bound - margin > limit;
     }
 
     template <class StateAt>
@@ -179,6 +219,7 @@ class JointSpaceIndex {
                        const Eigen::VectorXd &query,
                        const JointSpaceMetric &metric, std::size_t &best,
                        double &best_distance) const {
+        if (BoundExceeds(index, query, metric, best_distance)) return;
         const auto &node = nodes_[index];
         if (node.axis < 0) {
             for (std::size_t i = node.begin; i < node.end; ++i)
@@ -190,7 +231,8 @@ class JointSpaceIndex {
         const std::size_t close = delta < 0.0 ? index + 1 : node.right;
         const std::size_t far = delta < 0.0 ? node.right : index + 1;
         SearchNearest(close, state_at, query, metric, best, best_distance);
-        if (!(metric.SquaredAxisDistance(delta, node.axis) > best_distance))
+        if (!ExceedsBound(metric.SquaredAxisDistance(delta, node.axis),
+                          best_distance))
             SearchNearest(far, state_at, query, metric, best, best_distance);
     }
 
@@ -198,6 +240,7 @@ class JointSpaceIndex {
     void SearchNear(std::size_t index, const Eigen::VectorXd &query,
                     double squared_radius, const JointSpaceMetric &metric,
                     const Collect &collect) const {
+        if (BoundExceeds(index, query, metric, squared_radius)) return;
         const auto &node = nodes_[index];
         if (node.axis < 0) {
             for (std::size_t i = node.begin; i < node.end; ++i)
@@ -208,7 +251,8 @@ class JointSpaceIndex {
         const std::size_t close = delta < 0.0 ? index + 1 : node.right;
         const std::size_t far = delta < 0.0 ? node.right : index + 1;
         SearchNear(close, query, squared_radius, metric, collect);
-        if (!(metric.SquaredAxisDistance(delta, node.axis) > squared_radius))
+        if (!ExceedsBound(metric.SquaredAxisDistance(delta, node.axis),
+                          squared_radius))
             SearchNear(far, query, squared_radius, metric, collect);
     }
 };

@@ -1,6 +1,10 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
+
+#include "FrameValidation.h"
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace holistic_motion {
@@ -12,17 +16,12 @@ bool ValidLimitInterval(double lower, double upper) {
     return !std::isnan(lower) && !std::isnan(upper) && lower <= upper;
 }
 
-bool ValidFrame(const SE3d& pose) {
-    return pose.Coeffs().allFinite() &&
-           std::abs(pose.Coeffs().tail<4>().squaredNorm() - 1.0) <= 1e-9;
-}
-
 bool ValidJointNode(const JointNode& node) {
-    if (!ValidFrame(node.origin_pose) || !node.axis.allFinite() ||
+    if (!detail::IsValidFrame(node.origin_pose) || !node.axis.allFinite() ||
         !ValidLimitInterval(node.lower_limit, node.upper_limit) ||
         !ValidLimitInterval(node.lower_limit_set, node.upper_limit_set) ||
         std::max(node.lower_limit, node.lower_limit_set) >
-                std::min(node.upper_limit, node.upper_limit_set)) {
+            std::min(node.upper_limit, node.upper_limit_set)) {
         return false;
     }
     switch (node.joint_type) {
@@ -91,6 +90,16 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             pose_list.clear();
             return false;
         }
+        // Fixed nodes and exactly zero joint motions only compose their
+        // origin. Avoid constructing and multiplying a second identity SE3.
+        // Keep malformed protected-model axes on the validation path below.
+        if (type == JointType::FIXED || type == JointType::UNKNOWN ||
+            (i < static_cast<std::size_t>(this->dof_) && target_joint[i] == 0.0 &&
+             this->joint_nodes_[i].axis.allFinite())) {
+            pose_list.push_back(pre_pose * this->joint_nodes_[i].origin_pose);
+            pre_pose = pose_list.back();
+            continue;
+        }
         SE3d transform = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         Eigen::Vector3d xyz(0.0, 0.0, 0.0);
         SO3d rot = SO3d(0.0, 0.0, 0.0, 1.0);
@@ -99,7 +108,13 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             // SO3d(Vector3d) interprets Euler angles, not a rotation vector.
             const Eigen::Vector3d rotation_vector =
                     target_joint[i] * this->joint_nodes_[i].axis;
-            const double angle = rotation_vector.norm();
+            double angle = rotation_vector.norm();
+            if (angle < std::sqrt(std::numeric_limits<double>::min())) {
+                // Preserve representable tiny rotations when the norm's
+                // component squares lose precision or underflow to zero.
+                angle = std::hypot(rotation_vector.x(), rotation_vector.y(),
+                                   rotation_vector.z());
+            }
             if (!std::isfinite(angle)) {
                 pose_list.clear();
                 return false;
@@ -117,8 +132,15 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
             }
         }
         transform = SE3d(xyz, rot);
-        pose_list.push_back(pre_pose * this->joint_nodes_[i].origin_pose *
-                            transform);
+        SE3d pose = pre_pose * this->joint_nodes_[i].origin_pose;
+        if (type == JointType::REVOLUTE || type == JointType::CONTINUOUS) {
+            // Revolute motion has no translation. Compose the same SO3
+            // factors without forming a rotation matrix just to multiply zero.
+            pose = SE3d(pose.GetTranslation(), SO3d(pose.GetQuat()) * rot);
+        } else {
+            pose = pose * transform;
+        }
+        pose_list.push_back(pose);
         pre_pose = pose_list.back();
         // holistic_motion::utility::LogDebug("Joint{} pose:[SE3({})].", i + 1,
         //                         fmt::join(pre_pose.Coeffs(), ","));
@@ -133,7 +155,8 @@ bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
 }
 
 bool KinematicsBase::SetTCP(const SE3d& pose) {
-    if (!ValidFrame(pose)) return false;
+    if (!detail::IsValidFrame(pose))
+        return false;
     this->tcp_ = pose;
     return true;
 }
@@ -143,7 +166,8 @@ void KinematicsBase::ClearTCP() {
 }
 
 bool KinematicsBase::SetUserFrame(const SE3d& pose) {
-    if (!ValidFrame(pose)) return false;
+    if (!detail::IsValidFrame(pose))
+        return false;
     this->userframe_ = pose;
     return true;
 }

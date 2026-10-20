@@ -29,6 +29,30 @@ std::vector<double> Values(const IkRtn& result) {
 }  // namespace
 
 int main() {
+    for (const auto& shape : {std::pair<int, int>{2, 3}, {0, 7}, {7, 0}}) {
+        IkRtn result(true, 0, Eigen::MatrixXd::Ones(shape.first, shape.second));
+        result.PushBack(Eigen::VectorXd::Ones(3));
+        result.Clear();
+        if (!EmptyFailure(result) || result.state != -1 || result.dof != 6 ||
+            result.joint_states.rows() != 0 || result.joint_states.cols() != 0)
+            return Fail(__LINE__);
+    }
+    for (bool nearest : {false, true}) {
+        for (bool feasible : {false, true}) {
+            IkRtn result(true, 0, Eigen::MatrixXd::Ones(2, 3));
+            result.PushBack(Eigen::VectorXd::Constant(1, feasible ? 0.5 : 2.0));
+            const std::vector<JointNode> nodes{
+                JointNode(SE3d(), Eigen::Vector3d::UnitX(), JointType::PRISMATIC,
+                          0.0, 1.0)};
+            const Eigen::VectorXd reference = Eigen::VectorXd::Constant(1, 0.5);
+            const bool success = nearest ? result.WrapToLimitsNear(nodes, reference)
+                                         : result.GetLimitsIK(nodes);
+            if (success != feasible || result.joint_states.rows() != 0 ||
+                result.joint_states.cols() != 0 ||
+                (!feasible && !EmptyFailure(result)))
+                return Fail(__LINE__);
+        }
+    }
     constexpr double tau = 2.0 * M_PI;
     const double infinity = std::numeric_limits<double>::infinity();
     // Inclusive endpoints must not depend on which equivalent seed was used.
@@ -158,5 +182,67 @@ int main() {
     if (!result.GetLimitsIK({}, 1) || result.ik_number != 1 ||
         result.ik_joints.front().size() != 0)
         return Fail(__LINE__);
+    result.Clear();
+    for (JointType type :
+         {JointType::PRISMATIC, JointType::FIXED, JointType::UNKNOWN}) {
+        for (double bound : {10.0, infinity}) {
+            auto node = Revolute(-bound, bound);
+            node.joint_type = type;
+            result.PushBack(Eigen::VectorXd::Constant(1, 0.2));
+            if (!result.WrapToLimitsNear({node},
+                                         Eigen::VectorXd::Constant(1, 8.0)) ||
+                result.ik_number != 1 || result.ik_joints.front()[0] != 0.2)
+                return Fail(__LINE__);
+            result.Clear();
+        }
+    }
+    for (double seed : {-1e100, -1e20, 1e20, 1e100}) {
+        result.PushBack(Eigen::VectorXd::Constant(1, seed));
+        if (!result.WrapToLimitsNear({Revolute(-M_PI, M_PI)},
+                                     Eigen::VectorXd::Zero(1)))
+            return Fail(__LINE__);
+        const double value = result.ik_joints.front()[0];
+        if (value < -M_PI || value > M_PI ||
+            std::abs(std::sin(value) - std::sin(seed)) > 1e-10 ||
+            std::abs(std::cos(value) - std::cos(seed)) > 1e-10)
+            return Fail(__LINE__);
+        result.Clear();
+    }
+    for (int field = 0; field < 4; ++field) {
+        auto node = Revolute(-1.0, 1.0);
+        double *fields[] = {&node.lower_limit, &node.upper_limit,
+                            &node.lower_limit_set, &node.upper_limit_set};
+        *fields[field] = std::numeric_limits<double>::quiet_NaN();
+        result.PushBack(Eigen::VectorXd::Zero(1));
+        if (result.WrapToLimitsNear({node}, Eigen::VectorXd::Zero(1)) ||
+            !EmptyFailure(result))
+            return Fail(__LINE__);
+    }
+    result.PushBack(Eigen::VectorXd::Zero(1));
+    if (result.WrapToLimitsNear({Revolute(-1.0, 1.0)},
+                                Eigen::VectorXd::Constant(1, infinity)) ||
+        !EmptyFailure(result))
+        return Fail(__LINE__);
+    // Wrapping the first branch must not change an aliased reference used to
+    // choose the representation of the remaining branches.
+    result.PushBack(Eigen::VectorXd::Constant(1, 7.5));
+    result.PushBack(Eigen::VectorXd::Constant(1, 0.7));
+    if (!result.WrapToLimitsNear({Revolute(0.0, 7.0)}, result.ik_joints.front()) ||
+        result.ik_number != 2 ||
+        std::abs(result.ik_joints[0][0] - (7.5 - tau)) > 1e-12 ||
+        std::abs(result.ik_joints[1][0] - (0.7 + tau)) > 1e-12)
+        return Fail(__LINE__);
+    for (double scale : {0.5, 1.5, 2.0}) {
+        const double period = tau / scale;
+        auto node = Revolute(0.0, period);
+        node.axis *= scale;
+        for (double seed : {-period, 0.0, period, 2.0 * period}) {
+            result.Clear();
+            result.PushBack(Eigen::VectorXd::Constant(1, seed));
+            if (!result.GetLimitsIK({node}) ||
+                Values(result) != std::vector<double>({0.0, period}))
+                return Fail(__LINE__);
+        }
+    }
     return 0;
 }

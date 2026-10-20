@@ -5,6 +5,43 @@
 
 namespace holistic_motion {
 namespace robotics {
+namespace {
+
+template <typename Derived>
+EIGEN_DONT_INLINE double
+RescaledTangentNorm(const TangentBase<Derived> &tangent, double norm) {
+    const double scale = tangent.Coeffs().cwiseAbs().maxCoeff();
+    if (scale == 0.0 || !std::isfinite(scale))
+        return norm;
+    const typename TangentBase<Derived>::Tangent normalized(tangent.Coeffs() /
+                                                            scale);
+    return scale * normalized.WeightedNorm();
+}
+
+template <typename Derived>
+inline double StableTangentNorm(const TangentBase<Derived> &tangent) {
+    const double norm = tangent.WeightedNorm();
+    return norm > 0.0 && std::isfinite(norm)
+               ? norm
+               : RescaledTangentNorm(tangent, norm);
+}
+
+template <typename Derived>
+EIGEN_DONT_INLINE double
+RescaledCoefficientRoundoff(const Eigen::MatrixBase<Derived> &value) {
+    const double scale = value.cwiseAbs().maxCoeff();
+    return (64.0 * std::numeric_limits<double>::epsilon() * scale) *
+           (value / scale).norm();
+}
+
+template <typename Derived>
+inline double CoefficientRoundoff(const Eigen::MatrixBase<Derived> &value) {
+    const double norm = value.norm();
+    return std::isfinite(norm)
+               ? 64.0 * std::numeric_limits<double>::epsilon() * norm
+               : RescaledCoefficientRoundoff(value);
+}
+}  // namespace
 
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathBezierCurve)
 
@@ -146,17 +183,17 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd(
                                            fmt::join((*waypoint2).Coeffs(), ","));
 
         tangent_1_0 = *waypoint1 - *waypoint0;
-        double length_1_0 = tangent_1_0.WeightedNorm();
+        double length_1_0 = StableTangentNorm(tangent_1_0);
         tangent_1_0 = 1.0 / length_1_0 * tangent_1_0;
 
         tangent_2_1 = *waypoint2 - *waypoint1;
-        double length_2_1 = tangent_2_1.WeightedNorm();
+        double length_2_1 = StableTangentNorm(tangent_2_1);
         tangent_2_1 = 1.0 / length_2_1 * tangent_2_1;
 
         tangent_2_0 = tangent_2_1 - tangent_1_0;
-        double length_2_0 = tangent_2_0.WeightedNorm();
+        double length_2_0 = StableTangentNorm(tangent_2_0);
 
-        const bool reverses = (tangent_1_0 + tangent_2_1).WeightedNorm() <= Epsilon;
+        const bool reverses = StableTangentNorm(tangent_1_0 + tangent_2_1) <= Epsilon;
         dis = (this->blend_tolerance_ <= Epsilon || length_2_0 <= Epsilon || reverses)
                   ? 0.0
                   : 4.0 * this->blend_tolerance_ / length_2_0;
@@ -181,9 +218,11 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve2nd(
 
         double len_path1 = path_seg->GetLength();
         const double join_roundoff =
-            64.0 * std::numeric_limits<double>::epsilon() *
-            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm(),
-                      waypoint0->Coeffs().norm(), waypoint1->Coeffs().norm()});
+            std::max({64.0 * std::numeric_limits<double>::epsilon(),
+                      CoefficientRoundoff(control_0.Coeffs()),
+                      CoefficientRoundoff(control_2.Coeffs()),
+                      CoefficientRoundoff(waypoint0->Coeffs()),
+                      CoefficientRoundoff(waypoint1->Coeffs())});
         if (len_path1 > join_roundoff) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);
@@ -297,7 +336,7 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
         control_1 = *waypoint1;
         // calculate the tangent between waypoint1 and waypoint2;
         tangent_1_0 = *waypoint1 - *waypoint0;
-        double length_1_0 = tangent_1_0.WeightedNorm();
+        double length_1_0 = StableTangentNorm(tangent_1_0);
         tangent_1_0 = 1.0 / length_1_0 * tangent_1_0;
 
         // The last group of points needs to consider the problem of calculating
@@ -308,14 +347,14 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
             tangent_2_1 = tangent_1_0;
         }
 
-        double length_2_1 = tangent_2_1.WeightedNorm();
+        double length_2_1 = StableTangentNorm(tangent_2_1);
         tangent_2_1 = 1.0 / length_2_1 * tangent_2_1;
 
         tangent_2_0 = tangent_2_1 - tangent_1_0;
-        double length_2_0 = tangent_2_0.WeightedNorm();
+        double length_2_0 = StableTangentNorm(tangent_2_0);
 
         // A reversal is a stopped waypoint, not a blend with coincident ends.
-        const double direction_sum = (tangent_1_0 + tangent_2_1).WeightedNorm();
+        const double direction_sum = StableTangentNorm(tangent_1_0 + tangent_2_1);
         const bool reverses = direction_sum <= Epsilon;
         dis = (this->blend_tolerance_ <= Epsilon || length_2_0 <= Epsilon || reverses)
                   ? 0.0
@@ -363,9 +402,11 @@ template <typename LieGroup> void PathBezierCurve<LieGroup>::PathBezierCurve5th(
         // Include the source waypoints: trimmed controls near the origin can
         // result from cancellation of much larger coordinates and offsets.
         const double join_roundoff =
-            64.0 * std::numeric_limits<double>::epsilon() *
-            std::max({1.0, control_0.Coeffs().norm(), control_2.Coeffs().norm(),
-                      waypoint0->Coeffs().norm(), waypoint1->Coeffs().norm()});
+            std::max({64.0 * std::numeric_limits<double>::epsilon(),
+                      CoefficientRoundoff(control_0.Coeffs()),
+                      CoefficientRoundoff(control_2.Coeffs()),
+                      CoefficientRoundoff(waypoint0->Coeffs()),
+                      CoefficientRoundoff(waypoint1->Coeffs())});
         if (len_path1 > join_roundoff || (last_loop && len_path1 > 0.0)) {
             // store path_seg object pointer
             this->path_segments_.push_back(path_seg);

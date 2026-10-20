@@ -303,7 +303,8 @@ void CheckCustomQueriesAndFailures() {
 
 template <typename G> void CheckQuadraticSamplingScales() {
     using Tangent = typename G::Tangent;
-    for (double scale : {1e-150, 1e-20, 1.0, 1e150, 1e154}) {
+    for (double scale :
+         {1e-200, 1e-170, 1e-160, 1e-150, 1e-20, 1.0, 1e150, 1e154, 1e200}) {
         std::array<G, 3> points;
         for (int j = 0; j < G::DoF; ++j) {
             points[0].Coeffs()[j] = scale * (0.02 * j);

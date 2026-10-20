@@ -26,6 +26,10 @@ function(holistic_motion_register_tests)
         tests/cpp/manif/rotation_jacobian_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        rotation_autodiff_smoke_test
+        tests/cpp/manif/rotation_autodiff_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
         holistic_motion)
@@ -71,6 +75,11 @@ function(holistic_motion_register_tests)
         tests/cpp/kinematics/numerical_kinematics_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        ik_seed_alias_smoke_test
+        tests/cpp/kinematics/ik_seed_alias_smoke.cpp
+        holistic_motion)
+    set_tests_properties(ik_seed_alias_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
         ik_limit_smoke_test
         tests/cpp/kinematics/ik_limit_smoke.cpp
         holistic_motion)
@@ -102,20 +111,20 @@ function(holistic_motion_register_tests)
         tests/cpp/planning/joint_space_metric_smoke.cpp
         Eigen3::Eigen)
     target_include_directories(joint_space_metric_smoke_test PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/planning)
+        ${PROJECT_SOURCE_DIR}/src/planning ${PROJECT_SOURCE_DIR}/include)
     holistic_motion_add_smoke_test(
         joint_space_index_smoke_test
         tests/cpp/planning/joint_space_index_smoke.cpp
         Eigen3::Eigen)
     target_include_directories(joint_space_index_smoke_test PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/planning)
+        ${PROJECT_SOURCE_DIR}/src/planning ${PROJECT_SOURCE_DIR}/include)
     set_tests_properties(joint_space_index_smoke PROPERTIES TIMEOUT 30)
     holistic_motion_add_smoke_test(
         path_geometry_workspace_smoke_test
         tests/cpp/planning/path_geometry_workspace_smoke.cpp
         Eigen3::Eigen)
     target_include_directories(path_geometry_workspace_smoke_test PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/planning)
+        ${PROJECT_SOURCE_DIR}/src/planning ${PROJECT_SOURCE_DIR}/include)
     if(HOLISTICMOTION_ENABLE_COLLISION)
         holistic_motion_add_smoke_test(
             collision_smoke_test

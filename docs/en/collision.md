@@ -31,6 +31,11 @@ python3 examples/python/collision/basic_query.py \
 Adjacent-link pairs are excluded by default. Use `--include-adjacent` when
 they should participate in the query. Run `--help` for all options.
 
+Python configurations, geometry, and distance thresholds must be real. Complex
+inputs raise `TypeError` before queries or geometry updates; rejected sphere
+assignments retain their previous values. Real integer arrays and strided views
+remain supported.
+
 ## Collision-pair groups
 
 For a dual-arm robot, define each arm as a link group and enable only the
@@ -110,9 +115,18 @@ offsets include both frame translation and angular point-velocity terms.
 The local offset is rotated directly, preserving its Jacobian contribution
 after large world translations. Every nonzero center separation has a unit
 normal; exactly coincident centers use the deterministic +X normal and a zero
-distance gradient. Distances and collision predicates fall back to extended
+distance gradient. Spheres rigidly attached to the same joint have an exact zero
+distance gradient, including spheres on different links joined by fixed joints.
+Static world frames skip their identically zero point Jacobian. Distances and
+collision predicates fall back to extended
 precision when squared lengths overflow or underflow. World coordinates or
-signed distances that remain unrepresentable raise `OverflowError`.
+signed distances that remain unrepresentable raise `OverflowError`; overflowing
+gradient arithmetic also raises `OverflowError` rather than returning NaN or Inf.
+An unrepresentably large positive clearance does not hide a finite minimum and
+is excluded by finite distance filters. A minimum query still raises when its
+final distance is unrepresentable, including for a batch row.
+Batch queries reuse consecutive exactly equal configurations within that call;
+distinct small movements are evaluated separately, and no cache survives the call.
 `PathOptimizer.from_sphere_collision_model` automatically uses this gradient
 for vector-space configurations when a positive soft `clearance` is requested;
 its manifold configuration updates still fall back to finite differences.
@@ -146,9 +160,17 @@ of continuous mesh coverage.
 `SphereFitOptions.chunk_size` (default 512) bounds both dimensions of the
 temporary distance blocks. Radius fitting, sampled expansion, and coverage
 metrics process blocks without creating an all-samples distance matrix.
+Long runs of contained candidates are pruned in bounded blocks while preserving
+the stable greedy order and checks against newly selected spheres.
 Coordinate differences are computed directly, preserving small separations
 when the model is far from the origin, within floating-point input precision.
+Exceptional coordinate ranges use stable norms to retain finite radii and gaps
+when intermediate squares overflow or underflow. Gap evaluation also subtracts
+the radius before restoring an overflowing distance's scale. Unrepresentable
+final gaps are rejected; sampled coverage keeps its absolute `1e-12` tolerance.
 This preprocessing uses NumPy and does not require the native collision component.
+Coordinates, radii, fit metrics, and floating-point options must be real; complex values
+raise `TypeError` before conversion, including values with zero imaginary part.
 
 ```bash
 python -m pip install '.[examples]' 'scipy>=1.10'
@@ -171,7 +193,14 @@ gap, and the Viser overlay before using a generated model for planning.
 For a complete robot, the batch tool reads every URDF `<collision>` element,
 including mesh scale and collision origin. Mesh, box, cylinder, and sphere
 geometry are supported; repeat `--package-dir` for `package://` resources and
-repeat `--link` to fit only selected links:
+repeat `--link` to fit only selected links. This loads geometry only for the
+requested links, so unrelated meshes need not be present. URDF link names are
+still checked for duplicates.
+Repeated mesh URIs are resolved and read once per call. Repeated box, cylinder,
+and sphere declarations with identical attributes also share their initial mesh
+construction. Each instance receives independent scale/origin transforms, and
+cached geometry is released at its last use. Unique geometries and links with
+one collision element do not require extra copies.
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \

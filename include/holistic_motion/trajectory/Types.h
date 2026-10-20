@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <list>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -10,6 +11,7 @@
 
 #include "holistic_motion/manif/LieGroup.h"
 #include "holistic_motion/utility/Logging.h"
+#include "holistic_motion/utility/ScaledNorm.h"
 #include "holistic_motion/utility/Types.h"
 
 namespace holistic_motion::robotics {
@@ -99,35 +101,62 @@ inline Eigen::VectorXd GetWeights(int dof, bool cartesian) {
     return Eigen::VectorXd::Ones(dof);
 }
 
-inline double WeightedNorm(const Eigen::VectorXd& target,
-                           const Eigen::VectorXd& weights) {
-    return std::sqrt((target.array().square() * weights.array()).sum());
+namespace detail {
+template <typename Derived>
+double WeightedCoefficientNorm(const Eigen::MatrixBase<Derived> &target,
+                               const Eigen::VectorXd &weights) {
+    const double squared = (target.array().square() * weights.array()).sum();
+    // A normal weighted sum can still hide an underflowed unweighted square.
+    const double minimum_squared =
+        (weights.array() * std::numeric_limits<double>::min()).sum() +
+        target.size() * std::numeric_limits<double>::min();
+    if ((std::isfinite(squared) && squared > minimum_squared) ||
+        (squared == 0.0 && (target.array() == 0.0).all()))
+        return std::sqrt(squared);
+    // Retain the established result for invalid/non-finite metric inputs.
+    if (!target.allFinite() || !weights.allFinite() ||
+        (weights.array() < 0.0).any())
+        return std::sqrt(squared);
+    double norm = 0.0;
+    for (Eigen::Index index = 0; index < target.size(); ++index)
+        norm =
+            std::hypot(norm, std::sqrt(weights[index]) * target.coeff(index));
+    if (std::isnormal(norm) || !std::isfinite(norm))
+        return norm;
+    ScaledNormAccumulator accumulated;
+    for (Eigen::Index index = 0; index < target.size(); ++index)
+        accumulated.AddProduct(std::sqrt(weights[index]), target.coeff(index));
+    return accumulated.Value();
+}
+} // namespace detail
+
+inline double WeightedNorm(const Eigen::VectorXd &target,
+                           const Eigen::VectorXd &weights) {
+    return detail::WeightedCoefficientNorm(target, weights);
 }
 
 template <typename Derived>
-double WeightedNorm(const Eigen::MatrixBase<Derived>& target,
-                    const Eigen::VectorXd& weights) {
-    return std::sqrt((target.array().square() * weights.array()).sum());
+double WeightedNorm(const Eigen::MatrixBase<Derived> &target,
+                    const Eigen::VectorXd &weights) {
+    return detail::WeightedCoefficientNorm(target, weights);
 }
 
 template <typename Group>
-double WeightedNorm(const Group& target, const Eigen::VectorXd& weights) {
-    return std::sqrt(
-            (target.Coeffs().array().square() * weights.array()).sum());
+double WeightedNorm(const Group &target, const Eigen::VectorXd &weights) {
+    return detail::WeightedCoefficientNorm(target.Coeffs(), weights);
 }
 
 class TrajectoryConstraints {
-public:
+  public:
     TrajectoryConstraints() = default;
-    explicit TrajectoryConstraints(const Eigen::VectorXd& max_velocity)
+    explicit TrajectoryConstraints(const Eigen::VectorXd &max_velocity)
         : max_velocity_(max_velocity),
           max_acceleration_(Eigen::VectorXd::Ones(max_velocity.size())),
           max_jerk_(Eigen::VectorXd::Ones(max_velocity.size())) {}
-    TrajectoryConstraints(const Eigen::VectorXd& max_velocity,
-                          const Eigen::VectorXd& max_acceleration,
-                          const Eigen::VectorXd& max_jerk)
-        : max_velocity_(max_velocity),
-          max_acceleration_(max_acceleration),
+    TrajectoryConstraints(const Eigen::VectorXd &max_velocity,
+                          const Eigen::VectorXd &max_acceleration,
+                          const Eigen::VectorXd &max_jerk)
+        : max_velocity_(max_velocity), max_acceleration_(max_acceleration),
           max_jerk_(max_jerk) {}
     explicit TrajectoryConstraints(
             const std::vector<std::shared_ptr<Joint>>& joints);

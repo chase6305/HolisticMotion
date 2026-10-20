@@ -9,10 +9,13 @@ from typing import Union
 
 import numpy as np
 
+from ..._validation import real_array, require_real
+
 Cost = Union[float, Sequence[float]]
 
 
 def _finite_scalar(value, name: str) -> float:
+    require_real(value, name=name)
     try:
         result = float(value)
     except (TypeError, ValueError) as error:
@@ -37,7 +40,7 @@ def _joint_costs(value, name: str) -> Mapping[str, float]:
 
 
 def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
-    result = np.asarray(value, dtype=float)
+    result = real_array(value, name=name)
     if result.ndim == 0:
         result = np.full(size, float(result))
     result = result.reshape(-1)
@@ -143,7 +146,7 @@ class SupportPolygonTask:
     reference: str = "center_of_mass"
 
     def __post_init__(self) -> None:
-        vertices = np.asarray(self.vertices, dtype=float)
+        vertices = real_array(self.vertices, name="support polygon vertices")
         if (
             vertices.ndim != 2
             or vertices.shape[0] < 3

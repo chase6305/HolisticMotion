@@ -123,6 +123,7 @@ echo "[3/4] Configuring and building"
 cmake -S . -B "${BUILD_DIR}/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+    -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
     -DPython3_EXECUTABLE="$(command -v "${PYTHON_EXECUTABLE}")" \
     -DHOLISTICMOTION_BUILD_PYTHON=ON \
     -DHOLISTICMOTION_BUILD_TESTS="${RUN_TESTS}" \
@@ -134,7 +135,8 @@ echo "[4/4] Installing into ${BUILD_DIR}/install"
 cmake --install "${BUILD_DIR}/cmake" --prefix "${BUILD_DIR}/install"
 
 CONAN_RUN_ENV="${BUILD_DIR}/build/${BUILD_TYPE}/generators/conanrun.sh"
-if [[ -f "${CONAN_RUN_ENV}" ]]; then
+if [[ -f "${CONAN_RUN_ENV}" &&
+      ! -f "${BUILD_DIR}/install/.holistic_motion_local_runtime" ]]; then
     # Make Conan-managed shared libraries (notably Pinocchio and Coal)
     # available to the installed Python extension and test executables.
     # shellcheck disable=SC1090

@@ -44,6 +44,14 @@ path length on an unsolved case is not a quality improvement. No external robot
 asset or benchmark dependency is required. Timing is observational and is not
 a CI pass/fail threshold.
 
+Pass `[goal_bias [dof continuous]]` to isolate a workload, for example
+`sampling_planner_benchmark 0.05 7 1`. Explicit dimensions range from 2 to 32;
+`continuous=1` makes the first joint periodic. CSV includes a path checksum to
+compare seeded results before timing. Indexed queries cache bounded-coordinate
+boxes and use conservative roundoff margins to retain boundary ties.
+Distance queries cache one byte per joint for topology checks, preserving the
+weighted sum order while avoiding packed-bit decoding in candidate scans.
+
 The same option also builds `<build-directory>/fep_batch_benchmark`. This CPU
 benchmark uses a synthetic seven-joint chain, nonidentity origins and TCP, seed 7,
 and batch sizes 1/32/128/1024. Each case has three warmup calls followed by seven
@@ -95,6 +103,23 @@ final length, and a path checksum. Compare all result columns before timing;
 this benchmark excludes Python callback overhead and native mesh collision costs.
 Four optional positional arguments select one case, for example
 `path_optimizer_benchmark 7 256 1 0`, to alternate versions within each case.
+Append `--finite-cost` or `--analytic-cost` to include a quadratic state cost
+with numerical or analytic gradients. CSV also records cost mode and callback
+counts so reused workspaces can be compared without changing the amount of work.
+
+`benchmarks/continuous_tracker_benchmark.py` measures complete Python tracking
+steps with 1 or 8 candidates using fixed-transform/Jacobian fixtures. It includes
+NumPy SVD and continuity selection but excludes native FK/IK work. Run with
+`HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python`; use `--baseline` to compare an
+earlier `srs_tracker.py`. Candidate counts and result checks accompany timings.
+`benchmarks/sphere_fit_benchmark.py --selection-workloads` covers small, large,
+and duplicate-heavy candidate sets in both fitting modes. Its existing
+`--baseline` option checks output equivalence and measures allocations separately.
+
+`benchmarks/urdf_geometry_benchmark.py` measures complete URDF loading with
+1/32/128 links containing unique or repeated box, cylinder, and sphere geometry.
+Use the same pure-Python environment and `--baseline /path/to/old/urdf_sphere_fit.py`
+for paired timings with exact vertex/face checks. Input generation is excluded.
 
 `path_geometry_workspace_smoke` checks local objective changes against full path
 objectives and analytic gradients against central finite differences, including

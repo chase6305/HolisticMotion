@@ -5,8 +5,38 @@ import pytest
 from holistic_motion.kit.retargeting import (
     CuroboRetargetingSolver,
     PinkRetargetingSolver,
+    PinocchioRetargetingSolver,
     PostureTask,
+    RetargetingTarget,
 )
+
+
+@pytest.mark.parametrize("weight, translation", [(1e-300, 1e-30), (1.0, 1e-160)])
+def test_immobile_pinocchio_mode_preserves_tiny_nonzero_residual(
+    tmp_path, weight, translation
+):
+    pytest.importorskip("pinocchio", exc_type=ImportError)
+    urdf = tmp_path / "fixed_tool.urdf"
+    urdf.write_text("""<robot name="fixed_tool">
+      <link name="base"/><link name="tool"/>
+      <joint name="mount" type="fixed">
+        <parent link="base"/><child link="tool"/>
+      </joint></robot>""")
+    expected = np.sqrt(weight) * np.hypot(translation, translation)
+    solver = PinocchioRetargetingSolver(
+        urdf,
+        {"left_hand": "tool"},
+        {"left_arm": []},
+        tolerance=expected / 10.0,
+    )
+    solver.set_mode("left_arm")
+    pose = np.eye(4)
+    pose[:2, 3] = translation
+    result = solver.solve({"left_hand": RetargetingTarget(pose, weight=weight)})
+    assert not result.success
+    assert result.residual == pytest.approx(expected, rel=1e-14, abs=0.0)
+    assert result.iterations == 1
+    assert result.configuration.size == 0
 
 
 @pytest.mark.parametrize(

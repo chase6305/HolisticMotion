@@ -49,7 +49,7 @@ Joint::Joint(const std::string& name,
                             fmt::join(origin_pose.Coeffs(), ","));
 }
 
-std::ostream& operator<<(std::ostream& os, Joint& joint) {
+std::ostream& operator<<(std::ostream& os, const Joint& joint) {
     os << fmt::format(
             "\n\tjoint name:{}\n\tparent link name:{}\n\tchild link name:{}",
             joint.name, joint.parent_link, joint.child_link);

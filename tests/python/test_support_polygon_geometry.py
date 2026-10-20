@@ -12,6 +12,14 @@ from holistic_motion.kit.retargeting import (
 )
 
 
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
+def test_support_polygon_rejects_complex_vertices(dtype):
+    vertices = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]], dtype=dtype)
+    vertices[0, 0] = np.complex128(-1 + 1j)
+    with pytest.raises(TypeError, match="real"):
+        SupportPolygonTask(vertices)
+
+
 @pytest.mark.parametrize("scale", [1e-160, 1e-9, 1.0, 1e160])
 @pytest.mark.parametrize("clockwise", [False, True])
 def test_support_polygon_preserves_unit_normals_across_scales(scale, clockwise):

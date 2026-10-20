@@ -14,9 +14,9 @@ reduces unnecessary waypoints, and TOPPRA should subsequently apply velocity
 and acceleration limits. Controllers remain outside this library.
 
 `RRT_CONNECT` is the default for single-query robot planning. `RRT_STAR` and
-`INFORMED_RRT_STAR` use the complete time budget to improve path cost, so their
-reported planning time normally approaches `timeout_seconds` even after an
-initial solution is available.
+`INFORMED_RRT_STAR` continue improving path cost until the time or iteration
+budget is exhausted. With a large iteration budget, planning time normally
+approaches `timeout_seconds` even after an initial solution is available.
 
 Before growing a tree, every algorithm validates the complete start-to-goal
 edge. If it is valid, planning immediately returns the two-point shortest path;
@@ -28,6 +28,12 @@ When no state validator is configured, edge sampling is skipped: bounded joint
 interpolation remains inside its limits and continuous joints wrap normally.
 `edge_resolution` then has no validation work to control, and `collision_checks`
 remains zero. Configure a validator to check obstacles or additional constraints.
+
+Continuous-joint limits must span `2*pi` and resolve distinct floating-point
+coordinates within a revolution. `set_continuous_joints` rejects bounds whose
+spacing at either endpoint is at least `2*pi`; failed changes preserve prior topology.
+With coarser spacing, interpolated validation samples can collapse even when
+the original endpoints are distinct.
 
 Joint weights control search distances, not a goal tolerance. A direct solution
 preserves distinct endpoints even with very small weights. RRT-Connect joins
@@ -46,6 +52,12 @@ RRT* and Informed RRT* reuse an existing nearest state when it is sampled again,
 while still reconsidering its parent and rewiring its neighbors. This avoids
 storing duplicate goal samples. The neighborhood radius follows the admitted
 sample count; `tree_nodes` reports the nodes actually stored in the tree.
+
+After finding an incumbent, Informed RRT* allows at most 128 uniform draws per
+iteration to enter its informed subset. If all are rejected, it revisits the
+goal, which permits incumbent rewiring. This bounds rejection work when the
+subset becomes extremely narrow; affected seeded searches can follow a different
+sample sequence. Motion validation still applies to every new connection.
 
 ## Python example
 
@@ -181,7 +193,9 @@ second-difference terms. Full passes compute the initial and final reported
 objectives. Acceptance compares the affected local terms directly, so unchanged
 large costs elsewhere cannot hide a local improvement or permit an uphill trial.
 Final state-cost statistics are summed from cached accepted values without new
-callbacks, avoiding drift from repeated subtraction. Geometric bookkeeping
+callbacks, avoiding drift from repeated subtraction. If the raw state-cost sum
+overflows, cached costs are scaled before addition so a finite weighted total
+remains usable. Geometric bookkeeping
 therefore scales linearly with waypoint count per sweep
 for a fixed line-search budget. Collision and state-cost callbacks add their own
 costs.
@@ -189,7 +203,9 @@ costs.
 A workspace local to each `optimize()` call reuses edge, acceleration, gradient,
 direction, and candidate buffers. The two outer neighboring edges remain cached
 during one waypoint's backtracking search and refresh before the next waypoint,
-including reverse sweeps. Local geometry and gradient evaluation allocate no
+including reverse sweeps. Adjacent edge lengths are reused between gradient and
+cost evaluation and invalidated whenever the waypoint or its candidate changes.
+Local geometry and gradient evaluation allocate no
 Eigen heap storage after workspace/output initialization. The complete optimizer
 still allocates its path, validation samples, and optional state-cost buffers.
 
@@ -197,7 +213,9 @@ Terms whose objective weight is zero are skipped in both cost and gradient
 evaluation. This avoids unnecessary geometry work and prevents an overflowing
 disabled term from contaminating an otherwise finite objective.
 
-Each waypoint update uses bounded backtracking. `line_search_steps` controls
+Each waypoint update uses bounded backtracking. `step_size` must lie in `(0, 1]`.
+Representable coordinate changes are retained even below an absolute `1e-15`
+scale; a trial stops when rounding leaves the configuration unchanged. `line_search_steps` controls
 how many step sizes are attempted, while `line_search_decay` scales each
 retry. This recovers a smaller update when the initial step collides or
 overshoots, without accepting an infeasible intermediate path.
@@ -212,10 +230,31 @@ waypoints or state costs to optimize.
 The update direction is the analytic gradient of the enabled length and
 second-difference terms, combined with the optional state-cost gradient.
 Inverse joint weights precondition that gradient before its largest component
-is normalized, so objective weights affect both the search direction and the
-acceptance test.
-Default inverse-range-squared weights must be finite and positive; numerically
-unrepresentable joint ranges are rejected during construction.
+is normalized. Exponent-based ratios recover preconditioned directions that
+would overflow, underflow, or lose precision to subnormal rounding. Objective
+weights affect both the search direction and the
+acceptance test. Positive representable edge lengths contribute to this gradient
+regardless of their absolute magnitude. `minimum_improvement` remains an absolute
+objective threshold; adjust it when changing objective scales.
+Geometric gradients also recover weighted intermediate products that underflow
+before division by a small edge length or multiplication by a large difference.
+For a single joint, same-direction adjacent edges cancel their length derivatives
+before scaling, keeping a constant local length free of amplified roundoff.
+Weighted path lengths and geometric costs retain representable results even
+when an unweighted square would overflow or underflow. Ordinary-scale queries
+keep their original arithmetic. Smoothness coefficients are included before
+exceptional squared costs are accumulated, preserving finite nonzero objectives.
+Nearest and radius queries compare actual norms
+when squared distances cannot distinguish representable motion.
+Default inverse-range-squared weights must be
+finite and positive; ranges whose default weights cannot be represented are
+rejected during construction.
+
+Python planning inputs must be real. Complex limits, states, weights, option
+values (including iteration counts, flags, and joint indices), and cost callback
+results raise `TypeError` before conversion can discard
+their imaginary components. Real integer arrays and noncontiguous slices are
+supported.
 
 ## Resolution and safety
 
@@ -229,7 +268,9 @@ The planner validates each edge at intervals no larger than
 `edge_resolution` in any active joint. Smaller values improve collision
 coverage but increase Coal queries. Endpoints and every shortcut are checked.
 Shortcuts also revalidate the retained edge fragments because splitting an edge
-changes its collision sample grid. Optional path interpolation preserves every
+changes its collision sample grid. Shortcut improvement uses a relative roundoff
+tolerance so positive representable path lengths remain eligible after global
+joint-weight scaling. Optional path interpolation preserves every
 original corner and subdivides the longest segments to approach even spacing.
 `interpolation_points` is the target count when adding points; existing points
 are never removed. New subsegments are checked before accepting the interpolated

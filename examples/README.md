@@ -45,13 +45,16 @@ and the complete model configurations.
 
 - `python/collision/`: collision queries, pair policies, group checks, and path scans.
 - `python/visualization/`: interactive Viser applications.
-- `python/kinematics/`: forward/inverse kinematics and CUDA benchmarks.
 - `python/trajectory/`: trajectory generation and visualization.
 - `python/retargeting/`: Pinocchio and Pink-style task-space IK examples.
 - `python/planning/`: dependency-free RRT algorithm examples.
+- `python/simulation/`: caller-provided simulation backend composition.
 - `configs/`: robot-specific example profiles; library code never depends on them.
 
-Legacy launchers under `python/examples/` remain available during the migration.
+Kinematics demos, the FEP CUDA benchmark, and native trajectory examples remain
+under [`python/examples/`](../python/examples/). That directory also contains
+compatibility launchers for examples already moved here; its README describes
+which files still contain implementations.
 
 All Viser applications use the shared studio scene environment: a blurred HDRI
 background, balanced environment/fill/key lighting, shadow-casting default

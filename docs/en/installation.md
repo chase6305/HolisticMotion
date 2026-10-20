@@ -18,6 +18,26 @@
 This one-command build enables Python and collision support. Add `--cuda` for
 the optional CUDA backend, or use `--no-collision` for a lighter build.
 
+On Linux, the build helper records Conan dependency directories in the local
+libraries' runtime search paths. `source scripts/activate.sh` and
+`./scripts/run.sh python3 ...` expose the install while preserving the caller's
+loader paths, allowing native collision and Python retargeting in one process.
+Older installs and other platforms use the Conan runtime environment. Exported
+Conan packages retain their standard configuration; the local search-path
+setting is enabled by `scripts/build.sh`.
+
+Conan's global runtime environment can shadow libraries used by Python
+Pinocchio. For a Linux cache-local Python package with per-library search paths:
+
+```bash
+conan create . --no-remote -o '&:with_python=True' -o '&:shared=True' \
+  -c tools.build:jobs=2 \
+  -c 'tools.cmake.cmaketoolchain:extra_variables={"CMAKE_INSTALL_RPATH_USE_LINK_PATH": True}'
+```
+
+This mode records absolute Conan cache paths; rebuild after moving that cache.
+Use the default configuration for relocatable Conan packages.
+
 Run the installed bindings rather than importing stale files from the source
 tree:
 

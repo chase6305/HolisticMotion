@@ -29,6 +29,9 @@ python3 examples/python/collision/basic_query.py \
 默认排除相邻连杆的碰撞对；需要检测它们时加入 `--include-adjacent`。使用
 `--help` 查看全部参数。
 
+Python 构型、几何和距离阈值必须为实数。复数输入在查询或修改几何前抛出
+`TypeError`，球体属性赋值失败时保留原值；实数整数数组和非连续视图仍受支持。
+
 ## 碰撞对分组管理
 
 对于双臂机器人，可以把左右臂分别定义成 link 组，并且只启用左右臂组间的
@@ -91,8 +94,15 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 切空间解析梯度，也支持 `nq != nv` 的流形构型。link-local 球偏置同时计入 frame
 平移和角速度引起的点速度。局部偏移直接经旋转变换后参与 Jacobian，避免大世界
 坐标平移抹去局部力臂。非零球心间距使用单位法向量；球心完全重合时使用固定的
-+X 法向量与零距离梯度。平方长度溢出或下溢时，距离与碰撞判定会回退到扩展
-精度计算；世界坐标或有符号距离仍无法表示时抛出 `OverflowError`。
++X 法向量与零距离梯度。刚性附着于同一关节的球对具有严格的零距离梯度，包括
+通过固定关节连接的不同 link；世界固定坐标系跳过恒为零的点 Jacobian。
+平方长度溢出或下溢时，距离与碰撞判定会回退到扩展精度计算；世界坐标或有符号
+距离仍无法表示时抛出 `OverflowError`。梯度运算溢出同样抛出 `OverflowError`，
+不会返回 NaN 或 Inf。
+超出表示范围的正间距不会掩盖可表示的最小距离，也不会进入有限距离阈值的返回结果。
+最终最小距离仍无法表示时，标量查询及对应批量行仍会抛出异常。
+批量查询仅在本次调用内复用连续且逐元素完全相等的构型；微小但非零的移动仍独立计算，
+缓存不会保留到后续调用。
 `PathOptimizer.from_sphere_collision_model` 对向量空间
 构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
 碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此
@@ -127,6 +137,12 @@ NumPy 拟合器根据内部采样点与表面采样点选择较大的中轴候�
 半径拟合、采样覆盖扩张和覆盖率评估均分块处理，无需创建包含全部采样点的
 距离矩阵。距离直接由坐标差计算，在输入浮点精度允许的范围内，保留模型
 远离原点时的小间距。这一预处理只使用 NumPy，不需要启用原生碰撞组件。
+大量候选已被包含时，筛选会分块排除这些候选，并保留稳定贪心顺序以及对新选中
+球体的覆盖检查。
+极端坐标范围使用稳定范数，避免中间平方溢出或下溢丢失有限半径与间隙；
+距离溢出时会先减去半径再恢复尺度。最终间隙不可表示时拒绝计算；采样覆盖
+仍使用绝对 `1e-12` 容差。
+坐标、半径、拟合指标和浮点选项必须为实数；复数会在转换前抛出 `TypeError`，即使虚部为零。
 
 ```bash
 python -m pip install '.[examples]' 'scipy>=1.10'
@@ -147,7 +163,12 @@ python -m pip install '.[examples]' 'scipy>=1.10'
 
 整机批处理工具会读取全部 URDF `<collision>` 元素，并应用 mesh scale 与 collision
 origin。支持 mesh、box、cylinder 和 sphere；`package://` 资源可重复传入
-`--package-dir`，只拟合部分 link 时可重复传入 `--link`：
+`--package-dir`，只拟合部分 link 时可重复传入 `--link`。
+指定 link 时只加载这些 link 的几何，无关网格可以不在本机；URDF 中重复的
+link 名称仍会被拒绝。
+同次调用中的重复网格 URI 只解析并读取一次；属性相同的 box、cylinder 和 sphere
+声明也只生成一次初始网格。各实例独立应用缩放和位姿，原始缓存在最后一次使用时
+释放。唯一几何及仅有一个 collision 元素的 link 不增加副本。
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \

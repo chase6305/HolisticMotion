@@ -2,80 +2,38 @@
 
 English | [简体中文](README.zh-CN.md)
 
-HolisticMotion is a focused C++17 robotics library with Python bindings for
-URDF robot models, kinematics, manifolds, solver-adjacent algorithms,
-trajectory generation, optional Pinocchio/Coal collision queries, and pose
-retargeting.
+A C++17 robotics library with Python bindings for robot kinematics, motion
+planning, trajectory generation, collision queries, and pose retargeting.
+Robot models are supplied by the caller through explicit URDF paths.
 
-Robot assets are external. Every API that needs a model accepts an explicit
-URDF path; the project never downloads models implicitly.
+![HolisticMotion modules](docs/assets/holistic-motion-overview.png)
 
-![HolisticMotion modular capabilities: robot model, kinematics, retargeting, trajectory, planning, and collision](docs/assets/holistic-motion-overview.png)
+## Features
 
-## Highlights
+| Module | Capabilities |
+| --- | --- |
+| Kinematics | URDF models, FK/IK, numerical, OPW, UR, SRS, and FEP solvers |
+| Planning | Null-space planning, RRT-Connect, RRT*, Informed RRT*, and feasible path optimization |
+| Trajectories | Double-S, trapezoidal, TOPPRA, and optional differentiable PyTorch timing |
+| Collision | Optional Pinocchio/Coal mesh queries and sphere models |
+| Retargeting | Arm, leg, full-body, and optional hand retargeting |
 
-- C++17 library with pybind11 bindings.
-- URDF parsing and numerical, OPW, UR, SRS, and FEP kinematics.
-- Constraint-aware Double-S, trapezoidal, and TOPPRA path timing.
-- Optional PyTorch TOPPRA with batched CPU/CUDA execution and autograd.
-- Dependency-free RRT-Connect, RRT*, and Informed RRT* planning with feasible
-  path optimization.
-- Optional CUDA batch backends, enabled explicitly with `--cuda`.
-- Collision queries backed by Conan-managed Pinocchio and Coal, enabled by default.
-- Pinocchio-backed arm, leg, and full-body retargeting with CoM, support-polygon,
-  kinematic ZMP, and differentiable collision objectives.
-- English and Simplified Chinese documentation.
-
-## Components
-
-![HolisticMotion component layers: public APIs, peer core modules, and development tools](docs/assets/holistic-motion-components.png)
-
-| Area | Main API | Notes |
-| --- | --- | --- |
-| Robot model and kinematics | `holistic_motion::Robot`, `holistic_motion.Robot` | URDF, FK/IK, OPW, UR, SRS, and FEP |
-| Trajectory generation | `holistic_motion.trajectory` | Double-S, trapezoidal, and locally maintained TOPPRA implementation |
-| Retargeting toolkit | `holistic_motion.kit.retargeting` | Pinocchio-backed arm, leg, and full-body modes with balance tasks |
-| Collision | `CollisionModel`, `SphereCollisionModel` | Exact mesh queries through Pinocchio/Coal and lightweight sphere queries |
-| Sampling planning | `holistic_motion.planning` | RRT variants and feasibility-preserving path optimization |
+CUDA batch backends and Viser examples are optional. Planning runs without
+OMPL; the TOPPRA implementation is maintained in this repository.
 
 ## Quick start
+
+Requires a C++17 compiler, CMake 3.22+, Conan 2, and Python 3.9+.
+See [installation](docs/en/installation.md) for dependency setup and C++ usage.
 
 ```bash
 ./scripts/build.sh
 source scripts/activate.sh
 ```
 
-The default build includes Python bindings and the Conan-managed Pinocchio/Coal
-collision component. Use `--cuda` to add the CUDA backend or `--no-collision`
-for a lighter build; add `--tests` to run the test suites.
-The activation step exposes both the local Python package and Conan-managed
-shared libraries. For one command, use `./scripts/run.sh python3 ...` instead.
-
-Run the collision demo against your own URDF and configuration:
-
-```bash
-python3 examples/python/collision/basic_query.py \
-  --urdf /absolute/path/to/robot.urdf -q 0 0 0 0 0 0
-```
-
-Generate an editable collision-sphere model from URDF collision geometry:
-
-```bash
-./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \
-  --urdf /absolute/path/to/robot.urdf \
-  --output build/robot_spheres.json
-
-./scripts/run.sh python3 examples/python/visualization/sphere_model_editor.py \
-  --urdf /absolute/path/to/robot.urdf \
-  --spheres build/robot_spheres.json
-```
-
-Sphere fitting is automatic, while the Viser editor lets users inspect and
-adjust link-local spheres before using them for planning or batch collision
-queries. See the [collision guide](docs/en/collision.md) for coverage metrics,
-collision groups, and exact-versus-sphere query trade-offs.
-
-## Python example
+The default build includes Python bindings and collision support. Add
+`--cuda` for CUDA, `--no-collision` for a lighter build, or `--tests` to run tests.
+Use `./scripts/run.sh python3 ...` to run a single command with the local install.
 
 ```python
 import holistic_motion as hm
@@ -83,7 +41,6 @@ import holistic_motion as hm
 robot = hm.Robot("/absolute/path/to/robot.urdf")
 q = [0.0] * robot.dof
 pose = robot.kinematics.forward(q)
-solution = robot.kinematics.inverse(pose, q)
 ```
 
 Retime a waypoint path without an external TOPPRA installation:
@@ -99,79 +56,28 @@ trajectory = ToppraTrajectory(
 times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 ```
 
-For differentiable CPU/CUDA timing, install the `differentiable` extra and use
-`retime_path_torch` with Torch tensors. Gradients cover waypoints, limits,
-boundary speeds, and sampling times. This backend does not require the native
-`--cuda` build option. See the [trajectory guide](docs/en/trajectory.md) for
-batch shapes, gradient conventions, and a runnable example. Set
-`HOLISTICMOTION_PURE_PYTHON=1` before importing when using it without the compiled
-extension.
+Optional Python extras include `differentiable`, `retargeting`,
+`hand-retargeting`, and `examples`. See the corresponding guides below for
+installation and runtime requirements.
 
-Retargeting is available under `holistic_motion.kit.retargeting`:
+## Documentation and examples
 
-```python
-from holistic_motion.kit.retargeting import CuroboRetargetingSolver
+- [Kinematics and core concepts](docs/en/concepts.md)
+- [Planning](docs/en/planning.md) · [Trajectories](docs/en/trajectory.md)
+- [Collision and sphere fitting](docs/en/collision.md)
+- [Retargeting](docs/en/retargeting.md)
+- [Runnable examples](examples/README.md) · [Full documentation](docs/en/index.md)
 
-solver = CuroboRetargetingSolver(
-    "/absolute/path/to/robot.urdf",
-    frames={"left_hand": "left_ee", "right_hand": "right_ee", "head": "head_ee"},
-    joint_groups={
-        "left_arm": ["left_j1", "left_j2"],
-        "right_arm": ["right_j1", "right_j2"],
-    },
-    num_seeds=8,
-)
-solver.prepare("dual_arm")  # Resolve mode indices/workspaces before the hot loop.
-result = solver.solve({"left_hand": left_pose, "right_hand": right_pose})
-```
+Build the English and Chinese documentation locally with
+`python -m pip install '.[docs]'` followed by `./scripts/docs.sh`.
 
-Install its Pinocchio Python runtime with
-`python -m pip install '.[retargeting]'`; upstream Pink and cuRobo are not
-installed.
-
-Run the native dual-arm sampling planner and Viser animation:
-
-```bash
-./scripts/run.sh python3 examples/python/visualization/rrt_robot_viser.py \
-  --urdf /absolute/path/to/robot_with_ee.urdf
-```
-
-The planner is implemented inside HolisticMotion and does not depend on OMPL.
-See the [planning guide](docs/en/planning.md) for collision adapters and tuning.
-
-## Documentation
-
-```bash
-python -m pip install '.[docs]'
-./scripts/docs.sh
-```
-
-- English output: `docs/_build/html/en/index.html`
-- 中文输出: `docs/_build/html/zh_CN/index.html`
-
-See the [English documentation](docs/en/index.md) for installation, concepts,
-tutorials, API references, architecture, and contribution guidance.
-
-## Dependencies and attribution
-
-| Project | Relationship | License |
-| --- | --- | --- |
-| [Pinocchio](https://github.com/stack-of-tasks/pinocchio) | Conan-managed C++ collision/kinematics dependency when collision support is enabled | BSD 2-Clause |
-| [Coal](https://github.com/humanoid-path-planner/coal) | Conan-managed narrow-phase collision dependency when collision support is enabled | BSD |
-| [Pink](https://github.com/stephane-caron/pink) | Algorithm and API-design reference for the locally maintained task-based retargeting solver; not imported or vendored | Apache-2.0 |
-| [cuRobo](https://github.com/NVlabs/curobo) | Design reference for collision spheres, batched queries, feasible path optimization, and deterministic multi-seed retargeting; not imported or vendored | Apache-2.0 |
-| [TOPPRA](https://github.com/hungpham2511/toppra) | Algorithm reference for the locally maintained path parameterization implementation; not a runtime dependency | MIT |
-
-Pinocchio and Coal are resolved by Conan at the versions declared in
-[`conanfile.py`](conanfile.py); the current defaults are Pinocchio 3.8.0 and
-Coal 3.0.2. Disable both with `./scripts/build.sh --no-collision`. Pink and
-cuRobo source trees are not included in this repository. Detailed scope,
-copyright, and license notices are recorded in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-## Validation
+## Development
 
 ```bash
 ./scripts/build.sh --tests
 conan create . --no-remote -o '&:with_python=False'
 ```
+
+See [development](docs/en/development.md) for tests, benchmarks, and contribution
+guidelines. Dependency licenses and algorithm references are recorded in
+[third-party notices](THIRD_PARTY_NOTICES.md).

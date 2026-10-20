@@ -118,6 +118,40 @@ int main() {
     if (!solver.GetIK(original, solutions, seed, distances))
         return Fail(__LINE__);
 
+    // Representable tiny translation errors must not disappear when their
+    // squares underflow before comparison with a caller-selected tolerance.
+    NumericalKinematics tiny_slide(nodes);
+    for (double target_translation : {1e-160, 1e-180}) {
+        const double tolerance = target_translation * 1e-10;
+        tiny_slide.SetTransErrTh(tolerance);
+        seed = Eigen::VectorXd::Zero(1);
+        const SE3d target(Eigen::Vector3d(target_translation, 0.0, 0.0),
+                          SO3d());
+        if (!tiny_slide.GetIK(target, solutions, seed, distances) ||
+            !tiny_slide.GetFK(solutions.ik_joints.front(), actual) ||
+            std::abs(actual.GetTranslation().x() / target_translation - 1.0) >=
+                1e-10)
+            return Fail(__LINE__);
+    }
+
+    auto rotation_nodes = nodes;
+    rotation_nodes[0].joint_type = JointType::REVOLUTE;
+    rotation_nodes[0].axis = Eigen::Vector3d::UnitZ();
+    NumericalKinematics tiny_rotation(rotation_nodes);
+    for (double angle : {1e-8, 1e-12, 1e-180}) {
+        const Eigen::Matrix3d rotation =
+            Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ())
+                .toRotationMatrix();
+        if (std::abs(GetRAngle(rotation) / angle - 1.0) > 1e-14)
+            return Fail(__LINE__);
+        tiny_rotation.SetAngleErrTh(angle * 1e-10);
+        seed = Eigen::VectorXd::Zero(1);
+        if (!tiny_rotation.GetIK(SE3d(Eigen::Vector3d::Zero(), SO3d(rotation)),
+                                 solutions, seed, distances) ||
+            std::abs(solutions.ik_joints.front()[0] / angle - 1.0) >= 1e-10)
+            return Fail(__LINE__);
+    }
+
     for (double invalid_value : {nan, infinity, -infinity}) {
         SE3d frame;
         frame.Coeffs()[0] = invalid_value;
@@ -150,6 +184,77 @@ int main() {
     if (stationary.GetIK(SE3d(), solutions, empty, distances) ||
         solutions.ik_number != 0 || !distances.empty())
         return Fail(__LINE__);
+
+    // A zero-seed retry must still choose the multi-turn representation
+    // nearest to the caller's seed, and report that movement's distance.
+    std::vector<JointNode> turning{JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                                             JointType::REVOLUTE, -7.0, 7.0),
+                                   JointNode()};
+    turning.back().joint_type = JointType::FIXED;
+    NumericalKinematics nearest(turning);
+    nearest.SetMaxIterNum(1);
+    nearest.SetIkNearstWeight(Eigen::VectorXd::Constant(1, 2.0));
+    seed = Eigen::VectorXd::Constant(1, 2.0 * M_PI - 0.1);
+    double nearest_distance = -1.0;
+    if (!nearest.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+        solutions.ik_number != 1 ||
+        std::abs(solutions.ik_joints.front()[0] - 2.0 * M_PI) > 1e-12 ||
+        std::abs(nearest_distance - 0.2) > 1e-12 || seed[0] != 2.0 * M_PI - 0.1)
+        return Fail(__LINE__);
+    seed[0] = 0.2;
+    SE3d nearest_target;
+    if (!nearest.GetFK(seed, nearest_target) ||
+        !nearest.GetNearestIK(nearest_target, solutions, seed,
+                              nearest_distance) ||
+        solutions.ik_number != 1 || nearest_distance != 0.0 ||
+        solutions.ik_joints.front()[0] != seed[0])
+        return Fail(__LINE__);
+    for (double invalid_seed : {nan, infinity, -infinity}) {
+        seed[0] = invalid_seed;
+        if (nearest.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            solutions.ik_number != 0)
+            return Fail(__LINE__);
+    }
+
+    // Nearest-only queries must not enumerate a Cartesian product of
+    // equivalent turns or inherit the all-solutions expansion budget.
+    for (int dof : {17, 32, 65}) {
+        std::vector<JointNode> periodic_nodes(
+            dof, JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                           JointType::REVOLUTE, 0.0, 2.0 * M_PI));
+        periodic_nodes.emplace_back();
+        periodic_nodes.back().joint_type = JointType::FIXED;
+        NumericalKinematics periodic(periodic_nodes);
+        seed = Eigen::VectorXd::Zero(dof);
+        if (periodic.GetIK(SE3d(), solutions, seed, distances) ||
+            solutions.ik_number != 0 || !distances.empty())
+            return Fail(__LINE__);
+        if (!periodic.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            solutions.ik_number != 1 || nearest_distance != 0.0 ||
+            !solutions.ik_joints.front().isZero(0.0))
+            return Fail(__LINE__);
+    }
+    for (double axis_scale : {0.5, -0.5, 1.5, -1.5, 2.0}) {
+        auto scaled_nodes = turning;
+        scaled_nodes[0].axis = axis_scale * Eigen::Vector3d::UnitZ();
+        NumericalKinematics scaled(scaled_nodes);
+        seed = Eigen::VectorXd::Constant(1, 2.0 * M_PI / std::abs(axis_scale) *
+                                                2.0);
+        if (!scaled.GetIK(SE3d(), solutions, seed, distances))
+            return Fail(__LINE__);
+        for (const auto &joints : solutions.ik_joints) {
+            if (!scaled.GetFK(joints, actual) ||
+                (actual.GetTransform() - Eigen::Matrix4d::Identity()).norm() >
+                    1e-10)
+                return Fail(__LINE__);
+        }
+        if (!scaled.GetNearestIK(SE3d(), solutions, seed, nearest_distance) ||
+            !scaled.GetFK(solutions.ik_joints.front(), actual) ||
+            (actual.GetTransform() - Eigen::Matrix4d::Identity()).norm() >
+                1e-10)
+            return Fail(__LINE__);
+    }
+    solutions.Clear();
     if (!solutions.PushBack(empty) || solutions.PushBack(q) ||
         !solutions.PushBack(empty) || !solutions.RemoveRepeatedIK() ||
         !solutions.GetLimitsIK(fixed) || solutions.ik_number != 1 ||

@@ -28,13 +28,21 @@ int main() {
     planning::NullSpacePlanner planner(shared_solver);
     const Eigen::VectorXd direction = Eigen::VectorXd::Unit(7, 2);
     std::vector<Eigen::VectorXd> normal_path, scaled_path;
-    if (!planner.Plan(nominal, direction, 2, 0.01, normal_path) ||
-        !planner.Plan(nominal, 1e300 * direction, 2, 0.01, scaled_path) ||
-        normal_path.size() != scaled_path.size())
+    if (!planner.Plan(nominal, direction, 2, 0.01, normal_path))
         return 6;
-    for (std::size_t i = 0; i < normal_path.size(); ++i)
-        if (!normal_path[i].isApprox(scaled_path[i], 1e-11))
-            return 7;
+    for (double scale : {1e-300, 1e300}) {
+        if (!planner.Plan(nominal, scale * direction, 2, 0.01, scaled_path) ||
+            normal_path.size() != scaled_path.size())
+            return 6;
+        for (std::size_t i = 0; i < normal_path.size(); ++i)
+            if (!normal_path[i].isApprox(scaled_path[i], 1e-11))
+                return 7;
+    }
+    if (planner.Plan(nominal, direction, 2, 1e-300, scaled_path) ||
+        !scaled_path.empty()) {
+        std::cerr << "null-space planner accepted an unrepresentable step\n";
+        return 11;
+    }
     Eigen::VectorXd outside = nominal;
     outside[0] += 2.0 * std::acos(-1.0);
     if (planner.Plan(outside, direction, 2, 0.01, scaled_path) || !scaled_path.empty())
@@ -45,6 +53,13 @@ int main() {
     if (!shared_solver->SetUserJointLimits(upper, lower) ||
         planner.Plan(nominal, direction, 2, 0.01, scaled_path) || !scaled_path.empty())
         return 9;
+    const Eigen::VectorXd locked = Eigen::VectorXd::Zero(7);
+    if (!shared_solver->SetUserJointLimits(locked, locked) ||
+        planner.Plan(locked, direction, 2, 0.01, scaled_path) ||
+        !scaled_path.empty()) {
+        std::cerr << "null-space planner accepted a stationary corrected path\n";
+        return 12;
+    }
     for (const Eigen::VectorXd &q : std::vector<Eigen::VectorXd>{
              nominal, Eigen::VectorXd::Zero(7), 1e-10 * nominal}) {
         Eigen::MatrixXd jacobian;
@@ -72,6 +87,18 @@ int main() {
             std::abs(projection.trace() - std::round(projection.trace())) > 1e-12) {
             std::cerr << "SRS result is not an orthogonal null-space projection\n";
             return 5;
+        }
+        const Eigen::VectorXd unit_direction = Eigen::VectorXd::Ones(7);
+        const Eigen::VectorXd expected = projection * unit_direction;
+        Eigen::VectorXd huge_direction = 1e308 * unit_direction;
+        Eigen::VectorXd huge_velocity;
+        if (!solver.GetNullSpaceVelocity(q, huge_direction, huge_velocity) ||
+            (huge_velocity / 1e308 - expected).norm() > 1e-12 ||
+            !solver.GetNullSpaceVelocity(q, huge_direction, huge_direction) ||
+            (huge_direction / 1e308 - huge_velocity / 1e308).norm() > 1e-12) {
+            std::cerr << "null-space projection overflowed a representable "
+                         "preferred velocity\n";
+            return 10;
         }
     }
     return 0;

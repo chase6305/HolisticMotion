@@ -3,6 +3,7 @@
 #endif
 #define EIGEN_RUNTIME_NO_MALLOC
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <utility>
@@ -41,6 +42,44 @@ double Objective(const std::vector<Eigen::VectorXd> &path,
 } // namespace
 
 int main() {
+    // A monotone single-joint path has zero local length derivative, even
+    // when its two individual scaled derivatives cannot be represented.
+    for (double direction : {-1.0, 1.0}) {
+        const Eigen::VectorXd weights = Eigen::VectorXd::Constant(1, 1e300);
+        const std::vector<bool> topology(1, false);
+        std::vector<Eigen::VectorXd> path;
+        for (double value : {0.0, 1e-200, 4e-200})
+            path.push_back(Eigen::VectorXd::Constant(1, direction * value));
+        PathGeometryWorkspace workspace(weights, topology, 1e300, 0.0);
+        Eigen::VectorXd gradient(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (gradient[0] != 0.0) {
+            std::cerr << "monotone scalar length derivative did not cancel\n";
+            return 1;
+        }
+    }
+    {
+        const Eigen::VectorXd weights = Eigen::VectorXd::Constant(1, 1e-200);
+        const std::vector<bool> topology(1, false);
+        const std::vector<Eigen::VectorXd> path{
+            Eigen::VectorXd::Constant(1, 0.0),
+            Eigen::VectorXd::Constant(1, 1e100),
+            Eigen::VectorXd::Constant(1, 4e100)};
+        PathGeometryWorkspace workspace(weights, topology, 1e300, 1e-200);
+        Eigen::VectorXd gradient(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!gradient.allFinite() ||
+            std::abs(gradient[0] / -8e-300 - 1.0) > 1e-13) {
+            std::cerr << "scalar cancellation erased the smoothness gradient\n";
+            return 1;
+        }
+    }
     // Large but finite weights must not turn zero or small smoothness
     // derivatives into NaN through a prematurely overflowing coefficient.
     const Eigen::VectorXd large = Eigen::VectorXd::Constant(1, 1e308);
@@ -91,7 +130,105 @@ int main() {
             return 1;
         }
     }
-    for (int dof : {2, 7, 14}) {
+    // A representable positive edge keeps its derivative even when global
+    // weighting makes its norm much smaller than an absolute epsilon.
+    const std::vector<Eigen::VectorXd> bent{Eigen::Vector2d(0.0, 0.0),
+                                            Eigen::Vector2d(0.5, 1.0),
+                                            Eigen::Vector2d(1.0, 0.0)};
+    for (double scale : {1.0, 1e-40, 1e40, 1e-300, 1e300}) {
+        const Eigen::VectorXd scaled_weights = Eigen::Vector2d::Constant(scale);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(scaled_weights, topology, 1.0, 0.0);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(bent, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double expected = 2.0 / std::sqrt(1.25);
+        if (!gradient.allFinite() || gradient[0] != 0.0 ||
+            std::abs(gradient[1] / std::sqrt(scale) - expected) > 1e-13) {
+            std::cerr << "global weight scale erased a length derivative\n";
+            return 1;
+        }
+    }
+    // Tiny coordinates and weights can erase an intermediate product even
+    // though division by the edge length leaves a representable derivative.
+    for (const auto &parameters :
+         {std::array<double, 3>{1e-100, 1e-300, 1.0},
+          std::array<double, 3>{1e-150, 1e-200, 1.0},
+          std::array<double, 3>{1e-20, 1e-310, 1.0},
+          std::array<double, 3>{1.0, 1e-200, 1e-200}}) {
+        const auto [scale, weight, coefficient] = parameters;
+        auto path = bent;
+        for (auto &state : path)
+            state *= scale;
+        const Eigen::VectorXd tiny_weights = Eigen::Vector2d::Constant(weight);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(tiny_weights, topology, coefficient,
+                                        0.0);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        const double expected =
+            coefficient * std::sqrt(weight) * (2.0 / std::sqrt(1.25));
+        if (gradient[0] != 0.0 || !gradient.allFinite() ||
+            std::abs(gradient[1] / expected - 1.0) > 1e-13) {
+            std::cerr
+                << "weighted product underflow erased a length derivative\n";
+            return 1;
+        }
+    }
+    {
+        auto path = bent;
+        for (auto &state : path)
+            state *= 1e100;
+        const Eigen::VectorXd tiny_weights = Eigen::Vector2d::Constant(1e-200);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(tiny_weights, topology, 0.0, 1e-200);
+        Eigen::VectorXd gradient(2);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        workspace.Gradient(gradient);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (gradient[0] != 0.0 || !gradient.allFinite() ||
+            std::abs(gradient[1] / 8e-300 - 1.0) > 1e-13) {
+            std::cerr << "weighted product underflow erased a smoothness "
+                         "derivative\n";
+            return 1;
+        }
+    }
+    // Apply the objective coefficient before a squared norm can lose range.
+    for (const auto &parameters :
+         {std::array<double, 4>{1.0, 1e308, 1e-308, 4.0},
+          std::array<double, 4>{1e-100, 1e-300, 1e300, 4e-200},
+          std::array<double, 4>{1e-10, 1e-300, 1e300, 4e-20}}) {
+        const auto [scale, weight, coefficient, expected] = parameters;
+        auto path = bent;
+        for (auto &state : path)
+            state *= scale;
+        const Eigen::VectorXd scaled_weights =
+            Eigen::Vector2d::Constant(weight);
+        const std::vector<bool> topology(2, false);
+        PathGeometryWorkspace workspace(scaled_weights, topology, 0.0,
+                                        coefficient);
+        const Eigen::VectorXd trial = Eigen::Vector2d(0.5 * scale, 0.5 * scale);
+        Eigen::internal::set_is_malloc_allowed(false);
+        workspace.SetWaypoint(path, 1);
+        const double objective = workspace.LocalObjective();
+        const double candidate =
+            workspace.CandidateObjective(path.front(), trial, path.back());
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!std::isfinite(objective) || !std::isfinite(candidate) ||
+            std::abs(objective / expected - 1.0) > 1e-13 ||
+            std::abs(candidate / expected - 0.25) > 1e-13) {
+            std::cerr
+                << "smoothness coefficient lost a representable objective\n";
+            return 1;
+        }
+    }
+    for (int dof : {1, 2, 7, 14}) {
         for (bool continuous : {false, true}) {
             const Eigen::VectorXd weights =
                 Eigen::VectorXd::LinSpaced(dof, 0.5, 2.0);

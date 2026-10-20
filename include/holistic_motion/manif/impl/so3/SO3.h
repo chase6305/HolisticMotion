@@ -1,6 +1,9 @@
 #ifndef _HOLISTIC_MOTION_HOLISTIC_MOTION_SO3_H_
 #define _HOLISTIC_MOTION_HOLISTIC_MOTION_SO3_H_
 
+#include <limits>
+#include <type_traits>
+
 #include "holistic_motion/manif/impl/so3/SO3_base.h"
 
 namespace holistic_motion {
@@ -231,11 +234,29 @@ SO3<_Scalar>::SO3(const Scalar angle1,
         case EulerAnglesType::xyx:
             *this = SO3(RotX(angle3) * RotY(angle2) * RotX(angle1));
             break;
-        case EulerAnglesType::rota_vec:
+        case EulerAnglesType::rota_vec: {
             Eigen::Matrix<Scalar, 3, 1> rotVec(angle1, angle2, angle3);
-            *this = SO3(Eigen::AngleAxis<Scalar>(rotVec.norm(),
-                                                 rotVec.normalized()));
+            if constexpr (std::is_floating_point_v<Scalar>) {
+                const Scalar squared_norm = rotVec.squaredNorm();
+                using std::sqrt;
+                if (squared_norm >= std::numeric_limits<Scalar>::min() &&
+                    squared_norm <= std::numeric_limits<Scalar>::max()) {
+                    *this = SO3(Eigen::AngleAxis<Scalar>(sqrt(squared_norm),
+                                                         rotVec.normalized()));
+                } else {
+                    const Scalar angle = std::hypot(angle1, angle2, angle3);
+                    if (angle == Scalar(0))
+                        *this = SO3();
+                    else
+                        *this = SO3(
+                            Eigen::AngleAxis<Scalar>(angle, rotVec / angle));
+                }
+            } else {
+                *this = SO3(Eigen::AngleAxis<Scalar>(rotVec.norm(),
+                                                     rotVec.normalized()));
+            }
             break;
+        }
     }
 }
 

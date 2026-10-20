@@ -87,6 +87,8 @@ if(HOLISTICMOTION_BUILD_BENCHMARKS)
     target_link_libraries(fep_batch_benchmark PRIVATE holistic_motion)
     add_executable(numerical_ik_benchmark benchmarks/numerical_ik_benchmark.cpp)
     target_link_libraries(numerical_ik_benchmark PRIVATE holistic_motion)
+    add_executable(nearest_ik_benchmark benchmarks/nearest_ik_benchmark.cpp)
+    target_link_libraries(nearest_ik_benchmark PRIVATE holistic_motion)
     add_executable(ik_limit_benchmark benchmarks/ik_limit_benchmark.cpp)
     target_link_libraries(ik_limit_benchmark PRIVATE holistic_motion)
     add_executable(robot_model_benchmark benchmarks/robot_model_benchmark.cpp)
@@ -139,6 +141,18 @@ include(CMakePackageConfigHelpers)
 install(TARGETS holistic_motion EXPORT HolisticMotionTargets)
 if(HOLISTICMOTION_ENABLE_COLLISION)
     install(TARGETS holistic_motion_collision EXPORT HolisticMotionTargets)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_INSTALL_RPATH_USE_LINK_PATH)
+    # scripts/build.sh creates a local install tied to its Conan cache. Its
+    # per-library runtime paths avoid overriding Python dependency runtimes.
+    install(CODE [[
+        file(WRITE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/.holistic_motion_local_runtime"
+             "Dependencies use this local install's runtime paths.\n")
+    ]])
+else()
+    install(CODE [[
+        file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/.holistic_motion_local_runtime")
+    ]])
 endif()
 install(DIRECTORY include/holistic_motion/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/holistic_motion

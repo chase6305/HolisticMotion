@@ -39,6 +39,13 @@ ctest --test-dir build-sanitizers --output-on-failure --no-tests=error
 五次取中位数。`success` 区分找到路径与搜索预算耗尽；未求解用例的零路径长度
 不代表路径质量提升。不需要外部机器人资产或基准库，时间不作为 CI 通过门槛。
 
+可传入 `[goal_bias [dof continuous]]` 单独测量一个场景，例如
+`sampling_planner_benchmark 0.05 7 1`。显式维度支持 2–32；`continuous=1` 将
+第一个关节设为周期关节。CSV 包含路径校验和，应先比较固定种子的结果，再比较
+耗时。索引查询缓存非周期坐标的包围盒，并保留保守的舍入余量以正确处理边界并列。
+距离查询为每个关节缓存一个字节的拓扑标记，避免扫描候选状态时反复解包位标记，
+并保持加权求和顺序。
+
 同一选项还构建 `<构建目录>/fep_batch_benchmark`。该 CPU 基准使用合成七轴链、
 非单位关节原点和 TCP、种子 7，覆盖批量 1/32/128/1024。每个用例预热三次，
 随后测量七组，每组调用 `max(1, 16384 / batch_size)` 次，CSV 报告单次调用的
@@ -77,6 +84,20 @@ Clang 和 MSVC 的类型与版本比较，不替代各平台的真实构建。pr
 网格碰撞计算成本。
 可用四个位置参数单独选择用例，例如 `path_optimizer_benchmark 7 256 1 0`，
 便于逐用例交替测量前后版本。
+追加 `--finite-cost` 或 `--analytic-cost` 可启用二次状态代价，分别使用数值或
+解析梯度。CSV 同时记录代价模式与回调次数，便于在工作量一致时比较缓冲区复用。
+
+`benchmarks/continuous_tracker_benchmark.py` 使用固定变换和 Jacobian 夹具，测量
+1 或 8 个候选的完整 Python 跟踪步骤。计时包含 NumPy SVD 和连续性选择，不包含
+原生 FK/IK。使用 `HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python` 运行；
+`--baseline` 可比较旧版 `srs_tracker.py`，并核对候选数量与求解结果。
+`benchmarks/sphere_fit_benchmark.py --selection-workloads` 覆盖小型、大型及大量
+重复候选的两种拟合模式；已有的 `--baseline` 会核对输出，并单独测量分配开销。
+
+`benchmarks/urdf_geometry_benchmark.py` 测量含 1/32/128 个 link 的完整 URDF 加载，
+覆盖唯一及重复的 box、cylinder 和 sphere 几何。使用相同纯 Python 环境，传入
+`--baseline /path/to/old/urdf_sphere_fit.py` 进行配对测量，并精确核对顶点和面索引；
+计时不包含输入文件生成。
 
 `path_geometry_workspace_smoke` 将局部目标变化与完整路径目标比较，并用中心
 有限差分校验解析梯度，覆盖周期接缝、反向扫描、多次试探和重合路点。Eigen 分配

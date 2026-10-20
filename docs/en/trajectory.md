@@ -20,14 +20,46 @@ times, position, velocity, acceleration = trajectory.sample_uniform(200)
 Waypoint, limit, and timing-result arrays are immutable owned snapshots.
 `sample()` and `sample_uniform()` return new arrays that applications may
 modify freely without changing the trajectory object.
+Both timing backends require real inputs; complex arrays and scalar parameters
+raise `TypeError`, including complex values with zero imaginary components.
+NumPy validation also checks nested object arrays and rejects cyclic objects
+before conversion; shared acyclic real objects remain supported.
 
-The implementation uses squared path velocity as its state, propagates both
-bounds of controllable intervals backward, then selects the largest reachable
-speed at each forward step. It has
+NumPy uses scaled chord norms when squaring finite coordinates would overflow.
+Unrepresentable waypoint differences or chord lengths raise `ValueError`.
+
+The implementation uses squared path velocity as its state. Paths with more
+than two waypoints propagate controllable intervals backward, then select the
+largest reachable speed at each forward step. It has
 no runtime dependency on the upstream TOPPRA package or an external LP/QP
 solver.
 
-When the terminal path speed is zero, rest belongs to every backward
+The NumPy implementation eliminates symmetric acceleration bounds in bounded
+CPU chunks. Two-waypoint natural splines are straight lines: their squared-speed
+profile is the minimum of a velocity cap and cumulative acceleration budgets
+from each endpoint. NumPy evaluates these prefix/suffix budgets on the caller's
+grid, preserving boundary feasibility and checking every interval constraint.
+As before, a two-node grid with both endpoints at rest requires refinement.
+
+Extreme spatial and time scales use normalized speed variables for
+solving and sampling, then restore the requested physical units. Positive reachable speeds
+remain valid at small magnitudes; unrepresentable boundary speeds raise
+`ValueError`. Both backends keep inactive joint constraints finite when a
+normalized limit underflows, including their Torch adjoints.
+For very large NumPy geometry, the spline solve scales coordinate differences
+per axis and acceleration constraints normalize before short-interval division.
+Large-coordinate sampling combines motion in normalized spline coordinates,
+then restores coordinate and time units together using cached representable
+factors or their binary exponents.
+This avoids intermediate overflow and underflow while retaining representable
+physical outputs. Constraint ratios also retain their limits when a normalized
+limit alone would overflow. Final physical spline coefficients, constraint-grid
+positions and derivatives must be finite; otherwise construction raises `ValueError`.
+If unscaled interval coefficients exceed float64 range, a binary speed unit is
+chosen from conservative logarithmic bounds before forming those coefficients.
+This also supports very large paths with ordinary physical limits on fine grids.
+
+With more than two waypoints and zero terminal path speed, rest belongs to every backward
 controllable interval. The solver propagates only its upper bound and checks
 all interval half-planes after the forward pass. Nonzero terminal speeds use
 the full two-bound solve; nonzero initial speeds are supported in both cases.
@@ -70,6 +102,53 @@ Use `device="cpu"` for CPU execution. `TorchToppraTrajectory` is the matching
 class; the existing `retime_path` and `ToppraTrajectory` remain NumPy APIs.
 Importing the NumPy API does not import Torch.
 
+For paths with at least 16 waypoints, the Torch natural-cubic spline can use
+parallel cyclic reduction of its symmetric tridiagonal system. Elimination
+takes logarithmically many tensor stages and linear scratch storage. Its backward
+solves the same system for its adjoint, saving only the matrix diagonals and
+solution. One residual-correction solve improves relative accuracy in small
+solution components; spline tests check the original equations in extended
+precision and second derivatives against a dense solve.
+CUDA uses this parallel solve for long paths. On CPU, wide or large inputs
+retain the sequential solve to avoid extra memory traffic. The CPU threshold
+also accounts for whether the spline needs gradients: backward can amortize
+larger parallel working sets than forward alone. Shorter paths also use the
+sequential solve. The reachability passes still
+run sequentially along the timing grid. To measure the spline separately from
+complete construction, sampling, and backward, run
+`python benchmarks/torch_spline_benchmark.py --baseline /path/to/baseline.py --device cuda --output /tmp/spline.json`.
+Use `--device cpu` for CPU timings. The benchmark alternates the two modules
+and checks their values and first derivatives before timing.
+
+
+For CPU paths with at least 16 degrees of freedom, projection first screens
+acceleration-strip pairs using a conservative residual bound. At most eight
+retained distinct oriented strips are compared with every original strip; exact
+duplicates retain their lowest original index. Candidate scratch follows the
+largest retained set in the current batch, without padding every batch to eight
+strips. Exact equal or opposite coefficient
+relations with zero pair determinants need only the velocity candidates. Uncertain
+coefficient ranges or larger retained sets use complete pair enumeration. Nearly
+proportional strips skip the pilot search, and distinct absolute b coefficients
+avoid unnecessary duplicate sorting. These cost decisions keep every original
+constraint. The selected bound
+and its original first-pair tie order are preserved, including their first and
+second derivatives on the selected branch. Screening uses Torch float64 tensors
+on CPU and adds no NumPy dependency or global Torch settings. CUDA and smaller
+CPU problems retain complete enumeration. To measure the complete high-DOF
+workload, add `--scopes trajectory --dofs 16 32 64` to the benchmark above.
+
+At 128 or more degrees of freedom on CPU, float64 projection avoids reserving
+the complete quadratic pair-index table before screening. Selected pair ranks
+are decoded using integer row boundaries, preserving the original first tie.
+If full enumeration is needed, consecutive blocks target at most 262,144
+pairs and 2 MiB per float64 candidate buffer. A single exceptionally
+wide row can exceed those targets; input storage and other linear workspaces are
+additional. Enumeration still does quadratic arithmetic, but its pair-index and
+candidate scratch no longer grow quadratically with the number of strips.
+CUDA, non-float64 internal projections, and smaller CPU problems keep their
+existing dispatch. Waypoints of lower precision still use float64 internally.
+
 Inputs may be `(N, D)` or batched `(B, N, D)`. Positive symmetric velocity and
 acceleration limits may be scalars, `(D,)`, or `(B, D)` tensors; boundary path
 speeds may be scalars or `(B,)`. All numerical work runs on the waypoint device,
@@ -93,18 +172,55 @@ piecewise derivatives with active constraints, segment lookups, and grid
 topology fixed; they are not guaranteed at switches. The square-root adjoint
 at zero path speed is defined as zero. Tests validate first-order derivatives;
 this is not a smooth relaxation of TOPPRA.
+Changing spline elimination order changes float64 rounding. Ill-conditioned
+timing branches can amplify these small forward differences in end-to-end
+gradients; the implicit spline Jacobian is checked separately at fixed forward
+values, as well as against independent first- and second-derivative references.
+Extremely short parameter intervals can also amplify rounding in squared speeds
+into visible differences in the reported path-parameter accelerations; those
+values alone do not measure physical joint acceleration.
+For conditioned timing profiles, Torch also checks physical velocity and
+acceleration using binary unit scaling, uncancelled polynomial terms, and the
+stored interval clocks. A nonfinite bound or a bound above `1 + 1e-8` times
+the corresponding limit raises `ValueError` for the entire batch. Very short
+intervals and large endpoint speeds can expose this loss of float64 resolution.
+The bound is conservative: a physically safe profile may still be rejected
+when it cannot be certified at the available precision. Certification applies
+to the internal float64 profile; sampled outputs still round to the waypoint dtype.
+Better separated waypoints or a coarser timing grid can reduce cancellation.
 Projected stops retain zero speed and the same zero adjoint when the constraint
 residual differs from zero only by floating-point roundoff. If a coarse grid
 produces adjacent stops, construction raises an error asking for a finer grid.
+When the next-speed coefficient has only a roundoff-sized effect throughout
+the reachable interval, it does not force a stop. This applies to NumPy and
+Torch timing, including batched CPU/CUDA gradients.
 
 The solver normalizes each path's speed units before eliminating constraints,
 so large changes of time units do not overflow intermediate squared speeds
 or poison inactive-constraint gradients. Sampling keeps the path clock in those
 normalized units to avoid squaring very large physical times. Physical outputs still need to be
-representable in float64 and in the requested sample dtype. A batch whose
-terminal speeds are all zero uses a shorter controllability pass; mixed or
-nonzero terminal speeds retain both lower and upper bounds. Both paths retain
-autograd and validate every forward interval constraint.
+representable in float64 and in the requested sample dtype. For paths with
+more than two waypoints, a batch whose terminal speeds are all zero uses a
+shorter controllability pass; mixed or nonzero terminal speeds retain both
+lower and upper bounds. Both passes retain autograd and validate every forward
+interval constraint. Inactive constraints retain zero denominator adjoints
+even with subnormal limits or geometric derivatives, without forming an
+overflowing reciprocal.
+
+Two-waypoint paths have constant geometric derivatives. Their squared-speed
+profile is the minimum of a constant velocity cap and cumulative acceleration
+budgets from each endpoint. The tensor backend evaluates these prefix/suffix
+budgets in batches, avoiding per-interval LP projection and reachability loops.
+It retains the same grid, boundary feasibility checks, continuous interval
+limits, and gradients to waypoints, limits, boundary speeds, and sample times.
+
+Large coordinate units also use normalized chord-length knots and independently
+scaled spline differences. Polynomial terms cancel before physical units are
+restored, and acceleration ratios are formed before division by short intervals.
+These scales are detached choices of units; gradients still propagate through
+waypoints, limits, and interval widths. Both forward values and reverse-mode
+intermediates are protected. Physical spline coefficients and sampled motion
+must remain representable in float64.
 
 The tensor backend places the same number of subdivisions in each spline
 segment: `ceil((grid_size - 1) / (N - 1))`, with at least two for a two-waypoint
@@ -112,8 +228,18 @@ path. This keeps batch shapes fixed while differentiating chord-length knots.
 Its default grid and duration can differ from NumPy's spacing-based grid. For
 numerical comparisons, pass the tensor result's grid to NumPy as `gridpoints`.
 Natural cubic geometry and continuous interval limits are the same. CUDA
-support does not imply a speedup for small batches: the reachability passes
-remain sequential along the grid and launch Torch operations per interval.
+support does not imply a speedup for small batches. With more than two
+waypoints, reachability passes remain sequential along the grid and launch
+Torch operations per interval.
+
+In an audited Python 3.10 / Torch 2.13.0+cu130 environment, single-CPU-affinity
+CUDA gradient stress runs completed 10,000 numerical comparisons but aborted
+during interpreter shutdown. The native stack showed an autograd worker
+reacquiring the GIL while destroying tensor Python references. Enclosing
+evaluation and backward calls in `with torch.autograd.set_multithreading_enabled(False):`
+avoided the abort in controlled runs. This thread-local context runs backward
+on the calling thread. A related upstream [GIL shutdown race report](https://github.com/pytorch/pytorch/issues/179238)
+describes the same finalization mechanism in another backend.
 
 Run the batched forward/backward example without the compiled extension:
 
@@ -133,6 +259,9 @@ To compare revisions, extract the earlier tensor module and run
 It checks values and gradients before alternating timed runs, and records
 synchronized CUDA timings, peak allocations, and saved tensor storage as JSON.
 Use `--device cpu` for CPU measurements. These measurements need no robot assets.
+Use `--waypoint-counts 2` to measure the linear-path solver. Comparison samples
+use asymmetric interior time fractions to avoid symmetric acceleration jumps;
+trajectory regressions separately check endpoints and right-interval ownership.
 
 ## NumPy examples and interval bounds
 
@@ -190,6 +319,42 @@ Near a stop, its dynamics residual is compared against the scale of all terms
 in the interval equation, so changing time units does not turn cancellation
 roundoff into a spurious validation failure.
 
+For multi-waypoint paths ending at rest, the NumPy solver prepares the required
+coefficient rows in batches before the backward and forward passes. It reuses
+the original matrices for final constraint validation. Projection scratch
+buffers are also reused within each bounded interval chunk. Joints whose
+waypoints are exactly constant contribute only redundant zero acceleration
+strips, which are omitted from the solver; their positions, samples, and input
+limit validation are retained. Moving joints keep every original strip.
+Large coordinate differences go directly through the required normalized spline
+fit. Sampling reuses its own coefficient and derivative buffers, leaving the
+cached spline and earlier results intact; queries for one sample of one joint
+retain the short expression path.
+
+For larger float64 problems, projection screens constraint pairs using
+conservative rounding bounds, then evaluates retained pairs with the original
+arithmetic. Small problems, uncertain candidates, and coefficients outside the
+guarded range use complete pair elimination. No moving-joint constraint is
+removed. Exact difference strips skip pair determinants that cancel to zero.
+Constraint matrices are released before creating the immutable timing snapshot,
+which owns its grid copy.
+
+Very close grid nodes can amplify a small dimensionless solver residual into a
+larger physical acceleration error. The NumPy solver checks affected intervals
+in acceleration-limit units and verifies any conservative timing repair across
+the whole path. Very short intervals also receive this check; its rounding
+budget includes uncancelled spline derivative terms and speed integration to
+cover loss of precision near a stationary path derivative.
+If such an interval distorts the reachable speed envelope, affected acceleration
+rows also receive physical verification. Velocity caps remain checked directly,
+and ordinary paths retain the original interval residual checks.
+If a local plateau is insufficient, the repair also checks expanded plateaux
+and interpolated squared speeds across uncertain neighborhoods, choosing the
+shortest verified timing among these proposals and the original global blend.
+Spline knots and requested endpoint speeds are retained. If no
+verified timing can be found, it raises `ValueError` and asks for adjusted
+gridpoints or waypoint spacing.
+
 To compare solver speed with a previous revision on identical custom grids:
 
 ```bash
@@ -199,8 +364,24 @@ python benchmarks/compare_toppra.py --baseline /tmp/toppra-old.py --rounds 30
 
 The benchmark checks timing and sampled-motion equivalence before alternating
 baseline/candidate measurements. It prints raw timings and medians for 1, 7,
-and 32 joints, three grid sizes, and zero/nonzero terminal speeds. It requires
-only NumPy; no robot assets or compiled extension are needed.
+and 32 joints, three grid sizes, and zero/nonzero terminal speeds. Use
+`--waypoint-counts 2 12` to compare straight paths alongside the default
+twelve-waypoint workload. Use `--dofs 32 64 --active-dof-counts 7` to measure
+paths with seven moving joints and the remaining joints held fixed.
+For fully moving high-DOF paths, use `--dofs 16 32 64 128`.
+Comparison queries use asymmetric interior time
+fractions to avoid acceleration jumps; regressions check endpoints and interval
+ownership separately. It requires only NumPy; no robot assets or compiled
+extension are needed.
+
+Native `JointTrajectoryN`, `JointTrajectory`, `RnTrajectory`, and
+`BaseTrajectory` constructors require real waypoint and limit arrays.
+`CartesianLineTrajectory` likewise requires real start/end poses and limits.
+Scalar query times, blend tolerances, minimum durations, and
+`TrajectoryConstraints` limits must also be real. Sampling and report counts
+reject complex inputs before integer conversion. Complex NumPy arrays,
+object arrays, lists, and scalars raise `TypeError` before conversion. Rejected
+`set_minimum_duration` calls preserve existing timing.
 
 Native Bezier paths retain a reversing waypoint as a sharp linear join, even
 with a positive blend tolerance. Double-S and trapezoidal timing stop there
@@ -501,6 +682,17 @@ constructor also accepts distinct two-point motions below that tolerance;
 exactly repeated points still do not define a moving trajectory. Blends
 smaller than that tolerance are disabled before trimming either neighboring
 line, so suppressing a blend does not leave a positional gap.
+Path-length norms use a stable weighted fallback when intermediate squares lose
+range. Exceptional weighted components are accumulated at a common binary scale
+before rounding, retaining a representable norm even if individual components
+would round to zero. Quadratic curvature likewise uses successive divisions when
+length squared overflows, underflows, or becomes subnormal, retaining representable
+derivatives. Bezier construction also rescales exceptional direction and
+coordinate norms, and solves the quintic length equation in chord-length units
+when its raw coefficients overflow. Connection roundoff is scaled before
+restoring a coordinate norm that would overflow. This preserves finite path segments and
+the requested endpoints at large coordinate scales. Quintic curvature controls
+apply the curvature before a potentially overflowing length square.
 
 For time phases contained in one linear geometric segment, limit enforcement
 evaluates the endpoints and any interior zero of scalar acceleration. These

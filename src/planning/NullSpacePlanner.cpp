@@ -26,6 +26,13 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
         return false;
     }
 
+    const double direction_scale = preferred_direction.cwiseAbs().maxCoeff();
+    if (direction_scale == 0.0) return false;
+    // Only the direction matters: normalize once before projection so very
+    // small preferences do not disappear at the null-space rank threshold.
+    const Eigen::VectorXd normalized_direction =
+        preferred_direction / direction_scale;
+
     const auto &nodes = kinematics_->GetJointNodesView();
     for (Eigen::Index i = 0; i < start.size(); ++i) {
         const auto &node = nodes[static_cast<std::size_t>(i)];
@@ -44,7 +51,7 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
     Eigen::VectorXd current = start;
     for (int i = 0; i < steps; ++i) {
         Eigen::VectorXd velocity;
-        if (!kinematics_->GetNullSpaceVelocity(current, preferred_direction,
+        if (!kinematics_->GetNullSpaceVelocity(current, normalized_direction,
                                                velocity) ||
             velocity.stableNorm() < 1e-10) {
             return false;
@@ -54,13 +61,16 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
         velocity /= velocity.cwiseAbs().maxCoeff();
         velocity.normalize();
         Eigen::VectorXd seed = current + step_size * velocity;
+        if ((seed.array() == current.array()).all()) return false;
         IkRtn solutions;
         double distance = 0.0;
         if (!kinematics_->GetNearestIK(target, solutions, seed, distance) ||
             solutions.ik_joints.empty()) {
             return false;
         }
-        current = solutions.ik_joints.front();
+        const auto& next = solutions.ik_joints.front();
+        if ((next.array() == current.array()).all()) return false;
+        current = next;
         planned_path.push_back(current);
     }
     path = std::move(planned_path);

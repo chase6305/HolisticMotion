@@ -373,3 +373,119 @@ def test_toppra_custom_grid_snapping_preserves_short_spline_segments():
     )
     assert np.isin(trajectory._waypoint_s, trajectory.result.gridpoints).all()
     assert np.min(np.diff(trajectory.result.gridpoints)) == pytest.approx(2e-12)
+
+
+@pytest.mark.parametrize("dof", [1, 7, 32, 128])
+@pytest.mark.parametrize("zero_coefficients", [False, True])
+@pytest.mark.parametrize("scale", [1e-100, 1.0, 1e100])
+def test_numpy_projection_matches_general_half_plane_elimination(
+    dof, zero_coefficients, scale
+):
+    from holistic_motion.trajectory.toppra import (
+        _IntervalConstraints,
+        _projection_caps,
+    )
+
+    generator = np.random.default_rng(20261014 + dof)
+    aa = scale * generator.normal(size=(10, 3 * dof))
+    bb = scale * generator.normal(size=aa.shape)
+    if zero_coefficients:
+        aa[:, ::4] = 0.0
+        bb[:, ::3] = 0.0
+    velocity_cap = scale * generator.uniform(0.1, 2.0, size=(10, 1))
+    a = np.concatenate((aa, -aa, velocity_cap, np.zeros_like(velocity_cap)), axis=1)
+    b = np.concatenate((bb, -bb, np.zeros_like(velocity_cap), velocity_cap), axis=1)
+    expected = np.array(
+        [_IntervalConstraints(left, right).cap for left, right in zip(a, b)]
+    )
+    np.testing.assert_allclose(_projection_caps(a, b), expected, rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_numpy_projection_rejects_nonfinite_half_planes(invalid):
+    from holistic_motion.trajectory.toppra import _projection_caps
+
+    a = np.ones((2, 8))
+    b = a.copy()
+    a[1, 0] = invalid
+    with pytest.raises(ValueError, match="constraints must be finite"):
+        _projection_caps(a, b)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("imaginary", [0.0, 0.1])
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "waypoints",
+        "max_velocity",
+        "max_acceleration",
+        "gridpoints",
+        "start_path_velocity",
+        "end_path_velocity",
+    ],
+)
+def test_toppra_rejects_complex_inputs_without_discarding_imaginary_parts(
+    argument, dtype, imaginary
+):
+    values = {
+        "waypoints": [[0.0], [1.0]],
+        "max_velocity": [1.0],
+        "max_acceleration": [2.0],
+        "gridpoints": [0.0, 0.5, 1.0],
+        "start_path_velocity": 0.0,
+        "end_path_velocity": 0.0,
+    }
+    values[argument] = np.array(values[argument], dtype=dtype) + imaginary * 1j
+    with pytest.raises(TypeError, match="real"):
+        ToppraTrajectory(**values)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("imaginary", [0.0, 0.1])
+def test_toppra_rejects_complex_sample_times(dtype, imaginary):
+    trajectory = ToppraTrajectory([[0.0], [1.0]], [1.0], [2.0], grid_size=25)
+    times = np.array([0.0, trajectory.duration], dtype=dtype) + imaginary * 1j
+    with pytest.raises(TypeError, match="sample times must be real"):
+        trajectory.sample(times)
+
+
+@pytest.mark.parametrize(
+    "field", ["gridpoints", "path_speeds", "path_accelerations", "times", "duration"]
+)
+def test_toppra_result_rejects_complex_snapshots(field):
+    values = {
+        "gridpoints": [0.0, 1.0],
+        "path_speeds": [1.0, 1.0],
+        "path_accelerations": [0.0],
+        "times": [0.0, 1.0],
+        "duration": 1.0,
+    }
+    values[field] = np.array(values[field], dtype=np.complex128)
+    with pytest.raises(TypeError, match="real"):
+        ToppraResult(**values)
+
+
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_toppra_rejects_object_arrays_of_complex_scalars(imaginary):
+    points = np.array(
+        [[np.complex128(imaginary * 1j)], [np.complex128(1.0 + imaginary * 1j)]],
+        dtype=object,
+    )
+    with pytest.raises(TypeError, match="real"):
+        ToppraTrajectory(points, [1.0], [2.0])
+
+
+def test_toppra_preserves_real_object_array_inputs_and_snapshot_ownership():
+    points = np.array([[0.0], [1.0]], dtype=object)
+    trajectory = ToppraTrajectory(
+        points,
+        np.array([1.0], dtype=object),
+        np.array([2.0], dtype=object),
+        grid_size=25,
+    )
+    points[1, 0] = 2.0
+    position, _, _ = trajectory.sample(
+        np.array([0.0, trajectory.duration], dtype=object)
+    )
+    np.testing.assert_array_equal(position, [[0.0], [1.0]])

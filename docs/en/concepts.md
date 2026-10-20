@@ -32,6 +32,16 @@ kinematics users do not acquire Pinocchio and Coal unnecessarily.
 - Applications should perform any controller-specific joint reordering at
   their integration boundary.
 
+For built-in floating-point scalars, the C++ `SO3` constructor with
+`EulerAnglesType::rota_vec` retains rotations whose vector norm is representable
+even when its square overflows or underflows. Autodiff scalars keep their
+existing computation path.
+Native floating-point SO3 tangent exponentials and Jacobians use unit-axis
+formulas for large angles, avoiding overflowing powers and cancellation of
+small transverse derivatives. Inverse Jacobians still require representable
+entries and remain singular at full turns. Eigen autodiff scalar exponentials
+and Jacobians are checked against finite differences.
+
 ## Initialization and runtime phases
 
 Keep model construction and configuration outside real-time loops. `Robot`,
@@ -55,8 +65,10 @@ shoulder/wrist chains. Its null-space projection rejects non-finite inputs and
 uses a relative singular-value cutoff so near-singular configurations do not
 amplify numerical noise. Projection uses the retained right singular vectors
 directly, without forming a pseudoinverse. `NullSpacePlanner` requires its start
-to satisfy both hardware and user limits and safely normalizes large finite
-preferred directions before taking a step.
+to satisfy both hardware and user limits. The magnitude of a nonzero preferred
+direction does not change its step, including very small or large finite inputs.
+A seed that cannot change the current floating-point coordinates, or an IK
+correction back to the current configuration, fails and clears the output path.
 Ideal SRS models retain the direct closed-form result;
 small URDF link offsets use that result as a branch-preserving seed for a
 strict local correction. Equivalent revolute angles are selected directly
@@ -100,11 +112,26 @@ call, then accumulates each pose without allocating per-row joint or pose lists.
 Model and TCP changes take effect on the next call. Scalar FK uses axis-angle
 rotations for oblique revolute axes, and C++ continuous joint nodes contribute
 to both FK and the geometric Jacobian. Empty batches return shape `(0, 4, 4)`.
+CPU and CUDA batch FK reject non-finite output poses even when the input joints
+and TCP are finite. C++ failures clear all poses, including any completed rows.
 Streaming offset-arm targets can use `FEPContinuousTracker` with the same
 options and diagnostics as the SRS tracker. Both trackers solve the current
 branch on every frame, refresh all branches periodically, and immediately
 enumerate all candidates if the current branch fails or approaches a
-singularity. `candidate_refresh_interval` controls that tradeoff.
+singularity. Malformed candidates, including nested complex values and cyclic
+object containers, are filtered before branch metadata queries.
+An unusable seeded result, including one rejected by pose or dynamics checks,
+also triggers a refresh between periodic refreshes. Each frame enumerates all
+branches at most once; a failed refresh leaves tracker history intact.
+`candidate_refresh_interval` controls that tradeoff.
+Both trackers retain small pose errors with stable position norms and `atan2`
+rotation angles. Candidates with non-finite dynamics, FK poses or scores are
+discarded before ranking; an unrepresentable prediction leaves history intact.
+Initial joints, dynamic limits, weights and result snapshots must contain real
+values. Complex inputs raise `TypeError` before conversion.
+Scalar tracker weights and thresholds are stored as owned floats; modifying a
+caller-provided zero-dimensional array cannot change validated options.
+Non-scalar arrays are rejected for these scalar fields.
 
 Numerical IK reuses its thin-SVD, Jacobian, and step buffers within each solve.
 An already converged seed skips these buffers. The workspace is local to the
@@ -112,6 +139,31 @@ call and introduces no shared mutable solver cache. C++ tolerance, step-size,
 and damping setters require finite positive values; invalid values leave the
 previous setting intact. `GetIK()` clears solution and distance outputs before
 validation, so a failed call does not retain distances from a previous solve.
+If a C++ seed is an element of the previous IK output, the numerical, UR and
+OPW solvers copy it before clearing that output. Independent seeds avoid this copy.
+C++ IK targets use the same rigid-frame validation as TCP and user frames:
+finite coefficients and a quaternion squared norm within `1e-9` of one.
+Invalid targets fail with empty solution outputs and preserve a valid independent seed.
+Native Python FK/IK, SRS/FEP queries and numerical frame setters reject complex
+arrays before Eigen conversion, including object arrays containing complex
+scalars. Raw target matrices are checked before quaternion construction, so
+invalid rotation blocks or homogeneous last rows are rejected. Real lists and
+object arrays remain supported; rejected configuration updates preserve state.
+SRS/FEP configuration flags and redundancy values also require real scalars;
+rejected assignments preserve the configuration.
+UR/OPW parameter assignments and constructor limits follow the same real-input
+rule. Base and tool transforms must be rigid; rejected assignments retain the
+previous parameter value.
+Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
+representation of the converged branch minimizing weighted joint movement
+from the caller's finite seed. A zero-seed convergence retry
+still uses the original seed to choose multi-turn representations and distances.
+Extreme-scale Jacobians and errors use a normalized decomposition and bounded
+mantissa/exponent arithmetic when direct singular values, projections, or squared
+regularization terms overflow or lose subnormal precision.
+Translation norms retain tiny nonzero errors when their component squares
+underflow. Rotation errors use `atan2` to preserve angles whose trace rounds to
+three; FK also retains tiny revolute motions when their norm squares vanish.
 
 C++ solver construction validates joint fields and coordinate layout before
 allocating model-sized state. Numerical models reserve their last node for a
@@ -140,6 +192,8 @@ use their sine/cosine phase when ordinary remainder reduction loses accuracy;
 returned wraps must preserve that phase to `1e-10`. Nonperiodic coordinates are
 only checked against their interval. An already in-limit configuration with no
 other periodic representation skips turn enumeration and its workspace.
+For nonunit rotational axes, the coordinate period is `2*pi/axis.norm()`.
+Wrapping checks the physical rotation angle used by FK, including oblique axes.
 
 Expansion is limited to 65536 configurations by default, counted before any
 later deduplication. The C++ overload `GetLimitsIK(nodes, max_solutions)` accepts
@@ -148,7 +202,11 @@ unrepresentable turn range returns `false` with an empty result. No partial
 solution set is reported. Numerical `solve_all()` inherits the default budget;
 large multi-turn ranges can therefore fail even if individual joints have valid
 representations. Analytic nearest-branch filtering uses its existing separate
-`WrapToLimitsNear()` path.
+`WrapToLimitsNear()` path. Numerical `GetNearestIK()` and Python `inverse()`
+also select one representation per joint directly, so they can succeed when
+enumerating all turn combinations would exceed the all-solutions budget.
+Nearest wrapping checks nonperiodic coordinates without changing them and
+rejects NaN limits or an unrepresentable selected periodic phase.
 
 ## Scope
 

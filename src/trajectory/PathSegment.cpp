@@ -182,9 +182,10 @@ PathSegBezierCurve2nd<LieGroup>::GetCurvature(double s) const {
     auto ret = 2.0 * ((this->control_points_[2] - this->control_points_[1]) -
                       (this->control_points_[1] - this->control_points_[0]));
     const double length_squared = this->length_ * this->length_;
-    if (std::isfinite(length_squared))
+    if (std::isnormal(length_squared))
         return ret / length_squared;
-    // The derivative can remain representable when the denominator overflows.
+    // Successive divisions retain finite derivatives after denominator
+    // overflow, underflow, or subnormal rounding.
     return (ret / this->length_) / this->length_;
 }
 
@@ -260,12 +261,27 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
     double a = 256.0 - 49.0 * std::pow(WeightedNorm(tend + tstart, weights), 2);
     // Use the same tangent metric as a and c, including rotation. A fixed
     // three-coordinate block also reads beyond R1/R2 tangent storage.
-    const double b = 420.0 * ((pend - pstart).Coeffs().array() * weights.array() *
+    double b = 420.0 * ((pend - pstart).Coeffs().array() * weights.array() *
                               (tstart + tend).Coeffs().array())
                                  .sum();
     double c = -900.0 * WeightedNorm(pend - pstart, weights) *
                WeightedNorm(pend - pstart, weights);
     double delta = b * b - 4 * a * c;
+    double root_scale = 1.0;
+    if (std::isfinite(a) &&
+        (!std::isfinite(b) || !std::isfinite(c) || !std::isfinite(delta))) {
+        // Solve for root / chord length when squaring finite coordinates
+        // overflows. The dimensionless equation has the same positive root.
+        root_scale = WeightedNorm(pend - pstart, weights);
+        if (std::isfinite(root_scale) && root_scale > 0.0) {
+            const Tangent chord = (pend - pstart) / root_scale;
+            b = 420.0 * (chord.Coeffs().array() * weights.array() *
+                         (tstart + tend).Coeffs().array())
+                            .sum();
+            c = -900.0;
+            delta = b * b - 4 * a * c;
+        }
+    }
     holistic_motion::utility::LogDebug(
         "[PathSegBezierCurve5th] a:{}, b:{}, c:{}, delta:{}", a, b, c, delta);
     if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c) ||
@@ -286,6 +302,7 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
         const double q = -0.5 * (b + std::copysign(std::sqrt(delta), b));
         root = q == 0.0 ? 0.0 : std::max(q / a, c / q);
     }
+    root *= root_scale;
     if (!std::isfinite(root) || root <= Epsilon) {
         this->length_ = std::numeric_limits<double>::quiet_NaN();
         holistic_motion::utility::LogWarning(
@@ -295,10 +312,17 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
 
     auto p0 = pstart;
     auto p1 = pstart + 0.2 * root * tstart;
-    auto p2 = p1 + (p1 - p0) + 0.05 * root * root * cstart;
+    const double root_squared = root * root;
+    const Tangent start_curvature = std::isfinite(root_squared)
+                                        ? 0.05 * root * root * cstart
+                                        : root * (0.05 * root * cstart);
+    const Tangent end_curvature = std::isfinite(root_squared)
+                                      ? 0.05 * root * root * cend
+                                      : root * (0.05 * root * cend);
+    auto p2 = p1 + (p1 - p0) + start_curvature;
     auto p5 = pend;
     auto p4 = p5 + (-0.2) * root * tend;
-    auto p3 = p4 + (p4 - p5) + 0.05 * root * root * cend;
+    auto p3 = p4 + (p4 - p5) + end_curvature;
 
     if (!p0.Coeffs().allFinite() || !p1.Coeffs().allFinite() ||
         !p2.Coeffs().allFinite() || !p3.Coeffs().allFinite() ||

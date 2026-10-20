@@ -1,6 +1,7 @@
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <Eigen/SVD>
 
@@ -27,12 +28,27 @@ bool SRSKinematics::GetNullSpaceVelocity(const Eigen::VectorXd &joints,
     // directly instead of forming an incorrectly sized 7-by-6 inverse or
     // amplifying roundoff through singular-value inversion and multiplication
     // by J. Compute all coefficients first to support in-place output.
-    Eigen::VectorXd components = svd.matrixV().transpose() * preferred_velocity;
+    // The model has exactly seven coordinates and six task directions. Keep
+    // projection storage on the stack and scale only inputs whose dot products
+    // could overflow before row-space cancellation produces a finite result.
+    Eigen::Matrix<double, 6, 1> components;
+    Eigen::Matrix<double, 7, 1> scaled_preferred;
+    const double maximum = preferred_velocity.cwiseAbs().maxCoeff();
+    const bool scale_input = maximum > std::numeric_limits<double>::max() / 16.0;
+    if (scale_input) {
+        scaled_preferred = preferred_velocity / maximum;
+        components.noalias() = svd.matrixV().transpose() * scaled_preferred;
+    } else {
+        components.noalias() = svd.matrixV().transpose() * preferred_velocity;
+    }
     for (Eigen::Index i = 0; i < singular.size(); ++i) {
         if (singular[i] <= threshold)
             components[i] = 0.0;
     }
-    velocity = preferred_velocity - svd.matrixV() * components;
+    if (scale_input)
+        velocity = (scaled_preferred - svd.matrixV() * components) * maximum;
+    else
+        velocity = preferred_velocity - svd.matrixV() * components;
     return velocity.allFinite();
 }
 

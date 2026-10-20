@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional, Union
@@ -95,6 +96,13 @@ def _as_mesh(loaded, trimesh):
     return loaded
 
 
+def _geometry_key(shape):
+    if shape.tag == "mesh":
+        # Mesh scaling belongs to each instance; the file is shared.
+        return shape.tag, shape.get("filename", "")
+    return shape.tag, tuple(sorted(shape.attrib.items()))
+
+
 def load_urdf_collision_meshes(
     urdf_path: PathLike,
     *,
@@ -105,6 +113,15 @@ def load_urdf_collision_meshes(
     Mesh, box, cylinder, and sphere elements are supported. Returned values are
     ``trimesh.Trimesh`` objects, but trimesh remains an optional dependency.
     """
+    return _load_urdf_collision_meshes(urdf_path, package_dirs=package_dirs)
+
+
+def _load_urdf_collision_meshes(
+    urdf_path: PathLike,
+    *,
+    package_dirs: Iterable[PathLike],
+    selected_links: frozenset[str] | None = None,
+) -> dict[str, object]:
     import trimesh
 
     urdf = Path(urdf_path).resolve()
@@ -119,6 +136,14 @@ def load_urdf_collision_meshes(
     root = ET.parse(urdf).getroot()
     if root.tag != "robot":
         raise ValueError("URDF root element must be <robot>")
+    remaining_geometries = Counter(
+        _geometry_key(shape)
+        for link in root.findall("link")
+        if selected_links is None or link.get("name") in selected_links
+        for geometry in link.findall("collision/geometry")
+        for shape in geometry
+    )
+    geometry_cache = {}
     result = {}
     seen_links = set()
     for link in root.findall("link"):
@@ -128,48 +153,67 @@ def load_urdf_collision_meshes(
         if link_name in seen_links:
             raise ValueError(f"URDF contains duplicate link name {link_name!r}")
         seen_links.add(link_name)
+        if selected_links is not None and link_name not in selected_links:
+            continue
         geometries = []
         for collision in link.findall("collision"):
             geometry = collision.find("geometry")
             if geometry is None or len(geometry) != 1:
                 raise ValueError(f"link {link_name} has invalid collision geometry")
             shape = geometry[0]
+            key = _geometry_key(shape)
+            mesh = geometry_cache.get(key)
+            if mesh is None:
+                if shape.tag == "mesh":
+                    uri = shape.get("filename", "")
+                    mesh_path = _resolve_mesh_uri(uri, urdf.parent, roots)
+                    mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
+                elif shape.tag == "box":
+                    size = _vector(shape.get("size"), 3, None)
+                    if np.any(size <= 0.0):
+                        raise ValueError(f"link {link_name} box size must be positive")
+                    mesh = trimesh.creation.box(extents=size)
+                elif shape.tag == "cylinder":
+                    radius = float(shape.get("radius", "nan"))
+                    length = float(shape.get("length", "nan"))
+                    if not np.isfinite(radius + length) or radius <= 0 or length <= 0:
+                        raise ValueError(
+                            f"link {link_name} cylinder dimensions must be positive"
+                        )
+                    mesh = trimesh.creation.cylinder(radius=radius, height=length)
+                elif shape.tag == "sphere":
+                    radius = float(shape.get("radius", "nan"))
+                    if not np.isfinite(radius) or radius <= 0:
+                        raise ValueError(
+                            f"link {link_name} sphere radius must be positive"
+                        )
+                    mesh = trimesh.creation.icosphere(subdivisions=2, radius=radius)
+                else:
+                    raise ValueError(
+                        f"link {link_name} uses unsupported collision geometry {shape.tag!r}"
+                    )
+            remaining_geometries[key] -= 1
+            if remaining_geometries[key]:
+                # Keep an untransformed base only until its final requested
+                # instance. Unique geometries need neither a copy nor a cache.
+                geometry_cache[key] = mesh
+                mesh = mesh.copy()
+            else:
+                geometry_cache.pop(key, None)
             if shape.tag == "mesh":
-                mesh_path = _resolve_mesh_uri(
-                    shape.get("filename", ""), urdf.parent, roots
-                )
-                mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
                 scale = _vector(shape.get("scale"), 3, [1, 1, 1])
                 if np.any(scale <= 0.0):
                     raise ValueError(f"link {link_name} mesh scale must be positive")
                 mesh.apply_scale(scale)
-            elif shape.tag == "box":
-                size = _vector(shape.get("size"), 3, None)
-                if np.any(size <= 0.0):
-                    raise ValueError(f"link {link_name} box size must be positive")
-                mesh = trimesh.creation.box(extents=size)
-            elif shape.tag == "cylinder":
-                radius = float(shape.get("radius", "nan"))
-                length = float(shape.get("length", "nan"))
-                if not np.isfinite(radius + length) or radius <= 0 or length <= 0:
-                    raise ValueError(
-                        f"link {link_name} cylinder dimensions must be positive"
-                    )
-                mesh = trimesh.creation.cylinder(radius=radius, height=length)
-            elif shape.tag == "sphere":
-                radius = float(shape.get("radius", "nan"))
-                if not np.isfinite(radius) or radius <= 0:
-                    raise ValueError(f"link {link_name} sphere radius must be positive")
-                mesh = trimesh.creation.icosphere(subdivisions=2, radius=radius)
-            else:
-                raise ValueError(
-                    f"link {link_name} uses unsupported collision geometry {shape.tag!r}"
-                )
             mesh.apply_transform(_origin_transform(collision.find("origin")))
             geometries.append(mesh)
         if geometries:
-            result[link_name] = trimesh.util.concatenate(geometries)
-    if not result:
+            result[link_name] = (
+                geometries[0]
+                if len(geometries) == 1
+                else trimesh.util.concatenate(geometries)
+            )
+    if not result and selected_links is None:
         raise ValueError("URDF contains no supported collision geometry")
     return result
 
@@ -184,17 +228,24 @@ def fit_urdf_collision_spheres(
     surface_samples: int = 5000,
     random_seed: int = 0,
 ) -> dict[str, SphereFitResult]:
-    """Fit selected URDF links and return one result per link."""
+    """Load and fit only selected URDF links, in the requested order."""
     if isinstance(links, str):
         raise TypeError("links must be an iterable of link names, not a string")
-    meshes = load_urdf_collision_meshes(urdf_path, package_dirs=package_dirs)
-    selected = tuple(links) if links is not None else tuple(meshes)
-    if not selected:
-        raise ValueError("links must not be empty")
-    if len(set(selected)) != len(selected):
-        raise ValueError("links must contain unique names")
-    if any(not isinstance(link, str) or not link for link in selected):
-        raise ValueError("links must contain non-empty string names")
+    selected = tuple(links) if links is not None else None
+    if selected is not None:
+        if not selected:
+            raise ValueError("links must not be empty")
+        if any(not isinstance(link, str) or not link for link in selected):
+            raise ValueError("links must contain non-empty string names")
+        if len(set(selected)) != len(selected):
+            raise ValueError("links must contain unique names")
+    meshes = _load_urdf_collision_meshes(
+        urdf_path,
+        package_dirs=package_dirs,
+        selected_links=frozenset(selected) if selected is not None else None,
+    )
+    if selected is None:
+        selected = tuple(meshes)
     unknown = sorted(set(selected) - set(meshes))
     if unknown:
         raise ValueError("links have no collision geometry: " + ", ".join(unknown))

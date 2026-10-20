@@ -17,12 +17,14 @@ from typing import Optional, Union
 
 import numpy as np
 
-from ..._validation import validated_transform
+from ..._validation import real_array, require_real, validated_transform
 from .modes import RetargetingMode, RetargetingModeManager
+
+_MIN_NORMAL_NORM = np.sqrt(np.finfo(float).tiny)
 
 
 def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
-    result = np.array(value, dtype=float, copy=True)
+    result = real_array(value, name=name, copy=True)
     if shape is not None and result.shape != shape:
         raise ValueError(f"{name} must have shape {shape}")
     if not np.isfinite(result).all():
@@ -32,6 +34,7 @@ def _readonly_array(value, *, shape=None, name="array") -> np.ndarray:
 
 
 def _positive_float(value, name: str) -> float:
+    require_real(value, name=name)
     try:
         result = float(value)
     except (TypeError, ValueError) as error:
@@ -42,12 +45,17 @@ def _positive_float(value, name: str) -> float:
 
 
 def _stable_norm(value) -> float:
-    """Return a Euclidean norm without squaring finite large components."""
+    """Preserve finite norms when component squares overflow or underflow."""
 
     values = np.asarray(value, dtype=float).reshape(-1)
-    with np.errstate(over="ignore", invalid="ignore"):
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
         norm = float(np.linalg.norm(values))
-    if np.isfinite(norm) or not np.isfinite(values).all():
+    if norm == 0.0:
+        # Squared components may underflow even when the vector is nonzero.
+        return float(np.hypot.reduce(np.abs(values))) if values.any() else norm
+    if (np.isfinite(norm) and norm >= _MIN_NORMAL_NORM) or not np.isfinite(
+        values
+    ).all():
         return norm
     return float(np.hypot.reduce(np.abs(values)))
 
@@ -121,6 +129,8 @@ class RetargetingResult:
                 ) from error
             if len(pair) != 2:
                 raise ValueError(f"target residual {name!r} must contain two values")
+            require_real(pair[0], name=f"target residual {name!r}")
+            require_real(pair[1], name=f"target residual {name!r}")
             try:
                 pair = (float(pair[0]), float(pair[1]))
             except (TypeError, ValueError) as error:
@@ -150,6 +160,7 @@ class RetargetingResult:
             "support_polygon_violation",
         )
         for name in required_non_negative:
+            require_real(getattr(self, name), name=f"result {name}")
             try:
                 value = float(getattr(self, name))
             except (TypeError, ValueError) as error:
@@ -165,6 +176,7 @@ class RetargetingResult:
             "zmp_residual",
         )
         for name in optional_non_negative:
+            require_real(getattr(self, name), name=f"result {name}")
             try:
                 value = float(getattr(self, name))
             except (TypeError, ValueError) as error:
@@ -460,7 +472,7 @@ class PinocchioRetargetingSolver:
     def _configuration(self, value: Optional[Sequence[float]]) -> np.ndarray:
         if value is None:
             return self._neutral_q.copy()
-        q = np.asarray(value, dtype=float).reshape(-1)
+        q = real_array(value, name="configuration").reshape(-1)
         if q.shape != (self.model.nq,) or not np.isfinite(q).all():
             raise ValueError(
                 f"configuration must be a finite vector of size {self.model.nq}"

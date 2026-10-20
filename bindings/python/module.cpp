@@ -12,6 +12,7 @@
 
 #include "../../src/trajectory/TrajectoryStateSampler.h"
 #include "Bindings.h"
+#include "RealInputs.h"
 #include "holistic_motion/kinematics/OPWKinematics.h"
 #include "holistic_motion/kinematics/URKinematics.h"
 #include "holistic_motion/kinematics/fep/FEPKinematics.h"
@@ -89,6 +90,25 @@ void RequireRigidTransform(const Eigen::Matrix4d& transform,
         throw py::value_error(std::string(name) +
                               " must be a finite rigid transform");
     }
+}
+
+using holistic_motion::python::CheckedRealEigen;
+using holistic_motion::python::ReadParameter;
+using holistic_motion::python::RequireRealInput;
+using holistic_motion::python::WriteRealParameter;
+
+template <class Class, class Result, class Value>
+auto WithRealScalar(Result (Class::*method)(Value) const, const char *name) {
+    return [method, name](const Class &self, const py::object &input) {
+        return (self.*method)(CheckedRealEigen<Value>(input, name));
+    };
+}
+
+template <class Class, class Result, class Value>
+auto WithRealScalar(Result (Class::*method)(Value), const char *name) {
+    return [method, name](Class &self, const py::object &input) {
+        return (self.*method)(CheckedRealEigen<Value>(input, name));
+    };
 }
 
 void ValidateUniformSampleCount(std::size_t samples, std::size_t components) {
@@ -341,9 +361,26 @@ void BindJointTrajectory(py::module_ &module, const char *name,
     py::class_<JointTrajectory<N>>(module, name,
                                    "Fifth-order Bezier joint path with "
                                    "selectable Double-S or trapezoidal timing.")
-        .def(py::init<const Eigen::MatrixXd &, const Eigen::VectorXd &,
-                      const Eigen::VectorXd &, const Eigen::VectorXd &, double,
-                      double, const std::string &>(),
+        .def(py::init([](const py::object &waypoints,
+                         const py::object &max_velocity,
+                         const py::object &max_acceleration,
+                         const py::object &max_jerk,
+                         const py::object &blend_tolerance,
+                         const py::object &minimum_duration,
+                         const std::string &profile) {
+                 return std::make_unique<JointTrajectory<N>>(
+                     CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
+                                                       "max_velocity"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                                       "max_acceleration"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+                     CheckedRealEigen<double>(blend_tolerance,
+                                              "blend_tolerance"),
+                     CheckedRealEigen<double>(minimum_duration,
+                                              "minimum_duration"),
+                     profile);
+             }),
              py::arg("waypoints"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
              py::arg("blend_tolerance") = 0.0,
@@ -361,33 +398,47 @@ void BindJointTrajectory(py::module_ &module, const char *name,
         .def_property_readonly("max_jerk", &JointTrajectory<N>::MaxJerk)
         .def_property_readonly("path_length", &JointTrajectory<N>::PathLength)
         .def_property_readonly("waypoints", &JointTrajectory<N>::Waypoints)
-        .def("position", &JointTrajectory<N>::Position, py::arg("time"),
+        .def("position", WithRealScalar(&JointTrajectory<N>::Position, "time"),
+             py::arg("time"),
              "Evaluate joint position; finite times are clamped to the "
              "trajectory.")
-        .def("velocity", &JointTrajectory<N>::Velocity, py::arg("time"),
-             "Evaluate joint velocity at a finite time.")
-        .def("acceleration", &JointTrajectory<N>::Acceleration, py::arg("time"),
-             "Evaluate joint acceleration at a finite time.")
-        .def("jerk", &JointTrajectory<N>::Jerk, py::arg("time"),
-             "Evaluate joint jerk at a finite time.")
-        .def("set_minimum_duration", &JointTrajectory<N>::SetMinimumDuration,
-             py::arg("duration"),
-             "Slow the trajectory to at least duration seconds; never speeds "
-             "it up.")
-        .def("sample", &JointTrajectory<N>::Sample, py::arg("times"),
-             "Return position, velocity, acceleration, and jerk matrices for "
-             "1-D times.")
-        .def("sample_uniform", &JointTrajectory<N>::SampleUniform,
+        .def("velocity", WithRealScalar(&JointTrajectory<N>::Velocity, "time"),
+             py::arg("time"), "Evaluate joint velocity at a finite time.")
+        .def("acceleration",
+             WithRealScalar(&JointTrajectory<N>::Acceleration, "time"),
+             py::arg("time"), "Evaluate joint acceleration at a finite time.")
+        .def("jerk", WithRealScalar(&JointTrajectory<N>::Jerk, "time"),
+             py::arg("time"), "Evaluate joint jerk at a finite time.")
+        .def(
+            "set_minimum_duration",
+            WithRealScalar(&JointTrajectory<N>::SetMinimumDuration, "duration"),
+            py::arg("duration"),
+            "Slow the trajectory to at least duration seconds; never speeds "
+            "it up.")
+        .def(
+            "sample",
+            [](const JointTrajectory<N> &trajectory, const py::object &times) {
+                return trajectory.Sample(
+                    CheckedRealEigen<Eigen::VectorXd>(times, "times"));
+            },
+            py::arg("times"),
+            "Return position, velocity, acceleration, and jerk matrices for "
+            "1-D times.")
+        .def("sample_uniform",
+             WithRealScalar(&JointTrajectory<N>::SampleUniform, "samples"),
              py::arg("samples") = 1001,
              "Uniformly sample the inclusive [0, duration] interval and "
              "return time plus four state matrices.")
-        .def("state", &JointTrajectory<N>::State, py::arg("time"),
+        .def("state", WithRealScalar(&JointTrajectory<N>::State, "time"),
+             py::arg("time"),
              "Return position, velocity, acceleration, and jerk at one time.")
         .def(
             "constraint_report",
             [report_keys](const JointTrajectory<N> &trajectory,
-                          std::size_t samples) {
-                return trajectory.ConstraintReport(samples, *report_keys);
+                          const py::object &samples) {
+                return trajectory.ConstraintReport(
+                    CheckedRealEigen<std::size_t>(samples, "samples"),
+                    *report_keys);
             },
             py::arg("samples") = 2001,
             "Return sampled per-joint peaks, limit utilization, and "
@@ -598,6 +649,28 @@ private:
     std::string profile_;
 };
 
+namespace {
+
+template <typename Factory> auto CheckedTrajectoryFactory(Factory factory) {
+    return [factory](
+               const py::object &waypoints, const py::object &max_velocity,
+               const py::object &max_acceleration, const py::object &max_jerk,
+               const py::object &blend_tolerance,
+               const py::object &minimum_duration, const std::string &profile) {
+        return factory(
+            CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
+            CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity"),
+            CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                              "max_acceleration"),
+            CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+            CheckedRealEigen<double>(blend_tolerance, "blend_tolerance"),
+            CheckedRealEigen<double>(minimum_duration, "minimum_duration"),
+            profile);
+    };
+}
+
+} // namespace
+
 PYBIND11_MODULE(_holistic_motion, module) {
     module.doc() = "Robot models, kinematics, manifolds, and trajectories";
 
@@ -606,10 +679,13 @@ PYBIND11_MODULE(_holistic_motion, module) {
     holistic_motion::python::BindSamplingPlanning(module);
 
     py::class_<SE3d>(module, "SE3")
-            .def(py::init<>())
-            .def(py::init<const Eigen::Matrix4d&>())
-            .def("matrix", &SE3d::GetTransform)
-            .def("inverse", &SE3d::Inverse);
+        .def(py::init<>())
+        .def(py::init([](const py::object &transform) {
+            return SE3d(
+                CheckedRealEigen<Eigen::Matrix4d>(transform, "transform"));
+        }))
+        .def("matrix", &SE3d::GetTransform)
+        .def("inverse", &SE3d::Inverse);
 
     py::enum_<JointType>(module, "JointType")
             .value("UNKNOWN", JointType::UNKNOWN)
@@ -682,27 +758,47 @@ PYBIND11_MODULE(_holistic_motion, module) {
     py::class_<KinematicsBase, std::shared_ptr<KinematicsBase>>(
             module, "AnalyticKinematics")
             .def("dof", &KinematicsBase::GetDOF)
-            .def("forward", [](const KinematicsBase& self,
-                                const Eigen::VectorXd& joints) {
+        .def(
+            "forward",
+            [](const KinematicsBase &self, const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
                     throw py::value_error("invalid analytic FK joint vector");
                 }
                 return pose.GetTransform();
-            }, py::arg("joints"))
-            .def("solve_all", [](const KinematicsBase& self,
-                                  const Eigen::Matrix4d& target,
-                                  Eigen::VectorXd seed) {
+            },
+            py::arg("joints"))
+        .def(
+            "solve_all",
+            [](const KinematicsBase &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 std::vector<double> distances;
                 if (!self.GetIK(SE3d(target), solutions, seed, distances)) {
                     return std::vector<Eigen::VectorXd>{};
                 }
                 return solutions.ik_joints;
-            }, py::arg("target"), py::arg("seed"))
-            .def("inverse", [](const KinematicsBase& self,
-                                const Eigen::Matrix4d& target,
-                                Eigen::VectorXd seed) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "inverse",
+            [](const KinematicsBase &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
                 if (!self.GetNearestIK(SE3d(target), solutions, seed, distance) ||
@@ -710,54 +806,90 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     throw py::value_error("analytic inverse kinematics failed");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"));
+            },
+            py::arg("target"), py::arg("seed"));
 
     py::class_<OPWParameters>(module, "OPWParameters")
             .def(py::init<>())
-            .def_readwrite("a1", &OPWParameters::a1)
-            .def_readwrite("a2", &OPWParameters::a2)
-            .def_readwrite("b", &OPWParameters::b)
-            .def_readwrite("c1", &OPWParameters::c1)
-            .def_readwrite("c2", &OPWParameters::c2)
-            .def_readwrite("c3", &OPWParameters::c3)
-            .def_readwrite("c4", &OPWParameters::c4)
-            .def_readwrite("offsets", &OPWParameters::offsets)
-            .def_readwrite("rotation_directions",
-                           &OPWParameters::rotation_directions)
-            .def_property("base_transform",
-                    [](const OPWParameters& self) {
+        .def_property("a1", ReadParameter(&OPWParameters::a1),
+                      WriteRealParameter(&OPWParameters::a1, "a1"))
+        .def_property("a2", ReadParameter(&OPWParameters::a2),
+                      WriteRealParameter(&OPWParameters::a2, "a2"))
+        .def_property("b", ReadParameter(&OPWParameters::b),
+                      WriteRealParameter(&OPWParameters::b, "b"))
+        .def_property("c1", ReadParameter(&OPWParameters::c1),
+                      WriteRealParameter(&OPWParameters::c1, "c1"))
+        .def_property("c2", ReadParameter(&OPWParameters::c2),
+                      WriteRealParameter(&OPWParameters::c2, "c2"))
+        .def_property("c3", ReadParameter(&OPWParameters::c3),
+                      WriteRealParameter(&OPWParameters::c3, "c3"))
+        .def_property("c4", ReadParameter(&OPWParameters::c4),
+                      WriteRealParameter(&OPWParameters::c4, "c4"))
+        .def_property("offsets", ReadParameter(&OPWParameters::offsets),
+                      WriteRealParameter(&OPWParameters::offsets, "offsets"))
+        .def_property("rotation_directions",
+                      ReadParameter(&OPWParameters::rotation_directions),
+                      WriteRealParameter(&OPWParameters::rotation_directions,
+                                         "rotation_directions"))
+        .def_property(
+            "base_transform",
+            [](const OPWParameters &self) {
                         return self.T_b_ob.GetTransform();
-                    }, [](OPWParameters& self, const Eigen::Matrix4d& value) {
+            },
+            [](OPWParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_b_ob = SE3d(value);
                     })
-            .def_property("tool_transform",
-                    [](const OPWParameters& self) {
+        .def_property(
+            "tool_transform",
+            [](const OPWParameters &self) {
                         return self.T_oe_e.GetTransform();
-                    }, [](OPWParameters& self, const Eigen::Matrix4d& value) {
+            },
+            [](OPWParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_oe_e = SE3d(value);
                     });
 
     py::class_<URParameters>(module, "URParameters")
             .def(py::init<>())
-            .def_readwrite("d1", &URParameters::d1)
-            .def_readwrite("a2", &URParameters::a2)
-            .def_readwrite("a3", &URParameters::a3)
-            .def_readwrite("d4", &URParameters::d4)
-            .def_readwrite("d5", &URParameters::d5)
-            .def_readwrite("d6", &URParameters::d6)
-            .def_readwrite("offsets", &URParameters::offsets)
-            .def_readwrite("rotation_directions",
-                           &URParameters::rotation_directions)
-            .def_property("base_transform",
-                    [](const URParameters& self) {
-                        return self.T_b_ob.GetTransform();
-                    }, [](URParameters& self, const Eigen::Matrix4d& value) {
+        .def_property("d1", ReadParameter(&URParameters::d1),
+                      WriteRealParameter(&URParameters::d1, "d1"))
+        .def_property("a2", ReadParameter(&URParameters::a2),
+                      WriteRealParameter(&URParameters::a2, "a2"))
+        .def_property("a3", ReadParameter(&URParameters::a3),
+                      WriteRealParameter(&URParameters::a3, "a3"))
+        .def_property("d4", ReadParameter(&URParameters::d4),
+                      WriteRealParameter(&URParameters::d4, "d4"))
+        .def_property("d5", ReadParameter(&URParameters::d5),
+                      WriteRealParameter(&URParameters::d5, "d5"))
+        .def_property("d6", ReadParameter(&URParameters::d6),
+                      WriteRealParameter(&URParameters::d6, "d6"))
+        .def_property("offsets", ReadParameter(&URParameters::offsets),
+                      WriteRealParameter(&URParameters::offsets, "offsets"))
+        .def_property("rotation_directions",
+                      ReadParameter(&URParameters::rotation_directions),
+                      WriteRealParameter(&URParameters::rotation_directions,
+                                         "rotation_directions"))
+        .def_property(
+            "base_transform",
+            [](const URParameters &self) { return self.T_b_ob.GetTransform(); },
+            [](URParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_b_ob = SE3d(value);
                     })
-            .def_property("tool_transform",
-                    [](const URParameters& self) {
-                        return self.T_oe_e.GetTransform();
-                    }, [](URParameters& self, const Eigen::Matrix4d& value) {
+        .def_property(
+            "tool_transform",
+            [](const URParameters &self) { return self.T_oe_e.GetTransform(); },
+            [](URParameters &self, const py::object &input) {
+                const Eigen::Matrix4d value =
+                    CheckedRealEigen<Eigen::Matrix4d>(input, "transform");
+                RequireRigidTransform(value, "transform");
                         self.T_oe_e = SE3d(value);
                     });
 
@@ -786,12 +918,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
         }
         return nodes;
     };
-    py::class_<OPWKinematics, KinematicsBase,
-               std::shared_ptr<OPWKinematics>>(module, "OPWKinematics")
-            .def(py::init([make_joint_nodes, valid_directions, valid_offsets](
-                                             const OPWParameters& params,
-                                             const Eigen::VectorXd& lower,
-                                             const Eigen::VectorXd& upper) {
+    py::class_<OPWKinematics, KinematicsBase, std::shared_ptr<OPWKinematics>>(
+        module, "OPWKinematics")
+        .def(
+            py::init([make_joint_nodes, valid_directions,
+                      valid_offsets](const OPWParameters &params,
+                                     const py::object &lower_input,
+                                     const py::object &upper_input) {
+                const Eigen::VectorXd lower = CheckedRealEigen<Eigen::VectorXd>(
+                    lower_input, "lower_limits");
+                const Eigen::VectorXd upper = CheckedRealEigen<Eigen::VectorXd>(
+                    upper_input, "upper_limits");
                 const bool geometry_valid =
                         std::isfinite(params.a1) && std::isfinite(params.a2) &&
                         std::isfinite(params.b) && std::isfinite(params.c1) &&
@@ -808,14 +945,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
                         params, make_joint_nodes(lower, upper));
                 solver->DisableRobotConfig();
                 return solver;
-            }), py::arg("parameters"), py::arg("lower_limits"),
+            }),
+            py::arg("parameters"), py::arg("lower_limits"),
                 py::arg("upper_limits"));
-    py::class_<URKinematics, KinematicsBase,
-               std::shared_ptr<URKinematics>>(module, "URKinematics")
-            .def(py::init([make_joint_nodes, valid_directions, valid_offsets](
-                                             const URParameters& params,
-                                             const Eigen::VectorXd& lower,
-                                             const Eigen::VectorXd& upper) {
+    py::class_<URKinematics, KinematicsBase, std::shared_ptr<URKinematics>>(
+        module, "URKinematics")
+        .def(
+            py::init([make_joint_nodes, valid_directions,
+                      valid_offsets](const URParameters &params,
+                                     const py::object &lower_input,
+                                     const py::object &upper_input) {
+                const Eigen::VectorXd lower = CheckedRealEigen<Eigen::VectorXd>(
+                    lower_input, "lower_limits");
+                const Eigen::VectorXd upper = CheckedRealEigen<Eigen::VectorXd>(
+                    upper_input, "upper_limits");
                 const bool geometry_valid =
                         std::isfinite(params.d1) && std::isfinite(params.a2) &&
                         std::isfinite(params.a3) && std::isfinite(params.d4) &&
@@ -831,43 +974,63 @@ PYBIND11_MODULE(_holistic_motion, module) {
                         params, make_joint_nodes(lower, upper));
                 solver->DisableRobotConfig();
                 return solver;
-            }), py::arg("parameters"), py::arg("lower_limits"),
+            }),
+            py::arg("parameters"), py::arg("lower_limits"),
                 py::arg("upper_limits"));
 
     py::class_<NumericalKinematics, KinematicsBase,
-               std::shared_ptr<NumericalKinematics>>(
-            module, "NumericalKinematics")
+               std::shared_ptr<NumericalKinematics>>(module,
+                                                     "NumericalKinematics")
             .def_property(
                     "home_joints", &NumericalKinematics::GetHomeJoints,
-                    [](NumericalKinematics& self,
-                       const Eigen::VectorXd& joints) {
+            [](NumericalKinematics &self, const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                         if (!self.SetHomeJoints(joints)) {
                             throw py::value_error(
                                     "home_joints must match DOF and be finite");
                         }
                     })
             .def_property_readonly("joint_limits",
-                    [](const NumericalKinematics& self) {
+                               [](const NumericalKinematics &self) {
                         Eigen::VectorXd upper;
                         Eigen::VectorXd lower;
                         self.GetJointLimits(upper, lower);
                         return py::make_tuple(lower, upper);
                     })
-            .def("is_reachable", [](const NumericalKinematics& self,
-                                     const Eigen::Matrix4d& target) {
-                if (!target.allFinite()) return false;
+        .def(
+            "is_reachable",
+            [](const NumericalKinematics &self,
+               const py::object &target_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+
+                if (!IsRigidTransform(target))
+                    return false;
                 return self.IsReachable(SE3d(target));
-            }, py::arg("target"))
-            .def("forward", [](const NumericalKinematics& self,
-                               const Eigen::VectorXd& joints) {
+            },
+            py::arg("target"))
+        .def("forward",
+             [](const NumericalKinematics &self,
+                const py::object &joints_input) {
+                 Eigen::VectorXd joints =
+                     CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
-                    throw py::value_error("joint vector does not match robot DOF");
+                     throw py::value_error(
+                         "joint vector does not match robot DOF");
                 }
                 return pose.GetTransform();
             })
-            .def("forward_all", [](const NumericalKinematics& self,
-                                   const Eigen::VectorXd& joints) {
+        .def(
+            "forward_all",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 std::vector<SE3d> poses;
                 if (!self.GetAllFK(joints, poses)) {
                     throw py::value_error("joint vector does not match robot DOF");
@@ -878,19 +1041,32 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     matrices.push_back(pose.GetTransform());
                 }
                 return matrices;
-            }, py::arg("joints"))
-            .def("forward_user", [](const NumericalKinematics& self,
-                                     const Eigen::VectorXd& joints) {
+            },
+            py::arg("joints"))
+        .def(
+            "forward_user",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 SE3d pose;
                 if (!self.GetFK(joints, pose)) {
                     throw py::value_error(
                             "joint vector does not match robot DOF");
                 }
                 return self.ApplyUserFrame(pose).GetTransform();
-            }, py::arg("joints"))
-            .def("inverse", [](const NumericalKinematics& self,
-                               const Eigen::Matrix4d& target,
-                               Eigen::VectorXd seed) {
+            },
+            py::arg("joints"))
+        .def(
+            "inverse",
+            [](const NumericalKinematics &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
@@ -899,10 +1075,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     throw py::value_error("inverse kinematics did not converge");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"))
-            .def("inverse_user", [](const NumericalKinematics& self,
-                                     const Eigen::Matrix4d& target,
-                                     Eigen::VectorXd seed) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "inverse_user",
+            [](const NumericalKinematics &self, const py::object &target_input,
+               const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
@@ -913,30 +1096,48 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             "inverse kinematics did not converge");
                 }
                 return solutions.ik_joints.front();
-            }, py::arg("target"), py::arg("seed"))
-            .def("jacobian", [](const NumericalKinematics& self,
-                                const Eigen::VectorXd& joints) {
+            },
+            py::arg("target"), py::arg("seed"))
+        .def(
+            "jacobian",
+            [](const NumericalKinematics &self,
+               const py::object &joints_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+
                 Eigen::MatrixXd jacobian;
                 if (!self.GetJacobian(joints, jacobian)) {
                     throw py::value_error("joint vector does not match robot DOF");
                 }
                 return jacobian;
-            }, py::arg("joints"))
-            .def("set_tcp", [](NumericalKinematics& self,
-                               const Eigen::Matrix4d& pose) {
+            },
+            py::arg("joints"))
+        .def(
+            "set_tcp",
+            [](NumericalKinematics &self, const py::object &pose_input) {
+                Eigen::Matrix4d pose =
+                    CheckedRealEigen<Eigen::Matrix4d>(pose_input, "pose");
+
                 RequireRigidTransform(pose, "TCP pose");
                 return self.SetTCP(SE3d(pose));
-            }, py::arg("pose"))
-            .def("set_user_frame", [](NumericalKinematics& self,
-                                      const Eigen::Matrix4d& pose) {
+            },
+            py::arg("pose"))
+        .def(
+            "set_user_frame",
+            [](NumericalKinematics &self, const py::object &pose_input) {
+                Eigen::Matrix4d pose =
+                    CheckedRealEigen<Eigen::Matrix4d>(pose_input, "pose");
+
                 RequireRigidTransform(pose, "user frame");
                 return self.SetUserFrame(SE3d(pose));
-            }, py::arg("pose"))
-            .def_property_readonly("tcp", [](const NumericalKinematics& self) {
+            },
+            py::arg("pose"))
+        .def_property_readonly("tcp",
+                               [](const NumericalKinematics &self) {
                 return self.GetTCP().GetTransform();
             })
-            .def_property_readonly(
-                    "user_frame", [](const NumericalKinematics& self) {
+        .def_property_readonly("user_frame",
+                               [](const NumericalKinematics &self) {
                         return self.GetUserFrame().GetTransform();
                     })
             .def("clear_tcp", &NumericalKinematics::ClearTCP)
@@ -955,11 +1156,17 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .value("NO_SOLUTION", SRSSolveStatus::NO_SOLUTION);
 
     py::class_<SRSConfiguration>(module, "SRSConfiguration")
-            .def(py::init<>())
-            .def_readwrite("shoulder", &SRSConfiguration::shoulder)
-            .def_readwrite("elbow", &SRSConfiguration::elbow)
-            .def_readwrite("wrist", &SRSConfiguration::wrist)
-            .def_readwrite("redundancy", &SRSConfiguration::redundancy);
+        .def(py::init<>())
+        .def_property(
+            "shoulder", ReadParameter(&SRSConfiguration::shoulder),
+            WriteRealParameter(&SRSConfiguration::shoulder, "shoulder"))
+        .def_property("elbow", ReadParameter(&SRSConfiguration::elbow),
+                      WriteRealParameter(&SRSConfiguration::elbow, "elbow"))
+        .def_property("wrist", ReadParameter(&SRSConfiguration::wrist),
+                      WriteRealParameter(&SRSConfiguration::wrist, "wrist"))
+        .def_property(
+            "redundancy", ReadParameter(&SRSConfiguration::redundancy),
+            WriteRealParameter(&SRSConfiguration::redundancy, "redundancy"));
 
     py::class_<SRSGeometryAnalysis>(module, "SRSGeometryAnalysis")
             .def_readonly("structurally_compatible",
@@ -1009,24 +1216,40 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .def_property_readonly("compatible", &SRSKinematics::IsCompatible)
             .def("analyze_geometry", &SRSKinematics::AnalyzeGeometry,
                  py::arg("axis_tolerance") = 1e-4)
-            .def("configuration", &SRSKinematics::GetConfiguration,
+        .def(
+            "configuration",
+            [](const SRSKinematics &self, const py::object &joints) {
+                return self.GetConfiguration(
+                    CheckedRealEigen<Eigen::VectorXd>(joints, "joints"));
+            },
                  py::arg("joints"))
-            .def("solve", [](const SRSKinematics& self,
-                              const Eigen::Matrix4d& target,
-                              const Eigen::VectorXd& seed,
-                              SRSSolveMethod method) {
+        .def(
+            "solve",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 if (!self.Solve(SE3d(target), seed, method, solutions)) {
                     throw py::value_error("SRS inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_detailed", [](const SRSKinematics& self,
-                                       const Eigen::Matrix4d& target,
-                                       const Eigen::VectorXd& seed,
-                                       SRSSolveMethod method) {
+        .def(
+            "solve_detailed",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 if (!IsRigidTransform(target)) {
                     SRSSolveReport report;
                     report.status = SRSSolveStatus::INVALID_INPUT;
@@ -1034,12 +1257,18 @@ PYBIND11_MODULE(_holistic_motion, module) {
                     return report;
                 }
                 return self.SolveDetailed(SE3d(target), seed, method);
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_user", [](const SRSKinematics& self,
-                                   const Eigen::Matrix4d& target,
-                                   const Eigen::VectorXd& seed,
-                                   SRSSolveMethod method) {
+        .def(
+            "solve_user",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 const SE3d base_target = self.RemoveUserFrame(SE3d(target));
@@ -1048,12 +1277,18 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             "SRS inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_detailed_user", [](const SRSKinematics& self,
-                                            const Eigen::Matrix4d& target,
-                                            const Eigen::VectorXd& seed,
-                                            SRSSolveMethod method) {
+        .def(
+            "solve_detailed_user",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const py::object &seed_input, SRSSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
                 if (!IsRigidTransform(target)) {
                     SRSSolveReport report;
                     report.status = SRSSolveStatus::INVALID_INPUT;
@@ -1062,50 +1297,79 @@ PYBIND11_MODULE(_holistic_motion, module) {
                 }
                 return self.SolveDetailed(
                         self.RemoveUserFrame(SE3d(target)), seed, method);
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = SRSSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_configuration", [](const SRSKinematics& self,
-                                             const Eigen::Matrix4d& target,
-                                             const SRSConfiguration& config,
-                                             const Eigen::VectorXd& seed) {
+        .def(
+            "solve_configuration",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd solution;
                 if (!self.SolveConfiguration(SE3d(target), config, seed,
                                              solution)) {
                     throw py::value_error("SRS configuration is infeasible");
                 }
                 return solution;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("analytic_elbow_seed", [](const SRSKinematics& self,
-                                            const Eigen::Matrix4d& target,
-                                            const SRSConfiguration& config,
-                                            const Eigen::VectorXd& seed) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "analytic_elbow_seed",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd result;
                 if (!self.GetAnalyticElbowSeed(SE3d(target), config, seed,
                                                result)) {
                     throw py::value_error("target is outside the SRS workspace");
                 }
                 return result;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("analytic_solution", [](const SRSKinematics& self,
-                                          const Eigen::Matrix4d& target,
-                                          const SRSConfiguration& config,
-                                          const Eigen::VectorXd& seed) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "analytic_solution",
+            [](const SRSKinematics &self, const py::object &target_input,
+               const SRSConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd result;
                 if (!self.GetAnalyticSolution(SE3d(target), config, seed,
                                               result)) {
                     throw py::value_error("no feasible closed-form SRS solution");
                 }
                 return result;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"))
-            .def("null_space_velocity", [](const SRSKinematics& self,
-                                            const Eigen::VectorXd& joints,
-                                            const Eigen::VectorXd& direction) {
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"))
+        .def(
+            "null_space_velocity",
+            [](const SRSKinematics &self, const py::object &joints_input,
+               const py::object &direction_input) {
+                Eigen::VectorXd joints =
+                    CheckedRealEigen<Eigen::VectorXd>(joints_input, "joints");
+                Eigen::VectorXd direction = CheckedRealEigen<Eigen::VectorXd>(
+                    direction_input, "direction");
+
                 Eigen::VectorXd velocity;
                 if (!self.GetNullSpaceVelocity(joints, direction, velocity)) {
                     throw py::value_error("expected a compatible 7R chain");
                 }
                 return velocity;
-            }, py::arg("joints"), py::arg("preferred_direction"));
+            },
+            py::arg("joints"), py::arg("preferred_direction"));
 
     py::enum_<FEPSolveMethod>(module, "FEPSolveMethod")
             .value("SEEDED_NUMERICAL", FEPSolveMethod::SEEDED_NUMERICAL)
@@ -1120,28 +1384,36 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .value("CUDA", FEPBackend::CUDA);
 
     py::class_<FEPConfiguration>(module, "FEPConfiguration")
-            .def(py::init<>())
-            .def_readwrite("shoulder", &FEPConfiguration::shoulder)
-            .def_readwrite("elbow", &FEPConfiguration::elbow)
-            .def_readwrite("wrist", &FEPConfiguration::wrist)
-            .def_readwrite("redundancy", &FEPConfiguration::redundancy);
+        .def(py::init<>())
+        .def_property(
+            "shoulder", ReadParameter(&FEPConfiguration::shoulder),
+            WriteRealParameter(&FEPConfiguration::shoulder, "shoulder"))
+        .def_property("elbow", ReadParameter(&FEPConfiguration::elbow),
+                      WriteRealParameter(&FEPConfiguration::elbow, "elbow"))
+        .def_property("wrist", ReadParameter(&FEPConfiguration::wrist),
+                      WriteRealParameter(&FEPConfiguration::wrist, "wrist"))
+        .def_property(
+            "redundancy", ReadParameter(&FEPConfiguration::redundancy),
+            WriteRealParameter(&FEPConfiguration::redundancy, "redundancy"));
 
     py::class_<FEPKinematics, NumericalKinematics,
                std::shared_ptr<FEPKinematics>>(module, "FEPKinematics")
             .def_property_readonly("compatible", &FEPKinematics::IsCompatible)
             .def_property_readonly_static(
-                    "cuda_available", [](py::object) {
-                        return FEPKinematics::HasCudaBackend();
-                    })
+            "cuda_available",
+            [](py::object) { return FEPKinematics::HasCudaBackend(); })
             .def_property_readonly_static(
-                    "cuda_compiled", [](py::object) {
-                        return FEPKinematics::IsCudaCompiled();
-                    })
+            "cuda_compiled",
+            [](py::object) { return FEPKinematics::IsCudaCompiled(); })
             .def("resolve_backend", &FEPKinematics::ResolveBackend,
                  py::arg("backend"), py::arg("batch_size"))
-            .def("forward_batch", [](const FEPKinematics& self,
-                                      const Eigen::MatrixXd& joints,
+        .def(
+            "forward_batch",
+            [](const FEPKinematics &self, const py::object &joints_input,
                                       FEPBackend backend) {
+                Eigen::MatrixXd joints =
+                    CheckedRealEigen<Eigen::MatrixXd>(joints_input, "joints");
+
                 std::vector<Eigen::Matrix4d> poses;
                 if (!self.ForwardBatch(joints, backend, poses)) {
                     throw py::value_error(
@@ -1160,46 +1432,75 @@ PYBIND11_MODULE(_holistic_motion, module) {
                             values(pose, row, col) =
                                     poses[static_cast<std::size_t>(pose)](row, col);
                 return result;
-            }, py::arg("joints"), py::arg("backend") = FEPBackend::AUTO)
-            .def("configuration", &FEPKinematics::GetConfiguration,
+            },
+            py::arg("joints"), py::arg("backend") = FEPBackend::AUTO)
+        .def(
+            "configuration",
+            [](const FEPKinematics &self, const py::object &joints) {
+                return self.GetConfiguration(
+                    CheckedRealEigen<Eigen::VectorXd>(joints, "joints"));
+            },
                  py::arg("joints"))
-            .def("solve", [](const FEPKinematics& self,
-                              const Eigen::Matrix4d& target,
-                              const Eigen::VectorXd& seed,
-                              FEPSolveMethod method) {
+        .def(
+            "solve",
+            [](const FEPKinematics &self, const py::object &target_input,
+               const py::object &seed_input, FEPSolveMethod method) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 std::vector<Eigen::VectorXd> solutions;
                 if (!self.Solve(SE3d(target), seed, method, solutions)) {
                     throw py::value_error("FEP inverse kinematics did not converge");
                 }
                 return solutions;
-            }, py::arg("target"), py::arg("seed"),
+            },
+            py::arg("target"), py::arg("seed"),
                py::arg("method") = FEPSolveMethod::NEAREST_REDUNDANCY)
-            .def("solve_configuration", [](const FEPKinematics& self,
-                                             const Eigen::Matrix4d& target,
-                                             const FEPConfiguration& config,
-                                             const Eigen::VectorXd& seed) {
+        .def(
+            "solve_configuration",
+            [](const FEPKinematics &self, const py::object &target_input,
+               const FEPConfiguration &config, const py::object &seed_input) {
+                Eigen::Matrix4d target =
+                    CheckedRealEigen<Eigen::Matrix4d>(target_input, "target");
+                Eigen::VectorXd seed =
+                    CheckedRealEigen<Eigen::VectorXd>(seed_input, "seed");
+
+                RequireRigidTransform(target, "target");
                 Eigen::VectorXd solution;
                 if (!self.SolveConfiguration(SE3d(target), config, seed,
                                              solution)) {
                     throw py::value_error("FEP configuration is infeasible");
                 }
                 return solution;
-            }, py::arg("target"), py::arg("configuration"), py::arg("seed"));
+            },
+            py::arg("target"), py::arg("configuration"), py::arg("seed"));
 
     py::class_<planning::NullSpacePlanner>(module, "NullSpacePlanner")
-            .def(py::init<std::shared_ptr<SRSKinematics>>(),
-                 py::arg("kinematics"))
-            .def("plan", [](const planning::NullSpacePlanner& self,
-                            const Eigen::VectorXd& start,
-                            const Eigen::VectorXd& direction,
-                            int steps, double step_size) {
+        .def(py::init<std::shared_ptr<SRSKinematics>>(), py::arg("kinematics"))
+        .def(
+            "plan",
+            [](const planning::NullSpacePlanner &self,
+               const py::object &start_input, const py::object &direction_input,
+               const py::object &steps_input, const py::object &step_input) {
+                const Eigen::VectorXd start =
+                    CheckedRealEigen<Eigen::VectorXd>(start_input, "start");
+                const Eigen::VectorXd direction =
+                    CheckedRealEigen<Eigen::VectorXd>(direction_input,
+                                                      "preferred_direction");
+                const int steps = CheckedRealEigen<int>(steps_input, "steps");
+                const double step_size =
+                    CheckedRealEigen<double>(step_input, "step_size");
                 std::vector<Eigen::VectorXd> path;
                 if (!self.Plan(start, direction, steps, step_size, path)) {
                     throw py::value_error("null-space planning failed");
                 }
                 return path;
-            }, py::arg("start"), py::arg("preferred_direction"),
-               py::arg("steps"), py::arg("step_size") = 0.05);
+            },
+            py::arg("start"), py::arg("preferred_direction"), py::arg("steps"),
+            py::arg("step_size") = 0.05);
 
     py::class_<Robot, std::shared_ptr<Robot>>(module, "Robot")
             .def(py::init<const std::string&, bool>(), py::arg("urdf_path"),
@@ -1226,12 +1527,20 @@ PYBIND11_MODULE(_holistic_motion, module) {
             .def("load_visuals", &Robot::LoadVisuals);
 
     py::class_<TrajectoryConstraints, std::shared_ptr<TrajectoryConstraints>>(
-            module, "TrajectoryConstraints")
-            .def(py::init<const Eigen::VectorXd&, const Eigen::VectorXd&,
-                          const Eigen::VectorXd&>(),
-                 py::arg("max_velocity"), py::arg("max_acceleration"),
-                 py::arg("max_jerk"))
-            .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
+        module, "TrajectoryConstraints")
+        .def(
+            py::init([](const py::object &velocity,
+                        const py::object &acceleration,
+                        const py::object &jerk) {
+                return std::make_shared<TrajectoryConstraints>(
+                    CheckedRealEigen<Eigen::VectorXd>(velocity, "max_velocity"),
+                    CheckedRealEigen<Eigen::VectorXd>(acceleration,
+                                                      "max_acceleration"),
+                    CheckedRealEigen<Eigen::VectorXd>(jerk, "max_jerk"));
+            }),
+            py::arg("max_velocity"), py::arg("max_acceleration"),
+            py::arg("max_jerk"))
+        .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
 
     const auto report_keys = std::make_shared<const ReportKeys>();
     BindJointTrajectory<1>(module, "JointTrajectory1", report_keys);
@@ -1266,48 +1575,69 @@ PYBIND11_MODULE(_holistic_motion, module) {
     BindJointTrajectory<30>(module, "JointTrajectory30", report_keys);
     BindJointTrajectory<31>(module, "JointTrajectory31", report_keys);
     BindJointTrajectory<32>(module, "JointTrajectory32", report_keys);
+    module.def("JointTrajectory",
+               CheckedTrajectoryFactory(&MakeDynamicJointTrajectory),
+               py::arg("waypoints"), py::arg("max_velocity"),
+               py::arg("max_acceleration"), py::arg("max_jerk"),
+               py::arg("blend_tolerance") = 0.0,
+               py::arg("minimum_duration") = 0.0,
+               py::arg("profile") = "double_s",
+               "Construct a 1-32 DoF joint/configuration trajectory from its "
+               "waypoint columns.");
     module.def(
-            "JointTrajectory", &MakeDynamicJointTrajectory,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct a 1-32 DoF joint/configuration trajectory from its waypoint columns.");
+        "RnTrajectory", CheckedTrajectoryFactory(&MakeDynamicJointTrajectory),
+        py::arg("waypoints"), py::arg("max_velocity"),
+        py::arg("max_acceleration"), py::arg("max_jerk"),
+        py::arg("blend_tolerance") = 0.0, py::arg("minimum_duration") = 0.0,
+        py::arg("profile") = "double_s",
+        "Construct an R^n trajectory and infer n (1-32) from the waypoint "
+        "columns.");
     module.def(
-            "RnTrajectory", &MakeDynamicJointTrajectory,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct an R^n trajectory and infer n (1-32) from the waypoint columns.");
-    module.def(
-            "BaseTrajectory", &MakeJointTrajectory<3>,
-            py::arg("waypoints"), py::arg("max_velocity"),
-            py::arg("max_acceleration"), py::arg("max_jerk"),
-            py::arg("blend_tolerance") = 0.0,
-            py::arg("minimum_duration") = 0.0,
-            py::arg("profile") = "double_s",
-            "Construct an [x, y, yaw] mobile-base trajectory.");
+        "BaseTrajectory", CheckedTrajectoryFactory(&MakeJointTrajectory<3>),
+        py::arg("waypoints"), py::arg("max_velocity"),
+        py::arg("max_acceleration"), py::arg("max_jerk"),
+        py::arg("blend_tolerance") = 0.0, py::arg("minimum_duration") = 0.0,
+        py::arg("profile") = "double_s",
+        "Construct an [x, y, yaw] mobile-base trajectory.");
     py::class_<CartesianLineTrajectory>(module, "CartesianLineTrajectory")
-        .def(py::init<const Eigen::Matrix4d &, const Eigen::Matrix4d &,
-                      const Eigen::VectorXd &, const Eigen::VectorXd &,
-                      const Eigen::VectorXd &, double, const std::string &>(),
+        .def(py::init([](const py::object &start, const py::object &end,
+                         const py::object &max_velocity,
+                         const py::object &max_acceleration,
+                         const py::object &max_jerk,
+                         const py::object &minimum_duration,
+                         const std::string &profile) {
+                 return std::make_unique<CartesianLineTrajectory>(
+                     CheckedRealEigen<Eigen::Matrix4d>(start, "start"),
+                     CheckedRealEigen<Eigen::Matrix4d>(end, "end"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
+                                                       "max_velocity"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
+                                                       "max_acceleration"),
+                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
+                     CheckedRealEigen<double>(minimum_duration,
+                                              "minimum_duration"),
+                     profile);
+             }),
              py::arg("start"), py::arg("end"), py::arg("max_velocity"),
              py::arg("max_acceleration"), py::arg("max_jerk"),
              py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
         .def_property_readonly("duration", &CartesianLineTrajectory::Duration)
         .def_property_readonly("profile", &CartesianLineTrajectory::Profile)
-        .def("position", &CartesianLineTrajectory::Position, py::arg("time"))
-        .def("state", &CartesianLineTrajectory::State, py::arg("time"))
-        .def("sample_uniform", &CartesianLineTrajectory::SampleUniform,
+        .def("position",
+             WithRealScalar(&CartesianLineTrajectory::Position, "time"),
+             py::arg("time"))
+        .def("state", WithRealScalar(&CartesianLineTrajectory::State, "time"),
+             py::arg("time"))
+        .def("sample_uniform",
+             WithRealScalar(&CartesianLineTrajectory::SampleUniform, "samples"),
              py::arg("samples") = 1001)
         .def(
             "constraint_report",
             [report_keys](const CartesianLineTrajectory &trajectory,
-                          std::size_t samples) {
-                return trajectory.ConstraintReport(samples, *report_keys);
+                          const py::object &samples) {
+                return trajectory.ConstraintReport(
+                    CheckedRealEigen<std::size_t>(samples, "samples"),
+                    *report_keys);
             },
             py::arg("samples") = 2001);
 }

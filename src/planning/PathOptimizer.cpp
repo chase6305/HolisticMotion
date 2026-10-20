@@ -15,6 +15,18 @@
 namespace holistic_motion::robotics::planning {
 namespace {
 
+double WeightedStateCostSum(const std::vector<double> &costs, double weight,
+                            double raw_sum) {
+    if (std::isfinite(raw_sum))
+        return weight * raw_sum;
+    // All costs are non-negative. Scale cached values before adding when the
+    // raw total alone overflows; no additional callback evaluations are needed.
+    double weighted_sum = 0.0;
+    for (double cost : costs)
+        weighted_sum += weight * cost;
+    return weighted_sum;
+}
+
 class OptimizationContext {
   public:
     OptimizationContext(
@@ -27,6 +39,8 @@ class OptimizationContext {
         PathOptimizationStatistics &statistics,
         std::chrono::steady_clock::time_point deadline)
         : lower_(lower), upper_(upper), weights_(weights),
+          metric_(weights, continuous),
+          geometry_metric_(weights),
           inverse_weights_(weights.cwiseInverse()),
           has_continuous_(std::any_of(continuous.begin(), continuous.end(),
                                       [](bool value) { return value; })),
@@ -43,6 +57,26 @@ class OptimizationContext {
         return detail::Difference(from, to, continuous_);
     }
 
+    bool SameState(const Eigen::VectorXd &from, const Eigen::VectorXd &to) const {
+        for (Eigen::Index i = 0; i < from.size(); ++i) {
+            const double delta = to[i] - from[i];
+            const double difference = continuous_[static_cast<std::size_t>(i)]
+                                          ? detail::WrappedDifference(delta)
+                                          : delta;
+            if (difference != 0.0) return false;
+        }
+        return true;
+    }
+
+    void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                        Eigen::VectorXd &difference) const {
+        difference = to - from;
+        if (has_continuous_)
+            for (Eigen::Index i = 0; i < difference.size(); ++i)
+                if (continuous_[static_cast<std::size_t>(i)])
+                    difference[i] = detail::WrappedDifference(difference[i]);
+    }
+
     void Normalize(Eigen::VectorXd &state) const {
         for (Eigen::Index i = 0; i < state.size(); ++i)
             state[i] = NormalizeCoordinate(state[i], i);
@@ -55,13 +89,14 @@ class OptimizationContext {
                                  false);
     }
 
-    double SquaredNorm(const Eigen::VectorXd &value) const {
-        return (weights_.array() * value.array().square()).sum();
+    template <class Derived>
+    double SquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
+        return geometry_metric_.SquaredNorm(value);
     }
 
     double Distance(const Eigen::VectorXd &first,
                     const Eigen::VectorXd &second) const {
-        return std::sqrt(SquaredNorm(Difference(first, second)));
+        return metric_.Distance(first, second);
     }
 
     double PathLength(const std::vector<Eigen::VectorXd> &path) const {
@@ -74,17 +109,30 @@ class OptimizationContext {
     double GeometryObjective(const std::vector<Eigen::VectorXd> &path) const {
         if (options_.length_weight == 0.0 && options_.smoothness_weight == 0.0)
             return 0.0;
-        Eigen::VectorXd previous = Difference(path[0], path[1]);
+        Eigen::VectorXd previous(lower_.size()), next(lower_.size());
+        DifferenceInto(path[0], path[1], previous);
         double length =
-            options_.length_weight > 0.0 ? std::sqrt(SquaredNorm(previous)) : 0.0;
+            options_.length_weight > 0.0 ? geometry_metric_.Norm(previous) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
-            Eigen::VectorXd next = Difference(path[i], path[i + 1]);
+            DifferenceInto(path[i], path[i + 1], next);
             if (options_.length_weight > 0.0)
-                length += std::sqrt(SquaredNorm(next));
+                length += geometry_metric_.Norm(next);
             if (options_.smoothness_weight > 0.0)
                 smoothness += SquaredNorm(next - previous);
-            previous = std::move(next);
+            previous.swap(next);
+        }
+        if (options_.smoothness_weight > 0.0 && !std::isnormal(smoothness)) {
+            DifferenceInto(path[0], path[1], previous);
+            double norm = 0.0;
+            for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+                DifferenceInto(path[i], path[i + 1], next);
+                norm = std::hypot(
+                    norm, geometry_metric_.ScaledNorm(
+                              next - previous, options_.smoothness_weight));
+                previous.swap(next);
+            }
+            return options_.length_weight * length + norm * norm;
         }
         return options_.length_weight * length +
                options_.smoothness_weight * smoothness;
@@ -96,10 +144,15 @@ class OptimizationContext {
             throw std::invalid_argument(
                 "combined path objective gradient must be finite");
         direction = (-gradient.array() * inverse_weights_.array()).matrix();
-        if (!direction.allFinite()) {
+        const double maximum = direction.cwiseAbs().maxCoeff();
+        if (!direction.allFinite() ||
+            (maximum < std::numeric_limits<double>::min() &&
+             (gradient.array() != 0.0).any())) {
             // Only the relative ratios matter after normalization. Form them
             // as mantissa/exponent pairs so even a subnormal positive weight
             // cannot overflow its reciprocal or the preconditioned gradient.
+            // Recover underflowed and subnormal ratios before normalization,
+            // too: their true relative components can remain representable.
             // This also works where long double has the range of double.
             const auto ratio = [&](Eigen::Index i, int &exponent) {
                 int gradient_exponent, weight_exponent, ratio_exponent;
@@ -136,8 +189,8 @@ class OptimizationContext {
             }
             return;
         }
-        const double maximum = direction.cwiseAbs().maxCoeff();
-        if (maximum > 1e-15)
+        // Global weight scaling changes the magnitude, not the direction.
+        if (maximum > 0.0)
             direction /= maximum;
     }
 
@@ -152,9 +205,10 @@ class OptimizationContext {
         return value;
     }
 
-    Eigen::VectorXd StateCostGradient(const Eigen::VectorXd &state,
-                                      double current_cost) {
-        Eigen::VectorXd gradient = Eigen::VectorXd::Zero(state.size());
+    const Eigen::VectorXd &StateCostGradient(const Eigen::VectorXd &state,
+                                            double current_cost) {
+        auto &gradient = cost_gradient_;
+        gradient.setZero(state.size());
         if (!state_cost_ || options_.state_cost_weight == 0.0)
             return gradient;
         if (state_cost_gradient_) {
@@ -166,8 +220,13 @@ class OptimizationContext {
                     "dimension");
             return gradient;
         }
-        Eigen::VectorXd positive = state;
-        Eigen::VectorXd negative = state;
+        // These samples belong to this optimization request. Retain their
+        // storage across waypoints rather than allocating three vectors for
+        // every finite-difference gradient.
+        auto &positive = positive_sample_;
+        auto &negative = negative_sample_;
+        positive = state;
+        negative = state;
         for (Eigen::Index i = 0; i < state.size(); ++i) {
             const bool continuous = continuous_[static_cast<std::size_t>(i)];
             // Keep circular samples on opposite sides of the current point.
@@ -290,6 +349,8 @@ class OptimizationContext {
     const Eigen::VectorXd &lower_;
     const Eigen::VectorXd &upper_;
     const Eigen::VectorXd &weights_;
+    detail::JointSpaceMetric metric_;
+    detail::WeightedGeometry geometry_metric_;
     Eigen::VectorXd inverse_weights_;
     bool has_continuous_{false};
     const std::vector<bool> &continuous_;
@@ -299,6 +360,7 @@ class OptimizationContext {
     const PathOptimizationOptions &options_;
     PathOptimizationStatistics &statistics_;
     std::chrono::steady_clock::time_point deadline_;
+    Eigen::VectorXd cost_gradient_, positive_sample_, negative_sample_;
 };
 
 } // namespace
@@ -316,7 +378,7 @@ PathOptimizer::PathOptimizer(Eigen::VectorXd lower_limits,
             "joint limits must be finite, ordered, and non-empty");
     }
     const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = ranges.array().square().inverse().matrix();
+    weights_ = detail::DefaultJointWeights(ranges);
     if (!ranges.allFinite() || !weights_.allFinite() ||
         (weights_.array() <= 0.0).any())
         throw std::invalid_argument(
@@ -357,6 +419,11 @@ void PathOptimizer::SetContinuousJoints(
             2.0 * detail::kPi - 1e-9)
             throw std::invalid_argument(
                 "continuous joints require a range of at least 2*pi");
+        const Eigen::Index axis = static_cast<Eigen::Index>(index);
+        if (!detail::HasRepresentablePeriod(lower_limits_[axis],
+                                            upper_limits_[axis]))
+            throw std::invalid_argument(
+                "continuous joint limits cannot represent a full revolution");
         continuous[index] = true;
     }
     continuous_ = std::move(continuous);
@@ -493,7 +560,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     }
     result.statistics.initial_objective =
         context.GeometryObjective(result.path) +
-        options.state_cost_weight * total_state_cost;
+        WeightedStateCostSum(state_costs, options.state_cost_weight,
+                             total_state_cost);
     if (!std::isfinite(result.statistics.initial_objective)) {
         result.path.clear();
         result.feasible = false;
@@ -545,9 +613,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 ++result.statistics.line_search_evaluations;
                 candidate = previous + step * direction;
                 context.Normalize(candidate);
-                if (context.Difference(previous, candidate)
-                        .cwiseAbs()
-                        .maxCoeff() <= 1e-15)
+                // A caller-selected finite step may be much smaller than an
+                // absolute coordinate epsilon. Stop only if it changes no state.
+                if (context.SameState(previous, candidate))
                     break;
                 result.path[i] = candidate;
                 const double candidate_geometry = geometry.CandidateObjective(
@@ -600,8 +668,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     }
     result.statistics.final_objective =
         context.GeometryObjective(result.path) +
-        options.state_cost_weight *
-            std::accumulate(state_costs.begin(), state_costs.end(), 0.0);
+        WeightedStateCostSum(
+            state_costs, options.state_cost_weight,
+            std::accumulate(state_costs.begin(), state_costs.end(), 0.0));
     result.statistics.final_path_length = context.PathLength(result.path);
     if (context.TimedOut())
         return finish(PathOptimizationStatus::TIMEOUT,

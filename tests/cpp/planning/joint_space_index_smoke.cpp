@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <utility>
 
 #include "JointSpaceIndex.h"
 
@@ -117,8 +118,76 @@ int main() {
         JointSpaceIndex extreme;
         for (double radius :
              {1e-200, 1e200, std::numeric_limits<double>::infinity()})
-            if (!Check(extreme, states, query, metric, radius))
-                return 1;
+            if (!Check(extreme, states, query, metric, radius)) return 1;
+    }
+    // Degenerate boxes can equal a point's distance. Conservative pruning
+    // must retain ties despite scalar versus vectorized reduction rounding.
+    for (bool periodic : {false, true}) {
+        std::vector<bool> topology(7, false);
+        topology[0] = periodic;
+        for (double weight : {1e-300, 1.0, 1e300}) {
+            const Eigen::VectorXd unequal_weights =
+                weight * Eigen::VectorXd::LinSpaced(7, 0.1, 1.3);
+            JointSpaceMetric point_metric(unequal_weights, topology);
+            const Eigen::VectorXd point =
+                Eigen::VectorXd::LinSpaced(7, -0.7, 1.1);
+            const std::vector<Eigen::VectorXd> points(513, point);
+            const Eigen::VectorXd origin = Eigen::VectorXd::Zero(7);
+            const double radius =
+                std::sqrt(point_metric.SquaredDistance(point, origin));
+            JointSpaceIndex point_index;
+            for (double boundary :
+                 {radius, std::nextafter(radius, 0.0),
+                  std::nextafter(radius,
+                                 std::numeric_limits<double>::infinity())})
+                if (!Check(point_index, points, origin, point_metric, boundary))
+                    return 1;
+        }
+    }
+    // Actual norms remain representable when their squares are zero or
+    // infinity. Nearest and radius queries must still distinguish states.
+    for (const auto &entry : {std::pair<double, double>{1e-180, 1.0},
+                              {1e150, 1e300},
+                              {1e-162, 1.0},
+                              {1e-180, 1e300},
+                              {1e160, 1e-320}}) {
+        for (std::size_t count : {2, 129}) {
+            for (bool periodic : {false, true}) {
+                Eigen::VectorXd axis_weights =
+                    Eigen::VectorXd::Constant(4, entry.second);
+                std::vector<bool> topology(4, false);
+                topology[0] = periodic;
+                JointSpaceMetric scaled_metric(axis_weights, topology);
+                std::vector<Eigen::VectorXd> points(count,
+                                                    Eigen::VectorXd::Zero(4));
+                for (auto &point : points)
+                    point[1] = 2 * entry.first;
+                points.back()[1] = entry.first;
+                const Eigen::VectorXd origin = Eigen::VectorXd::Zero(4);
+                const double radius =
+                    1.5 * entry.first * std::sqrt(entry.second);
+                const auto state_at =
+                    [&](std::size_t i) -> const Eigen::VectorXd & {
+                    return points[i];
+                };
+                JointSpaceIndex scaled_index;
+                scaled_index.Nearest(count, state_at, origin, scaled_metric);
+                Eigen::internal::set_is_malloc_allowed(false);
+                const auto nearest = scaled_index.Nearest(
+                    count, state_at, origin, scaled_metric);
+                Eigen::internal::set_is_malloc_allowed(true);
+                const auto near = scaled_index.Near(count, state_at, origin,
+                                                    radius, scaled_metric);
+                if (nearest != count - 1 ||
+                    near != std::vector<std::size_t>{count - 1}) {
+                    std::cerr << "norm comparison collapsed at scale "
+                              << entry.first << " weight " << entry.second
+                              << " count " << count << " nearest " << nearest
+                              << " near " << near.size() << '\n';
+                    return 1;
+                }
+            }
+        }
     }
     return 0;
 }

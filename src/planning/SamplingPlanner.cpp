@@ -64,7 +64,7 @@ class PlanningContext {
 
     double Distance(const Eigen::VectorXd &first,
                     const Eigen::VectorXd &second) const {
-        return std::sqrt(metric_.SquaredDistance(first, second));
+        return metric_.Distance(first, second);
     }
 
     bool SameState(const Eigen::VectorXd &first, const Eigen::VectorXd &second) const {
@@ -159,7 +159,10 @@ class PlanningContext {
         for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
             const double distance =
                 metric_.SquaredDistance(tree.nodes[i].state, state);
-            if (distance < best_distance) {
+            if (distance < best_distance ||
+                (distance == best_distance && !std::isnormal(distance) &&
+                 metric_.IsCloser(tree.nodes[i].state, tree.nodes[best].state,
+                                  state, distance, best_distance))) {
                 best_distance = distance;
                 best = i;
             }
@@ -181,8 +184,8 @@ class PlanningContext {
         for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
             const double distance =
                 metric_.SquaredDistance(tree.nodes[i].state, state);
-            if (distance <= squared_radius &&
-                (std::isfinite(distance) || std::isinf(radius)))
+            if (metric_.WithinRadius(tree.nodes[i].state, state, distance,
+                                     radius, squared_radius))
                 result.push_back(i);
         }
         return result;
@@ -264,7 +267,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
             cumulative[i] =
                 cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
         }
-        if (cumulative.back() <= 1e-12)
+        if (!(cumulative.back() > 0.0) || !std::isfinite(cumulative.back()))
             return;
 
         std::uniform_real_distribution<double> distribution(0.0,
@@ -273,7 +276,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         double second_distance = distribution(context.Generator());
         if (first_distance > second_distance)
             std::swap(first_distance, second_distance);
-        if (second_distance - first_distance <= 1e-9)
+        if (second_distance <= first_distance)
             continue;
 
         const auto sample_at = [&](double distance, std::size_t &segment) {
@@ -284,7 +287,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
                 path.size() - 2);
             const double span = cumulative[segment + 1] - cumulative[segment];
             const double ratio =
-                span <= 1e-12 ? 0.0 : (distance - cumulative[segment]) / span;
+                span <= 0.0 ? 0.0 : (distance - cumulative[segment]) / span;
             return context.Interpolate(path[segment], path[segment + 1], ratio);
         };
 
@@ -294,7 +297,10 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         const Eigen::VectorXd second =
             sample_at(second_distance, second_segment);
         const double direct_length = context.Distance(first, second);
-        if (direct_length + 1e-9 >= second_distance - first_distance ||
+        const double arc_length = second_distance - first_distance;
+        const double roundoff =
+            64.0 * std::numeric_limits<double>::epsilon() * arc_length;
+        if (direct_length + roundoff >= arc_length ||
             !context.IsMotionValid(first, second) ||
             // Splitting the retained edges changes their collision sample grid.
             // Check both fragments, including the newly introduced first
@@ -468,8 +474,22 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             // Rejection sampling implements an informed subset without a
             // heavyweight ellipsoid dependency and remains valid for weighted
             // and wrapped joint metrics.
+            constexpr std::size_t kMaximumInformedAttempts = 128;
+            std::size_t attempts = 0;
             do {
                 sample = context.SampleUniform();
+                ++attempts;
+                if (informed && std::isfinite(best_cost) &&
+                    attempts == kMaximumInformedAttempts &&
+                    context.Distance(start, sample) +
+                            context.Distance(sample, goal) >
+                        best_cost) {
+                    // A narrow informed set can have negligible acceptance
+                    // probability. The goal belongs to the set and permits
+                    // incumbent rewiring without exhausting the time budget.
+                    sample = goal;
+                    break;
+                }
             } while (informed && std::isfinite(best_cost) &&
                      context.Distance(start, sample) +
                              context.Distance(sample, goal) >
@@ -565,7 +585,7 @@ SamplingPlanner::SamplingPlanner(Eigen::VectorXd lower_limits,
             "joint limits must be finite, ordered, and non-empty");
     }
     const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = ranges.array().square().inverse().matrix();
+    weights_ = detail::DefaultJointWeights(ranges);
     if (!ranges.allFinite() || !weights_.allFinite() ||
         (weights_.array() <= 0.0).any())
         throw std::invalid_argument(
@@ -599,6 +619,11 @@ void SamplingPlanner::SetContinuousJoints(
             throw std::invalid_argument(
                 "continuous joints require a range of at least 2*pi");
         }
+        const Eigen::Index axis = static_cast<Eigen::Index>(index);
+        if (!detail::HasRepresentablePeriod(lower_limits_[axis],
+                                            upper_limits_[axis]))
+            throw std::invalid_argument(
+                "continuous joint limits cannot represent a full revolution");
         continuous[index] = true;
     }
     continuous_ = std::move(continuous);

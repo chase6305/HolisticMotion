@@ -46,6 +46,103 @@ int main() {
         }
     }
 
+    // Regularized inversion must preserve representable updates even when
+    // squaring the singular value or damping overflows or underflows.
+    for (double scale : {1e-320, 1e-200, 1e-160, 1e160, 1e200, 1e308}) {
+        DampedIKWorkspace scaled_workspace(1);
+        Eigen::MatrixXd scaled_jacobian = Eigen::MatrixXd::Zero(6, 1);
+        scaled_jacobian(0, 0) = scale;
+        Eigen::Matrix<double, 6, 1> scaled_error =
+            Eigen::Matrix<double, 6, 1>::Zero();
+        scaled_error[0] = scale;
+        Eigen::VectorXd scaled_update(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const bool scaled_success = scaled_workspace.Solve(
+            scaled_jacobian, scaled_error, scale, 0.0, scaled_update);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!scaled_success || std::abs(scaled_update[0] - 0.5) > 1e-12) {
+            std::cerr << "damped inversion lost a finite scaled update at "
+                      << scale << '\n';
+            return 1;
+        }
+    }
+
+    // The gain alone may underflow although multiplying by a large error
+    // would produce a representable update. Preserve subnormal gains too.
+    for (double sigma : {1e-300, 1e-120}) {
+        DampedIKWorkspace scaled_workspace(1);
+        Eigen::MatrixXd scaled_jacobian = Eigen::MatrixXd::Zero(6, 1);
+        scaled_jacobian(0, 0) = sigma;
+        Eigen::Matrix<double, 6, 1> scaled_error =
+            Eigen::Matrix<double, 6, 1>::Zero();
+        scaled_error[0] = -1e300;
+        Eigen::VectorXd scaled_update(1);
+        const long double reference =
+            static_cast<long double>(scaled_error[0]) * sigma /
+            (static_cast<long double>(sigma) * sigma + 1e200L);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const bool scaled_success = scaled_workspace.Solve(
+            scaled_jacobian, scaled_error, 1e100, 0.0, scaled_update);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!scaled_success ||
+            std::abs((scaled_update[0] - reference) / reference) > 1e-12L) {
+            std::cerr << "damped inversion lost an underflowing gain\n";
+            return 1;
+        }
+    }
+
+    // A rectangular Jacobian can have an unrepresentable singular value or
+    // projected error even when every input and the regularized update fit.
+    for (double scale : {1e-320, 1e308}) {
+        DampedIKWorkspace scaled_workspace(1);
+        const Eigen::MatrixXd scaled_jacobian =
+            Eigen::MatrixXd::Constant(6, 1, scale);
+        const Eigen::Matrix<double, 6, 1> scaled_error =
+            Eigen::Matrix<double, 6, 1>::Constant(scale);
+        Eigen::VectorXd scaled_update(1);
+        Eigen::internal::set_is_malloc_allowed(false);
+        const bool scaled_success = scaled_workspace.Solve(
+            scaled_jacobian, scaled_error, scale, 0.0, scaled_update);
+        Eigen::internal::set_is_malloc_allowed(true);
+        if (!scaled_success || std::abs(scaled_update[0] - 6.0 / 7.0) > 1e-12) {
+            std::cerr << "rectangular damped inversion lost its scaled update\n";
+            return 1;
+        }
+    }
+
+    for (int dof : {1, 3, 6, 7, 14}) {
+        const Eigen::MatrixXd base_jacobian = Eigen::MatrixXd::Random(6, dof);
+        const Eigen::Matrix<double, 6, 1> base_error =
+            Eigen::Matrix<double, 6, 1>::Random();
+        DampedIKWorkspace scaled_workspace(dof);
+        Eigen::VectorXd scaled_update(dof);
+        for (double scale : {1e-320, 1e308, 1.0}) {
+            const Eigen::MatrixXd scaled_jacobian = base_jacobian * scale;
+            const Eigen::Matrix<double, 6, 1> scaled_error = base_error * scale;
+            const double scaled_damping = 0.2 * scale;
+            // Normalize the represented inputs, including subnormal rounding,
+            // before forming independent regularized normal equations.
+            const Eigen::MatrixXd normalized = scaled_jacobian / scale;
+            const double damping = scaled_damping / scale;
+            const Eigen::Matrix<double, 6, 6> normal =
+                normalized * normalized.transpose() +
+                damping * damping * Eigen::Matrix<double, 6, 6>::Identity();
+            const Eigen::VectorXd reference =
+                normalized.transpose() *
+                normal.ldlt().solve((scaled_error / scale).eval());
+            Eigen::internal::set_is_malloc_allowed(false);
+            const bool scaled_success =
+                scaled_workspace.Solve(scaled_jacobian, scaled_error,
+                                       scaled_damping, 0.0, scaled_update);
+            Eigen::internal::set_is_malloc_allowed(true);
+            if (!scaled_success || (scaled_update - reference).norm() > 1e-10) {
+                std::cerr << "scaled workspace differs from normalized normal "
+                             "equations or retained a previous input scale\n";
+                return 1;
+            }
+        }
+    }
+
     DampedIKWorkspace workspace(7);
     Eigen::MatrixXd jacobian = Eigen::MatrixXd::Zero(6, 7);
     jacobian(0, 0) = 5e-5;

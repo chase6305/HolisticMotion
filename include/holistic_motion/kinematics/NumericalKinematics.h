@@ -40,6 +40,8 @@ public:
                        std::vector<double>& dist) const override final;
 
     /// \brief get the nearst inverse kinematics
+    /// Returns one solution minimizing weighted movement from the caller's
+    /// finite seed, including when convergence requires a zero-seed retry.
     ///
     /// \param target_pose
     /// \param ik_solutions
@@ -74,6 +76,10 @@ public:
     bool GetDamp(double& damp) const;
 
 private:
+    bool SolveIK(const SE3d& target_pose, IkRtn& ik_solutions,
+                 Eigen::VectorXd& joint_seed, std::vector<double>& dist,
+                 const Eigen::VectorXd* nearest_reference) const;
+
     /// \brief Computes the kinematic Jacobian matrix for the robotic
     /// manipulator.
     ///

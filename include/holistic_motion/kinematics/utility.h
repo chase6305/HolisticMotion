@@ -11,9 +11,17 @@
 namespace holistic_motion {
 namespace robotics {
 
-inline double GetRAngle(const Eigen::Matrix3d& rotation) {
+inline double GetRAngle(const Eigen::Matrix3d &rotation) {
     const double cosine = clamp((rotation.trace() - 1.0) * 0.5, -1.0, 1.0);
-    return std::acos(cosine);
+    // atan2 retains small rotations whose trace already rounds to three.
+    // hypot also preserves tiny skew coefficients when their squares vanish.
+    const double x = rotation(2, 1) - rotation(1, 2);
+    const double y = rotation(0, 2) - rotation(2, 0);
+    const double z = rotation(1, 0) - rotation(0, 1);
+    if (x == 0.0 && y == 0.0 && z == 0.0)
+        return cosine < 0.0 ? M_PI : 0.0;
+    const double sine = 0.5 * std::hypot(x, y, z);
+    return std::atan2(sine, cosine);
 }
 
 /// \brief OPW available through papers: "An Analytical Solution of the Inverse
@@ -235,8 +243,8 @@ struct IkRtn {
     // may define a enum
     int state;  // state 0: success; 1: exceed link length; 2: exceed joint
                 // limit;
-    Eigen::MatrixXd joint_states;  // [result_num, control_joint_num] of
-                                   // float32. inverse kinematic joint states
+    Eigen::MatrixXd joint_states; // [result_num, control_joint_num]
+                                  // inverse kinematic joint states
     int dof;
     int ik_number;
     std::vector<Eigen::VectorXd> ik_joints;  // ik
@@ -257,6 +265,9 @@ struct IkRtn {
         success = false;
         state = -1;
         dof = 6;
+        if (joint_states.rows() != 0 || joint_states.cols() != 0) {
+            joint_states.resize(0, 0);
+        }
         ik_joints.clear();
         ik_number = 0;
     }
@@ -279,6 +290,8 @@ struct IkRtn {
     /// At most 65536 results are generated. Excessive expansion or a turn
     /// offset that cannot be represented fails and clears solution outputs.
     /// Nonperiodic coordinates are checked without angle wrapping.
+    /// Rotational coordinate periods follow the model's axis length:
+    /// 2*pi/axis.norm(), preserving the FK convention for nonunit axes.
     ///
     /// \param joint_nodes Vector containing joint limit information
     /// \return true if valid solutions found, false otherwise
@@ -292,6 +305,8 @@ struct IkRtn {
 
     /// Map each periodic IK branch into limits using the representation nearest
     /// to a reference state, without generating equivalent multi-turn copies.
+    /// Nonperiodic coordinates are only checked against their limits. Invalid
+    /// input or an unrepresentable selected turn/phase clears solution outputs.
     bool WrapToLimitsNear(const std::vector<JointNode>& joint_nodes,
                           const Eigen::VectorXd& reference);
 

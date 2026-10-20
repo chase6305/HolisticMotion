@@ -19,7 +19,7 @@ template <typename LieGroup> struct QuadraticEvaluation {
           t1(points[2] - points[1]), s(parameter), length(segment_length) {
         const auto numerator = 2.0 * (t1 - t0);
         const double length_squared = length * length;
-        curvature = std::isfinite(length_squared)
+        curvature = std::isnormal(length_squared)
                         ? numerator / length_squared
                         : (numerator / length) / length;
     }
@@ -106,7 +106,9 @@ template <typename LieGroup> struct QuinticEvaluation {
                                             const Tangent &d3) const {
         const auto ret = 20.0 * u * u * u * d0 + 60.0 * s * u * u * d1 +
                          60.0 * s2 * u * d2 + 20.0 * s2 * s * d3;
-        return ret / (length * length);
+        const double length_squared = length * length;
+        return std::isnormal(length_squared) ? ret / length_squared
+                                              : (ret / length) / length;
     }
 
     Tangent ThirdDerivative() const {
@@ -119,9 +121,10 @@ template <typename LieGroup> struct QuinticEvaluation {
 
     Tangent ThirdDerivativeFromDifferences(const Tangent &e0, const Tangent &e1,
                                            const Tangent &e2) const {
-        const auto ret = 60.0 * u * u * e0 + 120.0 * s * u * e1 + 60.0 * s2 * e2;
+        const auto ret =
+            60.0 * u * u * e0 + 120.0 * s * u * e1 + 60.0 * s2 * e2;
         const double length_cubed = length * length * length;
-        if (std::isfinite(length_cubed))
+        if (std::isnormal(length_cubed))
             return ret / length_cubed;
         // A finite derivative can survive an overflowing length cubed.
         return ((ret / length) / length) / length;

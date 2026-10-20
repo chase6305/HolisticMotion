@@ -45,6 +45,42 @@ def test_inscribed_fit_is_deterministic_and_reports_metrics():
     assert first.metrics.sampled_coverage == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("chunk_size", [1, 7, 512])
+@pytest.mark.parametrize("max_spheres", [1, 8, 256])
+def test_greedy_selection_matches_containment_reference(chunk_size, max_spheres):
+    rng = np.random.default_rng(20261014)
+    interior = rng.uniform(-0.6, 0.6, size=(80, 3))
+    # Duplicate candidates exercise stable ordering and exact containment.
+    interior = np.vstack((interior, interior[::4]))
+    surface = rng.normal(size=(120, 3))
+    surface /= np.linalg.norm(surface, axis=1)[:, None]
+    radii = np.min(np.linalg.norm(interior[:, None] - surface[None, :], axis=2), axis=1)
+    selected = []
+    for index in np.argsort(-radii, kind="stable"):
+        if any(
+            np.linalg.norm(interior[index] - interior[previous])
+            <= max(radii[previous] - radii[index], 0.0)
+            for previous in selected
+        ):
+            continue
+        selected.append(index)
+        if len(selected) == max_spheres:
+            break
+    result = fit_spheres(
+        interior,
+        surface,
+        SphereFitOptions(
+            max_spheres=max_spheres, min_radius=1e-6, chunk_size=chunk_size
+        ),
+    )
+    np.testing.assert_array_equal(
+        [sphere.center for sphere in result.spheres], interior[selected]
+    )
+    np.testing.assert_allclose(
+        [sphere.radius for sphere in result.spheres], radii[selected], rtol=1e-14
+    )
+
+
 def test_sampled_coverage_expands_to_cover_supplied_points():
     interior = np.array([[-1.0, 0, 0], [1.0, 0, 0]])
     surface = np.array([[-1.2, 0, 0], [0.0, 0, 0], [1.2, 0, 0]])

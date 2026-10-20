@@ -10,6 +10,69 @@ using namespace holistic_motion::robotics;
 
 int main() {
     {
+        std::vector<JointNode> nodes{JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                                               JointType::REVOLUTE, -M_PI,
+                                               M_PI),
+                                     JointNode()};
+        nodes.back().joint_type = JointType::FIXED;
+        NumericalKinematics solver(nodes);
+        for (double scale : {0.0, 0.5, 2.0}) {
+            SE3d target(
+                Eigen::Vector3d::Zero(),
+                SO3d(Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ())));
+            target.Coeffs().tail<4>() *= scale;
+            const auto rotation = target.GetRotation();
+            const Eigen::VectorXd initial = Eigen::VectorXd::Constant(
+                1, std::atan2(rotation(1, 0), rotation(0, 0)));
+            for (bool nearest : {false, true}) {
+                Eigen::VectorXd seed = initial;
+                IkRtn solutions;
+                solutions.PushBack(initial);
+                solutions.joint_states = Eigen::MatrixXd::Ones(2, 7);
+                std::vector<double> distances{99.0};
+                double distance = 99.0;
+                const bool success =
+                    nearest
+                        ? solver.GetNearestIK(target, solutions, seed, distance)
+                        : solver.GetIK(target, solutions, seed, distances);
+                if (success || solutions.success || solutions.ik_number != 0 ||
+                    !solutions.ik_joints.empty() ||
+                    solutions.joint_states.rows() != 0 ||
+                    solutions.joint_states.cols() != 0 ||
+                    !seed.isApprox(initial, 0.0) ||
+                    (!nearest && !distances.empty()) ||
+                    (nearest && distance != 99.0)) {
+                    std::cerr << "nonunit target quaternion accepted or "
+                                 "changed state\n";
+                    return 1;
+                }
+            }
+        }
+    }
+    {
+        JointFilterManager filters(2);
+        filters.SetAllJointFilters(JointFilterManager::FilterMode::POSITIVE);
+        if (!filters.SetJointAngleThresholds({0.1, 0.2}))
+            return 1;
+        for (double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity()}) {
+            filters.SetAllJointFilters(
+                JointFilterManager::FilterMode::POSITIVE);
+            if (filters.SetJointAngleThreshold(0, invalid) ||
+                filters.SetJointAngleThresholds({0.5, invalid}) ||
+                filters.GetJointAngleThresholds() !=
+                    std::vector<double>({0.1, 0.2}) ||
+                filters.IsValidJointAngle(0, invalid))
+                return 1;
+            filters.Reset();
+            if (filters.IsValidJointAngle(0, invalid))
+                return 1;
+        }
+        if (!filters.IsValidJointAngle(0, 0.3))
+            return 1;
+    }
+    {
         std::vector<JointNode> nodes{JointNode(SE3d(), Eigen::Vector3d::UnitX(),
                                                JointType::PRISMATIC, -1.0, 1.0),
                                      JointNode()};

@@ -40,6 +40,39 @@ def points(device, dtype=torch.float64, batch=False):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("time_scale", [1e-120, 1.0, 1e120])
+@pytest.mark.parametrize("end_velocity", [0.0, 0.01])
+@pytest.mark.parametrize("grid_size", [14, 20])
+def test_roundoff_sized_constraint_does_not_force_batch_stop(
+    device, time_scale, end_velocity, grid_size
+):
+    path = torch.tensor(
+        [[0.125, 0.125], [0.25, 0.25], [0.375, 0.25], [0.5, 0.125]],
+        device=device,
+        dtype=torch.float64,
+    )
+    p = torch.stack((path, path + 0.5)).requires_grad_()
+    v = torch.tensor(
+        [0.5, 0.25], device=device, dtype=torch.float64, requires_grad=True
+    )
+    a = torch.tensor([0.5, 0.5], device=device, dtype=torch.float64, requires_grad=True)
+    trajectory = TorchToppraTrajectory(
+        p,
+        v * time_scale,
+        (a * time_scale) * time_scale,
+        grid_size=grid_size,
+        end_path_velocity=end_velocity * time_scale,
+    )
+    assert bool((trajectory.result.path_speeds[:, 1:-1] > 0).all())
+    _, q, dq, ddq = trajectory.sample_uniform(501)
+    assert bool((dq.abs() / time_scale <= v + 1e-10).all())
+    assert bool(((ddq.abs() / time_scale) / time_scale <= a + 1e-10).all())
+    loss = (trajectory.duration * time_scale).sum() + q.square().mean() * 0.001
+    for gradient in torch.autograd.grad(loss, (p, v, a)):
+        assert bool(torch.isfinite(gradient).all())
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("batch", [False, True])
 @pytest.mark.parametrize("boundary", [(0.0, 0.0), (0.1, 0.2), (0.2, 0.0)])
 def test_matches_numpy_on_same_grid_and_continuous_limits(device, batch, boundary):
@@ -770,3 +803,46 @@ def test_unrepresentable_path_acceleration_is_rejected_at_construction(device):
     p = torch.tensor([[0.0], [1e-11]], device=device, dtype=torch.float64)
     with pytest.raises(ValueError, match="path timing is not representable"):
         TorchToppraTrajectory(p, 1e150, 1e300, grid_size=3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("time_scale", [1e-100, 1e100])
+@pytest.mark.parametrize("inactive_limit", [1e-300, 1e300])
+def test_inactive_joint_limits_preserve_timing_and_finite_gradients(
+    device, time_scale, inactive_limit
+):
+    points = torch.tensor(
+        [[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64, device=device, requires_grad=True
+    )
+    velocity = torch.tensor(
+        [time_scale, inactive_limit],
+        dtype=torch.float64,
+        device=device,
+        requires_grad=True,
+    )
+    acceleration = torch.tensor(
+        [2.0 * time_scale**2, inactive_limit],
+        dtype=torch.float64,
+        device=device,
+        requires_grad=True,
+    )
+    expected = TorchToppraTrajectory(
+        points.detach()[:, :1],
+        velocity.detach()[:1],
+        acceleration.detach()[:1],
+        grid_size=31,
+    )
+    actual = TorchToppraTrajectory(points, velocity, acceleration, grid_size=31)
+    torch.testing.assert_close(actual.duration, expected.duration, rtol=1e-12, atol=0)
+    times, position, speed, accel = actual.sample_uniform(65)
+    for values in (times, position, speed, accel):
+        assert torch.isfinite(values).all()
+    for values in (position, speed, accel):
+        torch.testing.assert_close(
+            values[:, 1], torch.zeros_like(values[:, 1]), rtol=0, atol=0
+        )
+    (actual.duration * time_scale).backward()
+    for values in (points, velocity, acceleration):
+        assert torch.isfinite(values.grad).all()
+    assert velocity.grad[1] == 0.0
+    assert acceleration.grad[1] == 0.0

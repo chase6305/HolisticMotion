@@ -2,6 +2,81 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize("seed", [np.nan, np.inf, -np.inf])
+def test_numerical_inverse_rejects_nonfinite_seed_without_zero_retry(tmp_path, seed):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "multi_turn.urdf"
+    urdf.write_text("""<robot name="multi_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+        <limit lower="-7" upper="7" velocity="1" effort="1"/>
+      </joint></robot>""")
+    solver = hm.Robot(str(urdf)).kinematics
+    with pytest.raises(ValueError, match="inverse kinematics"):
+        solver.inverse(np.eye(4), np.array([seed]))
+    np.testing.assert_allclose(solver.inverse(np.eye(4), [0.0]), [0.0])
+
+
+@pytest.mark.parametrize("angle", [1e-160, -1e-180, 1e-300])
+def test_numerical_forward_preserves_tiny_nonzero_rotation(tmp_path, angle):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "tiny_turn.urdf"
+    urdf.write_text("""<robot name="tiny_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>
+        <limit lower="-1" upper="1" velocity="1" effort="1"/>
+      </joint></robot>""")
+    pose = hm.Robot(str(urdf)).kinematics.forward([angle])
+    assert pose[1, 0] / angle == pytest.approx(1.0, rel=1e-14, abs=0.0)
+    assert pose[0, 1] / angle == pytest.approx(-1.0, rel=1e-14, abs=0.0)
+
+
+def test_numerical_inverse_avoids_all_solution_turn_expansion(tmp_path):
+    import holistic_motion as hm
+
+    dof = 17
+    links = "".join(f'<link name="link{i}"/>' for i in range(dof + 1))
+    joints = "".join(
+        f'''<joint name="turn{i}" type="revolute">
+          <parent link="link{i}"/><child link="link{i + 1}"/><axis xyz="0 0 1"/>
+          <limit lower="0" upper="{2 * np.pi}" velocity="1" effort="1"/>
+        </joint>'''
+        for i in range(dof)
+    )
+    urdf = tmp_path / "many_turns.urdf"
+    urdf.write_text(f'<robot name="many_turns">{links}{joints}</robot>')
+    solver = hm.Robot(str(urdf)).kinematics
+    seed = np.zeros(dof)
+    target = solver.forward(seed)
+    assert solver.solve_all(target, seed) == []
+    np.testing.assert_array_equal(solver.inverse(target, seed), seed)
+
+
+@pytest.mark.parametrize("axis_scale", [0.5, 1.5, 2.0])
+def test_scaled_revolute_axis_preserves_rotation_when_wrapping_ik(tmp_path, axis_scale):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "scaled_turn.urdf"
+    urdf.write_text(f"""<robot name="scaled_turn">
+      <link name="base"/><link name="tool"/>
+      <joint name="turn" type="revolute">
+        <parent link="base"/><child link="tool"/><axis xyz="0 0 {axis_scale}"/>
+        <limit lower="-7" upper="7" velocity="1" effort="1"/>
+      </joint></robot>""")
+    solver = hm.Robot(str(urdf)).kinematics
+    seed = np.array([4 * np.pi / axis_scale])
+    target = np.eye(4)
+    for joints in solver.solve_all(target, seed):
+        np.testing.assert_allclose(solver.forward(joints), target, atol=1e-10)
+    nearest = solver.inverse(target, seed)
+    np.testing.assert_allclose(solver.forward(nearest), target, atol=1e-10)
+    assert -7.0 <= nearest[0] <= 7.0
+
+
 def test_robot_loads_explicit_urdf_path(tmp_path):
     import holistic_motion as hm
 

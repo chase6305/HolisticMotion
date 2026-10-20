@@ -9,22 +9,40 @@ Example (no compiled extension required)::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import platform
 import statistics
 import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
 
 
 def load_module(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
+    # Supply package context for relative validation imports without running
+    # holistic_motion.__init__ or loading its optional native extension.
+    root = Path(__file__).resolve().parents[1] / "python/holistic_motion"
+    package_name = f"_holistic_motion_benchmark_{name}"
+    for package, directory in (
+        (package_name, root),
+        (f"{package_name}.trajectory", root / "trajectory"),
+    ):
+        namespace = types.ModuleType(package)
+        namespace.__path__ = [str(directory)]
+        namespace.__package__ = package
+        sys.modules[package] = namespace
+    spec = importlib.util.spec_from_file_location(
+        f"{package_name}.trajectory.{name}", path
+    )
     module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    source = path.read_bytes()
+    exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
+    module.source_sha256 = hashlib.sha256(source).hexdigest()
     return module
 
 
@@ -38,16 +56,43 @@ def main() -> None:
         / "python/holistic_motion/trajectory/toppra.py",
     )
     parser.add_argument("--rounds", type=int, default=20)
+    parser.add_argument("--waypoint-counts", type=int, nargs="+", default=[12])
+    parser.add_argument("--dofs", type=int, nargs="+", default=[1, 7, 32])
+    parser.add_argument(
+        "--active-dof-counts",
+        type=int,
+        nargs="+",
+        help="hold the remaining joints fixed; default: all joints move",
+    )
     args = parser.parse_args()
     if args.rounds < 2:
         parser.error("--rounds must be at least two")
+    if any(count < 2 for count in args.waypoint_counts):
+        parser.error("--waypoint-counts must be at least two")
+    if any(dof < 1 for dof in args.dofs):
+        parser.error("--dofs must be positive")
+    if args.active_dof_counts is not None and any(
+        count < 1 for count in args.active_dof_counts
+    ):
+        parser.error("--active-dof-counts must be positive")
+    workloads = [
+        (waypoint_count, dof, active_count)
+        for waypoint_count in args.waypoint_counts
+        for dof in args.dofs
+        for active_count in (args.active_dof_counts or [dof])
+        if active_count <= dof
+    ]
+    if not workloads:
+        parser.error("no active joint count fits the requested DOFs")
     modules = [
         load_module(args.baseline, "toppra_baseline"),
         load_module(args.candidate, "toppra_candidate"),
     ]
     results = []
-    for dof in (1, 7, 32):
-        points = np.random.default_rng(53).normal(size=(12, dof))
+    for waypoint_count, dof, active_count in workloads:
+        points = np.random.default_rng(53).normal(size=(waypoint_count, dof))
+        if active_count < dof:
+            points[:, active_count:] = points[0, active_count:]
         velocity = np.ones(dof)
         acceleration = 2.0 * velocity
         for grid_size in (50, 200, 800):
@@ -83,8 +128,9 @@ def main() -> None:
                         rtol=1e-9,
                         atol=1e-10,
                     )
+                # Avoid exact acceleration jumps in cross-solver samples.
                 samples = [
-                    item.sample(np.linspace(0.0, item.duration, 501))
+                    item.sample(np.linspace(0.0037, 0.9961, 501) * item.duration)
                     for item in trajectories
                 ]
                 for before, after in zip(*samples):
@@ -102,13 +148,18 @@ def main() -> None:
                 medians = [statistics.median(values) for values in elapsed]
                 results.append(
                     {
+                        "waypoint_count": waypoint_count,
                         "dof": dof,
+                        "active_dof_count": active_count,
                         "grid_size": grid_size,
                         "actual_grid_size": len(trajectories[0].result.gridpoints),
                         "end_speed": end_speed,
                         "baseline_ms": medians[0],
                         "candidate_ms": medians[1],
                         "speedup": medians[0] / medians[1],
+                        "paired_speedup": statistics.median(
+                            before / after for before, after in zip(*elapsed)
+                        ),
                         "raw_ms": elapsed,
                     }
                 )
@@ -121,6 +172,8 @@ def main() -> None:
                 "rounds": args.rounds,
                 "baseline": str(args.baseline.resolve()),
                 "candidate": str(args.candidate.resolve()),
+                "baseline_sha256": modules[0].source_sha256,
+                "candidate_sha256": modules[1].source_sha256,
                 "cases": results,
             },
             indent=2,
