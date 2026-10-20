@@ -94,6 +94,11 @@ Clang 和 MSVC 的类型与版本比较，不替代各平台的真实构建。pr
 `benchmarks/sphere_fit_benchmark.py --selection-workloads` 覆盖小型、大型及大量
 重复候选的两种拟合模式；已有的 `--baseline` 会核对输出，并单独测量分配开销。
 
+`benchmarks/urdf_geometry_benchmark.py` 测量含 1/32/128 个 link 的完整 URDF 加载，
+覆盖唯一及重复的 box、cylinder 和 sphere 几何。使用相同纯 Python 环境，传入
+`--baseline /path/to/old/urdf_sphere_fit.py` 进行配对测量，并精确核对顶点和面索引；
+计时不包含输入文件生成。
+
 `path_geometry_workspace_smoke` 将局部目标变化与完整路径目标比较，并用中心
 有限差分校验解析梯度，覆盖周期接缝、反向扫描、多次试探和重合路点。Eigen 分配
 守卫覆盖工作区的首次及后续计算。

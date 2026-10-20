@@ -621,6 +621,9 @@ The box QP uses a feasible active-set update: it moves toward the reduced
 minimizer only up to the first blocking joint bound, then resolves the remaining
 coordinates. This avoids cycling caused by independently clipping coupled
 coordinates. Equal lower and upper bounds stay fixed throughout the solve.
+The optimality tolerance scales with the objective gradient, so uniformly
+scaling the quadratic objective and regularization preserves the bounded
+update even when task costs are small.
 
 Offline `solve()` accepts `step_size > 1`, but caps the initial line-search
 scale at the first joint displacement bound. One shared scale preserves the

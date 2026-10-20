@@ -44,7 +44,15 @@ def run(module, inputs, grid_size, backward, end_speed=0.0, before_backward=None
         trajectory = module.TorchToppraTrajectory(
             *inputs, grid_size=grid_size, end_path_velocity=end_speed
         )
-        motion = trajectory.sample_uniform(101)
+        # Uniform symmetric queries can land exactly on an acceleration
+        # jump. Equivalent solvers may round its clock to opposite sides.
+        # Use asymmetric interior fractions for cross-solver comparisons;
+        # node ownership and endpoints are covered by trajectory regressions.
+        fractions = torch.linspace(
+            0.0037, 0.9961, 101, dtype=torch.float64, device=inputs[0].device
+        )
+        times = trajectory.duration[..., None] * fractions
+        motion = (times, *trajectory.sample(times))
         gradients = ()
         if backward:
             loss = trajectory.duration.sum() + sum(

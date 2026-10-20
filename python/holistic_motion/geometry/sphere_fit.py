@@ -422,31 +422,63 @@ def fit_spheres(
     selected_centers = np.empty((capacity, 3), dtype=float)
     selected_radii = np.empty(capacity, dtype=float)
     count = 0
-    for index in order:
-        center = interior[index]
-        radius = radii[index]
-        if count:
-            if stable_distances:
-                with np.errstate(over="ignore", under="ignore"):
-                    delta = selected_centers[:count] - center
-                    distances = np.hypot(
-                        np.hypot(delta[:, 0], delta[:, 1]), delta[:, 2]
+    rejected = 0
+    block_size = min(128, max(32, options.chunk_size))
+    for start in range(0, len(order), block_size):
+        block = order[start : start + block_size]
+        if rejected >= 32 and options.chunk_size >= 32:
+            # After many suppressed candidates, eliminate a bounded block
+            # against the already accepted spheres in one NumPy operation.
+            # Surviving candidates still enter the original greedy loop in
+            # stable radius order, including checks against new selections.
+            keep = np.ones(len(block), dtype=bool)
+            block_radii = radii[block]
+            for row, column, distances in _distance_tiles(
+                interior[block],
+                selected_centers[:count],
+                options.chunk_size,
+                stable=stable_distances,
+            ):
+                limits = np.maximum(
+                    selected_radii[None, column : column + distances.shape[1]]
+                    - block_radii[row : row + len(distances), None],
+                    0.0,
+                )
+                keep[row : row + len(distances)] &= ~np.any(distances <= limits, axis=1)
+            block = block[keep]
+        for index in block:
+            center = interior[index]
+            radius = radii[index]
+            if count:
+                if stable_distances:
+                    with np.errstate(over="ignore", under="ignore"):
+                        delta = selected_centers[:count] - center
+                        distances = np.hypot(
+                            np.hypot(delta[:, 0], delta[:, 1]), delta[:, 2]
+                        )
+                else:
+                    distances = np.linalg.norm(
+                        selected_centers[:count] - center, axis=1
                     )
-            else:
-                distances = np.linalg.norm(selected_centers[:count] - center, axis=1)
-            if np.any(distances <= np.maximum(selected_radii[:count] - radius, 0.0)):
-                continue
-        if count == capacity:
-            capacity = min(2 * capacity, options.max_spheres, len(order))
-            centers = np.empty((capacity, 3), dtype=float)
-            centers[:count] = selected_centers
-            selected_centers = centers
-            grown_radii = np.empty(capacity, dtype=float)
-            grown_radii[:count] = selected_radii
-            selected_radii = grown_radii
-        selected_centers[count] = center
-        selected_radii[count] = radius
-        count += 1
+                if np.any(
+                    distances <= np.maximum(selected_radii[:count] - radius, 0.0)
+                ):
+                    rejected += 1
+                    continue
+            if count == capacity:
+                capacity = min(2 * capacity, options.max_spheres, len(order))
+                centers = np.empty((capacity, 3), dtype=float)
+                centers[:count] = selected_centers
+                selected_centers = centers
+                grown_radii = np.empty(capacity, dtype=float)
+                grown_radii[:count] = selected_radii
+                selected_radii = grown_radii
+            selected_centers[count] = center
+            selected_radii[count] = radius
+            count += 1
+            rejected = 0
+            if count == options.max_spheres:
+                break
         if count == options.max_spheres:
             break
     if not count:

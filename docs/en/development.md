@@ -116,6 +116,11 @@ earlier `srs_tracker.py`. Candidate counts and result checks accompany timings.
 and duplicate-heavy candidate sets in both fitting modes. Its existing
 `--baseline` option checks output equivalence and measures allocations separately.
 
+`benchmarks/urdf_geometry_benchmark.py` measures complete URDF loading with
+1/32/128 links containing unique or repeated box, cylinder, and sphere geometry.
+Use the same pure-Python environment and `--baseline /path/to/old/urdf_sphere_fit.py`
+for paired timings with exact vertex/face checks. Input generation is excluded.
+
 `path_geometry_workspace_smoke` checks local objective changes against full path
 objectives and analytic gradients against central finite differences, including
 periodic seams, reverse sweeps, multiple trials, and coincident waypoints. Its

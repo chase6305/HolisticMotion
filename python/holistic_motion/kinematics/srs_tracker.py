@@ -545,10 +545,14 @@ class SRSContinuousTracker:
             redundancy = float(native.redundancy)
         except (AttributeError, TypeError, ValueError) as error:
             raise ValueError("solver returned an invalid configuration") from error
+        if not isfinite(redundancy):
+            raise ValueError("solver returned an invalid configuration")
+        if all(type(value) is int for value in raw_branch):
+            return raw_branch, redundancy
         if any(
             not isinstance(value, Integral) or isinstance(value, bool)
             for value in raw_branch
-        ) or not np.isfinite(redundancy):
+        ):
             raise ValueError("solver returned an invalid configuration")
         return tuple(int(value) for value in raw_branch), redundancy
 

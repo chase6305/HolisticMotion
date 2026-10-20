@@ -160,6 +160,8 @@ of continuous mesh coverage.
 `SphereFitOptions.chunk_size` (default 512) bounds both dimensions of the
 temporary distance blocks. Radius fitting, sampled expansion, and coverage
 metrics process blocks without creating an all-samples distance matrix.
+Long runs of contained candidates are pruned in bounded blocks while preserving
+the stable greedy order and checks against newly selected spheres.
 Coordinate differences are computed directly, preserving small separations
 when the model is far from the origin, within floating-point input precision.
 Exceptional coordinate ranges use stable norms to retain finite radii and gaps
@@ -194,9 +196,11 @@ geometry are supported; repeat `--package-dir` for `package://` resources and
 repeat `--link` to fit only selected links. This loads geometry only for the
 requested links, so unrelated meshes need not be present. URDF link names are
 still checked for duplicates.
-Repeated mesh URIs are resolved and read once per call, with independent scale/origin
-transforms. Cached untransformed geometry is released at its last use; unique
-meshes do not require extra copies.
+Repeated mesh URIs are resolved and read once per call. Repeated box, cylinder,
+and sphere declarations with identical attributes also share their initial mesh
+construction. Each instance receives independent scale/origin transforms, and
+cached geometry is released at its last use. Unique geometries and links with
+one collision element do not require extra copies.
 
 ```bash
 ./scripts/run.sh python3 examples/python/collision/fit_urdf_spheres.py \

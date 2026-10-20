@@ -96,6 +96,13 @@ def _as_mesh(loaded, trimesh):
     return loaded
 
 
+def _geometry_key(shape):
+    if shape.tag == "mesh":
+        # Mesh scaling belongs to each instance; the file is shared.
+        return shape.tag, shape.get("filename", "")
+    return shape.tag, tuple(sorted(shape.attrib.items()))
+
+
 def load_urdf_collision_meshes(
     urdf_path: PathLike,
     *,
@@ -129,13 +136,14 @@ def _load_urdf_collision_meshes(
     root = ET.parse(urdf).getroot()
     if root.tag != "robot":
         raise ValueError("URDF root element must be <robot>")
-    remaining_meshes = Counter(
-        mesh.get("filename", "")
+    remaining_geometries = Counter(
+        _geometry_key(shape)
         for link in root.findall("link")
         if selected_links is None or link.get("name") in selected_links
-        for mesh in link.findall("collision/geometry/mesh")
+        for geometry in link.findall("collision/geometry")
+        for shape in geometry
     )
-    mesh_cache = {}
+    geometry_cache = {}
     result = {}
     seen_links = set()
     for link in root.findall("link"):
@@ -153,51 +161,58 @@ def _load_urdf_collision_meshes(
             if geometry is None or len(geometry) != 1:
                 raise ValueError(f"link {link_name} has invalid collision geometry")
             shape = geometry[0]
-            if shape.tag == "mesh":
-                uri = shape.get("filename", "")
-                mesh = mesh_cache.get(uri)
-                if mesh is None:
+            key = _geometry_key(shape)
+            mesh = geometry_cache.get(key)
+            if mesh is None:
+                if shape.tag == "mesh":
+                    uri = shape.get("filename", "")
                     mesh_path = _resolve_mesh_uri(uri, urdf.parent, roots)
                     mesh = _as_mesh(trimesh.load(mesh_path, force="scene"), trimesh)
-                remaining_meshes[uri] -= 1
-                if remaining_meshes[uri]:
-                    # Keep an untransformed base only while another requested
-                    # instance needs it. The final instance takes ownership,
-                    # and unique meshes require neither a copy nor a cache.
-                    mesh_cache[uri] = mesh
-                    mesh = mesh.copy()
+                elif shape.tag == "box":
+                    size = _vector(shape.get("size"), 3, None)
+                    if np.any(size <= 0.0):
+                        raise ValueError(f"link {link_name} box size must be positive")
+                    mesh = trimesh.creation.box(extents=size)
+                elif shape.tag == "cylinder":
+                    radius = float(shape.get("radius", "nan"))
+                    length = float(shape.get("length", "nan"))
+                    if not np.isfinite(radius + length) or radius <= 0 or length <= 0:
+                        raise ValueError(
+                            f"link {link_name} cylinder dimensions must be positive"
+                        )
+                    mesh = trimesh.creation.cylinder(radius=radius, height=length)
+                elif shape.tag == "sphere":
+                    radius = float(shape.get("radius", "nan"))
+                    if not np.isfinite(radius) or radius <= 0:
+                        raise ValueError(
+                            f"link {link_name} sphere radius must be positive"
+                        )
+                    mesh = trimesh.creation.icosphere(subdivisions=2, radius=radius)
                 else:
-                    mesh_cache.pop(uri, None)
+                    raise ValueError(
+                        f"link {link_name} uses unsupported collision geometry {shape.tag!r}"
+                    )
+            remaining_geometries[key] -= 1
+            if remaining_geometries[key]:
+                # Keep an untransformed base only until its final requested
+                # instance. Unique geometries need neither a copy nor a cache.
+                geometry_cache[key] = mesh
+                mesh = mesh.copy()
+            else:
+                geometry_cache.pop(key, None)
+            if shape.tag == "mesh":
                 scale = _vector(shape.get("scale"), 3, [1, 1, 1])
                 if np.any(scale <= 0.0):
                     raise ValueError(f"link {link_name} mesh scale must be positive")
                 mesh.apply_scale(scale)
-            elif shape.tag == "box":
-                size = _vector(shape.get("size"), 3, None)
-                if np.any(size <= 0.0):
-                    raise ValueError(f"link {link_name} box size must be positive")
-                mesh = trimesh.creation.box(extents=size)
-            elif shape.tag == "cylinder":
-                radius = float(shape.get("radius", "nan"))
-                length = float(shape.get("length", "nan"))
-                if not np.isfinite(radius + length) or radius <= 0 or length <= 0:
-                    raise ValueError(
-                        f"link {link_name} cylinder dimensions must be positive"
-                    )
-                mesh = trimesh.creation.cylinder(radius=radius, height=length)
-            elif shape.tag == "sphere":
-                radius = float(shape.get("radius", "nan"))
-                if not np.isfinite(radius) or radius <= 0:
-                    raise ValueError(f"link {link_name} sphere radius must be positive")
-                mesh = trimesh.creation.icosphere(subdivisions=2, radius=radius)
-            else:
-                raise ValueError(
-                    f"link {link_name} uses unsupported collision geometry {shape.tag!r}"
-                )
             mesh.apply_transform(_origin_transform(collision.find("origin")))
             geometries.append(mesh)
         if geometries:
-            result[link_name] = trimesh.util.concatenate(geometries)
+            result[link_name] = (
+                geometries[0]
+                if len(geometries) == 1
+                else trimesh.util.concatenate(geometries)
+            )
     if not result and selected_links is None:
         raise ValueError("URDF contains no supported collision geometry")
     return result

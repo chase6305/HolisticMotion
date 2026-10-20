@@ -1168,7 +1168,10 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         status[unconstrained < lower] = -1
         status[unconstrained > upper] = 1
         status[lower == upper] = 2
-        scale = max(1.0, float(np.max(np.abs(gradient))))
+        # A common positive objective scale must not change the active set.
+        # An absolute floor here can accept arbitrary clipped minimizers when
+        # task weights and regularization are uniformly small.
+        scale = float(np.max(np.abs(gradient)))
         kkt_tolerance = 1e-10 * scale
         for _ in range(10 * solution.size + 10):
             free = status == 0
