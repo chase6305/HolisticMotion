@@ -30,6 +30,12 @@ function(holistic_motion_register_tests)
         tests/cpp/robot/joint_position_map_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        joint_position_context_smoke_test
+        tests/cpp/planning/joint_position_context_smoke.cpp
+        Eigen3::Eigen Threads::Threads)
+    target_include_directories(joint_position_context_smoke_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/planning ${PROJECT_SOURCE_DIR}/include)
+    holistic_motion_add_smoke_test(
         rotation_jacobian_smoke_test
         tests/cpp/manif/rotation_jacobian_smoke.cpp
         holistic_motion)

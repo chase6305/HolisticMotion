@@ -41,31 +41,30 @@ namespace py = pybind11;
 // Each C++ copy owns one Python reference, so tp_traverse can account for each
 // edge exactly once. Request copies that are outside the Python object graph
 // keep callbacks alive even if a reentrant setter replaces the original.
-class PlanningPythonFunction {
+class PlanningPythonReference {
   public:
-    explicit PlanningPythonFunction(py::function function)
-        : function_(std::move(function)) {}
-    PlanningPythonFunction(const PlanningPythonFunction &other) {
+    explicit PlanningPythonReference(py::object value) : object_(std::move(value)) {}
+    PlanningPythonReference(const PlanningPythonReference &other) {
         py::gil_scoped_acquire acquire;
-        function_ = other.function_;
+        object_ = other.object_;
     }
-    PlanningPythonFunction(PlanningPythonFunction &&other) noexcept
-        : function_(std::move(other.function_)) {}
-    ~PlanningPythonFunction() {
-        if (function_) {
+    PlanningPythonReference(PlanningPythonReference &&other) noexcept
+        : object_(std::move(other.object_)) {}
+    ~PlanningPythonReference() {
+        if (object_) {
             py::gil_scoped_acquire acquire;
-            py::function release(std::move(function_));
+            py::object release(std::move(object_));
         }
     }
-    PyObject *Pointer() const noexcept { return function_.ptr(); }
-    py::object Call(const Eigen::VectorXd &state) const { return function_(state); }
+    PyObject *Pointer() const noexcept { return object_.ptr(); }
+    py::object Call(const Eigen::VectorXd &state) const { return object_(state); }
 
   private:
-    py::function function_;
+    py::object object_;
 };
 
 template <class Result> struct PlanningPythonCallback {
-    PlanningPythonFunction function;
+    PlanningPythonReference function;
     const char *label;
     Result operator()(const Eigen::VectorXd &state) const {
         py::gil_scoped_acquire acquire;
@@ -86,8 +85,43 @@ PlanningValidator(const py::object &callback) {
     if (converted.target<NativeFunction>())
         return converted;
     return PlanningPythonCallback<bool>{
-        PlanningPythonFunction(callback.cast<py::function>()),
+        PlanningPythonReference(callback.cast<py::function>()),
         "state_validator result"};
+}
+
+// Export the functor type's RTTI: factories live in the collision extension,
+// while the core extension traverses these std::function targets during GC.
+// Each copy owns its resource, including request copies outside Python's graph.
+template <class Result> struct PYBIND11_EXPORT PlanningResourceCallback {
+    // Destroy callback captures before releasing the model they may reference.
+    PlanningPythonReference resource;
+    std::function<Result(const Eigen::VectorXd &)> callback;
+    Result operator()(const Eigen::VectorXd &state) const { return callback(state); }
+};
+
+template <class Result>
+std::function<Result(const Eigen::VectorXd &)> RetainPlanningCallbackResource(
+    const std::function<Result(const Eigen::VectorXd &)> &callback,
+    const py::object &resource) {
+    if (!callback)
+        return {};
+    return PlanningResourceCallback<Result>{PlanningPythonReference(resource),
+                                            callback};
+}
+
+template <class Planner>
+Planner RetainPlanningResource(Planner result, const py::object &resource) {
+    using namespace robotics::planning;
+    using Access = robotics::planning::detail::PlanningCallbackAccess;
+    result.SetStateValidator(
+        RetainPlanningCallbackResource(Access::Validator(result), resource));
+    if constexpr (std::is_same_v<Planner, PathOptimizer>) {
+        result.SetStateCost(
+            RetainPlanningCallbackResource(Access::Cost(result), resource));
+        result.SetStateCostGradient(
+            RetainPlanningCallbackResource(Access::Gradient(result), resource));
+    }
+    return result;
 }
 
 template <class Result>
@@ -98,6 +132,11 @@ int VisitPlanningCallback(
             callback.template target<PlanningPythonCallback<Result>>()) {
         PyObject *function = value->function.Pointer();
         Py_VISIT(function);
+    } else if (const auto *value =
+                   callback.template target<PlanningResourceCallback<Result>>()) {
+        PyObject *resource = value->resource.Pointer();
+        Py_VISIT(resource);
+        return VisitPlanningCallback(value->callback, visit, arg);
     }
     return 0;
 }

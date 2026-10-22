@@ -12,6 +12,21 @@
 - Python tests: `tests/python/`
 - Conan consumer test: `test_package/`
 
+## Native build parallelism
+
+`scripts/build.sh` chooses its native compile job count from CPU affinity,
+visible CPU quotas and available memory. It budgets approximately 2 GiB per
+compiler process and always allows at least one job. Linux detection considers
+host available memory and visible cgroup v1/v2 hard limits, including parent
+groups; see the [kernel cgroup documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+Mount locations and subtree roots are resolved from
+[`/proc/self/mountinfo`](https://www.kernel.org/doc/html/latest/filesystems/proc.html#proc-pid-mountinfo-information-about-mounts),
+including escaped paths; conventional locations remain a fallback.
+Missing resource files fall back to the available CPU information. An explicit
+positive `JOBS` takes priority, for example `JOBS=2 ./scripts/build.sh --tests`.
+The estimate applies to this script's CMake build; Conan dependency build
+parallelism remains controlled by the selected Conan profiles.
+
 ## C++ diagnostics and benchmarks
 
 Place explicit class-template instantiations after their member definitions.
@@ -54,6 +69,21 @@ seeds and outputs; CUDA batches run when a device is available. History-bearing
 solvers and mutable collision workspaces retain the per-worker ownership
 contract in [Concepts](concepts.md).
 
+`jacobian_benchmark` and `srs_null_space_benchmark` report native query timing
+and allocation counts with caller-owned output storage. `planning_context_benchmark`
+compares callback snapshots containing copied metadata with snapshots sharing a
+prepared joint context. Linux static builds count wrapped `malloc` calls;
+other builds label their narrower ordinary C++ allocation counter explicitly.
+Counting runs separately from timing.
+
+`benchmarks/collision_worker_benchmark.py` compares full worker construction
+with `CollisionModel.clone()`, including fresh workspaces and configured pairs.
+`benchmarks/planning_snapshot_benchmark.py` measures complete short planning and
+optimization calls, including Python conversion, request snapshots, collision
+validation and owned results. Both use temporary synthetic URDFs. Compare
+separate coherent SDK installs using `PYTHONPATH`, and retain the raw samples
+and output checksums when reporting a performance change.
+
 `benchmarks/joint_mapping_benchmark.py` compares per-call named collision-model
 mapping, a reusable native map, and a prepared NumPy map. For example:
 
@@ -87,7 +117,8 @@ than a cold disk read; timings are observational, with no CI threshold.
 `benchmarks/native_query_concurrency.py` compares equal query workloads in one
 thread and a persistent Python thread pool. It uses unchanged shared solvers,
 14-joint unreachable IK targets, 4096-row CPU FK batches, SRS detailed reports
-and FEP branch enumeration. `--optimization-calls 16` also compares geometry-only
+and FEP branch enumeration. `--null-space-calls 16` adds SRS null-space planning with 512 steps per request.
+`--optimization-calls 16` also compares geometry-only
 path optimization with `release_gil=False` and `True` on a shared seven-coordinate,
 256-waypoint optimizer. Model construction,
 pool creation and output equivalence checks are outside timing; each complete

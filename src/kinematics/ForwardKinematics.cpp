@@ -5,15 +5,13 @@
 
 namespace holistic_motion::robotics::detail {
 namespace {
-template <bool StorePoses>
+template <typename Visitor, typename Prepare>
 bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
-              std::vector<SE3d> &pose_list, SE3d &terminal_pose) {
+              Visitor &&visit, Prepare &&prepare, SE3d &terminal_pose) {
     const auto &nodes = solver.GetJointNodesView();
     const int dof = solver.GetDOF();
     const auto tcp = solver.GetTCP();
 
-    if constexpr (StorePoses)
-        pose_list.clear();
     const std::size_t num = nodes.size();
     if (num == 0 || dof < 0 || static_cast<std::size_t>(dof) > num ||
         target_joint.size() != dof || !target_joint.allFinite()) {
@@ -22,16 +20,13 @@ bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
             target_joint.size());
         return false;
     }
-    if constexpr (StorePoses)
-        pose_list.reserve(num + 1);
+    prepare(num);
     SE3d pre_pose = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
     for (std::size_t i = 0; i < num; ++i) {
         const auto type = nodes[i].joint_type;
         if ((type != JointType::FIXED && type != JointType::UNKNOWN &&
              i >= static_cast<std::size_t>(dof)) ||
             type == JointType::PLANAR || type == JointType::FLOATING) {
-            if constexpr (StorePoses)
-                pose_list.clear();
             return false;
         }
         // Fixed nodes and exactly zero joint motions only compose their
@@ -41,8 +36,7 @@ bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
             (i < static_cast<std::size_t>(dof) && target_joint[i] == 0.0 &&
              nodes[i].axis.allFinite())) {
             pre_pose = pre_pose * nodes[i].origin_pose;
-            if constexpr (StorePoses)
-                pose_list.push_back(pre_pose);
+            visit(i, pre_pose);
             continue;
         }
         SE3d transform = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
@@ -58,8 +52,6 @@ bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
             // large angle by whole turns through component rounding alone.
             const double angle = target_joint[i] * axis_norm;
             if (!std::isfinite(angle)) {
-                if constexpr (StorePoses)
-                    pose_list.clear();
                 return false;
             }
             if (angle != 0.0) {
@@ -70,8 +62,6 @@ bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
             // generate translation vector
             xyz = nodes[i].axis * target_joint[i];
             if (!xyz.allFinite()) {
-                if constexpr (StorePoses)
-                    pose_list.clear();
                 return false;
             }
         }
@@ -85,35 +75,72 @@ bool Evaluate(const KinematicsBase &solver, const Eigen::VectorXd &target_joint,
             pose = pose * transform;
         }
         pre_pose = pose;
-        if constexpr (StorePoses)
-            pose_list.push_back(pre_pose);
+        visit(i, pre_pose);
         // holistic_motion::utility::LogDebug("Joint{} pose:[SE3({})].", i + 1,
         //                         fmt::join(pre_pose.Coeffs(), ","));
     }
     // update tcp pose
     const SE3d terminal = pre_pose * tcp;
     if (!terminal.Coeffs().allFinite()) {
-        if constexpr (StorePoses)
-            pose_list.clear();
         return false;
     }
-    if constexpr (StorePoses)
-        pose_list.push_back(terminal);
-    else
-        terminal_pose = terminal;
+    terminal_pose = terminal;
     return true;
 }
 } // namespace
 
 bool ComputeTerminalFK(const KinematicsBase &solver, const Eigen::VectorXd &joints,
                        SE3d &pose) {
-    std::vector<SE3d> unused;
-    return Evaluate<false>(solver, joints, unused, pose);
+    return Evaluate(
+        solver, joints, [](std::size_t, const SE3d &) {}, [](std::size_t) {}, pose);
 }
 
 bool ComputeAllFK(const KinematicsBase &solver, const Eigen::VectorXd &joints,
                   std::vector<SE3d> &poses) {
-    SE3d unused;
-    return Evaluate<true>(solver, joints, poses, unused);
+    poses.clear();
+    SE3d terminal;
+    if (!Evaluate(
+            solver, joints,
+            [&poses](std::size_t, const SE3d &pose) { poses.push_back(pose); },
+            [&poses](std::size_t count) { poses.reserve(count + 1); }, terminal)) {
+        poses.clear();
+        return false;
+    }
+    poses.push_back(terminal);
+    return true;
+}
+
+bool ComputeJacobian(const KinematicsBase &solver, const Eigen::VectorXd &joints,
+                     Eigen::Ref<Eigen::MatrixXd> jacobian) {
+    const auto &nodes = solver.GetJointNodesView();
+    const int dof = solver.GetDOF();
+    if (jacobian.rows() != 6 || jacobian.cols() != dof)
+        return false;
+    SE3d terminal;
+    if (!Evaluate(
+            solver, joints,
+            [&](std::size_t index, const SE3d &pose) {
+                if (index < static_cast<std::size_t>(dof)) {
+                    jacobian.col(index).head<3>() = pose.GetTranslation();
+                    jacobian.col(index).tail<3>() =
+                        pose.GetRotation() * nodes[index].axis;
+                }
+            },
+            [](std::size_t) {}, terminal))
+        return false;
+    const Eigen::Vector3d end = terminal.GetTranslation();
+    for (int index = 0; index < dof; ++index) {
+        const auto type = nodes[static_cast<std::size_t>(index)].joint_type;
+        const Eigen::Vector3d axis = jacobian.col(index).tail<3>();
+        if (type == JointType::REVOLUTE || type == JointType::CONTINUOUS) {
+            const Eigen::Vector3d origin = jacobian.col(index).head<3>();
+            jacobian.col(index).head<3>() = axis.cross(end - origin);
+        } else {
+            jacobian.col(index).setZero();
+            if (type == JointType::PRISMATIC)
+                jacobian.col(index).head<3>() = axis;
+        }
+    }
+    return true;
 }
 } // namespace holistic_motion::robotics::detail

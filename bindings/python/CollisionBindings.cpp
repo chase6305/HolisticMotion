@@ -106,31 +106,28 @@ void BindCollision(pybind11::module_ &module) {
       .def_readonly("nearest_point_second",
                     &CollisionResult::nearest_point_second);
   pybind11::class_<CollisionModel>(module, "CollisionModel")
-      .def(pybind11::init<const std::string &, const std::vector<std::string> &,
-                          bool>(),
-           pybind11::arg("urdf_path"),
-           pybind11::arg("package_dirs") = std::vector<std::string>{},
-           pybind11::arg("exclude_adjacent") = true)
+      .def(
+          pybind11::init<const std::string &, const std::vector<std::string> &, bool>(),
+          pybind11::arg("urdf_path"),
+          pybind11::arg("package_dirs") = std::vector<std::string>{},
+          pybind11::arg("exclude_adjacent") = true)
+      .def("clone", &CollisionModel::Clone,
+           "Deep-copy the current geometry and pairs with independent query "
+           "workspaces; the source must have no active edits or queries.")
       .def_property_readonly("nq", &CollisionModel::GetConfigurationSize)
       .def_property_readonly("nv", &CollisionModel::GetVelocitySize)
       .def("validate_configuration",
-           WithRealInput(&CollisionModel::ValidateConfiguration,
-                         "configuration"),
+           WithRealInput(&CollisionModel::ValidateConfiguration, "configuration"),
            py::arg("configuration"))
-      .def_property_readonly("joint_coordinates",
-                             &CollisionModel::GetJointCoordinates)
+      .def_property_readonly("joint_coordinates", &CollisionModel::GetJointCoordinates)
       .def("create_joint_position_map", &CollisionModel::CreateJointPositionMap,
            py::arg("joint_names"))
-      .def_property_readonly("geometry_count",
-                             &CollisionModel::GetGeometryCount)
-      .def_property_readonly("pair_count",
-                             &CollisionModel::GetCollisionPairCount)
-      .def_property_readonly("geometry_names",
-                             &CollisionModel::GetGeometryNames)
+      .def_property_readonly("geometry_count", &CollisionModel::GetGeometryCount)
+      .def_property_readonly("pair_count", &CollisionModel::GetCollisionPairCount)
+      .def_property_readonly("geometry_names", &CollisionModel::GetGeometryNames)
       .def_property_readonly("collision_link_names",
                              &CollisionModel::GetCollisionLinkNames)
-      .def_property_readonly("collision_pairs",
-                             &CollisionModel::GetCollisionPairs)
+      .def_property_readonly("collision_pairs", &CollisionModel::GetCollisionPairs)
       .def("neutral_configuration", &CollisionModel::NeutralConfiguration)
       .def(
           "configuration_from_joint_positions",
@@ -146,8 +143,7 @@ void BindCollision(pybind11::module_ &module) {
       .def(
           "configuration_with_joint_positions",
           [](const CollisionModel &self, const py::object &reference,
-             const std::vector<std::string> &names,
-             const py::object &positions) {
+             const std::vector<std::string> &names, const py::object &positions) {
               return self.ConfigurationWithJointPositions(
                   CheckedRealEigen<Eigen::VectorXd>(reference, "reference"),
                   names,
@@ -162,21 +158,19 @@ void BindCollision(pybind11::module_ &module) {
            pybind11::arg("joint_names"))
       .def(
           "add_box_obstacle",
-          [](CollisionModel &self, const std::string &name,
-             const py::object &size, const py::object &pose) {
+          [](CollisionModel &self, const std::string &name, const py::object &size,
+             const py::object &pose) {
               self.AddBoxObstacle(
                   name, CheckedRealEigen<Eigen::Vector3d>(size, "size"),
                   CheckedRealEigen<Eigen::Matrix4d>(pose, "pose"));
           },
           pybind11::arg("name"), pybind11::arg("size"), pybind11::arg("pose"))
-      .def("remove_obstacle", &CollisionModel::RemoveObstacle,
-           pybind11::arg("name"))
+      .def("remove_obstacle", &CollisionModel::RemoveObstacle, pybind11::arg("name"))
       .def("remove_collision_pair", &CollisionModel::RemoveCollisionPair)
       .def("remove_collision_pairs_by_links",
-           &CollisionModel::RemoveCollisionPairsByLinks,
-           pybind11::arg("first_link"), pybind11::arg("second_link"))
-      .def("remove_adjacent_pairs",
-           &CollisionModel::RemoveAdjacentCollisionPairs)
+           &CollisionModel::RemoveCollisionPairsByLinks, pybind11::arg("first_link"),
+           pybind11::arg("second_link"))
+      .def("remove_adjacent_pairs", &CollisionModel::RemoveAdjacentCollisionPairs)
       .def("reset_collision_pairs", &CollisionModel::ResetCollisionPairs,
            pybind11::arg("exclude_adjacent") = true)
       .def("clear_collision_pairs", &CollisionModel::ClearCollisionPairs)
@@ -209,8 +203,7 @@ void BindCollision(pybind11::module_ &module) {
       .def("minimum_distance",
            WithRealInput(&CollisionModel::MinimumDistance, "configuration"),
            pybind11::arg("configuration"))
-      .def("evaluate",
-           WithRealInput(&CollisionModel::Evaluate, "configuration"),
+      .def("evaluate", WithRealInput(&CollisionModel::Evaluate, "configuration"),
            pybind11::arg("configuration"));
   pybind11::class_<SphereCollisionModel>(module, "SphereCollisionModel")
       .def(pybind11::init<const std::string &, std::vector<CollisionSphere>,

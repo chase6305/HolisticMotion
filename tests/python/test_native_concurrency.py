@@ -359,3 +359,118 @@ def test_planning_callback_snapshot_releases_python_references(kind):
     setter(None)
     gc.collect()
     assert retained() is None
+
+
+@pytest.mark.parametrize("query_kind", ["velocity", "path"])
+def test_shared_null_space_queries_own_outputs(tmp_path, query_kind):
+    import holistic_motion as hm
+
+    solver = _create_seven_axis_solver(tmp_path, "SRS")
+    planner = hm.NullSpacePlanner(solver)
+    nominal = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    states = [nominal + 0.002 * np.sin(i + np.arange(7)) for i in range(16)]
+    direction = np.eye(7)[2]
+
+    def query(index):
+        state = states[index].copy()
+        preference = direction.copy()
+        if query_kind == "velocity":
+            result = solver.null_space_velocity(state, preference)
+        else:
+            result = planner.plan(state, preference, 8, 0.001)
+        np.testing.assert_array_equal(state, states[index])
+        np.testing.assert_array_equal(preference, direction)
+        state.fill(np.nan)
+        preference.fill(np.nan)
+        return result
+
+    expected = [query(i) for i in range(len(states))]
+    with ThreadPoolExecutor(4) as workers:
+        actual = list(workers.map(query, range(len(states))))
+    for result, reference in zip(actual, expected):
+        np.testing.assert_allclose(result, reference, atol=2e-12, rtol=0.0)
+    actual[0][0] = np.nan
+    assert all(np.isfinite(result).all() for result in actual[1:])
+
+
+@pytest.mark.parametrize("query_kind", ["velocity", "path"])
+def test_null_space_queries_allow_python_progress(tmp_path, query_kind):
+    path = tmp_path / "srs.urdf"
+    _write_ideal_srs_urdf(path)
+    command = """
+import sys
+from threading import Event, Thread
+from time import monotonic
+import numpy as np
+import holistic_motion as hm
+solver = hm.Robot(sys.argv[1]).kinematics
+planner = hm.NullSpacePlanner(solver)
+seed = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+direction = np.eye(7)[2]
+if sys.argv[2] == 'path':
+    query = lambda: planner.plan(seed, direction, 512, 1e-5)
+else:
+    query = lambda: solver.null_space_velocity(seed, direction)
+query()
+ready, go = Event(), Event()
+progress = []
+def peer():
+    ready.set()
+    go.wait()
+    progress.append(True)
+worker = Thread(target=peer, daemon=True)
+worker.start()
+assert ready.wait(5)
+previous = sys.getswitchinterval()
+sys.setswitchinterval(10.0)
+try:
+    go.set()
+    # A fixed number of microsecond queries can finish before the OS schedules
+    # the peer. Keep offering native GIL release points for a bounded interval;
+    # the long switch interval still prevents Python bytecode from helping.
+    deadline = monotonic() + 1.0
+    while True:
+        result = query()
+        if progress or monotonic() >= deadline:
+            break
+    observed = bool(progress)
+finally:
+    sys.setswitchinterval(previous)
+    go.set()
+    worker.join(5)
+assert not worker.is_alive()
+assert np.isfinite(result).all()
+assert observed, 'native null-space query blocked Python progress'
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", command, str(path), query_kind],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_null_space_logging_exception_recovers_the_gil(tmp_path):
+    import holistic_motion as hm
+
+    solver = _create_seven_axis_solver(tmp_path, "SRS")
+    planner = hm.NullSpacePlanner(solver)
+    seed = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    direction = np.eye(7)[2]
+    failure = RuntimeError("null-space log handler failed")
+
+    class FailingHandler(logging.Handler):
+        def emit(self, record):
+            raise failure
+
+    try:
+        hm.setup_logging("DEBUG", [FailingHandler()])
+        with pytest.raises(RuntimeError) as caught:
+            planner.plan(seed, direction, 2, 0.001)
+        assert caught.value is failure
+    finally:
+        hm.reset_logging()
+    assert len(planner.plan(seed, direction, 2, 0.001)) == 3

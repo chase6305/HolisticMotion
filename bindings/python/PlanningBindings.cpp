@@ -210,7 +210,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                     return;
                 }
                 self.SetStateCost(PlanningPythonCallback<double>{
-                    PlanningPythonFunction(callback.cast<py::function>()),
+                    PlanningPythonReference(callback.cast<py::function>()),
                     "state_cost result"});
             },
             py::arg("state_cost"))
@@ -222,7 +222,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                     return;
                 }
                 self.SetStateCostGradient(PlanningPythonCallback<Eigen::VectorXd>{
-                    PlanningPythonFunction(callback.cast<py::function>()),
+                    PlanningPythonReference(callback.cast<py::function>()),
                     "state_cost_gradient result"});
             },
             py::arg("state_cost_gradient"))

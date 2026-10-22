@@ -51,6 +51,12 @@ public:
     RebuildGeometryData();
   }
 
+  explicit Impl(const Impl &source)
+      : model(source.model), geometry_model(source.geometry_model.clone()) {
+      data = std::make_unique<pinocchio::Data>(model);
+      RebuildGeometryData();
+  }
+
   void Validate(const Eigen::VectorXd &q) const {
     if (q.size() != model.nq) {
       throw std::invalid_argument("configuration size must equal model.nq (" +
@@ -158,6 +164,13 @@ CollisionModel::CollisionModel(const std::string &urdf_path,
 
 CollisionModel::~CollisionModel() = default;
 CollisionModel::CollisionModel(CollisionModel &&) noexcept = default;
+CollisionModel::CollisionModel(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+CollisionModel CollisionModel::Clone() const {
+    if (!impl_)
+        throw std::logic_error("cannot clone a moved-from collision model");
+    return CollisionModel(std::make_unique<Impl>(*impl_));
+}
 CollisionModel &CollisionModel::operator=(CollisionModel &&) noexcept = default;
 
 int CollisionModel::GetConfigurationSize() const { return impl_->model.nq; }

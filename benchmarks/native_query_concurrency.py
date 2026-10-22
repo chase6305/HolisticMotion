@@ -70,6 +70,11 @@ def main():
     parser.add_argument("--batch-calls", type=positive_int, default=16)
     parser.add_argument("--seven-axis-calls", type=positive_int, default=16)
     parser.add_argument(
+        "--null-space-calls",
+        type=positive_int,
+        help="also compare shared SRS null-space planning across threads",
+    )
+    parser.add_argument(
         "--optimization-calls",
         type=positive_int,
         help="also compare retained/released GIL on native path optimization",
@@ -141,6 +146,21 @@ def main():
                         srs.forward(solution), seven_target, atol=1e-3
                     )
 
+        null_space_rows = []
+        if args.null_space_calls is not None:
+            null_planner = hm.NullSpacePlanner(srs)
+            preferred = np.eye(7)[2]
+            null_reference = null_planner.plan(seven_seed, preferred, 512, 1e-5)
+
+            def null_space_chunk(_):
+                for _ in range(args.null_space_calls):
+                    result = null_planner.plan(seven_seed, preferred, 512, 1e-5)
+                return result
+
+            def validate_null_space(results):
+                for result in results:
+                    np.testing.assert_allclose(result, null_reference, atol=1e-12)
+
         optimization_rows = []
         if args.optimization_calls is not None:
             optimizer = hm.PathOptimizer(-np.ones(7) * 3.0, np.ones(7) * 3.0)
@@ -187,6 +207,22 @@ def main():
             fep_solve = measure(
                 pool, fep_chunk, validate_seven, args.workers, args.repeats
             )
+            if args.null_space_calls is not None:
+                row = measure(
+                    pool,
+                    null_space_chunk,
+                    validate_null_space,
+                    args.workers,
+                    args.repeats,
+                )
+                row.update(
+                    operation="srs_null_space_planning",
+                    calls_per_worker=args.null_space_calls,
+                    steps=512,
+                    dof=7,
+                    checksum=float(np.asarray(null_reference).sum()),
+                )
+                null_space_rows.append(row)
             if args.optimization_calls is not None:
                 for release_gil in (False, True):
                     row = measure(
@@ -225,7 +261,7 @@ def main():
                 method="ALL_CONFIGURATIONS",
                 dof=7,
             )
-    rows = [ik, fk, srs_report, fep_solve, *optimization_rows]
+    rows = [ik, fk, srs_report, fep_solve, *null_space_rows, *optimization_rows]
     print(json.dumps(rows, indent=2))
     if args.json is not None:
         args.json.write_text(json.dumps(rows, indent=2) + "\n")

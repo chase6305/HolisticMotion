@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 
+#include "AllocationCounter.h"
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
 
 using namespace holistic_motion::robotics;
@@ -30,7 +31,8 @@ int main() {
             direction[joint] = std::sin(0.17 * (sample + 1) * (joint + 1));
         directions.push_back(direction);
     }
-    std::cout << "joint_scale,median_us,checksum,max_task_residual\n"
+    std::cout << "joint_scale,median_us,checksum,max_task_residual,allocations,"
+                 "allocation_kind\n"
               << std::setprecision(17);
     for (double scale : {1.0, 0.0, 1e-10}) {
         const Eigen::VectorXd q = scale * nominal;
@@ -46,6 +48,11 @@ int main() {
         }
         if (maximum_residual > 1e-7)
             return 1;
+        hm_benchmark::StartCounting();
+        for (int query = 0; query < 128; ++query)
+            if (!solver.GetNullSpaceVelocity(q, directions[query], velocity))
+                return 1;
+        const double allocations = double(hm_benchmark::StopCounting()) / 128;
         std::vector<double> times;
         double checksum = 0.0;
         constexpr int queries = 20000;
@@ -70,6 +77,7 @@ int main() {
         }
         std::sort(times.begin(), times.end());
         std::cout << scale << ',' << times[times.size() / 2] << ',' << checksum << ','
-                  << maximum_residual << '\n';
+                  << maximum_residual << ',' << allocations << ','
+                  << hm_benchmark::allocation_kind << '\n';
     }
 }

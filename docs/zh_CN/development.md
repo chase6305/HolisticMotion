@@ -12,6 +12,19 @@
 - Python 测试：`tests/python/`
 - Conan 消费端测试：`test_package/`
 
+## 原生构建并行度
+
+`scripts/build.sh` 根据 CPU 亲和性、可见 CPU 配额与可用内存选择编译任务数，
+每个编译进程按约 2 GiB 预算估算，至少保留一个任务。Linux 会结合宿主可用内存
+与可见的 cgroup v1/v2 硬限制，并检查父级限制，接口定义见
+[内核 cgroup 文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)。
+挂载路径与子树根从
+[`/proc/self/mountinfo`](https://www.kernel.org/doc/html/latest/filesystems/proc.html#proc-pid-mountinfo-information-about-mounts)
+解析，支持转义路径；无法读取时仍尝试常规挂载位置。
+资源文件缺失时回退到可获得的 CPU 信息。显式设置的正整数 `JOBS` 优先，例如
+`JOBS=2 ./scripts/build.sh --tests`。该估算用于脚本的 CMake 构建；Conan 依赖的
+构建并行度仍由所选 Conan profile 管理。
+
 ## C++ 诊断与性能基准
 
 类模板的显式实例化应放在成员定义之后。提前实例化时，GCC 仍可能生成相关符号，
@@ -45,6 +58,17 @@ toolkit wheel，验证受支持的 Python Pinocchio 版本和手部后端。
 有历史的求解器与可变碰撞工作区仍遵守
 [概念](concepts.md) 中的每 worker 独立实例契约。
 
+`jacobian_benchmark` 与 `srs_null_space_benchmark` 记录复用调用方输出存储时的
+原生查询耗时及分配次数。`planning_context_benchmark` 比较复制映射元数据与
+共享已准备上下文的回调快照。Linux 静态构建通过包装 `malloc` 计数；其他构建会
+显式标注仅统计普通 C++ 分配。分配计数与耗时测量分开执行。
+
+`benchmarks/collision_worker_benchmark.py` 比较完整 worker 构建与
+`CollisionModel.clone()`，包含独立工作区及已配置的碰撞对。
+`benchmarks/planning_snapshot_benchmark.py` 测量完整的短规划与优化调用，包含
+Python 转换、请求快照、碰撞验证和独立结果。两者均使用临时合成 URDF。比较时
+通过 `PYTHONPATH` 选择分别保持一致的 SDK 安装，并保留原始样本和输出校验和。
+
 `benchmarks/joint_mapping_benchmark.py` 比较每次按名称映射、复用原生映射和
 预计算 NumPy 映射的开销。例如：
 
@@ -72,7 +96,8 @@ python benchmarks/runtime_import_benchmark.py --repeats 11 \
 
 `benchmarks/native_query_concurrency.py` 使用配置不变的共享求解器，比较单线程与
 常驻 Python 线程池完成相同工作量的耗时，覆盖 14 关节不可达 IK、4096 行 CPU FK、
-SRS 详细报告与 FEP 分支枚举。`--optimization-calls 16` 还会在共享的七坐标、
+SRS 详细报告与 FEP 分支枚举。`--null-space-calls 16` 增加每次请求 512 步的 SRS 零空间规划。
+`--optimization-calls 16` 还会在共享的七坐标、
 256 路点优化器上比较 `release_gil=False` 与 `True` 的纯几何路径优化。
 模型构造、线程池创建和输出等价性检查在计时外，完整调用仍包含输入转换和独立输出：
 

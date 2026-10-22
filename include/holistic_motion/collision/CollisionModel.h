@@ -53,6 +53,12 @@ public:
   CollisionModel(const CollisionModel &) = delete;
   CollisionModel &operator=(const CollisionModel &) = delete;
 
+  /// Deep-copy the current model, geometry, obstacles and collision pairs with
+  /// fresh query workspaces. Does not reread the URDF or mesh files. Clone a
+  /// quiescent source before starting workers; concurrent edits/queries on the
+  /// source require external synchronization.
+  CollisionModel Clone() const;
+
   int GetConfigurationSize() const;
   int GetVelocitySize() const;
   /// Validate nq, finite values and normalized manifold blocks. This does not
@@ -103,6 +109,7 @@ public:
 
 private:
   class Impl;
+  explicit CollisionModel(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
 

@@ -52,9 +52,24 @@ Pinocchio.
 
 SRS preparation runs when the model changes, rather than repeating canonical
 geometry discovery inside each solve. Scalar built-in FK traverses directly to
-the terminal pose without allocating the complete frame sequence. `GetAllFK()`
+the terminal pose without allocating the complete frame sequence. Built-in
+Jacobian queries use the same traversal and fill the caller's matrix directly.
+SRS null-space projection uses a fixed-size Jacobian and SVD workspace on the
+stack; it retains no per-solver mutable cache. `GetAllFK()`
 retains its full-frame contract, including virtual dispatch for custom numerical
 subclasses.
+
+`CollisionModel::Clone()` / Python `clone()` creates a deep in-memory snapshot
+of the current geometry, obstacles and pair selection, with fresh FK and
+collision workspaces. Create worker copies from a quiescent source before
+starting parallel planning. Cloning does not reread the URDF or mesh files and
+copies geometry storage rather than sharing mutable query state.
+
+Collision factories prepare one immutable joint selection and reference
+configuration. Callback/request copies share that context; each state query
+still creates its own full configuration. Caller edits after factory creation
+cannot change the prepared context. Collision and distance-cache workspaces
+retain their per-worker ownership.
 
 Planning copies request inputs and callbacks before calling user code. A
 callback may replace the owner's configuration for a subsequent request without
@@ -66,18 +81,21 @@ lifetimes.
 
 ## Python execution boundary
 
-Read-only built-in IK and batch operations release the GIL after copying inputs;
-result conversion reacquires it. Unknown custom solvers keep the conservative
+Read-only built-in IK, SRS null-space projection/planning and batch operations
+release the GIL after copying inputs; result conversion reacquires it. Unknown custom solvers keep the conservative
 calling contract unless they explicitly advertise compatible concurrent queries.
 The capability is a promise by the implementation, including its use of Python
 APIs, captured state and output ownership.
 
-Planning exposes `release_gil=True` as an explicit keyword. Its default preserves
-native callbacks that expect the GIL; Python callbacks reacquire it in either
+`SamplingPlanner` and `PathOptimizer` expose `release_gil=True` as an explicit
+keyword. Its default preserves native callbacks that expect the GIL; Python callbacks reacquire it in either
 mode. Callback copies retain Python references safely through request teardown.
 On CPython, the planner bindings expose their callback edges to cycle collection;
-borrowed C++ objects keep the lifetime rules of their external owner. PyPy's
-tested native callback cycles require explicit callback clearing.
+collision factory callbacks also expose their resource references. Native C++
+callback copies retain those resources until the copy is destroyed, including
+copies held outside the Python object graph. Borrowed C++ objects keep the
+lifetime rules of their external owner. PyPy's tested native callback cycles
+require explicit callback clearing.
 
 The extension does not declare execution without a GIL safe. Loading it into a
 free-threaded CPython build enables the GIL. Concurrent setters are also outside

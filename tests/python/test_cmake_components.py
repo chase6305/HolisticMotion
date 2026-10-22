@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 
 
-def run(command, *, success=True):
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+def run(command, *, success=True, timeout=None):
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, timeout=timeout
+    )
     output = result.stdout + result.stderr
     assert (result.returncode == 0) == success, output
     return output
@@ -179,11 +181,14 @@ file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/probe_path.txt"
   CONTENT "$<TARGET_FILE:_custom_solver_probe>")
 """)
     (tmp_path / "probe.cpp").write_text(r"""#include <pybind11/pybind11.h>
+#include <thread>
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 #include "holistic_motion/planning/PathOptimizer.h"
 #include "holistic_motion/planning/SamplingPlanner.h"
 using namespace holistic_motion::robotics;
 static std::unique_ptr<planning::SamplingPlanner> borrowed_planner;
+static std::unique_ptr<planning::SamplingPlanner> stored_planner;
+static std::unique_ptr<planning::PathOptimizer> stored_optimizer;
 class CustomSolver : public KinematicsBase {
 public:
     CustomSolver() { dof_ = 1; }
@@ -248,6 +253,32 @@ PYBIND11_MODULE(_custom_solver_probe, module) {
     module.def("clear_borrowed_callback", []() {
         borrowed_planner->SetStateValidator({});
     });
+    module.def("store_planner", [](const planning::SamplingPlanner &value) {
+        stored_planner = std::make_unique<planning::SamplingPlanner>(value);
+    });
+    module.def("store_optimizer", [](const planning::PathOptimizer &value) {
+        stored_optimizer = std::make_unique<planning::PathOptimizer>(value);
+    });
+    module.def("query_stored_planner", []() {
+        return stored_planner->Plan(Eigen::VectorXd::Constant(1, 0.8),
+                                    Eigen::VectorXd::Constant(1, 1.2)).Success();
+    }, pybind11::call_guard<pybind11::gil_scoped_release>());
+    module.def("query_stored_optimizer", []() {
+        return stored_optimizer->Optimize({Eigen::VectorXd::Constant(1, 0.8),
+                                           Eigen::VectorXd::Constant(1, 1.0),
+                                           Eigen::VectorXd::Constant(1, 1.2)}).Success();
+    }, pybind11::call_guard<pybind11::gil_scoped_release>());
+    module.def("clear_stored", []() {
+        stored_planner.reset();
+        stored_optimizer.reset();
+    });
+    module.def("clear_stored_in_worker", []() {
+        std::thread worker([]() {
+            stored_planner.reset();
+            stored_optimizer.reset();
+        });
+        worker.join();
+    }, pybind11::call_guard<pybind11::gil_scoped_release>());
 }
 """)
     build = tmp_path / "build"
@@ -316,10 +347,56 @@ assert planner_ref() is not None and callback_ref() is not None
 plugin.clear_borrowed_callback()
 gc.collect()
 assert planner_ref() is None and callback_ref() is None
+if hm.runtime_info().collision_compiled:
+    from pathlib import Path
+    path = Path(sys.argv[3])
+    geometry = '<collision><geometry><sphere radius="0.2"/></geometry></collision>'
+    path.write_text(
+        f'<robot name="resources"><link name="base">{geometry}</link>'
+        f'<link name="slider">{geometry}</link>'
+        '<joint name="slide" type="prismatic"><parent link="base"/>'
+        '<child link="slider"/><axis xyz="1 0 0"/>'
+        '<limit lower="0" upper="2" effort="1" velocity="1"/></joint></robot>'
+    )
+    class CollisionOwner(hm.CollisionModel):
+        pass
+    class SphereOwner(hm.SphereCollisionModel):
+        pass
+    for family in ('mesh', 'sphere'):
+        for cyclic in (False, True):
+            for kind, factory in (('planner', hm.SamplingPlanner),
+                                  ('optimizer', hm.PathOptimizer)):
+                model = (
+                    CollisionOwner(str(path), exclude_adjacent=False)
+                    if family == 'mesh' else SphereOwner(str(path), [
+                        hm.CollisionSphere('base', 'base', [0, 0, 0], .2),
+                        hm.CollisionSphere('slider', 'slider', [0, 0, 0], .2),
+                    ])
+                )
+                build = getattr(factory, 'from_collision_joints' if family == 'mesh'
+                                else 'from_sphere_collision_joints')
+                kwargs = {'clearance': .6} if kind == 'optimizer' else {}
+                owner = build(model, ['slide'], [1.0], **kwargs)
+                if cyclic:
+                    model.owner = owner
+                model_ref, owner_ref = weakref.ref(model), weakref.ref(owner)
+                getattr(plugin, 'store_' + kind)(owner)
+                del model, owner
+                try:
+                    gc.collect()
+                    assert model_ref() is not None
+                    assert (owner_ref() is not None) == cyclic
+                    assert getattr(plugin, 'query_stored_' + kind)()
+                finally:
+                    plugin.clear_stored_in_worker()
+                gc.collect()
+                assert model_ref() is None and owner_ref() is None
 """,
             str(prefix),
             plugin,
-        ]
+            str(tmp_path / "resource.urdf"),
+        ],
+        timeout=30,
     )
 
 

@@ -98,20 +98,46 @@ its previous output path. SRS/FEP `Solve()` can also use a previous output
 candidate as its seed. These calls retain the input values before replacing
 the output container.
 
-Python `plan()` and `optimize()` accept the keyword-only `release_gil=True` for
+Python `SRSKinematics.null_space_velocity()` and `NullSpacePlanner.plan()`
+copy their inputs and release the GIL during native computation. Read-only
+queries may share a solver/planner with independent output paths; model, frame
+and limit updates require external synchronization.
+
+Python `SamplingPlanner.plan()` and `PathOptimizer.optimize()` accept the keyword-only `release_gil=True` for
 parallel native work. The binding copies inputs, options and the planner or
 optimizer while holding the GIL, then releases it for that request. Python
 callbacks acquire it automatically. Existing native callbacks keep their current
 calling contract by default (`release_gil=False`); with release enabled, C++
 callbacks using Python APIs must acquire the GIL themselves. Captured collision
 models and other mutable callback workspaces still require separate worker
-instances.
+instances. Create them before starting the workers:
+
+```python
+worker_models = [collision.clone() for _ in range(4)]
+worker_planners = [
+    hm.SamplingPlanner.from_collision_joints(model, joint_names, context)
+    for model in worker_models
+]
+```
+
+Each clone preserves the source's current obstacles and collision pair selection
+and owns fresh query workspaces. The source must have no active query or edit
+during cloning. Use a different planner/model pair for each concurrent request;
+then call its `plan(..., release_gil=True)` to allow native parallel work.
 
 On CPython, validator, cost and gradient callbacks participate in cycle collection,
-including callbacks that capture their planner or optimizer. An active request
+including callbacks that capture their planner or optimizer and collision
+models that hold a back-reference to a factory-created owner. Factory callback
+copies retain the Python collision object they query; external C++ ownership
+still governs borrowed models. Clearing/replacing all such callbacks
+releases that resource once active request and external C++ copies finish. An active request
 retains its own callback references until it finishes. A planning object exposed
 as a borrowed C++ reference keeps the lifetime rules of its C++ owner; Python
 collection does not clear callbacks on that external object.
+Release C++ copies containing Python callbacks or resources before shutting down
+their Python interpreter. Copying or destroying these Python-retaining callbacks
+acquires the GIL; embedding code must release it while waiting for a worker that
+performs those operations.
 On PyPy, avoid callbacks capturing their owner or clear them explicitly with
 `set_state_validator(None)`, `set_state_cost(None)` and
 `set_state_cost_gradient(None)` when finished; native callback cycles are not

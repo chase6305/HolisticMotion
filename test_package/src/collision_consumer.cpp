@@ -11,8 +11,7 @@ int main() {
     const auto directory =
         std::filesystem::temp_directory_path() /
         ("holistic_motion_consumer_" +
-         std::to_string(
-             std::chrono::steady_clock::now().time_since_epoch().count()));
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     if (!std::filesystem::create_directory(directory))
         return 1;
     struct Cleanup {
@@ -39,8 +38,7 @@ int main() {
             return 1;
     }
     try {
-        holistic_motion::robotics::collision::CollisionModel model(
-            urdf.string());
+        holistic_motion::robotics::collision::CollisionModel model(urdf.string());
         if (model.GetConfigurationSize() != 3 || model.GetVelocitySize() != 2)
             return 1;
         const auto mapping = model.CreateJointPositionMap({"slide", "turn"});
@@ -50,8 +48,16 @@ int main() {
             model.NeutralConfiguration(), positions);
         if (!mapping.JointPositions(full).isApprox(positions, 1e-12))
             return 1;
-        return !model.InCollision(full) &&
-                       std::abs(model.MinimumDistance(full).distance - 1.2) < 1e-12
+        std::filesystem::remove(urdf);
+        auto worker = model.Clone();
+        model.ClearCollisionPairs();
+        if (model.GetCollisionPairCount() != 0 || worker.GetCollisionPairCount() != 1 ||
+            !worker.CreateJointPositionMap({"slide", "turn"})
+                 .JointPositions(full)
+                 .isApprox(positions, 1e-12))
+            return 1;
+        return !worker.InCollision(full) &&
+                       std::abs(worker.MinimumDistance(full).distance - 1.2) < 1e-12
                    ? 0
                    : 1;
     } catch (const std::exception &error) {

@@ -328,12 +328,10 @@ bool NumericalKinematics::GetDamp(double& damp) const {
 
 bool NumericalKinematics::GetJacobian(const Eigen::VectorXd& joint_pos,
                                       Eigen::MatrixXd& jacobian) const {
-    // if (joint_pos.size() != this->dof_) {
-    //     holistic_motion::utility::LogWarning("Joint position size[{}] not match
-    //     dof[{}].",
-    //                               joint_pos.size(), this->dof_);
-    //     return false;
-    // }
+    if (UsesDefaultForwardKinematics()) {
+        jacobian.resize(6, this->dof_);
+        return detail::ComputeJacobian(*this, joint_pos, jacobian);
+    }
     std::vector<SE3d> pose_list;
     if (!this->GetAllFK(joint_pos, pose_list)) {
         return false;

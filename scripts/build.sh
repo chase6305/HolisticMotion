@@ -5,7 +5,7 @@ set -euo pipefail
 REPOSITORY_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${REPOSITORY_DIR}/build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
-JOBS="${JOBS:-$(nproc)}"
+JOBS="${JOBS:-}"
 PYTHON_EXECUTABLE="${PYTHON_EXECUTABLE:-python3}"
 CONAN_PROFILE_HOST="${CONAN_PROFILE_HOST:-default}"
 CONAN_PROFILE_BUILD="${CONAN_PROFILE_BUILD:-default}"
@@ -31,7 +31,8 @@ Options:
   -h, --help       Show this help
 
 Environment:
-  BUILD_DIR, BUILD_TYPE, JOBS, PYTHON_EXECUTABLE
+  BUILD_DIR, BUILD_TYPE, PYTHON_EXECUTABLE
+  JOBS (positive integer override; automatic CPU/RAM estimate by default)
   CONAN_PROFILE_HOST, CONAN_PROFILE_BUILD (names or paths; default: default)
 EOF
 }
@@ -91,6 +92,11 @@ fi
 PYTHON_EXECUTABLE="$("${PYTHON_EXECUTABLE}" -I -S -c 'import sys; print(sys.executable)')"
 BUILD_DIR="$("${PYTHON_EXECUTABLE}" -I -S -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "${BUILD_DIR}")"
 
+if [[ -n "${JOBS}" && ( ! "${JOBS}" =~ ^[0-9]+$ || "${JOBS}" =~ ^0+$ ) ]]; then
+    echo "error: JOBS must be a positive integer" >&2
+    exit 2
+fi
+
 cd "${REPOSITORY_DIR}"
 
 if ! conan profile show -pr:h "${CONAN_PROFILE_HOST}" \
@@ -129,7 +135,11 @@ if [[ ! -f "${TOOLCHAIN}" ]]; then
     exit 1
 fi
 
+if [[ -z "${JOBS}" ]]; then
+    JOBS="$("${PYTHON_EXECUTABLE}" -I -S "${REPOSITORY_DIR}/scripts/build_parallelism.py")"
+fi
 echo "[3/4] Configuring and building"
+echo "      Parallel jobs=${JOBS} (override with JOBS)"
 cmake -S . -B "${BUILD_DIR}/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \

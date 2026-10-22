@@ -251,16 +251,37 @@ C++ `NullSpacePlanner::Plan()` 可以将旧输出路径中的行用作新的起�
 SRS/FEP `Solve()` 也可以将旧输出候选用作种子。这些调用会在替换输出容器前保留
 所需输入值。
 
-Python 的 `plan()` 和 `optimize()` 接受仅限关键字的 `release_gil=True`，用于并行
+Python 的 `SRSKinematics.null_space_velocity()` 与 `NullSpacePlanner.plan()`
+复制输入后在原生计算期间释放 GIL。只读查询可共享求解器或规划器，每次查询持有
+独立输出；模型、坐标系和限位更新仍须外部同步。
+
+Python 的 `SamplingPlanner.plan()` 和 `PathOptimizer.optimize()` 接受仅限关键字的 `release_gil=True`，用于并行
 执行原生计算。绑定先持有 GIL 复制输入、选项和规划器或优化器，再为本次请求释放
 GIL；Python 回调会自动重新获取它。默认 `release_gil=False` 保留既有原生回调的
 调用契约；启用后，访问 Python API 的 C++ 回调须自行获取 GIL。回调捕获的碰撞模型
-和其他可变工作区仍需由各 worker 分别持有。
+和其他可变工作区仍需由各 worker 分别持有。可在启动 worker 前创建副本：
+
+```python
+worker_models = [collision.clone() for _ in range(4)]
+worker_planners = [
+    hm.SamplingPlanner.from_collision_joints(model, joint_names, context)
+    for model in worker_models
+]
+```
+
+每个副本保留源对象当前的障碍物和碰撞对选择，并持有新的查询工作区。复制期间
+源对象应无活动查询或更新。每个并发请求使用不同的规划器与模型，再通过
+`plan(..., release_gil=True)` 并行执行原生计算。
 
 CPython 的校验、代价和梯度回调参与循环引用回收，包括捕获自身规划器或优化器的
-回调。执行中的请求会独立持有回调引用，直到请求结束。通过借用引用暴露给 Python
+回调，以及反向引用工厂规划器或优化器的碰撞模型。工厂回调的每个副本独立持有
+其 Python 碰撞对象引用；借用模型仍由外部 C++ 所有者管理原生生命周期。替换或清除全部相关回调后，活动请求与外部 C++ 副本结束时即可释放
+该资源。执行中的请求会独立持有回调引用，直到请求结束。通过借用引用暴露给 Python
 的 C++ 规划对象仍遵循其 C++ 所有者的生命周期；Python 回收不会清除该外部对象
 中的回调。
+包含 Python 回调或资源的 C++ 副本应在对应解释器关闭前释放。
+这些回调在复制或销毁时会获取 GIL；嵌入端等待执行这些操作的 worker 结束时，
+应释放 GIL。
 在 PyPy 上应避免回调捕获自身所有者，或在使用结束后显式调用
 `set_state_validator(None)`、`set_state_cost(None)` 和
 `set_state_cost_gradient(None)`；已测试的 PyPy 3.10 回收器不会回收原生回调循环。

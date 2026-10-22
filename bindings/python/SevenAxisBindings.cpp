@@ -252,7 +252,12 @@ void BindSevenAxisKinematics(py::module_ &module) {
                     direction_input, "direction");
 
                 Eigen::VectorXd velocity;
-                if (!self.GetNullSpaceVelocity(joints, direction, velocity)) {
+                bool success;
+                {
+                    py::gil_scoped_release release;
+                    success = self.GetNullSpaceVelocity(joints, direction, velocity);
+                }
+                if (!success) {
                     throw py::value_error("expected a compatible 7R chain");
                 }
                 return velocity;
@@ -398,7 +403,12 @@ void BindSevenAxisKinematics(py::module_ &module) {
                 const double step_size =
                     CheckedRealEigen<double>(step_input, "step_size");
                 std::vector<Eigen::VectorXd> path;
-                if (!self.Plan(start, direction, steps, step_size, path)) {
+                bool success;
+                {
+                    py::gil_scoped_release release;
+                    success = self.Plan(start, direction, steps, step_size, path);
+                }
+                if (!success) {
                     throw py::value_error("null-space planning failed");
                 }
                 return path;
