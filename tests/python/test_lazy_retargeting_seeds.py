@@ -7,10 +7,11 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, continuous=False, **options):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "lazy_seeds.urdf"
     kind = "continuous" if continuous else "revolute"
     limits = "" if continuous else 'lower="-1" upper="1"'

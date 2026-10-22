@@ -2,6 +2,57 @@ import numpy as np
 import pytest
 
 
+def test_delayed_visuals_use_original_source_after_working_directory_changes(
+    tmp_path, monkeypatch
+):
+    import holistic_motion as hm
+
+    source = tmp_path / "source"
+    shadow = tmp_path / "shadow"
+    source.mkdir()
+    shadow.mkdir()
+    for directory, radius in ((source, 0.1), (shadow, 0.9)):
+        (directory / "robot.urdf").write_text(
+            '<robot name="visual_source"><link name="base"><visual>'
+            f'<geometry><sphere radius="{radius}"/></geometry>'
+            "</visual></link></robot>"
+        )
+    monkeypatch.chdir(source)
+    robot = hm.Robot("robot.urdf")
+    monkeypatch.chdir(shadow)
+    assert robot.load_visuals()
+    assert robot.urdf_path == "robot.urdf"
+    assert robot.get_link("base").visuals[0].radius == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("source_change", ["replace", "remove"])
+@pytest.mark.parametrize("load_visuals", [False, True])
+def test_delayed_visuals_belong_to_the_loaded_model_snapshot(
+    tmp_path, source_change, load_visuals
+):
+    import holistic_motion as hm
+
+    path = tmp_path / "snapshot.urdf"
+
+    def source(radius):
+        return (
+            '<robot name="snapshot"><link name="base"><visual>'
+            f'<geometry><sphere radius="{radius}"/></geometry>'
+            "</visual></link></robot>"
+        )
+
+    path.write_text(source(0.1))
+    robot = hm.Robot(str(path), load_visuals=load_visuals)
+    assert bool(robot.get_link("base").visuals) is load_visuals
+    if source_change == "replace":
+        path.write_text(source(0.9))
+    else:
+        path.unlink()
+    assert robot.load_visuals()
+    assert robot.visuals_loaded
+    assert robot.get_link("base").visuals[0].radius == pytest.approx(0.1)
+
+
 @pytest.mark.parametrize("seed", [np.nan, np.inf, -np.inf])
 def test_numerical_inverse_rejects_nonfinite_seed_without_zero_retry(tmp_path, seed):
     import holistic_motion as hm
@@ -35,6 +86,31 @@ def test_numerical_forward_preserves_tiny_nonzero_rotation(tmp_path, angle):
     assert pose[0, 1] / angle == pytest.approx(-1.0, rel=1e-14, abs=0.0)
 
 
+@pytest.mark.parametrize("axis_index", [0, 1, 2])
+@pytest.mark.parametrize("angle", [1e155, -1e155, 1e200, -1e200, 1e308, -1e308])
+def test_numerical_forward_preserves_representable_large_rotation(
+    tmp_path, axis_index, angle
+):
+    import holistic_motion as hm
+
+    axis = np.eye(3)[axis_index]
+    path = tmp_path / "large_turn.urdf"
+    path.write_text(
+        '<robot name="large_turn"><link name="base"/><link name="tip"/>'
+        '<joint name="turn" type="continuous"><parent link="base"/>'
+        f'<child link="tip"/><axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>'
+        "</joint></robot>"
+    )
+    solver = hm.Robot(str(path)).kinematics
+    skew = np.array(
+        [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]
+    )
+    expected = np.eye(4)
+    expected[:3, :3] += np.sin(angle) * skew + (1 - np.cos(angle)) * (skew @ skew)
+    np.testing.assert_allclose(solver.forward([angle]), expected, atol=2e-15)
+    np.testing.assert_allclose(solver.jacobian([angle])[3:, 0], axis, atol=1e-15)
+
+
 def test_numerical_inverse_avoids_all_solution_turn_expansion(tmp_path):
     import holistic_motion as hm
 
@@ -57,7 +133,7 @@ def test_numerical_inverse_avoids_all_solution_turn_expansion(tmp_path):
 
 
 @pytest.mark.parametrize("axis_scale", [0.5, 1.5, 2.0])
-def test_scaled_revolute_axis_preserves_rotation_when_wrapping_ik(tmp_path, axis_scale):
+def test_urdf_revolute_axis_is_a_direction_when_wrapping_ik(tmp_path, axis_scale):
     import holistic_motion as hm
 
     urdf = tmp_path / "scaled_turn.urdf"
@@ -68,13 +144,51 @@ def test_scaled_revolute_axis_preserves_rotation_when_wrapping_ik(tmp_path, axis
         <limit lower="-7" upper="7" velocity="1" effort="1"/>
       </joint></robot>""")
     solver = hm.Robot(str(urdf)).kinematics
-    seed = np.array([4 * np.pi / axis_scale])
+    seed = np.array([4 * np.pi])
     target = np.eye(4)
     for joints in solver.solve_all(target, seed):
         np.testing.assert_allclose(solver.forward(joints), target, atol=1e-10)
     nearest = solver.inverse(target, seed)
     np.testing.assert_allclose(solver.forward(nearest), target, atol=1e-10)
     assert -7.0 <= nearest[0] <= 7.0
+
+
+@pytest.mark.parametrize("kind", ["revolute", "continuous", "prismatic"])
+@pytest.mark.parametrize("scale", [0.5, -1.5, 2.0, 1e-200, 1e200])
+def test_urdf_joint_axis_magnitude_does_not_change_joint_units(tmp_path, kind, scale):
+    import holistic_motion as hm
+
+    path = tmp_path / "direction.urdf"
+    path.write_text(
+        '<robot name="direction"><link name="base"/><link name="tool"/>'
+        f'<joint name="joint" type="{kind}"><parent link="base"/>'
+        f'<child link="tool"/><axis xyz="0 {0.6 * scale} {0.8 * scale}"/>'
+        '<limit lower="-2" upper="2" velocity="1" effort="1"/></joint></robot>'
+    )
+    robot = hm.Robot(str(path))
+    axis = np.sign(scale) * np.array([0.0, 0.6, 0.8])
+    np.testing.assert_allclose(robot.get_joint("joint").axis, axis, atol=1e-15)
+    coordinate = 0.7
+    expected = np.eye(4)
+    if kind == "prismatic":
+        expected[:3, 3] = coordinate * axis
+    else:
+        skew = np.array(
+            [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]
+        )
+        expected[:3, :3] += np.sin(coordinate) * skew + (1 - np.cos(coordinate)) * (
+            skew @ skew
+        )
+    for solver in (robot.kinematics, robot.create_kinematics("base", "tool")):
+        np.testing.assert_allclose(solver.forward([coordinate]), expected, atol=1e-14)
+        expected_jacobian = np.zeros((6, 1))
+        if kind == "prismatic":
+            expected_jacobian[:3, 0] = axis
+        else:
+            expected_jacobian[3:, 0] = axis
+        np.testing.assert_allclose(
+            solver.jacobian([coordinate]), expected_jacobian, atol=1e-14
+        )
 
 
 def test_robot_loads_explicit_urdf_path(tmp_path):
@@ -404,25 +518,23 @@ def test_numerical_ik_uses_tool_position_error_in_world_frame(tmp_path, offset, 
     np.testing.assert_allclose(recovered[:3, :3], target[:3, :3], atol=2e-3)
 
 
-@pytest.mark.parametrize(
-    "kind,large_joint", [("prismatic", 1e308), ("revolute", 1e200)]
-)
 @pytest.mark.parametrize("method", ["forward", "forward_all", "jacobian"])
-def test_numerical_fk_rejects_arithmetic_overflow(tmp_path, kind, large_joint, method):
+def test_numerical_fk_rejects_translation_overflow(tmp_path, method):
     import holistic_motion as hm
 
     path = tmp_path / "overflow.urdf"
     path.write_text(
         '<robot name="overflow"><link name="base"/><link name="tool"/>'
-        f'<joint name="joint" type="{kind}"><parent link="base"/>'
+        '<joint name="joint" type="prismatic"><parent link="base"/>'
         '<child link="tool"/><axis xyz="2 0 0"/>'
-        '<limit lower="-1" upper="1" velocity="1" effort="1"/></joint></robot>',
+        + '<origin xyz="1e308 0 0"/>'
+        + '<limit lower="-1" upper="1" velocity="1" effort="1"/></joint></robot>',
         encoding="utf-8",
     )
     solver = hm.Robot(str(path)).kinematics
     expected = solver.forward([0.25])
     with pytest.raises(ValueError):
-        getattr(solver, method)([large_joint])
+        getattr(solver, method)([1e308])
     np.testing.assert_array_equal(solver.forward([0.25]), expected)
 
 
@@ -448,14 +560,15 @@ def test_numerical_ik_preserves_periodic_limit_endpoints(tmp_path, seed):
 
 
 @pytest.mark.parametrize("seed", [-1e20, 1e20])
-def test_numerical_ik_reduces_extreme_periodic_seed(tmp_path, seed):
+@pytest.mark.parametrize("axis", ["0 0 1", "1 1 1", "-0.363181 1.063434 -1.634851"])
+def test_numerical_ik_reduces_extreme_periodic_seed(tmp_path, seed, axis):
     import holistic_motion as hm
 
     path = tmp_path / "large_seed.urdf"
     path.write_text(
         '<robot name="periodic"><link name="base"/><link name="tool"/>'
         '<joint name="joint" type="revolute"><parent link="base"/>'
-        '<child link="tool"/><axis xyz="0 0 1"/>'
+        f'<child link="tool"/><axis xyz="{axis}"/>'
         f'<limit lower="{-np.pi!r}" upper="{np.pi!r}" velocity="1" effort="1"/>'
         "</joint></robot>",
         encoding="utf-8",

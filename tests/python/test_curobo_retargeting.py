@@ -9,10 +9,11 @@ from holistic_motion.kit.retargeting import (
     SupportPolygonTask,
     ZmpTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def _solver(tmp_path, **kwargs):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "curobo_style.urdf"
     urdf.write_text(
         """<robot name="curobo_style">
@@ -234,7 +235,7 @@ def test_collision_finite_difference_reuses_cost_at_joint_limit(tmp_path):
 
 
 def test_collision_finite_difference_uses_continuous_joint_tangent(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "continuous.urdf"
     urdf.write_text(
         """<robot name="continuous">
@@ -444,7 +445,7 @@ def test_curobo_style_seed_ranking_uses_weighted_objective(tmp_path):
 
 
 def test_curobo_style_solver_supports_dual_leg_only_configuration(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "dual_leg.urdf"
     urdf.write_text(
         """<robot name="dual_leg">
@@ -498,7 +499,7 @@ def test_mode_requirements_are_checked_lazily(tmp_path):
 
 
 def test_curobo_style_solver_tracks_center_of_mass_without_mink(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "center_of_mass.urdf"
     urdf.write_text(
         """<robot name="center_of_mass">
@@ -551,7 +552,7 @@ def test_curobo_style_solver_tracks_center_of_mass_without_mink(tmp_path):
 
 
 def test_curobo_style_solver_moves_com_inside_support_polygon(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "support_polygon.urdf"
     urdf.write_text(
         """<robot name="support_polygon">
@@ -607,7 +608,7 @@ def test_curobo_style_solver_moves_com_inside_support_polygon(tmp_path):
 
 
 def test_curobo_style_solver_tracks_kinematic_zmp(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "zmp.urdf"
     urdf.write_text(
         """<robot name="zmp">

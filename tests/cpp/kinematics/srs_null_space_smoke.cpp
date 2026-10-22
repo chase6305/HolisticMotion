@@ -30,6 +30,19 @@ int main() {
     std::vector<Eigen::VectorXd> normal_path, scaled_path;
     if (!planner.Plan(nominal, direction, 2, 0.01, normal_path))
         return 6;
+    for (bool alias_start : {false, true}) {
+        for (bool alias_direction : {false, true}) {
+            std::vector<Eigen::VectorXd> reused{nominal, direction};
+            const auto &start = alias_start ? reused.front() : nominal;
+            const auto &preference = alias_direction ? reused.back() : direction;
+            if (!planner.Plan(start, preference, 2, 0.01, reused) ||
+                reused.size() != normal_path.size())
+                return 13;
+            for (std::size_t index = 0; index < reused.size(); ++index)
+                if (!reused[index].isApprox(normal_path[index], 1e-11))
+                    return 14;
+        }
+    }
     for (double scale : {1e-300, 1e300}) {
         if (!planner.Plan(nominal, scale * direction, 2, 0.01, scaled_path) ||
             normal_path.size() != scaled_path.size())
@@ -55,8 +68,7 @@ int main() {
         return 9;
     const Eigen::VectorXd locked = Eigen::VectorXd::Zero(7);
     if (!shared_solver->SetUserJointLimits(locked, locked) ||
-        planner.Plan(locked, direction, 2, 0.01, scaled_path) ||
-        !scaled_path.empty()) {
+        planner.Plan(locked, direction, 2, 0.01, scaled_path) || !scaled_path.empty()) {
         std::cerr << "null-space planner accepted a stationary corrected path\n";
         return 12;
     }

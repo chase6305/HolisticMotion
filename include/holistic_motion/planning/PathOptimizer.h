@@ -2,12 +2,18 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <Eigen/Core>
 
+#include "holistic_motion/planning/JointSpace.h"
+
 namespace holistic_motion::robotics::planning {
+namespace detail {
+struct PlanningCallbackAccess;
+}
 
 enum class PathOptimizationStatus {
   OPTIMIZED,
@@ -53,6 +59,8 @@ struct PathOptimizationResult {
   PathOptimizationStatistics statistics;
   std::string message;
   bool feasible{false};
+  /// Space used for this request, independent of later optimizer setters.
+  std::optional<JointSpace> joint_space;
 
   bool Success() const { return feasible; }
 };
@@ -62,8 +70,14 @@ struct PathOptimizationResult {
 /// Endpoints remain fixed. Every accepted waypoint update decreases the
 /// weighted length/smoothness objective and validates both adjacent edges.
 /// Input validation checks each original waypoint exactly, as well as the
-/// configured interior edge samples, to preserve validity at roundoff boundaries.
+/// configured interior edge samples, to preserve validity at roundoff
+/// boundaries. Each call snapshots options, joint space and callback wrappers;
+/// reentrant edits affect subsequent requests. Captured callback state retains
+/// its usual ownership. Concurrent Optimize calls
+/// additionally require thread-safe validator/cost/gradient callbacks and no
+/// concurrent setter calls.
 class PathOptimizer {
+    friend struct detail::PlanningCallbackAccess;
 public:
   using StateValidator = std::function<bool(const Eigen::VectorXd &)>;
   using StateCost = std::function<double(const Eigen::VectorXd &)>;
@@ -72,6 +86,10 @@ public:
 
   PathOptimizer(Eigen::VectorXd lower_limits, Eigen::VectorXd upper_limits,
                 StateValidator validator = {});
+  explicit PathOptimizer(JointSpace joint_space, StateValidator validator = {});
+
+  /// Independent topology snapshot; callbacks and their state are not copied.
+  JointSpace GetJointSpace() const { return joint_space_; }
 
   void SetStateValidator(StateValidator validator);
   void SetStateCost(StateCost state_cost);
@@ -84,10 +102,7 @@ public:
            const PathOptimizationOptions &options = {}) const;
 
 private:
-  Eigen::VectorXd lower_limits_;
-  Eigen::VectorXd upper_limits_;
-  Eigen::VectorXd weights_;
-  std::vector<bool> continuous_;
+  JointSpace joint_space_;
   StateValidator validator_;
   StateCost state_cost_;
   StateCostGradient state_cost_gradient_;

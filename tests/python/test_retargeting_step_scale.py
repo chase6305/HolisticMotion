@@ -8,10 +8,11 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, solver_type, continuous, step_size, damping=1e-6):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "scaled_waist.urdf"
     kind = "continuous" if continuous else "revolute"
     limits = "" if continuous else 'lower="-2" upper="2"'
@@ -70,7 +71,7 @@ def test_scaled_offline_update_stays_within_velocity_bounds(
 def test_limited_scale_preserves_the_multijoint_search_direction(
     tmp_path, solver_type, direction
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "two_slides.urdf"
     urdf.write_text("""<robot name="two_slides">
       <link name="base"/><link name="x"/><link name="tool"/>

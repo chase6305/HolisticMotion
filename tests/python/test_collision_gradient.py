@@ -8,10 +8,11 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, solver_type, cost, step, limit=1.0):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "bounded_joint.urdf"
     urdf.write_text(f"""<robot name="bounded_joint">
         <link name="base"/><link name="tool"/>
@@ -36,6 +37,55 @@ def make_solver(tmp_path, solver_type, cost, step, limit=1.0):
     )
     solver.prepare("left_arm")
     return solver
+
+
+@pytest.mark.parametrize(
+    "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
+)
+@pytest.mark.parametrize("method", ["solve", "step"])
+@pytest.mark.parametrize(
+    "callback", ["cost", "gradient", "combined_cost", "combined_gradient"]
+)
+@pytest.mark.parametrize("representation", ["complex", "nested_object"])
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_complex_collision_callbacks_preserve_history_and_allow_recovery(
+    tmp_path, solver_type, method, callback, representation, imaginary
+):
+    def cost(q):
+        return float((q[0] - 0.3) ** 2)
+
+    solver = make_solver(tmp_path, solver_type, cost, 1e-4)
+    solver.reset([0.1])
+    previous_q = solver._last_q.copy()
+    previous_velocity = solver._last_velocity.copy()
+    scalar = np.complex128(0.5 + imaginary * 1j)
+    if representation == "nested_object":
+        wrapped = np.empty((), dtype=object)
+        wrapped[()] = scalar
+        scalar = wrapped
+        gradient = np.empty(1, dtype=object)
+        gradient[0] = scalar
+    else:
+        gradient = np.array([scalar])
+    if callback == "cost":
+        solver.collision_cost = lambda q: scalar
+    elif callback == "gradient":
+        solver.collision_gradient = lambda q: gradient
+    elif callback == "combined_cost":
+        solver.collision_cost_gradient = lambda q: (scalar, [0.2])
+    else:
+        solver.collision_cost_gradient = lambda q: (cost(q), gradient)
+    targets = {"left_hand": np.eye(4)}
+    with pytest.raises(TypeError, match="real"):
+        getattr(solver, method)(targets)
+    np.testing.assert_array_equal(solver._last_q, previous_q)
+    np.testing.assert_array_equal(solver._last_velocity, previous_velocity)
+    solver.collision_cost = cost
+    solver.collision_gradient = None
+    solver.collision_cost_gradient = None
+    result = solver.step(targets)
+    assert np.isfinite(result.configuration).all()
+    assert result.configuration[0] > previous_q[0]
 
 
 @pytest.mark.parametrize(

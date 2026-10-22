@@ -282,7 +282,12 @@ struct IkRtn {
 
     /// \brief Remove approximately equal IK solutions within tolerance
     ///
-    /// \param eps Tolerance threshold for comparing solutions
+    /// Keeps lexicographically first representatives in a deterministic greedy
+    /// pass. All coordinate differences must be strictly below eps to merge;
+    /// eps == 0 merges exact duplicates. Approximate equality is not transitive.
+    /// Invalid tolerance or malformed candidates clear solution outputs.
+    /// Cached ik_number is reconciled from ik_joints and joint_states cleared.
+    /// \param eps Finite, nonnegative coordinate tolerance
     /// \return true if operation successful, false otherwise
     bool RemoveRepeatedIK(const double& eps = 1e-4);
 
@@ -312,7 +317,10 @@ struct IkRtn {
 
     /// \brief Sort solutions by minimum movement from reference joint state
     ///
-    /// \param joints Reference joint state to compare against
+    /// Sorts the supplied finite distances with stable ties; distances must
+    /// correspond to ik_joints. The reference is validated, not recomputed.
+    /// Malformed input clears solutions and distances. Clears joint_states.
+    /// \param joints Finite reference state with the configured DOF
     /// \param dist Output vector storing sorted distances
     /// \return true if sorting successful, false otherwise
     bool SortMinMovement(const Eigen::VectorXd& joints,
@@ -323,11 +331,15 @@ struct IkRtn {
     /// \param joint_nodes Vector of joint nodes
     /// \param robot_config Robot configuration manager with constraints
     /// \return true if valid solutions remain after filtering
+    /// Six-DoF filtering uses scalar-axis FK for its first four nodes. Invalid
+    /// prefix geometry or candidate coordinates clear the solution outputs.
     bool LimitRobotConfig(const std::vector<JointNode>& joint_nodes,
                           const RobotConfigManager& robot_config);
 
     /// \brief Apply joint solution filters based on filter manager rules
     ///
+    /// Invalid dimensions or nonfinite candidates clear solution outputs.
+    /// Reconciles ik_number and clears joint_states after filtering.
     /// \param filter Joint filter manager containing filtering rules
     /// \return true if filtering successful, false otherwise
     bool FilterJointSolutions(const JointFilterManager& filter);

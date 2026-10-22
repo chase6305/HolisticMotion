@@ -17,7 +17,7 @@ public:
     PathSegLinear(const std::array<LieGroup, 2>& waypoints,
                   const double& s0 = 0.0,
                   const bool& is_cartesian_space = false);
-    ~PathSegLinear() { holistic_motion::utility::LogDebug("Destructing PathSegLinear."); };
+    ~PathSegLinear() = default;
 
     std::shared_ptr<PathSegmentBase<LieGroup>> Copy() const {
         return std::make_shared<PathSegLinear<LieGroup>>(*this);
@@ -41,9 +41,7 @@ public:
     PathSegBezierCurve2nd(const std::array<LieGroup, 3>& waypoints,
                           const double& sp = 0.0,
                           const bool& is_cartesian_space = false);
-    ~PathSegBezierCurve2nd() {
-        holistic_motion::utility::LogDebug("Destructing PathSegBezierCurve2nd.");
-    };
+    ~PathSegBezierCurve2nd() = default;
 
     std::shared_ptr<PathSegmentBase<LieGroup>> Copy() const {
         return std::make_shared<PathSegBezierCurve2nd<LieGroup>>(*this);
@@ -77,9 +75,7 @@ public:
                           const double& tend_norm = 1.,
                           const double& cend_norm = 0.,
                           const bool& is_cartesian_space = false);
-    ~PathSegBezierCurve5th() {
-        holistic_motion::utility::LogDebug("Destructing PathSegBezierCurve5th.");
-    };
+    ~PathSegBezierCurve5th() = default;
 
     std::shared_ptr<PathSegmentBase<LieGroup>> Copy() const {
         return std::make_shared<PathSegBezierCurve5th<LieGroup>>(*this);

@@ -8,6 +8,7 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize(
@@ -61,7 +62,7 @@ def test_box_qp_zero_gradient_keeps_fixed_coupled_coordinates(scale):
 def test_weak_frame_tasks_keep_the_same_bounded_retargeting_step(
     tmp_path, solver_type, weight
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     axis_y = np.sqrt(0.19)
     path = tmp_path / "coupled_slides.urdf"
     path.write_text(f"""<robot name="coupled_slides">

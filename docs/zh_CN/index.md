@@ -27,6 +27,7 @@ logging
 
 cpp_api
 python_api
+architecture
 development
 project_layout
 ```

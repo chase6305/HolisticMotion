@@ -20,6 +20,14 @@ auto WithRealInput(Result (Class::*method)(const Input &), const char *name) {
     };
 }
 
+template <class Class, class Result, class Input>
+auto WithRealInput(Result (Class::*method)(const Input &) const,
+                   const char *name) {
+    return [method, name](const Class &self, const py::object &input) {
+        return (self.*method)(CheckedRealEigen<Input>(input, name));
+    };
+}
+
 } // namespace
 
 void BindCollision(pybind11::module_ &module) {
@@ -105,6 +113,14 @@ void BindCollision(pybind11::module_ &module) {
            pybind11::arg("exclude_adjacent") = true)
       .def_property_readonly("nq", &CollisionModel::GetConfigurationSize)
       .def_property_readonly("nv", &CollisionModel::GetVelocitySize)
+      .def("validate_configuration",
+           WithRealInput(&CollisionModel::ValidateConfiguration,
+                         "configuration"),
+           py::arg("configuration"))
+      .def_property_readonly("joint_coordinates",
+                             &CollisionModel::GetJointCoordinates)
+      .def("create_joint_position_map", &CollisionModel::CreateJointPositionMap,
+           py::arg("joint_names"))
       .def_property_readonly("geometry_count",
                              &CollisionModel::GetGeometryCount)
       .def_property_readonly("pair_count",
@@ -203,6 +219,15 @@ void BindCollision(pybind11::module_ &module) {
            pybind11::arg("exclude_same_link") = true)
       .def_property_readonly("nq", &SphereCollisionModel::GetConfigurationSize)
       .def_property_readonly("nv", &SphereCollisionModel::GetVelocitySize)
+      .def("validate_configuration",
+           WithRealInput(&SphereCollisionModel::ValidateConfiguration,
+                         "configuration"),
+           py::arg("configuration"))
+      .def_property_readonly("joint_coordinates",
+                             &SphereCollisionModel::GetJointCoordinates)
+      .def("create_joint_position_map",
+           &SphereCollisionModel::CreateJointPositionMap,
+           py::arg("joint_names"))
       .def_property_readonly("sphere_count",
                              &SphereCollisionModel::GetSphereCount)
       .def_property_readonly("pair_count",
@@ -221,6 +246,35 @@ void BindCollision(pybind11::module_ &module) {
       .def_property_readonly("collision_pairs",
                              &SphereCollisionModel::GetCollisionPairs)
       .def("neutral_configuration", &SphereCollisionModel::NeutralConfiguration)
+      .def(
+          "configuration_from_joint_positions",
+          [](const SphereCollisionModel &self, const py::dict &positions) {
+              std::map<std::string, double> checked;
+              for (const auto &item : positions)
+                  checked.emplace(
+                      py::cast<std::string>(item.first),
+                      CheckedRealEigen<double>(item.second, "joint_positions"));
+              return self.ConfigurationFromJointPositions(checked);
+          },
+          pybind11::arg("joint_positions"))
+      .def(
+          "configuration_with_joint_positions",
+          [](const SphereCollisionModel &self, const py::object &reference,
+             const std::vector<std::string> &names,
+             const py::object &positions) {
+              return self.ConfigurationWithJointPositions(
+                  CheckedRealEigen<Eigen::VectorXd>(reference, "reference"),
+                  names,
+                  CheckedRealEigen<Eigen::VectorXd>(positions,
+                                                    "joint_positions"));
+          },
+          pybind11::arg("reference"), pybind11::arg("joint_names"),
+          pybind11::arg("joint_positions"))
+      .def("joint_lower_limits", &SphereCollisionModel::GetJointLowerLimits,
+           pybind11::arg("joint_names"))
+      .def("joint_upper_limits", &SphereCollisionModel::GetJointUpperLimits,
+           pybind11::arg("joint_names"))
+
       .def("set_collision_groups", &SphereCollisionModel::SetCollisionGroups,
            pybind11::arg("groups"), pybind11::arg("group_pairs"))
       .def("reset_collision_pairs", &SphereCollisionModel::ResetCollisionPairs,

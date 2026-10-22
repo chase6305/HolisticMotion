@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <typeinfo>
 
 namespace {
 
@@ -23,6 +24,15 @@ bool IsFiniteVector(const Eigen::VectorXd& values) {
 
 namespace holistic_motion {
 namespace robotics {
+
+KinematicsCapabilities OPWKinematics::GetCapabilities() const {
+    auto result = KinematicsBase::GetCapabilities();
+    result.family = KinematicsFamily::OPW;
+    result.default_ik_algorithm = IKAlgorithm::ANALYTIC;
+    result.supports_closed_form_ik = true;
+    result.supports_concurrent_queries = typeid(*this) == typeid(OPWKinematics);
+    return result;
+}
 
 bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
                           SE3d &pose) const {

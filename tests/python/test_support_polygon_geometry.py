@@ -10,6 +10,7 @@ from holistic_motion.kit.retargeting import (
     RetargetingModeManager,
     SupportPolygonTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
@@ -64,7 +65,7 @@ def test_subnormal_edges_still_have_unit_normals():
 
 @pytest.mark.parametrize("translation", [[0.0, 0.0], [1e9, -1e9]])
 def test_support_vertex_remains_on_boundary_in_solver(tmp_path, translation):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     angle = 0.1
     rotation = np.array(
         [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]

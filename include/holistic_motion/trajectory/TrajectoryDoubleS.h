@@ -11,39 +11,36 @@ private:
     using Tangent = typename LieGroup::Tangent;
 
 public:
-    virtual ~TrajectoryDoubleS() {
-        holistic_motion::utility::LogDebug("Destructing TrajectoryDoubleS.");
-    };
+  virtual ~TrajectoryDoubleS() = default;
 
-    /// \brief DoubleS profile
-    ///
-    /// \param path path with init position between the end position
-    /// \param velocity_limits
-    /// \param acceleration_limits
-    /// \param jerk_limits
-    /// \param vel_init init velocity
-    /// \param vel_end end velocity
-    /// \param min_duration time control
-    TrajectoryDoubleS(const std::shared_ptr<PathBase<LieGroup>>& path,
-                      const std::shared_ptr<TrajectoryConstraints>& constraints,
-                      const double& vel_init = .0,
-                      const double& vel_end = .0);
+  /// \brief DoubleS profile
+  ///
+  /// \param path path with init position between the end position
+  /// \param velocity_limits
+  /// \param acceleration_limits
+  /// \param jerk_limits
+  /// \param vel_init init velocity
+  /// \param vel_end end velocity
+  /// \param min_duration time control
+  TrajectoryDoubleS(const std::shared_ptr<PathBase<LieGroup>> &path,
+                    const std::shared_ptr<TrajectoryConstraints> &constraints,
+                    const double &vel_init = .0, const double &vel_end = .0);
 
-    /// \brief get the path
-    ///
-    /// \param s path parameter
-    /// \return std::shared_ptr<PathSegmentBase>
-    std::shared_ptr<PathBase<LieGroup>> GetPath() const { return this->path_; }
+  /// \brief get the path
+  ///
+  /// \param s path parameter
+  /// \return std::shared_ptr<PathSegmentBase>
+  std::shared_ptr<PathBase<LieGroup>> GetPath() const { return this->path_; }
 
-    /// \brief get the length of path of the trajectory
-    ///
-    /// \return double the path length
-    double GetPathLength() const { return GetPath()->GetLength(); }
+  /// \brief get the length of path of the trajectory
+  ///
+  /// \return double the path length
+  double GetPathLength() const { return GetPath()->GetLength(); }
 
-    // /// \brief get the waypoints of the path
-    std::list<TrajectorySeg> GetWaypointSegments() const {
-        return this->trajectory_segments_;
-    };
+  // /// \brief get the waypoints of the path
+  std::list<TrajectorySeg> GetWaypointSegments() const {
+      return this->trajectory_segments_;
+  };
 
 protected:
     /// \brief compute max velocity of the segment

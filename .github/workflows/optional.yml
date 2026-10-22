@@ -1,0 +1,203 @@
+name: Optional Python runtimes
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: optional-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-core:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Clang and Python build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang-14
+          python -m pip install 'conan>=2.28' 'numpy>=1.23' 'pytest>=7' 'hypothesis>=6.112,<7'
+      - name: Select a coherent Clang dependency profile
+        run: |
+          conan profile detect
+          cat > clang.profile <<'EOF'
+          include(default)
+          [settings]
+          compiler=clang
+          compiler.version=14
+          compiler.libcxx=libstdc++11
+          compiler.cppstd=17
+          [conf]
+          tools.build:compiler_executables={"c":"clang-14","cpp":"clang++-14"}
+          EOF
+      - name: Build and link all native trajectory dimensions with Clang
+        env:
+          BUILD_DIR: build-clang
+          CONAN_PROFILE_HOST: clang.profile
+          JOBS: "2"
+        run: ./scripts/build.sh --tests --no-cuda --no-collision
+
+  native-python-abi:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "pypy3.10"
+            numpy: "numpy>=1.23,<2.3"
+            hypothesis: "hypothesis==6.112.0"
+          - python: "3.13"
+            numpy: "numpy>=1.23,<3"
+            hypothesis: "hypothesis>=6.112,<7"
+          - python: "3.13t"
+            numpy: "numpy>=1.23,<3"
+            hypothesis: "hypothesis>=6.112,<7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Conan in the build interpreter
+        run: python -m pip install 'conan>=2.28'
+      - uses: actions/setup-python@v5
+        id: target
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install target interpreter test dependencies
+        run: >-
+          python -m pip install '${{ matrix.numpy }}' 'pytest>=7'
+          '${{ matrix.hypothesis }}'
+      - name: Build and test the selected native ABI
+        env:
+          PYTHON_EXECUTABLE: ${{ steps.target.outputs.python-path }}
+          BUILD_DIR: build-abi
+          JOBS: "2"
+        run: ./scripts/build.sh --tests --no-cuda --no-collision
+      - name: Check package identity against the selected interpreter
+        env:
+          HOLISTICMOTION_TEST_CONAN_PYTHON_ABI: "1"
+          HOLISTICMOTION_TEST_TOOLCHAIN: build-abi/build/Release/generators/conan_toolchain.cmake
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/python/test_conan_python_abi.py -q
+
+  toolkit-wheel:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build a portable toolkit wheel without Conan
+        run: >-
+          python -m pip wheel . --no-deps --wheel-dir dist
+          -Ccmake.define.HOLISTICMOTION_PYTHON_TOOLKIT_ONLY=ON
+          -Cwheel.platlib=false
+      - name: Install and import the wheel outside the source tree
+        run: |
+          python -m pip install dist/*.whl 'pytest>=7'
+          python -I -c "import holistic_motion as hm; assert hm.runtime_info().pure_python; assert not hm.runtime_info().native_loaded; assert not hasattr(hm, 'Robot')"
+      - name: Verify the installed NumPy toolkit and compiler-free install
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: >-
+          python -I -m pytest tests/python/test_toppra*.py
+          tests/python/test_toolkit_install.py tests/python/test_runtime.py
+          tests/python/test_joint_position_map.py tests/python/test_viser_scene_style.py -q
+
+  cuda-build:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - name: Install host build tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends git g++ cmake python3 python3-venv
+          python3 -m venv /tmp/hmotion-ci
+          /tmp/hmotion-ci/bin/python -m pip install 'conan>=2.28'
+          echo /tmp/hmotion-ci/bin >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+      - name: Resolve core dependencies without collision or Python
+        run: |
+          conan profile detect
+          conan install . --output-folder=build-cuda --build=missing \
+            -o '&:with_python=False' -o '&:with_tests=True' \
+            -o '&:with_collision=False' -o '&:with_cuda=True' \
+            -o '&:cuda_architectures=75'
+      - name: Compile CUDA backends on a CPU runner
+        run: |
+          cmake -S . -B build-cuda/cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/build-cuda/build/Release/generators/conan_toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release -DHOLISTICMOTION_CUDA_ARCHITECTURES=75
+          cmake --build build-cuda/cmake --parallel 2
+      - name: Test CPU fallback and explicit unavailable-backend behavior
+        run: |
+          ctest --test-dir build-cuda/cmake --output-on-failure --no-tests=error
+          ./build-cuda/cmake/fep_batch_smoke_test
+      - name: Validate exported CUDA package and FEP consumer linkage
+        run: >-
+          conan create . --no-remote
+          -o '&:with_python=False' -o '&:with_tests=False'
+          -o '&:with_collision=False' -o '&:with_cuda=True'
+          -o '&:cuda_architectures=75' -c tools.build:jobs=2
+
+  retargeting:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pin: "pin==3.8.0"
+            python: "3.10"
+            coal: "coal==3.0.2"
+            urdfdom: "cmeel-urdfdom==4.0.1"
+            tinyxml2: "cmeel-tinyxml2==10.0.0"
+          - pin: "pin>=3.8,<5"
+            python: "3.11"
+            coal: "coal"
+            urdfdom: "cmeel-urdfdom"
+            tinyxml2: "cmeel-tinyxml2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the independent Python runtime
+        run: >-
+          python -m pip install --only-binary=:all:
+          '${{ matrix.pin }}' '${{ matrix.coal }}' '${{ matrix.urdfdom }}'
+          '${{ matrix.tinyxml2 }}' 'numpy>=1.23' 'pytest>=7'
+      - name: Exercise numerical retargeting and runtime boundaries
+        run: bash scripts/test-retargeting.sh -q
+
+  hand-retargeting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install optional hand dependencies
+        run: python -m pip install 'torch>=2.2' --index-url https://download.pytorch.org/whl/cpu
+      - name: Install the hand optimization backend
+        run: >-
+          python -m pip install 'pin>=3.8,<5' 'dex-retargeting==0.5.0'
+          'numpy>=1.23' 'pytest>=7'
+      - name: Verify optional dependencies before testing
+        run: python -c 'import pinocchio, dex_retargeting, nlopt, torch'
+      - name: Exercise the real hand backend in a separate process
+        env:
+          HOLISTICMOTION_PURE_PYTHON: "1"
+          PYTHONPATH: python
+        run: python -m pytest tests/python/test_dex_hand_retargeting.py -q

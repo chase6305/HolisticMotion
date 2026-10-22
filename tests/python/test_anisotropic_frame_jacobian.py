@@ -9,10 +9,11 @@ from holistic_motion.kit.retargeting import (
     PostureTask,
     RetargetingTarget,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, solver_type, task, chain=True):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "rotating_axes.urdf"
     extra = (
         """<link name="shoulder"/><link name="tool"/>

@@ -13,6 +13,7 @@ from holistic_motion.kit.retargeting import (
     SupportPolygonTask,
     ZmpTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def test_frame_task_supports_scalar_and_anisotropic_costs():
@@ -84,7 +85,7 @@ def test_zmp_task_supports_anisotropic_costs():
 
 
 def test_solver_rejects_non_finite_numeric_options(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "empty.urdf"
     urdf.write_text('<robot name="empty"><link name="base"/></robot>')
 
@@ -124,7 +125,7 @@ def test_solver_rejects_non_finite_numeric_options(tmp_path):
 
 
 def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "fixed.urdf"
     urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
     solver = PinkRetargetingSolver(
@@ -156,7 +157,7 @@ def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
 
 
 def test_zero_cost_frame_error_does_not_change_lm_damping(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "single_joint.urdf"
     urdf.write_text(
         """<robot name="single_joint">
@@ -288,7 +289,7 @@ def test_box_qp_matches_enumerated_active_sets_for_ill_conditioned_problem():
 
 
 def test_pink_solver_handles_dual_arm_mode(tmp_path, monkeypatch):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "pink.urdf"
     urdf.write_text(
         """<robot name="pink">

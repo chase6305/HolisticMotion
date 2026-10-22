@@ -1,10 +1,13 @@
 #include "holistic_motion/robot/Robot.h"
+#include "URDFModel.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <functional>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include <urdf_parser/urdf_parser.h>
 
@@ -112,15 +115,16 @@ void ParseVisual(const urdf::Visual& source, VisualGeometry& result) {
     }
 }
 
-void PopulateVisuals(const urdf::Link& source, Link& target) {
-    target.visuals.clear();
-    target.visuals.reserve(source.visual_array.size());
+std::vector<VisualGeometry> ParseVisuals(const urdf::Link& source) {
+    std::vector<VisualGeometry> result;
+    result.reserve(source.visual_array.size());
     for (const auto& visual : source.visual_array) {
         if (!visual) continue;
         VisualGeometry geometry;
         ParseVisual(*visual, geometry);
-        target.visuals.push_back(std::move(geometry));
+        result.push_back(std::move(geometry));
     }
+    return result;
 }
 
 using UrdfJointPath = std::vector<urdf::JointConstSharedPtr>;
@@ -192,19 +196,17 @@ std::shared_ptr<Robot> Robot::Create(const std::string& urdf_path,
 }
 
 bool Robot::LoadURDF(const std::string& urdf_path, bool load_visuals) {
-    const auto model = urdf::parseURDFFile(urdf_path);
+    std::error_code path_error;
+    const auto resolved_path = std::filesystem::absolute(urdf_path, path_error);
+    if (path_error) return false;
+    const auto model = urdf_internal::LoadModel(resolved_path.string());
     if (!model || !model->getRoot()) return false;
 
-    name_ = model->getName();
-    urdf_path_ = urdf_path;
-    root_link_name_ = model->getRoot()->name;
-    joints_.clear();
-    actuated_joints_.clear();
-    all_actuated_joints_.clear();
-    links_.clear();
-    joint_nodes_.clear();
+    Robot loaded;
+    loaded.name_ = model->getName();
+    loaded.urdf_path_ = urdf_path;
+    loaded.root_link_name_ = model->getRoot()->name;
 
-    std::unordered_map<std::string, std::shared_ptr<Link>> links_by_name;
     std::unordered_map<std::string, std::shared_ptr<Joint>> joints_by_name;
     std::function<void(const urdf::LinkConstSharedPtr&)> visit =
             [&](const urdf::LinkConstSharedPtr& source) {
@@ -230,14 +232,18 @@ bool Robot::LoadURDF(const std::string& urdf_path, bool load_visuals) {
                         (joint->joint_type == JointType::REVOLUTE ||
                          joint->joint_type == JointType::CONTINUOUS ||
                          joint->joint_type == JointType::PRISMATIC)) {
-                        all_actuated_joints_.push_back(joint);
+                        loaded.all_actuated_joints_.push_back(joint);
                     }
                     joints_by_name.emplace(joint->name, joint);
-                    joints_.push_back(std::move(joint));
+                    loaded.joints_.push_back(std::move(joint));
                 }
-                if (load_visuals) PopulateVisuals(*source, *link);
-                links_by_name.emplace(link->name, link);
-                links_.push_back(std::move(link));
+                if (load_visuals) {
+                    link->visuals = ParseVisuals(*source);
+                } else if (!source->visual_array.empty()) {
+                    loaded.pending_visuals_.emplace_back(
+                            loaded.links_.size(), ParseVisuals(*source));
+                }
+                loaded.links_.push_back(std::move(link));
                 for (const auto& child : source->child_links) visit(child);
             };
     visit(model->getRoot());
@@ -253,63 +259,65 @@ bool Robot::LoadURDF(const std::string& urdf_path, bool load_visuals) {
         // solver. Other URDF joint types remain available in joints_/links_.
         const auto converted = joints_by_name.find(source->name);
         if (converted == joints_by_name.end()) return false;
-        actuated_joints_.push_back(converted->second);
+        loaded.actuated_joints_.push_back(converted->second);
         const JointType solver_type = source->type == urdf::Joint::PRISMATIC
                                               ? JointType::PRISMATIC
                                               : JointType::REVOLUTE;
-        joint_nodes_.emplace_back(pending_fixed_transform * origin,
-                                  ToEigen(source->axis), solver_type,
-                                  converted->second->limit.lower_limit,
-                                  converted->second->limit.upper_limit);
+        loaded.joint_nodes_.emplace_back(
+                pending_fixed_transform * origin, converted->second->axis,
+                solver_type, converted->second->limit.lower_limit,
+                converted->second->limit.upper_limit);
         pending_fixed_transform =
                 SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
     }
-    if (joint_nodes_.empty()) {
-        kinematics_.reset();
+    if (loaded.joint_nodes_.empty()) {
+        loaded.kinematics_.reset();
     } else {
         JointNode terminal;
         terminal.origin_pose = pending_fixed_transform;
         terminal.joint_type = JointType::FIXED;
-        joint_nodes_.push_back(terminal);
+        loaded.joint_nodes_.push_back(terminal);
         const bool is_seven_revolute =
-                joint_nodes_.size() == 8 &&
-                std::all_of(joint_nodes_.begin(), joint_nodes_.begin() + 7,
+                loaded.joint_nodes_.size() == 8 &&
+                std::all_of(loaded.joint_nodes_.begin(),
+                            loaded.joint_nodes_.begin() + 7,
                             [](const JointNode& node) {
                                 return node.joint_type == JointType::REVOLUTE;
                             });
         if (is_seven_revolute) {
-            kinematics_ = std::make_shared<SRSKinematics>(joint_nodes_);
+            loaded.kinematics_ =
+                    std::make_shared<SRSKinematics>(loaded.joint_nodes_);
         } else {
-            kinematics_ = std::make_shared<NumericalKinematics>(joint_nodes_);
+            loaded.kinematics_ =
+                    std::make_shared<NumericalKinematics>(loaded.joint_nodes_);
         }
     }
-    visuals_loaded_ = load_visuals;
+    loaded.visuals_loaded_ = load_visuals;
+    *this = std::move(loaded);
     return true;
 }
 
 bool Robot::LoadVisuals() {
     if (visuals_loaded_) return true;
-    const auto model = urdf::parseURDFFile(urdf_path_);
-    if (!model) return false;
-    std::unordered_map<std::string, std::shared_ptr<Link>> links_by_name;
-    for (const auto& link : links_) links_by_name.emplace(link->name, link);
-    std::vector<urdf::LinkSharedPtr> parsed_links;
-    model->getLinks(parsed_links);
-    for (const auto& source : parsed_links) {
-        const auto target = links_by_name.find(source->name);
-        if (target != links_by_name.end()) {
-            PopulateVisuals(*source, *target->second);
-        }
-    }
+    if (links_.empty()) return false;
+    // All metadata belongs to the same parse as kinematics. Publishing uses
+    // noexcept vector moves; no second file parse can mix model generations.
+    for (const auto &link : links_) link->visuals.clear();
+    for (auto &entry : pending_visuals_)
+        links_[entry.first]->visuals = std::move(entry.second);
+    decltype(pending_visuals_)().swap(pending_visuals_);
     visuals_loaded_ = true;
     return true;
 }
 
-std::shared_ptr<NumericalKinematics> Robot::CreateKinematics(
-    const std::string& base_link, const std::string& tip_link) const {
-    if (!GetLink(base_link)) return nullptr;
+std::vector<const Joint *>
+Robot::GetChainPath(const std::string &base_link,
+                    const std::string &tip_link) const {
+    if (!GetLink(base_link))
+        return {};
     const Link* current = GetLink(tip_link).get();
-    if (!current) return nullptr;
+    if (!current)
+        return {};
 
     // Public C++ model fields are mutable. Build a temporary index only when
     // repeated scans on a long path justify it; each call sees current names.
@@ -321,26 +329,87 @@ std::shared_ptr<NumericalKinematics> Robot::CreateKinematics(
     while (current && current->name != base_link) {
         // A mutated parent relation may create a cycle. A tree path cannot
         // visit more links than the model contains.
-        if (path.size() >= links_.size()) return nullptr;
+        if (path.size() >= links_.size())
+            return {};
         if (!indexed && path.size() == 8 && links_.size() > 64) {
             links_by_name.reserve(std::min<std::size_t>(links_.size(), 128));
             joints_by_name.reserve(std::min<std::size_t>(joints_.size(), 128));
             indexed = true;
         }
-        if (current->parent_joint.empty()) return nullptr;
+        if (current->parent_joint.empty())
+            return {};
         const Joint* joint = indexed
                                  ? FindIndexed(joints_, current->parent_joint,
                                                joints_by_name, scanned_joints)
                                  : GetJoint(current->parent_joint).get();
-        if (!joint) return nullptr;
+        if (!joint)
+            return {};
         path.push_back(joint);
         current = indexed ? FindIndexed(links_, joint->parent_link,
                                         links_by_name, scanned_links)
                           : GetLink(joint->parent_link).get();
     }
-    if (!current || current->name != base_link) return nullptr;
+    if (!current || current->name != base_link)
+        return {};
     std::reverse(path.begin(), path.end());
 
+    for (const auto *joint : path) {
+        if (!joint->mimic_joint.empty() ||
+            (joint->joint_type != JointType::FIXED &&
+             joint->joint_type != JointType::REVOLUTE &&
+             joint->joint_type != JointType::CONTINUOUS &&
+             joint->joint_type != JointType::PRISMATIC))
+            return {};
+    }
+    return path;
+}
+
+std::vector<std::string>
+Robot::GetChainJointNames(const std::string &base_link,
+                          const std::string &tip_link) const {
+    std::vector<std::string> result;
+    for (const auto *joint : GetChainPath(base_link, tip_link))
+        if (joint->joint_type != JointType::FIXED)
+            result.push_back(joint->name);
+    return result;
+}
+
+std::vector<JointCoordinate> Robot::GetJointCoordinates() const {
+    std::vector<JointCoordinate> result;
+    result.reserve(all_actuated_joints_.size());
+    int index = 0;
+    for (const auto &joint : all_actuated_joints_) {
+        result.push_back({joint->name, index, 1, index, 1});
+        ++index;
+    }
+    return result;
+}
+
+JointPositionMap
+Robot::CreateJointPositionMap(const std::vector<std::string> &names) const {
+    const auto coordinates = GetJointCoordinates();
+    std::unordered_map<std::string_view, const JointCoordinate *> by_name;
+    by_name.reserve(coordinates.size());
+    for (const auto &joint : coordinates) {
+        if (joint.name.empty() || !by_name.emplace(joint.name, &joint).second)
+            throw std::invalid_argument(
+                "model joint names must be nonempty and unique: " + joint.name);
+    }
+    std::vector<JointCoordinate> selected;
+    selected.reserve(names.size());
+    for (const auto &name : names) {
+        const auto found = by_name.find(name);
+        if (found == by_name.end())
+            throw std::invalid_argument("unknown scalar model joint: " + name);
+        selected.push_back(*found->second);
+    }
+    return JointPositionMap(GetModelDoF(), GetModelDoF(), std::move(selected));
+}
+
+std::shared_ptr<NumericalKinematics>
+Robot::CreateKinematics(const std::string &base_link,
+                        const std::string &tip_link) const {
+    const auto path = GetChainPath(base_link, tip_link);
     std::vector<JointNode> nodes;
     SE3d fixed_transform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
     for (const auto& joint : path) {

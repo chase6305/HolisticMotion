@@ -7,9 +7,25 @@ import time
 from collections import deque
 from math import floor, log10
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-import trimesh
+
+if TYPE_CHECKING:
+    import trimesh
+
+
+def _load_trimesh():
+    try:
+        import trimesh
+    except ModuleNotFoundError as error:
+        if error.name != "trimesh":
+            raise
+        raise ImportError(
+            "Mesh/pose visualization requires the optional examples dependencies: "
+            "pip install 'holistic-motion[examples]'"
+        ) from error
+    return trimesh
 
 
 def _positive_scene_extent(value, name: str) -> float:
@@ -272,6 +288,7 @@ class ViserPerformanceMonitor:
 
 
 def visual_mesh(hm, visual, asset_directory: Path) -> trimesh.Trimesh:
+    trimesh = _load_trimesh()
     if visual.type == hm.GeometryType.MESH:
         path = (asset_directory / visual.mesh_path).resolve()
         loaded = trimesh.load(path, force="scene")
@@ -299,6 +316,7 @@ def visual_mesh(hm, visual, asset_directory: Path) -> trimesh.Trimesh:
 
 
 def pose_components(transform: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    trimesh = _load_trimesh()
     quaternion = trimesh.transformations.quaternion_from_matrix(transform)
     return quaternion, transform[:3, 3]
 

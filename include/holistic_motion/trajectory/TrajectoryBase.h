@@ -41,9 +41,7 @@ public:
         bool acceleration_continuous{false};
     };
 
-    virtual ~TrajectoryBase() {
-        holistic_motion::utility::LogDebug("Destructing TrajectoryBase.");
-    };
+    virtual ~TrajectoryBase() = default;
 
     /// \brief judge whether the path is valid
     bool IsValid() const { return this->valid_; };

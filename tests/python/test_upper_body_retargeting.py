@@ -14,6 +14,7 @@ from holistic_motion.kit.retargeting import (
     TorsoFirstResult,
     solve_torso_first,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(
@@ -25,7 +26,7 @@ def make_solver(
     waist_velocity=4.0,
     **kwargs,
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     waist_type = "continuous" if continuous else "revolute"
     left_origin = "0 0 0" if redundant else "0 0.25 0"
     right_origin = "0 0 0" if redundant else "0 -0.25 0"
@@ -254,7 +255,7 @@ def test_unrepresentable_normalization_rejected(tmp_path, magnitude):
 def test_floating_configuration_normalizes_rotation_without_clipping(
     tmp_path, solver_type
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "floating.urdf"
     urdf.write_text("""<robot name="floating">
         <link name="base"/><link name="body"/>

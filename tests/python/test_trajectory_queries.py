@@ -202,12 +202,17 @@ def test_stopped_corner_derivatives_use_the_active_time_phase(profile, scale):
         assert samples[order][0, 1] == 0.0
         assert samples[order][1, 0] == 0.0
         assert samples[order][2, 0] == 0.0
-    # The tiny incoming speed can round to zero when the cubic is evaluated.
-    assert samples[1][0, 0] >= 0.0
+    # Cancellation near a stop can leave a signed roundoff residual. Bound it
+    # relative to the trajectory's speed scale instead of requiring its sign
+    # below floating-point resolution (Clang and GCC round this differently).
+    report = trajectory.constraint_report()
+    velocity_roundoff = (
+        8 * np.finfo(float).eps * np.max(report["peak_velocity"])
+    )
+    assert samples[1][0, 0] >= -velocity_roundoff
     assert samples[1][2, 1] > 0.0
     assert samples[2][0, 0] < 0.0
     assert samples[2][2, 1] > 0.0
-    report = trajectory.constraint_report()
     assert report["within_limits"]
     assert report["velocity_continuous"]
     assert report["acceleration_continuous"] == (profile == "double_s")

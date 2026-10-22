@@ -38,6 +38,11 @@ failed attempt are closed and the exception is re-raised. A retained default
 handler remains module-owned, including NullHandlers created by reset, and is
 closed when a later configuration removes it.
 
+Native kinematics, path and trajectory destructors do not emit log records.
+Cleanup therefore does not invoke application handlers during Python garbage
+collection or C++ stack unwinding. Handler exceptions from ordinary native
+queries still propagate to Python; failing handlers are not silently disabled.
+
 ## JSON and custom destinations
 
 ```python

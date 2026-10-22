@@ -15,40 +15,44 @@ NullSpacePlanner::NullSpacePlanner(std::shared_ptr<SRSKinematics> kinematics)
 }
 
 bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
-                            const Eigen::VectorXd &preferred_direction,
-                            int steps, double step_size,
+                            const Eigen::VectorXd &preferred_direction, int steps,
+                            double step_size,
                             std::vector<Eigen::VectorXd> &path) const {
-    path.clear();
     if (!kinematics_->IsCompatible() || start.size() != 7 ||
         preferred_direction.size() != 7 || !start.allFinite() ||
         !preferred_direction.allFinite() || steps < 1 || !std::isfinite(step_size) ||
         step_size <= 0.0) {
+        path.clear();
         return false;
     }
 
     const double direction_scale = preferred_direction.cwiseAbs().maxCoeff();
-    if (direction_scale == 0.0) return false;
+    if (direction_scale == 0.0) {
+        path.clear();
+        return false;
+    }
     // Only the direction matters: normalize once before projection so very
     // small preferences do not disappear at the null-space rank threshold.
-    const Eigen::VectorXd normalized_direction =
-        preferred_direction / direction_scale;
+    const Eigen::VectorXd normalized_direction = preferred_direction / direction_scale;
+    Eigen::VectorXd current = start;
+    // Both inputs may refer to rows in the previous output path.
+    path.clear();
 
     const auto &nodes = kinematics_->GetJointNodesView();
-    for (Eigen::Index i = 0; i < start.size(); ++i) {
+    for (Eigen::Index i = 0; i < current.size(); ++i) {
         const auto &node = nodes[static_cast<std::size_t>(i)];
-        if (start[i] < std::max(node.lower_limit, node.lower_limit_set) ||
-            start[i] > std::min(node.upper_limit, node.upper_limit_set))
+        if (current[i] < std::max(node.lower_limit, node.lower_limit_set) ||
+            current[i] > std::min(node.upper_limit, node.upper_limit_set))
             return false;
     }
 
     SE3d target;
-    if (!kinematics_->GetFK(start, target))
+    if (!kinematics_->GetFK(current, target))
         return false;
     std::vector<Eigen::VectorXd> planned_path;
     planned_path.reserve(static_cast<std::size_t>(steps) + 1);
-    planned_path.push_back(start);
+    planned_path.push_back(current);
 
-    Eigen::VectorXd current = start;
     for (int i = 0; i < steps; ++i) {
         Eigen::VectorXd velocity;
         if (!kinematics_->GetNullSpaceVelocity(current, normalized_direction,
@@ -61,15 +65,17 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
         velocity /= velocity.cwiseAbs().maxCoeff();
         velocity.normalize();
         Eigen::VectorXd seed = current + step_size * velocity;
-        if ((seed.array() == current.array()).all()) return false;
+        if ((seed.array() == current.array()).all())
+            return false;
         IkRtn solutions;
         double distance = 0.0;
         if (!kinematics_->GetNearestIK(target, solutions, seed, distance) ||
             solutions.ik_joints.empty()) {
             return false;
         }
-        const auto& next = solutions.ik_joints.front();
-        if ((next.array() == current.array()).all()) return false;
+        const auto &next = solutions.ik_joints.front();
+        if ((next.array() == current.array()).all())
+            return false;
         current = next;
         planned_path.push_back(current);
     }

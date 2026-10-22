@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
-import trimesh
 
 from holistic_motion import JointType
+from .scene import _load_trimesh
 
 
 def _joint_motion(joint, value: float) -> np.ndarray:
@@ -14,9 +14,8 @@ def _joint_motion(joint, value: float) -> np.ndarray:
     if joint.joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
         length = np.linalg.norm(axis)
         if length > 0.0:
-            result = trimesh.transformations.rotation_matrix(
-                value, axis / length
-            )
+            trimesh = _load_trimesh()
+            result = trimesh.transformations.rotation_matrix(value, axis / length)
     elif joint.joint_type == JointType.PRISMATIC:
         result[:3, 3] = axis * value
     return result
@@ -44,8 +43,7 @@ def tree_transforms(robot, positions: dict[str, float], topology=None) -> dict:
         value = positions.get(joint.name, 0.0)
         if joint.mimic_joint:
             value = (
-                positions.get(joint.mimic_joint, 0.0)
-                * joint.mimic_multiplier
+                positions.get(joint.mimic_joint, 0.0) * joint.mimic_multiplier
                 + joint.mimic_offset
             )
         transforms[joint.child_link] = (

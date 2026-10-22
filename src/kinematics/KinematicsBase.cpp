@@ -1,6 +1,7 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
 
 #include "FrameValidation.h"
+#include "ForwardKinematics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -53,6 +54,51 @@ bool ValidJointModel(const std::vector<JointNode>& nodes, int dof) {
 
 }  // namespace
 
+KinematicsCapabilities KinematicsBase::GetCapabilities() const {
+    KinematicsCapabilities result;
+    result.dof = GetDOF();
+    return result;
+}
+
+IKSolveReport KinematicsBase::SolveIK(const SE3d &target, const Eigen::VectorXd &seed,
+                                      IKSelection selection) const {
+    IKSolveReport report;
+    report.algorithm = GetCapabilities().default_ik_algorithm;
+    report.selection = selection;
+    if (!detail::IsValidFrame(target) || seed.size() != GetDOF() || !seed.allFinite() ||
+        (selection != IKSelection::NEAREST && selection != IKSelection::ALL)) {
+        report.status = IKSolveStatus::INVALID_INPUT;
+        return report;
+    }
+
+    Eigen::VectorXd working_seed = seed;
+    IkRtn solutions;
+    std::vector<double> distances;
+    if (selection == IKSelection::NEAREST) {
+        double distance = 0.0;
+        if (!GetNearestIK(target, solutions, working_seed, distance) ||
+            solutions.ik_joints.size() != 1)
+            return report;
+        distances.push_back(distance);
+    } else if (!GetIK(target, solutions, working_seed, distances)) {
+        return report;
+    }
+    if (solutions.ik_joints.empty() || distances.size() != solutions.ik_joints.size() ||
+        !std::all_of(distances.begin(), distances.end(),
+                     [](double distance) {
+                         return std::isfinite(distance) && distance >= 0.0;
+                     }) ||
+        !std::all_of(solutions.ik_joints.begin(), solutions.ik_joints.end(),
+                     [this](const Eigen::VectorXd &joints) {
+                         return joints.size() == GetDOF() && joints.allFinite();
+                     }))
+        return report;
+    report.solutions = std::move(solutions.ik_joints);
+    report.distances = std::move(distances);
+    report.status = IKSolveStatus::SUCCESS;
+    return report;
+}
+
 void KinematicsBase::InitializeJointModel(
         const std::vector<JointNode>& joint_nodes, int dof) {
     if (!ValidJointModel(joint_nodes, dof)) {
@@ -68,90 +114,9 @@ void KinematicsBase::InitializeJointModel(
     initalize_ = true;
 }
 
-bool KinematicsBase::GetAllFK(const Eigen::VectorXd& target_joint,
-                              std::vector<SE3d>& pose_list) const {
-    pose_list.clear();
-    const std::size_t num = this->joint_nodes_.size();
-    if (num == 0 || this->dof_ < 0 ||
-        static_cast<std::size_t>(this->dof_) > num ||
-        target_joint.size() != this->dof_ || !target_joint.allFinite()) {
-        holistic_motion::utility::LogWarning(
-                "Invalid FK model or joint vector (DOF {}, nodes {}, joints {})",
-                this->dof_, num, target_joint.size());
-        return false;
-    }
-    pose_list.reserve(num + 1);
-    SE3d pre_pose = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-    for (std::size_t i = 0; i < num; ++i) {
-        const auto type = this->joint_nodes_[i].joint_type;
-        if ((type != JointType::FIXED && type != JointType::UNKNOWN &&
-             i >= static_cast<std::size_t>(this->dof_)) ||
-            type == JointType::PLANAR || type == JointType::FLOATING) {
-            pose_list.clear();
-            return false;
-        }
-        // Fixed nodes and exactly zero joint motions only compose their
-        // origin. Avoid constructing and multiplying a second identity SE3.
-        // Keep malformed protected-model axes on the validation path below.
-        if (type == JointType::FIXED || type == JointType::UNKNOWN ||
-            (i < static_cast<std::size_t>(this->dof_) && target_joint[i] == 0.0 &&
-             this->joint_nodes_[i].axis.allFinite())) {
-            pose_list.push_back(pre_pose * this->joint_nodes_[i].origin_pose);
-            pre_pose = pose_list.back();
-            continue;
-        }
-        SE3d transform = SE3d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-        Eigen::Vector3d xyz(0.0, 0.0, 0.0);
-        SO3d rot = SO3d(0.0, 0.0, 0.0, 1.0);
-        if (JointType::REVOLUTE == this->joint_nodes_[i].joint_type ||
-            JointType::CONTINUOUS == this->joint_nodes_[i].joint_type) {
-            // SO3d(Vector3d) interprets Euler angles, not a rotation vector.
-            const Eigen::Vector3d rotation_vector =
-                    target_joint[i] * this->joint_nodes_[i].axis;
-            double angle = rotation_vector.norm();
-            if (angle < std::sqrt(std::numeric_limits<double>::min())) {
-                // Preserve representable tiny rotations when the norm's
-                // component squares lose precision or underflow to zero.
-                angle = std::hypot(rotation_vector.x(), rotation_vector.y(),
-                                   rotation_vector.z());
-            }
-            if (!std::isfinite(angle)) {
-                pose_list.clear();
-                return false;
-            }
-            if (angle > 0.0) {
-                rot = SO3d(Eigen::AngleAxisd(angle, rotation_vector / angle));
-            }
-        }
-        if (JointType::PRISMATIC == this->joint_nodes_[i].joint_type) {
-            // generate translation vector
-            xyz = this->joint_nodes_[i].axis * target_joint[i];
-            if (!xyz.allFinite()) {
-                pose_list.clear();
-                return false;
-            }
-        }
-        transform = SE3d(xyz, rot);
-        SE3d pose = pre_pose * this->joint_nodes_[i].origin_pose;
-        if (type == JointType::REVOLUTE || type == JointType::CONTINUOUS) {
-            // Revolute motion has no translation. Compose the same SO3
-            // factors without forming a rotation matrix just to multiply zero.
-            pose = SE3d(pose.GetTranslation(), SO3d(pose.GetQuat()) * rot);
-        } else {
-            pose = pose * transform;
-        }
-        pose_list.push_back(pose);
-        pre_pose = pose_list.back();
-        // holistic_motion::utility::LogDebug("Joint{} pose:[SE3({})].", i + 1,
-        //                         fmt::join(pre_pose.Coeffs(), ","));
-    }
-    // update tcp pose
-    pose_list.push_back(pose_list.back() * this->GetTCP());
-    if (!pose_list.back().Coeffs().allFinite()) {
-        pose_list.clear();
-        return false;
-    }
-    return true;
+bool KinematicsBase::GetAllFK(const Eigen::VectorXd &joints,
+                              std::vector<SE3d> &poses) const {
+    return detail::ComputeAllFK(*this, joints, poses);
 }
 
 bool KinematicsBase::SetTCP(const SE3d& pose) {

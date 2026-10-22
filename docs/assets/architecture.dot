@@ -1,0 +1,33 @@
+digraph HolisticMotion {
+    graph [rankdir=TB, bgcolor="white", pad=0.15, nodesep=0.35, ranksep=0.65];
+    node [shape=box, style="rounded,filled", fontname="Arial", fontsize=12,
+          color="#b5c5d5", fillcolor="#edf4fa", fontcolor="#17324d", margin="0.16,0.10"];
+    edge [color="#667d93", arrowsize=0.7, fontname="Arial", fontsize=10,
+          fontcolor="#425970"];
+
+    facade [label="holistic_motion\nPython package", fillcolor="#d5e9fa", penwidth=1.4];
+    core_py [label="Core Python extension\nFK / IK / planning / trajectories"];
+    collision_py [label="Collision Python extension\nqueries / planning factories", fillcolor="#e8f4ed"];
+    toolkit [label="Python toolkits\nretargeting / array trajectories / adapters", fillcolor="#f2eff8"];
+    core_cpp [label="C++ core\nHolisticMotion::holistic_motion"];
+    collision_cpp [label="C++ collision\nHolisticMotion::collision", fillcolor="#e8f4ed"];
+    common [label="Eigen / urdfdom", fillcolor="#f4f6f8"];
+    logging [label="fmt / spdlog", fillcolor="#f4f6f8"];
+    native_collision [label="Conan Pinocchio / Coal", fillcolor="#f4f6f8"];
+    python_deps [label="Feature dependencies\nNumPy / Torch / Python Pinocchio / Viser", fillcolor="#f4f6f8"];
+
+    facade -> core_py [label="native mode"];
+    facade -> collision_py [label="first collision use", style=dashed];
+    facade -> toolkit [label="feature use", style=dashed];
+    core_py -> core_cpp;
+    collision_py -> core_cpp;
+    collision_py -> collision_cpp;
+    toolkit -> python_deps [label="by feature", style=dashed];
+    core_cpp -> common;
+    core_cpp -> logging;
+    collision_cpp -> common;
+    collision_cpp -> native_collision [label="implementation"];
+
+    {rank=same; core_py; collision_py; toolkit;}
+    {rank=same; core_cpp; collision_cpp;}
+}

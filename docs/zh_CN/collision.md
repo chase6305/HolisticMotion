@@ -1,7 +1,18 @@
 # 碰撞检测
 
-默认构建提供基于 Conan 管理的 Pinocchio 和 Coal 的 `CollisionModel`。它从调用方
-传入的 URDF 加载碰撞几何，并检测指定构型下的自碰撞。
+默认构建提供基于 Conan 管理的 Pinocchio 和 Coal 的 `CollisionModel`，从调用方
+传入的 URDF 加载碰撞几何，并检测指定构型下的自碰撞。Python 首次访问碰撞类型
+或调用碰撞规划工厂时才加载可选碰撞扩展，普通 `import holistic_motion` 只加载
+核心。`runtime_info().collision_loaded` 表示实际加载状态。
+
+运动学与碰撞几何来自同一份 URDF 文本快照。构造函数只读取一次源文件，
+因此构造期间替换文件不会混用两版模型。网格文件仍按调用方提供的包根目录解析。
+
+即使所有关节输入均为有限值，世界几何位姿仍可能溢出；查询会抛出 `OverflowError`。
+距离查询也会明确拒绝 Coal 无法表示的结果，避免返回无关碰撞对或索引越界错误。
+即使有符号距离仍为有限值，非有限的最近点也会被拒绝。
+失败后可继续查询有效构型；带安全距离的查询退出时会恢复请求参数。
+`evaluate()` 与 `collisions()` 的碰撞、距离计算共享一次 FK 和几何位姿更新。
 
 可以使用 `add_box_obstacle` 动态加入世界坐标系中的 box，并通过
 `remove_obstacle` 删除。把障碍物名称加入碰撞组即可选择需要与其检测的机器人
@@ -14,8 +25,23 @@ python3 examples/python/collision/basic_query.py \
   -q 0 0 0 0 0 0
 ```
 
-`-q` 后的数值数量必须等于程序输出的 Pinocchio `nq`。固定基座机器人默认使用
-全零构型；浮动基座机器人应显式传入合法的 Pinocchio 构型，其中四元数必须归一化。
+`-q` 后的数值数量必须等于程序输出的 Pinocchio `nq`。默认使用模型的 neutral
+构型：连续关节的余弦/正弦对为 `[1, 0]`，浮动关节使用单位四元数。显式配置中的
+连续关节和四元数块也必须归一化。
+
+采样标量关节空间线段时，可按端点顺序指定关节名称：
+
+```bash
+python3 examples/python/collision/path_scan.py --urdf /path/to/robot.urdf \
+  --joint-names shoulder_slide wrist_turn \
+  --q-start=0.2,3.0 --q-end=0.4,3.3 --samples 101
+```
+
+名称模式线性插值输入的标量位置，并将其写入 neutral 完整配置；也可用
+`--context=...` 提供完整 `nq` 参考配置，保留未选择的关节和基座状态。调用方可以
+展开角度以指定转动方向，示例不会自动选择最短角度路径。省略 `--joint-names`
+时保留完整标量配置的输入约定；非欧氏模型必须使用名称模式，避免直接插值余弦/
+正弦和四元数分量。离散采样不证明采样点之间无碰撞。
 
 如果 URDF 使用 `package://` 网格路径，可重复传入 package 根目录：
 
@@ -85,8 +111,9 @@ distance = sphere_model.minimum_distance(q).distance
 distance_and_gradient = sphere_model.minimum_distance_with_gradient(q)
 trajectory_distances = sphere_model.batch_minimum_distances(q_path)
 
-planner = hm.SamplingPlanner.from_sphere_collision_model(
-    lower_limits, upper_limits, sphere_model, security_margin=0.01
+planner = hm.SamplingPlanner.from_sphere_collision_joints(
+    sphere_model, joint_names, sphere_model.neutral_configuration(),
+    security_margin=0.01,
 )
 ```
 
@@ -103,8 +130,11 @@ planner = hm.SamplingPlanner.from_sphere_collision_model(
 最终最小距离仍无法表示时，标量查询及对应批量行仍会抛出异常。
 批量查询仅在本次调用内复用连续且逐元素完全相等的构型；微小但非零的移动仍独立计算，
 缓存不会保留到后续调用。
-`PathOptimizer.from_sphere_collision_model` 对向量空间
-构型和正的软 `clearance` 自动使用该梯度；其流形构型更新仍回退到有限差分。
+`q` 和 `q_path` 的每一行都是完整且归一化的 `nq` 配置。按名称构造的规划器则输入
+`joint_names` 顺序的标量位置，并保留指定的完整参考配置。
+`PathOptimizer.from_sphere_collision_joints` 对正的软 `clearance` 将该 `nv` 梯度
+转换为所选标量坐标的梯度，支持连续关节及冻结的浮动基座上下文。旧的
+`from_sphere_collision_model` 入口只接受向量空间配置；非欧氏模型使用名称入口。
 碰撞组被重置、替换或清空时 `pair_revision` 都会递增，短生命周期距离缓存可据此
 识别模型重配置。
 已有路径优化器观察到空 pair 集时，硬约束和软 clearance 项都会暂时关闭，直到

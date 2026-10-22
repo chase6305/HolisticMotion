@@ -1,12 +1,16 @@
 set(HOLISTICMOTION_CORE_SOURCES
     src/utility/Logging.cpp
+    src/utility/BuildIdentity.cpp
     src/robot/Robot.cpp
     src/robot/Joint.cpp
     src/kinematics/KinematicsBase.cpp
+    src/kinematics/ForwardKinematics.cpp
     src/kinematics/NumericalKinematics.cpp
     src/kinematics/OPWKinematics.cpp
     src/kinematics/URKinematics.cpp
     src/kinematics/utility.cpp
+    src/kinematics/IKResults.cpp
+    src/kinematics/RobotConfigFilter.cpp
     src/kinematics/srs/SRSGeometry.cpp
     src/kinematics/srs/SRSKinematics.cpp
     src/kinematics/srs/SRSNullSpace.cpp
@@ -14,15 +18,30 @@ set(HOLISTICMOTION_CORE_SOURCES
     src/kinematics/fep/FEPKinematics.cpp
     src/kinematics/fep/FEPSelection.cpp
     src/planning/NullSpacePlanner.cpp
+    src/planning/JointSpace.cpp
     src/planning/PathOptimizer.cpp
     src/planning/SamplingPlanner.cpp
     src/trajectory/PathBase.cpp
     src/trajectory/PathBezierCurve.cpp
+    src/trajectory/PathBezierCurve9To16.cpp
+    src/trajectory/PathBezierCurve17To24.cpp
+    src/trajectory/PathBezierCurve25To32.cpp
     src/trajectory/PathSegment.cpp
+    src/trajectory/PathSegment9To16.cpp
+    src/trajectory/PathSegment17To24.cpp
+    src/trajectory/PathSegment25To32.cpp
     src/trajectory/TrajectoryBase.cpp
+    src/trajectory/TrajectoryBase9To16.cpp
+    src/trajectory/TrajectoryBase17To24.cpp
+    src/trajectory/TrajectoryBase25To32.cpp
     src/trajectory/TrajectoryReport.cpp
+    src/trajectory/TrajectoryReport9To16.cpp
+    src/trajectory/TrajectoryReport17To24.cpp
+    src/trajectory/TrajectoryReport25To32.cpp
     src/trajectory/TrajectoryDoubleS.cpp
+    src/trajectory/DoubleSProfile.cpp
     src/trajectory/TrajectoryTrapezium.cpp
+    src/trajectory/TrapeziumProfile.cpp
     src/trajectory/Types.cpp)
 
 set(HOLISTICMOTION_CUDA_SOURCES
@@ -30,11 +49,27 @@ set(HOLISTICMOTION_CUDA_SOURCES
     src/kinematics/fep/cuda/FEPBatch.cu)
 
 set(HOLISTICMOTION_COLLISION_SOURCES
+    src/collision/BuildIdentity.cpp
     src/collision/CollisionModel.cpp
     src/collision/SphereCollisionModel.cpp)
 
 set(HOLISTICMOTION_PYTHON_BINDING_SOURCES
+    bindings/python/CoordinateBindings.cpp
     bindings/python/LoggingBindings.cpp
     bindings/python/module.cpp
+    bindings/python/RobotBindings.cpp
+    bindings/python/KinematicsBindings.cpp
+    bindings/python/SevenAxisBindings.cpp
+    bindings/python/TrajectoryBindings.cpp
+    bindings/python/CartesianTrajectoryBindings.cpp
+    bindings/python/JointTrajectoryBindings1To8.cpp
+    bindings/python/JointTrajectoryBindings9To16.cpp
+    bindings/python/JointTrajectoryBindings17To24.cpp
+    bindings/python/JointTrajectoryBindings25To32.cpp
     bindings/python/PlanningBindings.cpp
+    bindings/python/PlanningCollisionLoader.cpp)
+
+set(HOLISTICMOTION_PYTHON_COLLISION_BINDING_SOURCES
+    bindings/python/collision_module.cpp
+    bindings/python/PlanningCollisionBindings.cpp
     bindings/python/CollisionBindings.cpp)

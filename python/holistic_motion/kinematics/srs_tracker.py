@@ -1,4 +1,4 @@
-"""Continuous branch tracking for the native stateless SRS solver."""
+"""Continuous branch tracking with a separate history per worker."""
 
 from __future__ import annotations
 
@@ -168,7 +168,12 @@ class SRSContinuousResult:
 
 
 class SRSContinuousTracker:
-    """Select temporally continuous solutions from native SRS candidates."""
+    """Select temporally continuous solutions from native SRS candidates.
+
+    History is mutable, so each worker owns a tracker. A native solver may be
+    shared for read-only queries; its configuration must remain unchanged.
+    Tracker reset, option changes and step calls must not overlap.
+    """
 
     _dof = 7
     _solver_label = "SRS"

@@ -2,6 +2,16 @@
 
 <div class="language-switcher">English · <a href="../zh_CN/python_api.html">简体中文</a></div>
 
+## Coordinate mapping and runtime diagnostics
+
+```{eval-rst}
+.. automodule:: holistic_motion.configuration
+   :members:
+
+.. automodule:: holistic_motion.runtime
+   :members:
+```
+
 ## Continuous kinematics
 
 ```{eval-rst}

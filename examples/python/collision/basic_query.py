@@ -22,23 +22,36 @@ def main() -> None:
     )
     parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument(
-        "--configuration", "-q", type=float, nargs="*",
-        help="Pinocchio configuration values; defaults to zero for fixed-base robots.",
+        "--configuration",
+        "-q",
+        type=float,
+        nargs="*",
+        help="Pinocchio nq values; defaults to the model's neutral configuration.",
     )
     parser.add_argument(
-        "--package-dir", action="append", default=[], type=Path,
+        "--package-dir",
+        action="append",
+        default=[],
+        type=Path,
         help="Package root used to resolve package:// mesh paths (repeatable).",
     )
     parser.add_argument(
-        "--include-adjacent", action="store_true",
+        "--include-adjacent",
+        action="store_true",
         help="Keep collision pairs belonging to adjacent links.",
     )
     parser.add_argument(
-        "--group", action="append", default=[], metavar="NAME=LINK1,LINK2",
+        "--group",
+        action="append",
+        default=[],
+        metavar="NAME=LINK1,LINK2",
         help="Define a collision group by link names (repeatable).",
     )
     parser.add_argument(
-        "--check-groups", action="append", default=[], metavar="GROUP1:GROUP2",
+        "--check-groups",
+        action="append",
+        default=[],
+        metavar="GROUP1:GROUP2",
         help="Enable a group pair, including NAME:NAME for group self-collision.",
     )
     args = parser.parse_args()
@@ -72,11 +85,17 @@ def main() -> None:
             group_pairs.append((first, second))
         model.set_collision_groups(groups, group_pairs)
     q = np.asarray(
-        args.configuration if args.configuration is not None else [0.0] * model.nq,
+        args.configuration
+        if args.configuration is not None
+        else model.neutral_configuration(),
         dtype=float,
     )
     if q.shape != (model.nq,):
         parser.error(f"configuration needs {model.nq} values, received {q.size}")
+    try:
+        model.validate_configuration(q)
+    except ValueError as error:
+        parser.error(str(error))
 
     collisions = model.collisions(q)
     print(

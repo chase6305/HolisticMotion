@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "holistic_motion/robot/JointPositionMap.h"
 #include <Eigen/Core>
 
 namespace holistic_motion::robotics::collision {
@@ -37,6 +38,9 @@ struct CollisionReport {
 
 // Pinocchio/Coal-backed collision geometry kept separate from Robot so meshes
 // are loaded only when collision checking is explicitly requested.
+// Queries mutate Pinocchio/Coal workspaces. Use one instance per worker and do
+// not change obstacles or collision pairs during an active query.
+// Scalar URDF axes are validated and normalized before model construction.
 class CollisionModel {
 public:
   explicit CollisionModel(const std::string &urdf_path,
@@ -51,6 +55,12 @@ public:
 
   int GetConfigurationSize() const;
   int GetVelocitySize() const;
+  /// Validate nq, finite values and normalized manifold blocks. This does not
+  /// check joint limits or collisions and does not change query workspaces.
+  void ValidateConfiguration(const Eigen::VectorXd &configuration) const;
+  std::vector<JointCoordinate> GetJointCoordinates() const;
+  JointPositionMap
+  CreateJointPositionMap(const std::vector<std::string> &joint_names) const;
   std::size_t GetGeometryCount() const;
   std::size_t GetCollisionPairCount() const;
   std::vector<std::string> GetGeometryNames() const;

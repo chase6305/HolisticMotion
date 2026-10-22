@@ -1,7 +1,9 @@
 #include "SRSKinematicsInternal.h"
+#include "../JointMotion.h"
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 
 namespace holistic_motion::robotics::srs_detail {
 
@@ -73,14 +75,27 @@ double SignedElbowAngle(const SRSKinematics& solver,
 namespace holistic_motion::robotics {
 
 SRSGeometryAnalysis SRSKinematics::AnalyzeGeometry(double axis_tolerance) const {
-    if (geometry_analysis_cache_ &&
-        geometry_analysis_cache_->first == axis_tolerance) {
-        return geometry_analysis_cache_->second;
-    }
+    SRSGeometryAnalysis analysis;
+    analysis.structurally_compatible = geometry_analysis_.structurally_compatible;
+    if (!analysis.structurally_compatible || !std::isfinite(axis_tolerance) ||
+        axis_tolerance <= 0.0)
+        return analysis;
+    analysis = geometry_analysis_;
+    analysis.closed_form_compatible =
+        analysis.shoulder_axis_residual <= axis_tolerance &&
+        analysis.wrist_axis_residual <= axis_tolerance &&
+        analysis.shoulder_orthogonality_residual <= axis_tolerance &&
+        analysis.wrist_orthogonality_residual <= axis_tolerance &&
+        analysis.upper_arm_length > axis_tolerance &&
+        analysis.forearm_length > axis_tolerance;
+    return analysis;
+}
+
+SRSGeometryAnalysis SRSKinematics::ComputeGeometryAnalysis() const {
     SRSGeometryAnalysis analysis;
     analysis.structurally_compatible = IsCompatible();
-    if (!analysis.structurally_compatible ||
-        !std::isfinite(axis_tolerance) || axis_tolerance <= 0.0) return analysis;
+    if (!analysis.structurally_compatible)
+        return analysis;
     std::array<Eigen::Vector3d, 7> points;
     std::array<Eigen::Vector3d, 7> axes;
     SE3d pose(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
@@ -122,20 +137,15 @@ SRSGeometryAnalysis SRSKinematics::AnalyzeGeometry(double axis_tolerance) const 
     analysis.elbow_angle_offset = srs_detail::SignedElbowAngle(
             *this, zero, analysis.shoulder_center);
     Eigen::VectorXd perturbed = zero;
-    perturbed[3] = 1e-4;
+    // Probe a small physical angle. A fixed coordinate step can traverse
+    // multiple turns for a scaled axis and reverse the measured derivative.
+    constexpr double angle_step = 1e-4;
+    perturbed[3] = angle_step / detail::JointAxisNorm(joint_nodes_[3].axis);
     const double perturbed_angle = srs_detail::SignedElbowAngle(
             *this, perturbed, analysis.shoulder_center);
     const double derivative = std::remainder(
-            perturbed_angle - analysis.elbow_angle_offset, 2.0 * M_PI) / 1e-4;
+            perturbed_angle - analysis.elbow_angle_offset, 2.0 * M_PI) / angle_step;
     analysis.elbow_angle_direction = derivative < 0.0 ? -1.0 : 1.0;
-    analysis.closed_form_compatible =
-            analysis.shoulder_axis_residual <= axis_tolerance &&
-            analysis.wrist_axis_residual <= axis_tolerance &&
-            analysis.shoulder_orthogonality_residual <= axis_tolerance &&
-            analysis.wrist_orthogonality_residual <= axis_tolerance &&
-            analysis.upper_arm_length > axis_tolerance &&
-            analysis.forearm_length > axis_tolerance;
-    geometry_analysis_cache_ = std::make_pair(axis_tolerance, analysis);
     return analysis;
 }
 

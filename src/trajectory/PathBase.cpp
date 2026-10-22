@@ -8,8 +8,6 @@
 namespace holistic_motion {
 namespace robotics {
 
-HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathBase)
-
 template <typename LieGroup>
 void PathBase<LieGroup>::_CheckPathWaypoints(std::vector<LieGroup>& waypoints) {
     if (waypoints.size() < 2) return;
@@ -100,6 +98,9 @@ typename LieGroup::Tangent PathBase<LieGroup>::GetTorsion(double s) const {
     if (!seg) throw std::logic_error("cannot query an invalid path");
     return seg->GetTorsion(s);
 }
+
+// Members must be defined before explicit class instantiation (Clang).
+HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathBase)
 
 }  // namespace robotics
 }  // namespace holistic_motion

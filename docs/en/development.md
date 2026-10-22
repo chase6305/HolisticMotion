@@ -14,6 +14,97 @@
 
 ## C++ diagnostics and benchmarks
 
+Place explicit class-template instantiations after their member definitions.
+Instantiating earlier can omit constructor and method symbols on Clang even
+when GCC emits them. The optional Clang 14 core job builds its own Conan
+dependency cohort and links the Python bindings across all trajectory dimensions.
+Separate optional jobs cover PyPy 3.10 and both CPython 3.13 ABI layouts.
+
+Optional runtimes are tested in separate processes. After a CUDA-enabled native
+build with tests and Python bindings, run the hardware check with:
+
+```bash
+bash scripts/test-cuda.sh --build-dir build/cmake --python /path/to/python -q
+# Also exercise the optional Torch CUDA trajectory backend:
+bash scripts/test-cuda.sh --build-dir build/cmake --python /path/to/python --torch -q
+```
+
+This check requires a usable GPU and fails if a CUDA backend silently falls back
+to CPU. It covers both FEP kernels, batch layouts, and candidate scoring across
+thread-block boundaries. CI separately compiles CUDA and tests the no-device
+fallback on a CPU runner. The CUDA job also exports the Conan package and links
+a real FEP consumer, which exercises transitive runtime linkage even without a GPU.
+For Python Pinocchio retargeting, use
+`PYTHON_EXECUTABLE=/path/to/python bash scripts/test-retargeting.sh -q`; this
+selects toolkit mode and checks that Pinocchio is installed before running.
+The optional workflow also builds portable toolkit wheels and exercises the
+supported Python Pinocchio versions and the hand backend.
+The native core job covers CPython 3.9 and 3.12 and exports Python-enabled Conan
+packages whose installed consumer imports the recorded interpreter ABI. The
+3.9 job checks NumPy 1.23; the 3.12 job checks sanitizers and the supported
+core-plus-Python-Pinocchio runtime. The main collision job uses CPython 3.11.
+After its collision tests, that job also installs Python Pinocchio and checks
+both import orders in fresh processes with the default native package. Core
+FK/retargeting must work together while collision remains unloaded; explicit
+collision access must enforce the runtime boundary.
+
+`concurrent_queries_smoke` shares an immutable mapping, a read-only FEP solver,
+and planners with stateless callbacks across four workers. Each worker owns its
+seeds and outputs; CUDA batches run when a device is available. History-bearing
+solvers and mutable collision workspaces retain the per-worker ownership
+contract in [Concepts](concepts.md).
+
+`benchmarks/joint_mapping_benchmark.py` compares per-call named collision-model
+mapping, a reusable native map, and a prepared NumPy map. For example:
+
+```bash
+PYTHONPATH=python:build/cmake python benchmarks/joint_mapping_benchmark.py \
+  --joints 64 --selected 7 --continuous --iterations 10000 --repeats 7
+```
+
+The synthetic URDF is temporary; input parsing, map construction and output
+equivalence checks stay outside timing. CSV reports alternating-order median
+timings and an output checksum. Public input validation remains in each timed
+call; model convenience calls additionally check the complete manifold. This
+measures complete coordinate conversion, not collision or FK throughput.
+
+`benchmarks/runtime_import_benchmark.py` compares fresh-process package imports
+and the first collision-type access. It alternates package order and reports
+median times plus raw samples. On Linux it also records resident memory and
+mapped Pinocchio/Coal libraries after the core import:
+
+```bash
+python benchmarks/runtime_import_benchmark.py --repeats 11 \
+  --package baseline=/path/to/baseline/install \
+  --package current=/path/to/current/install --json /tmp/imports.json
+```
+
+Use the interpreter that matches both extensions. Interpreter startup and the
+worker's standard-library imports are outside the timed interval. This measures
+module initialization with the operating system's current file cache, rather
+than a cold disk read; timings are observational, with no CI threshold.
+
+`benchmarks/native_query_concurrency.py` compares equal query workloads in one
+thread and a persistent Python thread pool. It uses unchanged shared solvers,
+14-joint unreachable IK targets, 4096-row CPU FK batches, SRS detailed reports
+and FEP branch enumeration. `--optimization-calls 16` also compares geometry-only
+path optimization with `release_gil=False` and `True` on a shared seven-coordinate,
+256-waypoint optimizer. Model construction,
+pool creation and output equivalence checks are outside timing; each complete
+call still includes input conversion and owned outputs:
+
+```bash
+PYTHONPATH=python:build/cmake python benchmarks/native_query_concurrency.py \
+  --workers 4 --repeats 7 --optimization-calls 16 --json /tmp/native-threads.json
+```
+
+`test_native_concurrency.py` checks independent reports/batches and logging
+exception recovery. A separate process also verifies that another Python thread
+can progress during a long native IK call, without using a speedup threshold.
+Planning regressions cover both GIL modes, callback exceptions and reference
+cleanup. An external SDK plugin checks the actual GIL state seen by native
+callbacks, including the compatible default mode.
+
 ASan, UBSan, and Eigen assertions can be enabled in a separate CPU-only C++
 development build. The option defaults to off and requires GCC or Clang.
 Instrumentation covers project sources; prebuilt Conan dependencies remain
@@ -34,6 +125,12 @@ cmake --build build-sanitizers --parallel 2
 ctest --test-dir build-sanitizers --output-on-failure --no-tests=error
 ```
 
+This helper supports a CPU core build. Mixing local ASan-instrumented Eigen
+allocation/deallocation with the default prebuilt Pinocchio libraries produced
+an allocation-ABI mismatch during collision workspace destruction; CMake rejects
+that combination before dependency discovery. Collision sanitizer work requires
+a separately instrumented, matching dependency cohort rather than this helper.
+
 For performance measurements, enable `HOLISTICMOTION_BUILD_BENCHMARKS=ON` in a
 regular Release build with sanitizers disabled, then run
 `<build-directory>/sampling_planner_benchmark`. It emits CSV for weighted RRT*
@@ -52,12 +149,49 @@ boxes and use conservative roundoff margins to retain boundary ties.
 Distance queries cache one byte per joint for topology checks, preserving the
 weighted sum order while avoiding packed-bit decoding in candidate scans.
 
-The same option also builds `<build-directory>/fep_batch_benchmark`. This CPU
+The same option also builds `<build-directory>/fep_batch_benchmark`. Its default CPU
 benchmark uses a synthetic seven-joint chain, nonidentity origins and TCP, seed 7,
 and batch sizes 1/32/128/1024. Each case has three warmup calls followed by seven
 timed groups of `max(1, 16384 / batch_size)` calls. CSV output reports the median
 microseconds per call, maximum scalar-FK error, and a pose checksum. Output
-capacity is reused; Python conversion and GPU transfers are outside this timing.
+capacity is reused; Python conversion is outside this timing. Pass `CUDA` or
+`AUTO` to select another backend, with 100 calls per timed group. Explicit CUDA
+requires an available device and includes host packing, device allocation,
+transfers, the kernel and output unpacking.
+
+`fep_selection_benchmark [CPU|CUDA]` measures complete seven-coordinate candidate
+scoring against a CPU reference, with counts 1/32/129/1024 and seed 82. It uses
+three warmups and seven groups; CUDA groups contain 100 calls and CPU groups
+contain `max(1, 16384 / count)`. CSV includes maximum score error and a checksum.
+The two CUDA operations use one request-local device allocation each. Model
+constants for batch FK share one upload; buffers remain independent between
+queries. The Linux `cuda_workspace_smoke` test injects allocation and transfer
+failures, including output download after kernel launch, and checks cleanup and
+successful retries. Without a GPU it still checks size rejection and allocation
+failure handling.
+Candidate scoring also checks nonunit coordinate periods against an independent
+trigonometric reference on CPU and CUDA. The seed and seven periods share one
+upload, retaining three transfers and one allocation per scoring request.
+
+`<build-directory>/forward_kinematics_benchmark` measures scalar terminal FK on
+synthetic 0/1/3/7/14/64-coordinate mixed chains and seven-axis SRS/FEP solvers.
+Origins and TCP are nonidentity, and axes include nonunit scales. After checking
+each state against the full frame trace, it runs seven groups of 65536 calls and
+reports median nanoseconds, ordinary C++ `operator new` calls per query, and a
+translation checksum. The allocation counter excludes aligned allocations and
+direct `malloc` calls. Built-in numerical, SRS and FEP terminal queries traverse
+the chain without constructing a frame list; unknown numerical subclasses retain
+virtual `GetAllFK()` dispatch. `forward_kinematics_smoke` also compares against an
+independent matrix chain and checks invalid inputs and custom dispatch.
+
+`joint_space_snapshot_benchmark` measures immutable-space copies, direct plans
+and two-waypoint optimization for 2/7/64/256 coordinates with long joint names.
+Seven groups contain 32768 calls each; allocation counting uses a separate
+128-call pass. CSV records nanoseconds, allocations, counter kind and a checksum.
+Linux GCC/Clang builds wrap linked `malloc` calls, including Eigen allocations;
+other platforms count ordinary C++ `new` only. Snapshot copies retain immutable
+data without allocation. `joint_space_snapshot_smoke` checks copy/move validity,
+builder isolation, retained results and concurrent snapshot construction.
 
 `<build-directory>/numerical_ik_benchmark` measures synthetic 1/3/6/7/14-joint
 chains with a nonidentity TCP. It covers an exact seed, a nearby reachable target,
@@ -77,6 +211,14 @@ DOF, active terminal nodes, and empty FK output. Python regressions exercise
 finite values whose FK arithmetic overflows through all three numerical FK and
 Jacobian entry points, then verify that an ordinary query still works.
 
+`concurrent_queries_smoke` starts four C++ workers together. They share a
+read-only FEP model, a named map with distinct configuration/tangent layouts,
+and generic sampling/path optimizers, while owning their seeds and outputs.
+FK is compared with an independent matrix chain, IK round trips are checked,
+and concurrent planning results must match the sequential seeded reference.
+A CUDA-enabled build with an available device also checks concurrent batch FK;
+otherwise it exercises CPU batches. It runs under the CPU sanitizer build too.
+
 `<build-directory>/robot_model_benchmark` measures URDF loading and explicit
 base-to-tip solver construction. It writes temporary synthetic prismatic chains
 with 7/64/256/1024 joints, plus a 256-joint trunk with 1024 fixed leaves. After one
@@ -86,7 +228,8 @@ tip height. URDF generation and FK validation are outside timing; loading includ
 file reads, parsing, construction, and destruction. Large cases expose scaling
 costs and do not represent typical seven-axis arm latency.
 
-The `robot_model_smoke` regression checks C++ model renaming, first-match duplicate
+The `robot_model_smoke` regression checks imported unit-axis semantics, preserved
+model/solver state after failed reloads, C++ model renaming, first-match duplicate
 name resolution, and termination after a parent edit introduces a cycle. Python
 tests cover default-chain selection across supported, mimic, and planar branches.
 `compiler_check_smoke` checks compiler-family and version comparisons for GCC,
@@ -120,6 +263,14 @@ and duplicate-heavy candidate sets in both fitting modes. Its existing
 1/32/128 links containing unique or repeated box, cylinder, and sphere geometry.
 Use the same pure-Python environment and `--baseline /path/to/old/urdf_sphere_fit.py`
 for paired timings with exact vertex/face checks. Input generation is excluded.
+
+`benchmarks/collision_reconfiguration_benchmark.py` measures public collision-pair
+resets, group changes, and obstacle add/remove cycles on synthetic 7/32/128-joint
+models with two sphere geometries. It warms each operation three times, then
+reports seven groups of 100 calls, including the complete Python/native call.
+Pair counts and physical distances are checked after timing. This measures
+geometry workspace updates, not end-to-end planning throughput; the immutable
+kinematic model's `pinocchio::Data` remains reusable across those edits.
 
 `path_geometry_workspace_smoke` checks local objective changes against full path
 objectives and analytic gradients against central finite differences, including
@@ -242,6 +393,9 @@ that prevents current Hypothesis versions from running.
 Properties cover whole-turn equivalence in weighted joint spaces, mixed-joint
 FK/IK and geometric Jacobians under base transforms, TOPPRA spatial/time scaling,
 and preservation of the best RRT* path as its iteration budget increases.
+Named-coordinate properties generate branched mixed-joint URDFs, shuffle joint
+selection, preserve a floating-base reference, and compare native chain point
+Jacobians with full-model sphere-distance tangent gradients.
 Path smoothing properties independently recompute the full weighted objective
 and check objective decrease, exact endpoint preservation, and joint bounds for
 mixed periodic/bounded paths with optional quadratic state costs.

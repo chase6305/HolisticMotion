@@ -1,4 +1,6 @@
 #pragma once
+#include "holistic_motion/kinematics/Capabilities.h"
+#include "holistic_motion/kinematics/IKSolveReport.h"
 #include "holistic_motion/kinematics/utility.h"
 
 namespace holistic_motion {
@@ -6,67 +8,73 @@ namespace robotics {
 // TODO:
 // 1.may add numerical Solution to base, etc
 // 2.add some utility functions
+/// Configuration updates must not overlap queries. Derived solvers may own
+/// mutable caches even behind const methods; consult the derived-class
+/// contract. Seeds and output buffers belong to the caller and must not be
+/// shared by calls.
 class KinematicsBase : public std::enable_shared_from_this<KinematicsBase> {
 public:
-    virtual ~KinematicsBase() {
-        holistic_motion::utility::LogDebug("Destructing KinematicsBase...");
-    };
+  /// Inspect operation support without solving or loading a CUDA runtime.
+  /// Custom solvers inherit conservative defaults and may override them.
+  virtual KinematicsCapabilities GetCapabilities() const;
 
-    /// \brief Get the forward kinematics for each joint
-    ///
-    /// \param target_joint
-    /// \param pose_list: the forward kinematics for each joint
-    /// Cleared on invalid input, inconsistent model dimensions, or FK overflow.
-    /// \return bool
-    virtual bool GetAllFK(const Eigen::VectorXd& target_joint,
-                          std::vector<SE3d>& pose_list) const;
+  /// Common numerical/analytic IK with an owned result and an unchanged
+  /// caller seed. Uses the same algorithm as GetIK/GetNearestIK; specialized
+  /// SRS/FEP strategies remain explicit Solve calls. Invalid targets/seeds
+  /// return INVALID_INPUT and failures leave both result arrays empty.
+  IKSolveReport SolveIK(const SE3d &target, const Eigen::VectorXd &seed,
+                        IKSelection selection = IKSelection::NEAREST) const;
 
-    /// \brief Get the forward kinematics
-    ///
-    /// \param target_joint
-    /// \param pose: the forward kinematics
-    /// \return bool
-    virtual bool GetFK(const Eigen::VectorXd& target_joint,
-                       SE3d& pose) const = 0;
+  virtual ~KinematicsBase() = default;
 
-    /// \brief Determine whether the robot joint corresponding to the target TCP
-    /// pose is reachable
-    ///
-    /// \param target_tcp_pose
-    /// \return bool
-    virtual bool IsReachable(const SE3d& target_tcp_pose) const;
+  /// \brief Get the forward kinematics for each joint
+  ///
+  /// \param target_joint
+  /// \param pose_list: the forward kinematics for each joint
+  /// Cleared on invalid input, inconsistent model dimensions, or FK overflow.
+  /// \return bool
+  virtual bool GetAllFK(const Eigen::VectorXd &target_joint,
+                        std::vector<SE3d> &pose_list) const;
 
-    /// \brief Get the inverse kinematics
-    ///
-    /// \param target_pose: target TCP pose
-    /// \param ik_solutions: the inverse kinematics
-    /// \param joint_seed: most recently solved joint
-    /// \param dist: the distance of each joint from joint_seed
-    /// \return bool
-    virtual bool GetIK(const SE3d& target_pose,
-                       IkRtn& ik_solutions,
-                       Eigen::VectorXd& joint_seed,
-                       std::vector<double>& dist) const = 0;
+  /// \brief Get the forward kinematics
+  ///
+  /// \param target_joint
+  /// \param pose: the forward kinematics
+  /// \return bool
+  virtual bool GetFK(const Eigen::VectorXd &target_joint, SE3d &pose) const = 0;
 
-    /// \brief Get the nearst inverse kinematics
-    ///
-    /// \param target_pose: target TCP pose
-    /// \param ik_solutions: the nearst inverse kinematics
-    /// \param joint_seed: most recently solved joint
-    /// \param dist: the distance from joint_seed
-    /// \return bool
-    virtual bool GetNearstIK(const SE3d& target_pose,
-                             IkRtn& ik_solutions,
-                             Eigen::VectorXd& joint_seed,
-                             double& min_dist) const = 0;
+  /// \brief Determine whether the robot joint corresponding to the target TCP
+  /// pose is reachable
+  ///
+  /// \param target_tcp_pose
+  /// \return bool
+  virtual bool IsReachable(const SE3d &target_tcp_pose) const;
 
-    /// Correctly spelled compatibility-neutral alias for GetNearstIK().
-    bool GetNearestIK(const SE3d& target_pose,
-                      IkRtn& ik_solutions,
-                      Eigen::VectorXd& joint_seed,
-                      double& min_dist) const {
-        return GetNearstIK(target_pose, ik_solutions, joint_seed, min_dist);
-    }
+  /// \brief Get the inverse kinematics
+  ///
+  /// \param target_pose: target TCP pose
+  /// \param ik_solutions: the inverse kinematics
+  /// \param joint_seed: most recently solved joint
+  /// \param dist: the distance of each joint from joint_seed
+  /// \return bool
+  virtual bool GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                     Eigen::VectorXd &joint_seed, std::vector<double> &dist) const = 0;
+
+  /// \brief Get the nearst inverse kinematics
+  ///
+  /// \param target_pose: target TCP pose
+  /// \param ik_solutions: the nearst inverse kinematics
+  /// \param joint_seed: most recently solved joint
+  /// \param dist: the distance from joint_seed
+  /// \return bool
+  virtual bool GetNearstIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                           Eigen::VectorXd &joint_seed, double &min_dist) const = 0;
+
+  /// Correctly spelled compatibility-neutral alias for GetNearstIK().
+  bool GetNearestIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                    Eigen::VectorXd &joint_seed, double &min_dist) const {
+      return GetNearstIK(target_pose, ik_solutions, joint_seed, min_dist);
+  }
 
     /// Set a finite rigid tool transform; invalid input leaves the TCP intact.
     virtual bool SetTCP(const SE3d& pose);

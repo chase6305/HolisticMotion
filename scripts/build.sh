@@ -85,6 +85,12 @@ if ! command -v "${PYTHON_EXECUTABLE}" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Resolve caller-relative paths before moving to the repository. CMake resolves
+# an interpreter path against its build directory, and Conan activation scripts
+# may change PATH later in this process.
+PYTHON_EXECUTABLE="$("${PYTHON_EXECUTABLE}" -I -S -c 'import sys; print(sys.executable)')"
+BUILD_DIR="$("${PYTHON_EXECUTABLE}" -I -S -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "${BUILD_DIR}")"
+
 cd "${REPOSITORY_DIR}"
 
 if ! conan profile show -pr:h "${CONAN_PROFILE_HOST}" \
@@ -101,7 +107,9 @@ else
 fi
 
 echo "[2/4] Installing dependencies"
-echo "      CUDA=${CONAN_WITH_CUDA}, collision=${CONAN_WITH_COLLISION}, tests=${CONAN_WITH_TESTS}"
+HOLISTICMOTION_PYTHON_MINOR="$("${PYTHON_EXECUTABLE}" -I -S -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+HOLISTICMOTION_PYTHON_ABI="$("${PYTHON_EXECUTABLE}" -I -S "${REPOSITORY_DIR}/python/holistic_motion/_python_abi.py" --abi)"
+echo "      Python=${HOLISTICMOTION_PYTHON_MINOR} (${HOLISTICMOTION_PYTHON_ABI}), CUDA=${CONAN_WITH_CUDA}, collision=${CONAN_WITH_COLLISION}, tests=${CONAN_WITH_TESTS}"
 conan install . \
     -pr:h "${CONAN_PROFILE_HOST}" -pr:b "${CONAN_PROFILE_BUILD}" \
     --output-folder="${BUILD_DIR}" \
@@ -109,6 +117,8 @@ conan install . \
     -s build_type="${BUILD_TYPE}" \
     -o "&:shared=${CONAN_SHARED}" \
     -o "&:with_python=True" \
+    -o "&:python_version=${HOLISTICMOTION_PYTHON_MINOR}" \
+    -o "&:python_abi=${HOLISTICMOTION_PYTHON_ABI}" \
     -o "&:with_tests=${CONAN_WITH_TESTS}" \
     -o "&:with_cuda=${CONAN_WITH_CUDA}" \
     -o "&:with_collision=${CONAN_WITH_COLLISION}"
@@ -123,8 +133,10 @@ echo "[3/4] Configuring and building"
 cmake -S . -B "${BUILD_DIR}/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+    -DHOLISTICMOTION_PYTHON_VERSION="${HOLISTICMOTION_PYTHON_MINOR}" \
+    -DHOLISTICMOTION_PYTHON_ABI="${HOLISTICMOTION_PYTHON_ABI}" \
     -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
-    -DPython3_EXECUTABLE="$(command -v "${PYTHON_EXECUTABLE}")" \
+    -DPython3_EXECUTABLE="${PYTHON_EXECUTABLE}" \
     -DHOLISTICMOTION_BUILD_PYTHON=ON \
     -DHOLISTICMOTION_BUILD_TESTS="${RUN_TESTS}" \
     -DHOLISTICMOTION_ENABLE_CUDA="${CONAN_WITH_CUDA}" \
@@ -143,9 +155,10 @@ if [[ -f "${CONAN_RUN_ENV}" &&
     source "${CONAN_RUN_ENV}"
 fi
 
+HOLISTICMOTION_PURE_PYTHON=0 \
 PYTHONPATH="${BUILD_DIR}/install${PYTHONPATH:+:${PYTHONPATH}}" \
     "${PYTHON_EXECUTABLE}" -c \
-    "import holistic_motion as hm; print('Python import smoke test: OK'); print(f'FEP CUDA compiled/runtime: {hm.FEPKinematics.cuda_compiled}/{hm.FEPKinematics.cuda_available}'); assert hm.FEPKinematics.cuda_compiled is ${CONAN_WITH_CUDA}; assert hasattr(hm, 'CollisionModel') is ${CONAN_WITH_COLLISION}"
+    "import holistic_motion as hm; print('Python import smoke test: OK'); print(hm.runtime_info()); print(f'FEP CUDA compiled/runtime: {hm.FEPKinematics.cuda_compiled}/{hm.FEPKinematics.cuda_available}'); assert hm.FEPKinematics.cuda_compiled is ${CONAN_WITH_CUDA}; assert hm.runtime_info().collision_compiled is ${CONAN_WITH_COLLISION}; assert hasattr(hm, 'CollisionModel') is ${CONAN_WITH_COLLISION}"
 
 if [[ "${RUN_TESTS}" == true ]]; then
     ctest --test-dir "${BUILD_DIR}/cmake" --output-on-failure --no-tests=error
@@ -154,24 +167,42 @@ if [[ "${RUN_TESTS}" == true ]]; then
         echo "error: --tests requires pytest" >&2
         exit 1
     fi
+    HOLISTICMOTION_PYTEST_PLUGINS=()
+    if "${PYTHON_EXECUTABLE}" -c \
+        'import importlib.util; raise SystemExit(importlib.util.find_spec("hypothesis") is None)'; then
+        HOLISTICMOTION_PYTEST_PLUGINS=(-p hypothesis.extra.pytestplugin)
+    fi
+    # Optional plugins from ROS or other environments can import incompatible
+    # native runtimes before collection. Load only the project's property plugin.
+    HOLISTICMOTION_PURE_PYTHON=0 \
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
     PYTHONPATH="${BUILD_DIR}/install${PYTHONPATH:+:${PYTHONPATH}}" \
-        "${PYTHON_EXECUTABLE}" -m pytest tests/python -q
+        "${PYTHON_EXECUTABLE}" -m pytest "${HOLISTICMOTION_PYTEST_PLUGINS[@]}" tests/python -q
 fi
 
 echo
+HOLISTICMOTION_BUILD_HINT=""
+if [[ "${BUILD_DIR}" != "${REPOSITORY_DIR}/build" || "${BUILD_TYPE}" != Release ]]; then
+    printf -v HOLISTICMOTION_BUILD_HINT 'BUILD_DIR=%q BUILD_TYPE=%q ' "${BUILD_DIR}" "${BUILD_TYPE}"
+fi
+printf -v HOLISTICMOTION_PYTHON_HINT '%q' "$(command -v "${PYTHON_EXECUTABLE}")"
+print_run_example() {
+    printf '  %s./scripts/%s %s %s\n' "${HOLISTICMOTION_BUILD_HINT}" "$1" \
+        "${HOLISTICMOTION_PYTHON_HINT}" "$2"
+}
 echo "Build completed. Activate the local install with:"
-echo "  source scripts/activate.sh"
+printf '  %ssource scripts/activate.sh\n' "${HOLISTICMOTION_BUILD_HINT}"
 echo "Or run a command in the build environment with:"
-echo "  ./scripts/run.sh python3 examples/python/planning/classic_plan_and_retime.py"
-echo "  ./scripts/run.sh python3 examples/python/trajectory/toppra_retiming.py"
+print_run_example run.sh examples/python/planning/classic_plan_and_retime.py
+print_run_example run.sh examples/python/trajectory/toppra_retiming.py
 echo "Run a pure-Python/Pink toolkit without native Pinocchio ABI mixing with:"
-echo "  ./scripts/run-python-toolkit.sh python3 examples/python/retargeting/pink_dual_arm.py --help"
-echo "  ./scripts/run-python-toolkit.sh python3 examples/python/retargeting/classic_torso_first.py --help"
+print_run_example run-python-toolkit.sh 'examples/python/retargeting/pink_dual_arm.py --help'
+print_run_example run-python-toolkit.sh 'examples/python/retargeting/classic_torso_first.py --help'
 echo "Run the viewer with:"
-echo "  ./scripts/run.sh python3 examples/python/visualization/rrt_robot_viser.py --urdf /path/to/robot.urdf"
+print_run_example run.sh 'examples/python/visualization/rrt_robot_viser.py --urdf /path/to/robot.urdf'
 echo "Generate trajectory diagnostics with:"
-echo "  ./scripts/run.sh python3 python/examples/trajectory/plot_joint_trajectory.py --output build/trajectory_profiles.png"
+print_run_example run.sh 'python/examples/trajectory/plot_joint_trajectory.py --output build/trajectory_profiles.png'
 if [[ "${CONAN_WITH_CUDA}" == True ]]; then
     echo "Run the FEP CUDA benchmark with:"
-    echo "  ./scripts/run.sh python3 python/examples/fep_cuda_benchmark.py --urdf /path/to/robot.urdf"
+    print_run_example run.sh 'python/examples/fep_cuda_benchmark.py --urdf /path/to/robot.urdf'
 fi

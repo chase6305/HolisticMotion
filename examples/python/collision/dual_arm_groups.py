@@ -35,7 +35,8 @@ def main() -> None:
     parser.add_argument("--left-self", action="store_true")
     parser.add_argument("--right-self", action="store_true")
     parser.add_argument(
-        "--list-pairs", action="store_true",
+        "--list-pairs",
+        action="store_true",
         help="Print the generated geometry-level collision pairs.",
     )
     args = parser.parse_args()
@@ -54,11 +55,17 @@ def main() -> None:
     )
 
     q = np.asarray(
-        args.configuration if args.configuration is not None else [0.0] * model.nq,
+        args.configuration
+        if args.configuration is not None
+        else model.neutral_configuration(),
         dtype=float,
     )
     if q.shape != (model.nq,):
         parser.error(f"configuration needs {model.nq} values, received {q.size}")
+    try:
+        model.validate_configuration(q)
+    except ValueError as error:
+        parser.error(str(error))
 
     print(f"generated arm collision pairs: {model.pair_count}")
     if args.list_pairs:

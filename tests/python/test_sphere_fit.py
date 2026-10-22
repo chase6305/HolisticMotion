@@ -1,9 +1,9 @@
 import json
-import tracemalloc
 
 import holistic_motion as hm
 import numpy as np
 import pytest
+from optional_dependencies import tracemalloc_or_skip
 from holistic_motion.geometry import (
     SphereFitMetrics,
     SphereFitOptions,
@@ -311,6 +311,7 @@ def test_coverage_assignment_keeps_first_center_on_ties(chunk_size):
 
 
 def test_nearest_surface_workspace_stays_bounded_with_many_samples():
+    tracemalloc = tracemalloc_or_skip()
     from holistic_motion.geometry.sphere_fit import _minimum_distances
 
     query = np.zeros((64, 3))

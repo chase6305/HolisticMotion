@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "holistic_motion/robot/JointPositionMap.h"
 #include <Eigen/Core>
 
 namespace holistic_motion::robotics::collision {
@@ -47,6 +48,9 @@ struct SphereDistanceGradientResult {
 ///
 /// Spheres are caller-provided and remain independent of the URDF collision
 /// meshes. Coal should be used when exact geometry validation is required.
+/// Queries reuse mutable FK/Jacobian/distance buffers. Each concurrent worker
+/// requires its own model; pair changes must not overlap any query.
+/// Scalar URDF axes are validated and normalized before model construction.
 class SphereCollisionModel {
 public:
   SphereCollisionModel(const std::string &urdf_path,
@@ -61,6 +65,22 @@ public:
 
   int GetConfigurationSize() const;
   int GetVelocitySize() const;
+  /// Validate nq, finite values and normalized manifold blocks. This does not
+  /// check joint limits or collisions and does not change query workspaces.
+  void ValidateConfiguration(const Eigen::VectorXd &configuration) const;
+  std::vector<JointCoordinate> GetJointCoordinates() const;
+  JointPositionMap
+  CreateJointPositionMap(const std::vector<std::string> &joint_names) const;
+  Eigen::VectorXd ConfigurationFromJointPositions(
+      const std::map<std::string, double> &joint_positions) const;
+  Eigen::VectorXd
+  ConfigurationWithJointPositions(const Eigen::VectorXd &reference,
+                                  const std::vector<std::string> &joint_names,
+                                  const Eigen::VectorXd &joint_positions) const;
+  Eigen::VectorXd
+  GetJointLowerLimits(const std::vector<std::string> &joint_names) const;
+  Eigen::VectorXd
+  GetJointUpperLimits(const std::vector<std::string> &joint_names) const;
   std::size_t GetSphereCount() const;
   std::size_t GetCollisionPairCount() const;
   std::size_t GetCollisionPairRevision() const;

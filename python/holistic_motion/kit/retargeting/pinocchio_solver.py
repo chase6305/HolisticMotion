@@ -18,6 +18,8 @@ from typing import Optional, Union
 import numpy as np
 
 from ..._validation import real_array, require_real, validated_transform
+from ...configuration import JointCoordinate, JointPositionMap
+from ._urdf import normalized_urdf_xml
 from .modes import RetargetingMode, RetargetingModeManager
 
 _MIN_NORMAL_NORM = np.sqrt(np.finfo(float).tiny)
@@ -61,13 +63,16 @@ def _stable_norm(value) -> float:
 
 
 def _load_pinocchio():
-    try:
-        import pinocchio as pin
-    except ImportError as error:
-        raise ImportError(
-            "PinocchioRetargetingSolver requires Python Pinocchio; install "
-            "HolisticMotion with the 'retargeting' extra"
-        ) from error
+    from ...runtime import _python_pinocchio_import
+
+    with _python_pinocchio_import():
+        try:
+            import pinocchio as pin
+        except ImportError as error:
+            raise ImportError(
+                "PinocchioRetargetingSolver requires Python Pinocchio; install "
+                "HolisticMotion with the 'retargeting' extra"
+            ) from error
     return pin
 
 
@@ -210,7 +215,11 @@ class _PinocchioSolveWorkspace:
 
 
 class PinocchioRetargetingSolver:
-    """Damped least-squares multi-frame retargeting with warm starts."""
+    """Damped least-squares multi-frame retargeting with warm starts.
+
+    Pinocchio Data and warm-start history are mutable. Prepare one instance per
+    worker, and serialize its solve, reset, mode and configuration operations.
+    """
 
     def __init__(
         self,
@@ -267,7 +276,7 @@ class PinocchioRetargetingSolver:
                 raise ValueError(f"joint group {group!r} contains duplicate joints")
             normalized_groups[group] = names
 
-        self.model = self.pin.buildModelFromUrdf(str(self.urdf_path))
+        self.model = self.pin.buildModelFromXML(normalized_urdf_xml(self.urdf_path))
         self.data = self.model.createData()
         self.frames = MappingProxyType(dict(frames))
         self.joint_groups = MappingProxyType(normalized_groups)
@@ -286,12 +295,41 @@ class PinocchioRetargetingSolver:
         self._upper_position_limits = np.asarray(
             self.model.upperPositionLimit, dtype=float
         ).copy()
+        if (
+            np.isnan(self._lower_position_limits).any()
+            or np.isnan(self._upper_position_limits).any()
+            or np.any(self._lower_position_limits > self._upper_position_limits)
+        ):
+            raise ValueError("joint position limits must be ordered and not NaN")
         self._finite_lower_position_limits = np.isfinite(self._lower_position_limits)
         self._finite_upper_position_limits = np.isfinite(self._upper_position_limits)
         self._neutral_q = self._project_limits(
             np.asarray(self.pin.neutral(self.model), dtype=float)
         )
         self._last_q = self._neutral_q.copy()
+
+    @property
+    def nv(self) -> int:
+        """Tangent dimension; gradients and velocities use this coordinate space."""
+        return int(self.model.nv)
+
+    @property
+    def joint_coordinates(self) -> tuple:
+        """Snapshot of named configuration and tangent blocks."""
+        model = self.model
+        return tuple(
+            JointCoordinate(
+                str(model.names[i]),
+                int(model.idx_qs[i]),
+                int(model.nqs[i]),
+                int(model.idx_vs[i]),
+                int(model.nvs[i]),
+            )
+            for i in range(1, len(model.names))
+        )
+
+    def create_joint_position_map(self, joint_names) -> JointPositionMap:
+        return JointPositionMap.from_model(self, joint_names)
 
     @property
     def nq(self) -> int:

@@ -1,4 +1,6 @@
 #include "holistic_motion/kinematics/fep/FEPKinematics.h"
+#include "../JointPeriod.h"
+#include "../SeedAlias.h"
 #include "FEPSelection.h"
 
 #include <algorithm>
@@ -8,20 +10,40 @@
 #include <numeric>
 
 namespace holistic_motion::robotics {
+
+KinematicsCapabilities FEPKinematics::GetCapabilities() const {
+    auto result = NumericalKinematics::GetCapabilities();
+    result.family = KinematicsFamily::FEP;
+    result.supports_concurrent_queries = true;
+    result.supports_redundancy = IsCompatible();
+    result.supports_batch_fk = IsCompatible();
+    result.cuda_compiled = IsCudaCompiled();
+    return result;
+}
+
 namespace {
 
 int Direction(double value) { return value >= 0.0 ? 1 : -1; }
 
-double WrappedDistance(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs) {
+double WrappedDistance(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
+                       const fep_internal::CoordinatePeriods &periods) {
     double total = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        total += std::pow(std::remainder(lhs[i] - rhs[i], 2.0 * M_PI), 2);
+        const double delta = std::remainder(lhs[i] - rhs[i], periods[i]);
+        total += delta * delta;
     }
     return total;
 }
 
-bool SameSolution(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs) {
-    return WrappedDistance(lhs, rhs) < 1e-12;
+bool SameSolution(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
+                  const fep_internal::CoordinatePeriods &periods) {
+    double squared = 0.0;
+    for (Eigen::Index i = 0; i < lhs.size(); ++i) {
+        const double phase = std::remainder(lhs[i] - rhs[i], periods[i]) *
+                             (fep_internal::kUnitCoordinatePeriods[i] / periods[i]);
+        squared += phase * phase;
+    }
+    return squared < 1e-12;
 }
 
 bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
@@ -31,10 +53,10 @@ bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
     if (!solver.GetFK(joints, actual))
         return false;
     const Eigen::Matrix4d delta =
-            actual.Inverse().GetTransform() * target.GetTransform();
+        actual.Inverse().GetTransform() * target.GetTransform();
     const double translation_error = delta.block<3, 1>(0, 3).norm();
     const double cosine =
-            clamp((delta.block<3, 3>(0, 0).trace() - 1.0) * 0.5, -1.0, 1.0);
+        clamp((delta.block<3, 3>(0, 0).trace() - 1.0) * 0.5, -1.0, 1.0);
     return std::isfinite(translation_error) &&
            translation_error <= translation_tolerance &&
            std::acos(cosine) <= angle_tolerance;
@@ -149,13 +171,20 @@ bool FEPKinematics::SolveConfiguration(const SE3d &target,
 bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                           FEPSolveMethod method,
                           std::vector<Eigen::VectorXd> &solutions) const {
+    if (detail::SeedAliasesSolutions(solutions, seed)) {
+        const Eigen::VectorXd stable_seed = seed;
+        return Solve(target, stable_seed, method, solutions);
+    }
     solutions.clear();
     if (!IsCompatible() || seed.size() != 7 || !seed.allFinite())
         return false;
+    fep_internal::CoordinatePeriods periods;
+    for (std::size_t joint = 0; joint < periods.size(); ++joint)
+        periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
     auto append = [&](const Eigen::VectorXd &candidate) {
         if (std::none_of(solutions.begin(), solutions.end(),
                          [&](const Eigen::VectorXd &existing) {
-                             return SameSolution(existing, candidate);
+                             return SameSolution(existing, candidate, periods);
                          })) {
             solutions.push_back(candidate);
         }
@@ -186,7 +215,10 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         const double upper = joint_nodes_[6].upper_limit;
         double previous_low = std::numeric_limits<double>::quiet_NaN();
         double previous_high = std::numeric_limits<double>::quiet_NaN();
-        for (double delta = 0.0; delta <= M_PI + 1e-12; delta += M_PI / 36.0) {
+        // Sample a half physical turn on each side. Integer layers also bound
+        // the work for models whose coordinate period is extremely small.
+        for (int layer = 0; layer <= 36; ++layer) {
+            const double delta = layer * (periods[6] / 72.0);
             const std::array<double, 2> signs{-1.0, 1.0};
             const int sign_count = delta == 0.0 ? 1 : 2;
             for (int sign_index = 0; sign_index < sign_count; ++sign_index) {
@@ -200,7 +232,7 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                 Eigen::VectorXd candidate;
                 if (!SolveSeed(target, trial, candidate))
                     continue;
-                const double cost = WrappedDistance(candidate, seed);
+                const double cost = WrappedDistance(candidate, seed, periods);
                 if (cost < best_cost) {
                     best_cost = cost;
                     best = candidate;
@@ -213,13 +245,24 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
             append(best);
     }
     std::vector<double> scores;
+    bool cuda_scored = false;
 #ifdef HOLISTICMOTION_HAS_CUDA
     // Transfers dominate small interactive calls; reserve CUDA for batches.
     if (solutions.size() >= 32)
-        fep_internal::ScoreCandidatesCUDA(solutions, seed, scores);
+        cuda_scored =
+            fep_internal::ScoreCandidatesCUDA(solutions, seed, scores, periods);
 #endif
-    if (scores.size() != solutions.size())
-        scores = fep_internal::ScoreCandidatesCPU(solutions, seed);
+    if (!cuda_scored || scores.size() != solutions.size())
+        scores = fep_internal::ScoreCandidatesCPU(solutions, seed, periods);
+    if (scores.size() != solutions.size() ||
+        std::any_of(scores.begin(), scores.end(),
+                    [](double value) { return !std::isfinite(value); })) {
+        solutions.clear();
+        return false;
+    }
+    // Keep score validation above; a validated singleton needs no reordering.
+    if (solutions.size() < 2)
+        return !solutions.empty();
     std::vector<std::size_t> order(solutions.size());
     std::iota(order.begin(), order.end(), 0);
     std::stable_sort(order.begin(), order.end(), [&](std::size_t lhs, std::size_t rhs) {

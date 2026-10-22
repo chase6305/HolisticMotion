@@ -16,11 +16,19 @@ function(holistic_motion_register_tests)
     set_tests_properties(logging_smoke PROPERTIES TIMEOUT 10)
     add_test(NAME compiler_check_smoke COMMAND ${CMAKE_COMMAND}
         -P ${PROJECT_SOURCE_DIR}/tests/cmake/compiler_check_smoke.cmake)
+    add_test(NAME build_identity_smoke COMMAND ${CMAKE_COMMAND}
+        -DREPOSITORY_ROOT=${PROJECT_SOURCE_DIR}
+        -DWORK_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/build-identity-fixture
+        -P ${PROJECT_SOURCE_DIR}/tests/cmake/build_identity_smoke.cmake)
     holistic_motion_add_smoke_test(
         robot_model_smoke_test
         tests/cpp/robot/robot_model_smoke.cpp
         holistic_motion)
     set_tests_properties(robot_model_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
+        joint_position_map_smoke_test
+        tests/cpp/robot/joint_position_map_smoke.cpp
+        holistic_motion)
     holistic_motion_add_smoke_test(
         rotation_jacobian_smoke_test
         tests/cpp/manif/rotation_jacobian_smoke.cpp
@@ -80,6 +88,15 @@ function(holistic_motion_register_tests)
         holistic_motion)
     set_tests_properties(ik_seed_alias_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
+        ik_results_smoke_test
+        tests/cpp/kinematics/ik_results_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        ik_solve_report_smoke_test
+        tests/cpp/kinematics/ik_solve_report_smoke.cpp
+        holistic_motion)
+    set_tests_properties(ik_results_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
         ik_limit_smoke_test
         tests/cpp/kinematics/ik_limit_smoke.cpp
         holistic_motion)
@@ -89,9 +106,23 @@ function(holistic_motion_register_tests)
         tests/cpp/kinematics/kinematic_model_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        forward_kinematics_smoke_test
+        tests/cpp/kinematics/forward_kinematics_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
         srs_null_space_smoke_test
         tests/cpp/kinematics/srs_null_space_smoke.cpp
         holistic_motion)
+    holistic_motion_add_smoke_test(
+        srs_geometry_smoke_test
+        tests/cpp/kinematics/srs_geometry_smoke.cpp
+        holistic_motion Threads::Threads)
+    set_tests_properties(srs_geometry_smoke PROPERTIES TIMEOUT 30)
+    holistic_motion_add_smoke_test(
+        srs_prepared_model_smoke_test
+        tests/cpp/kinematics/srs_prepared_model_smoke.cpp
+        holistic_motion Threads::Threads)
+    set_tests_properties(srs_prepared_model_smoke PROPERTIES TIMEOUT 30)
     holistic_motion_add_smoke_test(
         damped_ik_workspace_smoke_test
         tests/cpp/kinematics/damped_ik_workspace_smoke.cpp
@@ -103,9 +134,40 @@ function(holistic_motion_register_tests)
         tests/cpp/kinematics/fep_batch_smoke.cpp
         holistic_motion)
     holistic_motion_add_smoke_test(
+        concurrent_queries_smoke_test
+        tests/cpp/kinematics/concurrent_queries_smoke.cpp
+        holistic_motion Threads::Threads)
+    set_tests_properties(concurrent_queries_smoke PROPERTIES TIMEOUT 30)
+    if(HOLISTICMOTION_ENABLE_CUDA AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+       AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        holistic_motion_add_smoke_test(
+            cuda_workspace_smoke_test
+            tests/cpp/kinematics/cuda_workspace_smoke.cpp
+            holistic_motion)
+        target_include_directories(cuda_workspace_smoke_test PRIVATE src/kinematics/fep)
+        target_link_options(cuda_workspace_smoke_test PRIVATE
+            "-Wl,--wrap=cudaMalloc" "-Wl,--wrap=cudaFree" "-Wl,--wrap=cudaMemcpy")
+        set_tests_properties(cuda_workspace_smoke PROPERTIES TIMEOUT 30)
+    endif()
+    holistic_motion_add_smoke_test(
+        fep_selection_smoke_test
+        tests/cpp/kinematics/fep_selection_smoke.cpp
+        holistic_motion)
+    target_include_directories(fep_selection_smoke_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/kinematics/fep)
+    holistic_motion_add_smoke_test(
         sampling_planner_smoke_test
         tests/cpp/planning/sampling_planner_smoke.cpp
         holistic_motion)
+    holistic_motion_add_smoke_test(
+        request_isolation_smoke_test
+        tests/cpp/planning/request_isolation_smoke.cpp
+        holistic_motion)
+    holistic_motion_add_smoke_test(
+        joint_space_snapshot_smoke_test
+        tests/cpp/planning/joint_space_snapshot_smoke.cpp
+        holistic_motion Threads::Threads)
+    set_tests_properties(request_isolation_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
         joint_space_metric_smoke_test
         tests/cpp/planning/joint_space_metric_smoke.cpp

@@ -5,8 +5,19 @@
 Install Pinocchio's Python runtime and import the toolkit:
 
 ```bash
-python -m pip install '.[retargeting]'
+python -m pip install '.[retargeting]' \
+  -Ccmake.define.HOLISTICMOTION_PYTHON_TOOLKIT_ONLY=ON \
+  -Cwheel.platlib=false
 ```
+
+This builds a pure Python toolkit without Conan or a C++ compiler and selects
+toolkit mode automatically. The default native build can also combine native
+kinematics and Python Pinocchio in one process while its optional collision
+extension remains unloaded. `runtime_info().collision_loaded` distinguishes
+loaded collision from build support. Run native collision and Python retargeting
+in separate processes; `scripts/run-python-toolkit.sh` selects toolkit mode for
+the Python worker. See [Installation](installation.md) for runtime
+combinations and diagnostics.
 
 ```python
 from holistic_motion.kit.retargeting import (
@@ -312,6 +323,10 @@ joint positions. All-zero orientation coordinates, and values that cannot be
 normalized numerically, raise `ValueError`. Invalid seeds, reset configurations,
 or posture targets leave the previous configuration, velocity history, and
 posture preference unchanged; input arrays are not modified.
+Construction rejects reversed or NaN position-limit intervals; equal bounds
+remain valid locked scalar positions. Model topology and cached URDF limits are
+construction snapshots. Create a new solver after changing them rather than
+mutating the exposed Pinocchio model underneath prepared workspaces.
 
 ## Torso-arm coordination and torso-first stages
 
@@ -479,6 +494,8 @@ callbacks. The non-negative cost is
 included in line-search acceptance and convergence, while its tangent-space
 gradient directly changes the IK step. If the gradient callback is omitted, a
 joint-limit-aware finite difference is used over active velocity coordinates.
+Callback costs and gradients must be finite real values; complex results,
+including zero imaginary parts, are rejected before committing solver history.
 
 Numerical differences skip coordinates with zero velocity limits or equal scalar
 position bounds, even when other joints in the mode remain movable. Those fixed
@@ -501,21 +518,29 @@ cost roundoff. Otherwise both representably nonzero offsets are retained,
 including small joint ranges. A sample that rounds back to the current
 configuration reuses its cost.
 
-The existing sphere model can provide a quadratic clearance penalty. Its
-analytic gradient is expressed in the `nv`-dimensional tangent space, including
-when a manifold model has `nq != nv`:
+A distance backend can provide a quadratic clearance penalty. Its analytic
+gradient must use the solver's full `nv` tangent coordinates, including when
+`nq != nv`. The adapter below expects an application-provided
+`distance_query(q, with_gradient=...)` that returns `(signed_distance, gradient)`;
+the gradient is a NumPy array of shape `(nv,)`, or `None` for cost-only queries.
+Use a backend built on the
+same Python Pinocchio runtime, or a client of a separate native collision
+process. A native `SphereCollisionModel` cannot be captured directly by these
+callbacks in a Python Pinocchio process. If the backend uses another model,
+its adapter must map joint names/configuration blocks and return gradients in
+the solver's tangent order; equal vector lengths do not establish that order.
 
 ```python
 clearance = 0.05
 
 def collision_cost(q):
-    distance = sphere_model.minimum_distance(q).distance
+    distance, _ = distance_query(q, with_gradient=False)
     return max(0.0, clearance - distance) ** 2
 
 def collision_cost_gradient(q):
-    result = sphere_model.minimum_distance_with_gradient(q)
-    deficit = max(0.0, clearance - result.distance_result.distance)
-    return deficit**2, -2.0 * deficit * result.gradient
+    distance, gradient = distance_query(q, with_gradient=True)
+    deficit = max(0.0, clearance - distance)
+    return deficit**2, -2.0 * deficit * gradient
 
 solver = CuroboRetargetingSolver(
     urdf_path,
@@ -647,6 +672,6 @@ before starting a new sequence of steps.
 ```{warning}
 Collision callbacks are optional. Without them, retargeting does not perform
 collision checking. Even with a soft collision cost, use the optional
-C++/Python `CollisionModel` component before accepting a command when your
-application requires hard collision rejection.
+C++/Python `CollisionModel` component in a separate collision process before
+accepting a command when your application requires hard collision rejection.
 ```

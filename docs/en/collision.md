@@ -2,7 +2,24 @@
 
 The default build provides `CollisionModel`, backed by Conan-managed
 Pinocchio and Coal. It loads collision geometry from a caller-provided URDF
-and checks self-collision at one configuration.
+and checks self-collision at one configuration. Python loads its optional
+extension on first access to a collision type or collision planning factory;
+ordinary `import holistic_motion` loads the core alone.
+`runtime_info().collision_loaded` reports the actual loaded state.
+
+Kinematics and collision geometry are constructed from the same owned URDF text
+snapshot. The constructor reads the source once, so replacing the file during
+construction cannot combine two model revisions. Mesh files are still resolved
+through the caller's package roots.
+
+Queries reject non-finite world geometry placements with `OverflowError`, even
+when every input joint value is finite. Distance queries also reject results
+that Coal cannot represent, including non-finite nearest points despite a finite
+signed distance, instead of returning an unrelated pair or reporting an indexing
+error. A failed query leaves the instance available for the next
+valid configuration; clearance settings are restored when a margin query exits.
+`evaluate()` and `collisions()` share one FK/geometry update between collision
+and distance calculations.
 
 World-fixed box obstacles can be added at runtime with `add_box_obstacle` and
 removed with `remove_obstacle`. Include each obstacle name in a collision group
@@ -16,8 +33,26 @@ python3 examples/python/collision/basic_query.py \
 ```
 
 The number of values after `-q` must equal the reported Pinocchio `nq`.
-Zero is used by default for fixed-base robots. For floating-base models,
-provide a valid Pinocchio configuration, including a normalized quaternion.
+The default is the model's neutral configuration, including `[1, 0]` for
+continuous joints and an identity quaternion for floating joints. Explicit
+configurations must contain normalized continuous/quaternion blocks.
+
+For a sampled scalar joint-space segment, provide joint names in endpoint order:
+
+```bash
+python3 examples/python/collision/path_scan.py --urdf /path/to/robot.urdf \
+  --joint-names shoulder_slide wrist_turn \
+  --q-start=0.2,3.0 --q-end=0.4,3.3 --samples 101
+```
+
+Named mode linearly interpolates the supplied scalar positions and embeds them
+in a neutral full configuration, or in the full `nq` reference supplied with
+`--context=...`. Angles can be unwrapped to select the intended turn direction;
+the example does not choose a shortest angular path automatically. Without
+`--joint-names`, endpoints retain the full scalar-configuration convention;
+non-Euclidean models require named mode so cosine/sine and quaternion components
+are not interpolated as scalar joints. Sampling does not certify collision
+freedom between samples.
 
 If the URDF uses `package://` mesh URLs, pass one or more package roots:
 
@@ -103,8 +138,9 @@ distance = sphere_model.minimum_distance(q).distance
 distance_and_gradient = sphere_model.minimum_distance_with_gradient(q)
 trajectory_distances = sphere_model.batch_minimum_distances(q_path)
 
-planner = hm.SamplingPlanner.from_sphere_collision_model(
-    lower_limits, upper_limits, sphere_model, security_margin=0.01
+planner = hm.SamplingPlanner.from_sphere_collision_joints(
+    sphere_model, joint_names, sphere_model.neutral_configuration(),
+    security_margin=0.01,
 )
 ```
 
@@ -127,9 +163,14 @@ is excluded by finite distance filters. A minimum query still raises when its
 final distance is unrepresentable, including for a batch row.
 Batch queries reuse consecutive exactly equal configurations within that call;
 distinct small movements are evaluated separately, and no cache survives the call.
-`PathOptimizer.from_sphere_collision_model` automatically uses this gradient
-for vector-space configurations when a positive soft `clearance` is requested;
-its manifold configuration updates still fall back to finite differences.
+`q` and each `q_path` row are complete normalized `nq` configurations. Named
+planning factories instead accept scalar positions in `joint_names` order and
+preserve the supplied full reference configuration.
+`PathOptimizer.from_sphere_collision_joints` pulls back this `nv` gradient to
+the selected scalar coordinates when positive soft `clearance` is requested,
+including for continuous joints and frozen floating-base contexts. The legacy
+`from_sphere_collision_model` factory accepts only vector-space configurations;
+use the named factory for non-Euclidean models.
 `pair_revision` increases whenever collision groups are reset, replaced, or
 cleared, allowing short-lived distance caches to detect reconfiguration.
 If an existing path optimizer observes an empty pair set, both its hard check

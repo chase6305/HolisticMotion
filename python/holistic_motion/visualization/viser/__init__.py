@@ -1,6 +1,6 @@
 """Reusable Viser scene primitives."""
 
-import os
+from ...runtime import runtime_info
 
 from .scene import (
     ViserPerformanceMonitor,
@@ -22,7 +22,7 @@ __all__ = [
 
 # Robot helpers consume enums from the compiled extension. Renderer-only
 # consumers such as TOPPRA plots remain available in pure-Python mode.
-if os.environ.get("HOLISTICMOTION_PURE_PYTHON") != "1":
+if not runtime_info().pure_python:
     from .robot import chain_joint_names, tree_topology, tree_transforms
 
     __all__ += ["chain_joint_names", "tree_topology", "tree_transforms"]

@@ -5,8 +5,17 @@
 安装 Pinocchio Python 运行时并导入工具箱：
 
 ```bash
-python -m pip install '.[retargeting]'
+python -m pip install '.[retargeting]' \
+  -Ccmake.define.HOLISTICMOTION_PYTHON_TOOLKIT_ONLY=ON \
+  -Cwheel.platlib=false
 ```
+
+该安装方式生成纯 Python 工具包，无需 Conan 或 C++ 编译器，并自动选择工具层模式。
+默认原生构建也可将原生运动学与 Python Pinocchio 放在同一进程，前提是尚未加载
+可选碰撞扩展；`runtime_info().collision_loaded` 可区分实际加载状态与构建支持。
+原生碰撞与 Python 重定向需在独立进程运行，可用 `scripts/run-python-toolkit.sh`
+为 Python worker 选择工具层模式。
+运行时组合与诊断见[安装指南](installation.md)。
 
 ```python
 from holistic_motion.kit.retargeting import (
@@ -258,6 +267,9 @@ frame 与关节组映射，并缓存 active indices、速度限制和 Pink 数�
 或浮动关节四元数时改变朝向；标量关节仍按位置限位夹取。全零朝向坐标、
 以及数值上无法归一化的配置会抛出 `ValueError`。非法 seed、重置配置或姿态
 偏好不会改变先前配置、速度历史或偏好目标，也不会修改调用方的输入数组。
+构造时拒绝反向或含 NaN 的位置限位区间；上下界相等时仍支持锁定标量位置。
+模型拓扑和缓存的 URDF 限位是构造时快照；修改它们后应新建求解器，避免直接改动
+已准备工作区所使用的 Pinocchio 模型。
 
 ## 腰臂协同与先转腰策略
 
@@ -400,6 +412,7 @@ Pink 和 cuRobo 风格的 `solve()`/`step()` 遇到 `KeyboardInterrupt` 或
 非负碰撞代价参与回溯接受和收敛
 判断，其切空间梯度直接改变 IK 更新方向。未提供解析梯度时，求解器会沿激活的
 速度坐标执行关节限位感知的有限差分。
+回调的代价与梯度必须为有限实数；复数结果（包括虚部为零）会在提交求解历史前被拒绝。
 
 即使同一模式中还有可动关节，数值差分也会跳过零速度限位或标量位置上下界
 相同的自由度。这些固定分量在内部数值梯度中置零，不做采样积分和代价查询；
@@ -416,20 +429,25 @@ Pink 和 cuRobo 风格的 `solve()`/`step()` 遇到 `KeyboardInterrupt` 或
 避免放大代价舍入误差；否则保留可表示的非零位移，包括小范围关节的采样。
 因舍入而回到当前配置的采样继续复用当前代价。
 
-球碰撞模型可以构造二次 clearance 代价；解析梯度位于 `nv` 维切空间中，也支持
-流形模型的 `nq != nv`：
+距离后端可以构造二次 clearance 代价；解析梯度必须采用求解器完整的 `nv` 维切空间
+顺序，也支持 `nq != nv`。下例要求应用提供
+`distance_query(q, with_gradient=...)`，返回 `(有符号距离, 梯度)`；梯度为 `(nv,)`
+形状的 NumPy 数组，只查询代价时可为 `None`。后端应使用同一套 Python Pinocchio，或通过客户端访问独立的
+原生碰撞进程；不能在 Python Pinocchio 进程中直接捕获原生 `SphereCollisionModel`
+作为这些回调的依赖。后端使用不同模型时，适配层应按名称/配置块转换输入，并将梯度
+转换到求解器的切空间顺序；向量长度相同不代表坐标顺序相同。
 
 ```python
 clearance = 0.05
 
 def collision_cost(q):
-    distance = sphere_model.minimum_distance(q).distance
+    distance, _ = distance_query(q, with_gradient=False)
     return max(0.0, clearance - distance) ** 2
 
 def collision_cost_gradient(q):
-    result = sphere_model.minimum_distance_with_gradient(q)
-    deficit = max(0.0, clearance - result.distance_result.distance)
-    return deficit**2, -2.0 * deficit * result.gradient
+    distance, gradient = distance_query(q, with_gradient=True)
+    deficit = max(0.0, clearance - distance)
+    return deficit**2, -2.0 * deficit * gradient
 
 solver = CuroboRetargetingSolver(
     urdf_path,
@@ -534,5 +552,5 @@ Jacobian、碰撞梯度与 QP 更新。目标未满足时返回 `no_feasible_mot
 ```{warning}
 碰撞回调是可选项；未配置时 retargeting 不执行碰撞检测。即使启用了软碰撞
 代价，如果应用需要硬性拒绝碰撞指令，仍应在接受结果前使用可选的 C++/Python
-`CollisionModel` 组件。
+`CollisionModel` 组件，并让该组件运行在独立的碰撞进程中。
 ```
