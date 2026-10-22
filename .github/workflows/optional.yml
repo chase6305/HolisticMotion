@@ -82,6 +82,8 @@ jobs:
           PYTHON_EXECUTABLE: ${{ steps.target.outputs.python-path }}
           BUILD_DIR: build-abi
           JOBS: "2"
+          # Preserve native stderr when an extension aborts inside pytest.
+          PYTEST_ADDOPTS: --capture=sys
         run: ./scripts/build.sh --tests --no-cuda --no-collision
       - name: Check package identity against the selected interpreter
         env:

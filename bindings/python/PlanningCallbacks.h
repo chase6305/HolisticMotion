@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <pybind11/functional.h>
 
@@ -141,17 +143,59 @@ int VisitPlanningCallback(
     return 0;
 }
 
+inline std::vector<py::detail::type_info *>
+PlanningTypeInfoWithoutCaching(PyTypeObject *type) {
+    const auto &registered = py::detail::get_internals().registered_types_py;
+    std::vector<py::detail::type_info *> result;
+    std::vector<PyTypeObject *> pending{type};
+    for (std::size_t index = 0; index < pending.size(); ++index) {
+        auto *current = pending[index];
+        const auto cached = registered.find(current);
+        if (cached != registered.end() && !cached->second.empty()) {
+            for (auto *info : cached->second) {
+                if (std::find(result.begin(), result.end(), info) == result.end())
+                    py::detail::all_type_info_add_base_most_derived_first(result,
+                                                                        info);
+            }
+        } else if (current->tp_bases && PyTuple_Check(current->tp_bases)) {
+            for (Py_ssize_t base = 0; base < PyTuple_GET_SIZE(current->tp_bases);
+                 ++base)
+                pending.push_back(reinterpret_cast<PyTypeObject *>(
+                    PyTuple_GET_ITEM(current->tp_bases, base)));
+        }
+    }
+    return result;
+}
+
 template <class Planner> Planner *OwnedPlanningValue(PyObject *self) {
     auto *instance = reinterpret_cast<py::detail::instance *>(self);
     if (!instance->owned)
         return nullptr;
+    // Type weak references may have been cleared before GC calls tp_clear.
+    // Do not recreate that cache (or Python references) inside a collector hook.
+    // Resurrected owners still need their native edges traced on later cycles.
+    const auto &types = py::detail::get_internals().registered_types_py;
+    const auto cached = types.find(Py_TYPE(self));
+    const auto fallback = cached == types.end() || cached->second.empty()
+                              ? PlanningTypeInfoWithoutCaching(Py_TYPE(self))
+                              : std::vector<py::detail::type_info *>{};
+    const auto &metadata = fallback.empty() && cached != types.end()
+                               ? cached->second
+                               : fallback;
     const auto *info = py::detail::get_type_info(typeid(Planner));
     if (!info)
         return nullptr;
-    const auto value = instance->get_value_and_holder(info, false);
-    if (!value.inst || !value.holder_constructed() || !value.instance_registered())
-        return nullptr;
-    return value.template value_ptr<Planner>();
+    std::size_t offset = 0;
+    for (std::size_t index = 0; index < metadata.size(); ++index) {
+        if (metadata[index] == info) {
+            const py::detail::value_and_holder value(instance, info, offset, index);
+            if (!value.holder_constructed() || !value.instance_registered())
+                return nullptr;
+            return value.template value_ptr<Planner>();
+        }
+        offset += 1 + metadata[index]->holder_size_in_ptrs;
+    }
+    return nullptr;
 }
 
 template <class Planner> struct PlanningGarbageCollection {

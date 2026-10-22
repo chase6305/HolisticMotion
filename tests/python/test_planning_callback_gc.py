@@ -28,6 +28,35 @@ def test_dynamic_dictionary_has_one_gc_ownership_edge(base, subclass):
 
 
 @requires_cpython_gc
+@pytest.mark.parametrize("base", [hm.SamplingPlanner, hm.PathOptimizer])
+def test_resurrected_local_subclass_is_collectible_again(base):
+    survivors = []
+
+    def create():
+        class Derived(base):
+            def __del__(self):
+                survivors.append(self)
+
+        owner = Derived([-1.0], [1.0])
+        owner.cycle = owner
+
+        def callback(state):
+            return owner.cycle is owner
+
+        owner.callback = callback
+        owner.set_state_validator(callback)
+
+    create()
+    gc.collect()
+    assert len(survivors) == 1
+    owner = survivors.pop()
+    references = weakref.ref(owner), weakref.ref(owner.callback)
+    del owner
+    gc.collect()
+    assert all(reference() is None for reference in references)
+
+
+@requires_cpython_gc
 @pytest.mark.parametrize("kind", ["planner", "validator", "cost", "gradient"])
 @pytest.mark.parametrize("subclass", [False, True])
 @pytest.mark.parametrize("python_cycle", [False, True])
@@ -88,14 +117,28 @@ def test_constructor_callback_cycles_are_collected(cls, named_space):
 
 
 @requires_cpython_gc
-def test_multiple_native_bases_trace_all_callback_edges():
+@pytest.mark.parametrize("collect_during_init", [False, True])
+def test_multiple_native_bases_trace_all_callback_edges(collect_during_init):
     class Both(hm.SamplingPlanner, hm.PathOptimizer):
         pass
 
+    class CollectingArray:
+        def __init__(self, value):
+            self.value = value
+
+        def __array__(self, dtype=None, copy=None):
+            gc.collect()
+            return np.asarray([self.value], dtype=dtype)
+
     def create():
         owner = Both.__new__(Both)
-        hm.SamplingPlanner.__init__(owner, [-1.0], [1.0])
-        hm.PathOptimizer.__init__(owner, [-1.0], [1.0])
+        limits = (
+            (CollectingArray(-1.0), CollectingArray(1.0))
+            if collect_during_init
+            else ([-1.0], [1.0])
+        )
+        hm.SamplingPlanner.__init__(owner, *limits)
+        hm.PathOptimizer.__init__(owner, *limits)
 
         def callback(state):
             return owner.joint_space.dof == 1
