@@ -14,7 +14,7 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 
-from ..._validation import real_array
+from ..._validation import real_array, require_real
 from .modes import RetargetingMode
 from .pinocchio_solver import (
     PinocchioRetargetingSolver,
@@ -990,7 +990,9 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         if cache is not None and key in cache:
             return cache[key]
         evaluations[0] += 1
-        value = float(self.collision_cost(q.copy()))
+        value = self.collision_cost(q.copy())
+        require_real(value, name="collision_cost result")
+        value = float(value)
         if not np.isfinite(value) or value < 0.0:
             raise ValueError("collision_cost must return a finite non-negative value")
         if cache is not None:
@@ -1015,9 +1017,9 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             )[1]
         evaluations[1] += 1
         if self.collision_gradient is not None:
-            value = np.asarray(self.collision_gradient(q.copy()), dtype=float).reshape(
-                -1
-            )
+            value = real_array(
+                self.collision_gradient(q.copy()), name="collision_gradient result"
+            ).reshape(-1)
             if value.shape != (self.model.nv,) or not np.isfinite(value).all():
                 raise ValueError(
                     f"collision_gradient must return {self.model.nv} finite values"
@@ -1125,8 +1127,11 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         evaluations[0] += 1
         evaluations[1] += 1
         cost, gradient = self.collision_cost_gradient(q.copy())
+        require_real(cost, name="collision_cost_gradient cost")
         cost = float(cost)
-        gradient = np.asarray(gradient, dtype=float).reshape(-1)
+        gradient = real_array(
+            gradient, name="collision_cost_gradient gradient"
+        ).reshape(-1)
         if not np.isfinite(cost) or cost < 0.0:
             raise ValueError(
                 "collision_cost_gradient must return a finite non-negative cost"

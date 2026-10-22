@@ -60,7 +60,8 @@ jobs:
             hypothesis: "hypothesis>=6.112,<7"
           - python: "3.13t"
             numpy: "numpy>=1.23,<3"
-            hypothesis: "hypothesis>=6.112,<7"
+            # Hypothesis 6.156+ requires Rust/PyO3, which excludes CPython 3.13t.
+            hypothesis: "hypothesis>=6.112,<6.156"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -74,7 +75,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install target interpreter test dependencies
         run: >-
-          python -m pip install '${{ matrix.numpy }}' 'pytest>=7'
+          python -m pip install --only-binary=:all: '${{ matrix.numpy }}' 'pytest>=7'
           '${{ matrix.hypothesis }}'
       - name: Build and test the selected native ABI
         env:

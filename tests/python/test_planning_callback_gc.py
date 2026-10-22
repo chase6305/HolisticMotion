@@ -15,6 +15,19 @@ requires_cpython_gc = pytest.mark.skipif(
 
 
 @requires_cpython_gc
+@pytest.mark.parametrize("base", [hm.SamplingPlanner, hm.PathOptimizer])
+@pytest.mark.parametrize("subclass", [False, True])
+def test_dynamic_dictionary_has_one_gc_ownership_edge(base, subclass):
+    class Derived(base):
+        pass
+
+    owner = (Derived if subclass else base)([-1.0], [1.0])
+    owner.cycle = owner
+    dictionary = owner.__dict__
+    assert sum(value is dictionary for value in gc.get_referents(owner)) == 1
+
+
+@requires_cpython_gc
 @pytest.mark.parametrize("kind", ["planner", "validator", "cost", "gradient"])
 @pytest.mark.parametrize("subclass", [False, True])
 @pytest.mark.parametrize("python_cycle", [False, True])

@@ -198,6 +198,16 @@ template <class Planner> struct PlanningGarbageCollection {
     }
     static void Setup(PyHeapTypeObject *heap_type) {
         auto *type = &heap_type->ht_type;
+#if PY_VERSION_HEX >= 0x030B0000 && PY_VERSION_HEX < 0x030C0000 && !defined(PYPY_VERSION)
+        // CPython 3.11's subtype_traverse visits managed dictionaries even
+        // when the native base also visits them. Use a traditional dictionary
+        // slot so Python subclasses do not report that ownership edge twice.
+        if (PyType_HasFeature(type, Py_TPFLAGS_MANAGED_DICT)) {
+            type->tp_flags &= ~Py_TPFLAGS_MANAGED_DICT;
+            type->tp_dictoffset = type->tp_basicsize;
+            type->tp_basicsize += static_cast<Py_ssize_t>(sizeof(PyObject *));
+        }
+#endif
         previous_traverse = type->tp_traverse;
         previous_clear = type->tp_clear;
         type->tp_traverse = Traverse;
