@@ -317,11 +317,7 @@ class SRSContinuousTracker:
             selected = self._apply_hysteresis(evaluated)
             previous_branch = self._configuration
             redundancy = self._unwrap_scalar(selected.redundancy, self._redundancy)
-            singular_values = np.linalg.svd(
-                np.asarray(self.solver.jacobian(selected.joints), dtype=float),
-                compute_uv=False,
-            )
-            minimum = float(singular_values[-1]) if singular_values.size else 0.0
+            minimum = self._minimum_singular_value(selected.joints)
             result = self._result_type(
                 joints=selected.joints,
                 velocity=selected.velocity,
@@ -370,8 +366,10 @@ class SRSContinuousTracker:
             branch, redundancy = self._validated_configuration(
                 self.solver.configuration(joints)
             )
-            actual = np.asarray(self.solver.forward(joints), dtype=float)
-            if actual.shape != (4, 4) or not np.isfinite(actual).all():
+            raw_pose = self.solver.forward(joints)
+            try:
+                actual = validated_transform(raw_pose, name="solver forward result")
+            except (TypeError, ValueError, OverflowError):
                 continue
             position_error, angle_error = self._pose_error(actual, pose)
             if not isfinite(position_error) or not isfinite(angle_error):
@@ -414,13 +412,9 @@ class SRSContinuousTracker:
                 )
             except ValueError:
                 pass
-            singular_values = np.linalg.svd(
-                np.asarray(self.solver.jacobian(self._joints), dtype=float),
-                compute_uv=False,
-            )
             near_singularity = (
-                singular_values.size == 0
-                or singular_values[-1] <= self.options.singular_value_threshold
+                self._minimum_singular_value(self._joints)
+                <= self.options.singular_value_threshold
             )
             refresh = (
                 not candidates
@@ -473,6 +467,12 @@ class SRSContinuousTracker:
                 continue
             if values.shape == (self._dof,) and np.isfinite(values).all():
                 yield values
+
+    def _minimum_singular_value(self, joints: np.ndarray) -> float:
+        jacobian = real_array(self.solver.jacobian(joints), name="solver Jacobian")
+        if jacobian.shape != (6, self._dof) or not np.isfinite(jacobian).all():
+            raise ValueError("solver Jacobian must be a finite 6x7 matrix")
+        return float(np.linalg.svd(jacobian, compute_uv=False)[-1])
 
     def _all_configurations_method(self):
         import holistic_motion as hm

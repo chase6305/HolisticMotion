@@ -9,8 +9,6 @@ _IDENTITY_ROTATION.setflags(write=False)
 # Per-entry absolute and relative bounds for R.T @ R = I.
 _ROTATION_TOLERANCE = 1e-6 + 1e-5 * _IDENTITY_ROTATION
 _ROTATION_TOLERANCE.setflags(write=False)
-_HOMOGENEOUS_LAST_ROW = np.array([0.0, 0.0, 0.0, 1.0])
-_HOMOGENEOUS_LAST_ROW.setflags(write=False)
 
 
 def require_real(value, *, name: str):
@@ -82,7 +80,11 @@ def validated_transform(value, *, name: str, readonly: bool = False) -> np.ndarr
     transform = real_array(value, name=name, copy=True)
     if transform.shape != (4, 4) or not np.isfinite(transform).all():
         raise ValueError(f"{name} must be a finite 4x4 matrix")
-    if not np.all(np.abs(transform[3] - _HOMOGENEOUS_LAST_ROW) <= 1e-8):
+    last_row = transform[3]
+    last_row_error = max(
+        abs(last_row[0]), abs(last_row[1]), abs(last_row[2]), abs(last_row[3] - 1.0)
+    )
+    if last_row_error > 1e-8:
         raise ValueError(f"{name} must have a valid homogeneous last row")
     rotation = transform[:3, :3]
     # Small discarded products do not invalidate a rotation. Large invalid
