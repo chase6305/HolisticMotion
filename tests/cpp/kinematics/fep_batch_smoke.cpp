@@ -80,9 +80,56 @@ bool Check(FEPKinematics &solver, const Eigen::MatrixXd &joints) {
     return true;
 }
 
+bool CheckNearSingularIK() {
+    const Eigen::Vector3d axes[] = {
+        Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitX()};
+    std::vector<JointNode> nodes;
+    for (int joint = 0; joint < 7; ++joint)
+        nodes.emplace_back(
+            SE3d(Eigen::Vector3d(0, 0, joint ? 0.1 : 0.0), SO3d()), axes[joint],
+            JointType::REVOLUTE, -2.0, 2.0);
+    nodes.emplace_back();
+    nodes.back().joint_type = JointType::FIXED;
+    FEPKinematics solver(nodes);
+    for (double initial_angle : {0.001, 0.002, 0.005}) {
+        for (int moving_joint : {3, 4}) {
+            const auto seed =
+                Eigen::VectorXd::Constant(7, initial_angle).eval();
+            auto expected = seed;
+            expected[moving_joint] += 0.001;
+            SE3d target;
+            if (!solver.GetFK(expected, target))
+                return false;
+            std::vector<Eigen::VectorXd> solutions;
+            if (!solver.Solve(target, seed, FEPSolveMethod::SEEDED_NUMERICAL,
+                              solutions) ||
+                solutions.empty()) {
+                std::cerr << "FEP rejected a reachable near-singular target\n";
+                return false;
+            }
+            SE3d actual;
+            if (!solver.GetFK(solutions.front(), actual) ||
+                (actual.GetTranslation() - target.GetTranslation()).norm() >=
+                    1e-5 ||
+                Eigen::AngleAxisd(actual.GetRotation().transpose() *
+                                  target.GetRotation())
+                        .angle() >= 1e-5) {
+                std::cerr << "FEP accepted an inaccurate refined pose\n";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
+    if (!CheckNearSingularIK())
+        return 1;
     std::cout << "FEP CUDA compiled/runtime: "
               << FEPKinematics::IsCudaCompiled() << "/"
               << FEPKinematics::HasCudaBackend() << "\n";

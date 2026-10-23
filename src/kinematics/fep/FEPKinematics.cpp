@@ -23,6 +23,9 @@ KinematicsCapabilities FEPKinematics::GetCapabilities() const {
 
 namespace {
 
+constexpr double kTranslationTolerance = 1e-5;
+constexpr double kAngleTolerance = 1e-5;
+
 int Direction(double value) { return value >= 0.0 ? 1 : -1; }
 
 double WrappedDistance(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
@@ -47,8 +50,7 @@ bool SameSolution(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
 }
 
 bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
-                         const Eigen::VectorXd &joints, double translation_tolerance,
-                         double angle_tolerance) {
+                         const Eigen::VectorXd &joints) {
     SE3d actual;
     if (!solver.GetFK(joints, actual))
         return false;
@@ -58,8 +60,8 @@ bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
     const double cosine =
         clamp((delta.block<3, 3>(0, 0).trace() - 1.0) * 0.5, -1.0, 1.0);
     return std::isfinite(translation_error) &&
-           translation_error <= translation_tolerance &&
-           std::acos(cosine) <= angle_tolerance;
+           translation_error <= kTranslationTolerance &&
+           std::acos(cosine) <= kAngleTolerance;
 }
 
 } // namespace
@@ -119,15 +121,15 @@ bool FEPKinematics::SolveSeed(const SE3d &target, Eigen::VectorXd seed,
     if (solution.size() != 7 || !solution.allFinite())
         return false;
 
-    // The shared interactive solver intentionally accepts sub-millimetre
-    // residuals. FEP branch enumeration needs tighter FK round trips so a
-    // second local solve uses stricter tolerances only when required.
-    if (!PoseWithinTolerance(*this, target, solution, 1e-5, 1e-5)) {
+    // The shared interactive solver accepts sub-millimetre residuals.
+    // Refine to FEP's acceptance tolerances. A tighter convergence goal can
+    // exhaust the iteration budget near singularities and discard a valid pose.
+    if (!PoseWithinTolerance(*this, target, solution)) {
         NumericalKinematics refinement(joint_nodes_);
         refinement.SetTCP(GetTCP());
         refinement.SetMaxIterNum(200);
-        refinement.SetTransErrTh(1e-7);
-        refinement.SetAngleErrTh(1e-7);
+        refinement.SetTransErrTh(kTranslationTolerance);
+        refinement.SetAngleErrTh(kAngleTolerance);
         refinement.SetDamp(0.01);
         IkRtn refined;
         std::vector<double> refined_distances;
@@ -138,7 +140,7 @@ bool FEPKinematics::SolveSeed(const SE3d &target, Eigen::VectorXd seed,
         }
     }
     return solution.size() == 7 && solution.allFinite() &&
-           PoseWithinTolerance(*this, target, solution, 1e-5, 1e-5);
+           PoseWithinTolerance(*this, target, solution);
 }
 
 bool FEPKinematics::SolveConfiguration(const SE3d &target,

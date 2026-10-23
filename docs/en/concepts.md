@@ -288,6 +288,8 @@ are independently checked to 10 µm and 10 µrad after optional high-precision
 refinement. Explicit `CUDA` requests fail instead of silently falling back.
 The high-precision pass inherits the current TCP, so its target and final check
 use the same tool frame as the initial solve.
+Refinement stops at the same 10 µm and 10 µrad acceptance limits, avoiding
+unnecessary iterations and false failures near singularities.
 CPU batch FK prepares joint axes and the fixed terminal/TCP transform once per
 call, then accumulates each pose without allocating per-row joint or pose lists.
 Model and TCP changes take effect on the next call. Scalar FK uses axis-angle
