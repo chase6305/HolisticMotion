@@ -435,12 +435,12 @@ class SRSContinuousTracker:
             )
             refresh = (
                 not candidates
+                or near_singularity
+                or self._frame_index % self.options.candidate_refresh_interval == 0
                 or any(
                     self._configuration_of(item) != self._configuration
                     for item in candidates
                 )
-                or near_singularity
-                or self._frame_index % self.options.candidate_refresh_interval == 0
             )
         if refresh:
             try:
