@@ -224,6 +224,60 @@ def test_fep_ik_refinement_preserves_tcp_updates(tmp_path, method_name):
             assert angle < 1e-5
 
 
+@pytest.mark.parametrize("initial_angle", [0.001, 0.002, 0.005])
+@pytest.mark.parametrize("moving_joint", [3, 4])
+def test_fep_refinement_accepts_near_singular_targets(
+    tmp_path, initial_angle, moving_joint
+):
+    import holistic_motion as hm
+
+    path = tmp_path / "seven_axis.urdf"
+    path.write_text(_seven_axis_urdf(), encoding="utf-8")
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    seed = np.full(7, initial_angle)
+    expected = seed.copy()
+    expected[moving_joint] += 0.001
+    target = solver.forward(expected)
+    coarse = solver.forward(solver.inverse(target, seed))
+    assert np.linalg.norm(coarse[:3, 3] - target[:3, 3]) > 1e-5
+
+    solutions = solver.solve(target, seed, hm.FEPSolveMethod.SEEDED_NUMERICAL)
+    assert solutions
+    actual = solver.forward(solutions[0])
+    assert np.linalg.norm(actual[:3, 3] - target[:3, 3]) < 1e-5
+    relative = actual[:3, :3].T @ target[:3, :3]
+    angle = np.arccos(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+    assert angle < 1e-5
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_fep_accepts_seed_just_inside_angular_tolerance(tmp_path, axis):
+    import holistic_motion as hm
+
+    path = tmp_path / "seven_axis.urdf"
+    path.write_text(_seven_axis_urdf(), encoding="utf-8")
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    seed = np.zeros(7)
+    target = solver.forward(seed)
+    angle = 1e-5 - 5e-12
+    first, second = (axis + 1) % 3, (axis + 2) % 3
+    target[first, first] = target[second, second] = np.cos(angle)
+    target[first, second] = -np.sin(angle)
+    target[second, first] = np.sin(angle)
+
+    solutions = solver.solve(target, seed, hm.FEPSolveMethod.SEEDED_NUMERICAL)
+    assert solutions
+    actual = solver.forward(solutions[0])
+    assert np.linalg.norm(actual[:3, 3] - target[:3, 3]) < 1e-5
+    relative = actual[:3, :3].T @ target[:3, :3]
+    sine = 0.5 * np.hypot(
+        np.hypot(relative[2, 1] - relative[1, 2], relative[0, 2] - relative[2, 0]),
+        relative[1, 0] - relative[0, 1],
+    )
+    cosine = np.clip((np.trace(relative) - 1.0) * 0.5, -1.0, 1.0)
+    assert np.arctan2(sine, cosine) < 1e-5
+
+
 def test_fep_continuous_tracker_preserves_branch_and_precision(tmp_path):
     import holistic_motion as hm
     from holistic_motion.kinematics import FEPContinuousTracker
