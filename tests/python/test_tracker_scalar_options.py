@@ -1,6 +1,7 @@
 """Tracker scalar options must own immutable, validated numeric values."""
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -68,3 +69,97 @@ def test_scoring_observes_the_public_options_property(kind):
     tracker._configuration = (1, 1, 1)
     zero = np.zeros(7)
     assert tracker._score(np.ones(7), zero, zero, zero, (1, 1, 1), 1.0) == 42.0
+
+
+@pytest.fixture(params=["SRS", "FEP"])
+def stationary_tracker(request):
+    from holistic_motion import kinematics
+
+    tracker_type = getattr(kinematics, request.param + "ContinuousTracker")
+
+    class Solver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        def __init__(self):
+            self.solve_calls = 0
+
+        @staticmethod
+        def configuration(_joints):
+            return SimpleNamespace(shoulder=1, elbow=1, wrist=1, redundancy=0.0)
+
+        @staticmethod
+        def forward(_joints):
+            return np.eye(4)
+
+        @staticmethod
+        def jacobian(_joints):
+            return np.eye(6, 7)
+
+        def solve(self, _target, _seed, _method):
+            self.solve_calls += 1
+            return [np.zeros(7)]
+
+    class Tracker(tracker_type):
+        # These scalar-contract tests do not require native solve-method enums.
+        def _seeded_method(self):
+            return None
+
+        def _all_configurations_method(self):
+            return None
+
+    return Tracker(Solver(), np.zeros(7))
+
+
+@pytest.mark.parametrize(
+    "dt", [[0.1], np.array([0.1]), np.array([[0.1]]), np.array([0.1, 0.2])]
+)
+def test_tracker_time_step_rejects_non_scalar_shapes(stationary_tracker, dt):
+    with pytest.raises(ValueError, match="scalar"):
+        stationary_tracker.solve(np.eye(4), dt=dt)
+    assert stationary_tracker.solver.solve_calls == 0
+    assert stationary_tracker.frame_index == 0
+
+
+@pytest.mark.parametrize("dt", [0.1j, np.complex128(0.1 + 0j), np.complex128(0.1 + 1j)])
+def test_tracker_time_step_rejects_complex_values(stationary_tracker, dt):
+    with pytest.raises(TypeError, match="real"):
+        stationary_tracker.solve(np.eye(4), dt=dt)
+    assert stationary_tracker.solver.solve_calls == 0
+    assert stationary_tracker.frame_index == 0
+
+
+@pytest.mark.parametrize(
+    "dt",
+    [
+        0.0,
+        -0.1,
+        np.nan,
+        np.inf,
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        pytest.param(10**5000, id="overflowing-integer"),
+        object(),
+    ],
+)
+def test_tracker_time_step_rejects_invalid_scalars(stationary_tracker, dt):
+    with pytest.raises(ValueError, match="dt"):
+        stationary_tracker.solve(np.eye(4), dt=dt)
+    assert stationary_tracker.solver.solve_calls == 0
+    assert stationary_tracker.frame_index == 0
+
+
+@pytest.mark.parametrize(
+    "dt",
+    [
+        np.float64(0.1),
+        np.array(0.1),
+        Decimal("0.1"),
+        np.array(Decimal("0.1"), dtype=object),
+    ],
+)
+def test_tracker_time_step_accepts_real_scalars(stationary_tracker, dt):
+    result = stationary_tracker.solve(np.eye(4), dt=dt)
+    assert stationary_tracker.frame_index == 1
+    np.testing.assert_array_equal(result.joints, np.zeros(7))
+    np.testing.assert_array_equal(result.velocity, np.zeros(7))

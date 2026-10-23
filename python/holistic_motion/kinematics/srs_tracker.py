@@ -277,7 +277,14 @@ class SRSContinuousTracker:
 
     def solve(self, target: np.ndarray, dt: float) -> SRSContinuousResult:
         pose = validated_transform(target, name="target")
-        if not np.isfinite(dt) or dt <= 0.0:
+        dt = require_real(dt, name="dt")
+        if np.ndim(dt) != 0:
+            raise ValueError("dt must be a scalar")
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("dt must be finite and positive") from error
+        if not isfinite(dt) or dt <= 0.0:
             raise ValueError("dt must be finite and positive")
 
         with np.errstate(over="ignore", invalid="ignore"):
