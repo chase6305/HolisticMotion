@@ -1,10 +1,11 @@
 """Real-valued Python APIs inspect nested object arrays before conversion."""
 
 from decimal import Decimal
+from math import cos, sin
 
 import numpy as np
 import pytest
-from holistic_motion._validation import real_array, require_real
+from holistic_motion._validation import real_array, require_real, validated_transform
 from holistic_motion.geometry import SphereSpec
 from holistic_motion.kit.retargeting.tasks import FrameTask, PostureTask
 from holistic_motion.trajectory import ToppraTrajectory
@@ -78,3 +79,62 @@ def test_real_validation_traverses_shared_containers_once():
         outer[:] = [value, value]
         value = outer
     assert require_real(value, name="shared") is value
+
+
+@pytest.mark.parametrize("readonly", [False, True])
+def test_transform_validation_owns_its_output(readonly):
+    source = np.eye(4)
+    source[:3, 3] = [0.25, -0.5, 0.75]
+    result = validated_transform(source, name="pose", readonly=readonly)
+    source[:3, 3] = 0.0
+    np.testing.assert_array_equal(result[:3, 3], [0.25, -0.5, 0.75])
+    assert result.flags.writeable is not readonly
+    assert not np.shares_memory(source, result)
+
+
+@pytest.mark.parametrize("angle", [1e-160, 1e-200, 5e-324])
+def test_transform_validation_accepts_tiny_rotations_under_strict_numpy_errors(angle):
+    pose = np.eye(4)
+    pose[:2, :2] = [[cos(angle), -sin(angle)], [sin(angle), cos(angle)]]
+    with np.errstate(all="raise"):
+        result = validated_transform(pose, name="pose")
+    np.testing.assert_array_equal(result, pose)
+
+
+@pytest.mark.parametrize("scale", [1e160, 1e200, 1e308])
+def test_transform_validation_rejects_large_rotations_without_arithmetic_errors(scale):
+    pose = np.eye(4)
+    pose[:3, :3] *= scale
+    with np.errstate(all="raise"):
+        with pytest.raises(ValueError, match="proper orthonormal"):
+            validated_transform(pose, name="pose")
+
+
+@pytest.mark.parametrize(
+    "row,column,delta,accepted",
+    [
+        (0, 0, 4e-6, True),
+        (0, 0, 6e-6, False),
+        (0, 1, 5e-7, True),
+        (0, 1, 2e-6, False),
+        (3, 0, 5e-9, True),
+        (3, 0, 2e-8, False),
+    ],
+)
+def test_transform_validation_keeps_existing_rotation_and_row_tolerances(
+    row, column, delta, accepted
+):
+    pose = np.eye(4)
+    pose[row, column] += delta
+    if accepted:
+        np.testing.assert_array_equal(validated_transform(pose, name="pose"), pose)
+    else:
+        with pytest.raises(ValueError):
+            validated_transform(pose, name="pose")
+
+
+def test_transform_validation_rejects_orthogonal_reflections():
+    pose = np.eye(4)
+    pose[0, 0] = -1.0
+    with pytest.raises(ValueError, match="proper orthonormal"):
+        validated_transform(pose, name="pose")
