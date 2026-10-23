@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import atan2, hypot, isfinite
 from numbers import Integral
-from typing import Union
+from typing import NamedTuple, Union
 
 import numpy as np
 
@@ -46,7 +46,7 @@ class SRSContinuousOptions:
         scalars = tuple(
             require_real(getattr(self, name), name=name) for name in scalar_names
         )
-        if any(np.ndim(value) != 0 for value in scalars):
+        if any(isinstance(value, np.ndarray) and value.ndim != 0 for value in scalars):
             raise ValueError("tracker weights and thresholds must be scalars")
         try:
             scalars = tuple(float(value) for value in scalars)
@@ -140,7 +140,7 @@ class SRSContinuousResult:
         metrics = tuple(
             require_real(getattr(self, name), name=name) for name in metric_names
         )
-        if any(np.ndim(value) != 0 for value in metrics):
+        if any(isinstance(value, np.ndarray) and value.ndim != 0 for value in metrics):
             raise ValueError("result metrics must be scalars")
         try:
             metrics = tuple(float(value) for value in metrics)
@@ -166,6 +166,19 @@ class SRSContinuousResult:
         if self.candidate_count < 1:
             raise ValueError("candidate_count must be positive")
         object.__setattr__(self, "candidate_count", int(self.candidate_count))
+
+
+class _EvaluatedCandidate(NamedTuple):
+    """Validated values used for ranking and publishing the selected sample."""
+
+    score: float
+    joints: np.ndarray
+    velocity: np.ndarray
+    acceleration: np.ndarray
+    configuration: tuple[int, int, int]
+    redundancy: float
+    position_error: float
+    angle_error: float
 
 
 class SRSContinuousTracker:
@@ -215,8 +228,6 @@ class SRSContinuousTracker:
             or np.any(self._lower > self._upper)
         ):
             raise ValueError("solver returned invalid seven-axis joint limits")
-        self._bounded_lower = np.isfinite(self._lower)
-        self._bounded_upper = np.isfinite(self._upper)
         self._max_velocity = self._limit_vector(
             self.options.max_velocity, "max_velocity"
         )
@@ -278,7 +289,7 @@ class SRSContinuousTracker:
     def solve(self, target: np.ndarray, dt: float) -> SRSContinuousResult:
         pose = validated_transform(target, name="target")
         dt = require_real(dt, name="dt")
-        if np.ndim(dt) != 0:
+        if isinstance(dt, np.ndarray) and dt.ndim != 0:
             raise ValueError("dt must be a scalar")
         try:
             dt = float(dt)
@@ -300,47 +311,37 @@ class SRSContinuousTracker:
             raise ValueError(
                 f"no {self._solver_label} candidate satisfies continuity limits"
             )
-        evaluated.sort(key=lambda item: item[0])
+        evaluated.sort(key=lambda item: item.score)
         previous_pending = self._pending_branch, self._pending_count
         try:
             selected = self._apply_hysteresis(evaluated)
-            (
-                _,
-                joints,
-                velocity,
-                acceleration,
-                branch,
-                position_error,
-                angle_error,
-            ) = selected
             previous_branch = self._configuration
-            native = self.solver.configuration(joints)
-            redundancy = self._unwrap_scalar(float(native.redundancy), self._redundancy)
+            redundancy = self._unwrap_scalar(selected.redundancy, self._redundancy)
             singular_values = np.linalg.svd(
-                np.asarray(self.solver.jacobian(joints), dtype=float),
+                np.asarray(self.solver.jacobian(selected.joints), dtype=float),
                 compute_uv=False,
             )
             minimum = float(singular_values[-1]) if singular_values.size else 0.0
             result = self._result_type(
-                joints=joints,
-                velocity=velocity,
-                acceleration=acceleration,
-                configuration=branch,
+                joints=selected.joints,
+                velocity=selected.velocity,
+                acceleration=selected.acceleration,
+                configuration=selected.configuration,
                 redundancy=redundancy,
-                branch_changed=branch != previous_branch,
+                branch_changed=selected.configuration != previous_branch,
                 near_singularity=minimum <= self.options.singular_value_threshold,
                 minimum_singular_value=minimum,
-                position_error=position_error,
-                angle_error=angle_error,
+                position_error=selected.position_error,
+                angle_error=selected.angle_error,
                 candidate_count=len(evaluated),
             )
         except BaseException:
             self._pending_branch, self._pending_count = previous_pending
             raise
 
-        self._joints = joints
-        self._velocity = velocity
-        self._configuration = branch
+        self._joints = selected.joints
+        self._velocity = selected.velocity
+        self._configuration = selected.configuration
         self._redundancy = redundancy
         self._frame_index += 1
         return result
@@ -366,7 +367,9 @@ class SRSContinuousTracker:
                 & (np.abs(acceleration) <= self._max_acceleration + 1e-12)
             ):
                 continue
-            branch = self._configuration_of(joints)
+            branch, redundancy = self._validated_configuration(
+                self.solver.configuration(joints)
+            )
             actual = np.asarray(self.solver.forward(joints), dtype=float)
             if actual.shape != (4, 4) or not np.isfinite(actual).all():
                 continue
@@ -384,14 +387,15 @@ class SRSContinuousTracker:
             if not isfinite(score):
                 continue
             evaluated.append(
-                (
-                    score,
-                    joints,
-                    velocity,
-                    acceleration,
-                    branch,
-                    position_error,
-                    angle_error,
+                _EvaluatedCandidate(
+                    score=score,
+                    joints=joints,
+                    velocity=velocity,
+                    acceleration=acceleration,
+                    configuration=branch,
+                    redundancy=redundancy,
+                    position_error=position_error,
+                    angle_error=angle_error,
                 )
             )
         return evaluated
@@ -482,13 +486,14 @@ class SRSContinuousTracker:
 
     def _apply_hysteresis(self, evaluated):
         best = evaluated[0]
-        best_branch = best[4]
+        best_branch = best.configuration
         if best_branch == self._configuration:
             self._pending_branch = None
             self._pending_count = 0
             return best
         current = next(
-            (item for item in evaluated if item[4] == self._configuration), None
+            (item for item in evaluated if item.configuration == self._configuration),
+            None,
         )
         if current is None:
             self._pending_branch = None
@@ -555,8 +560,11 @@ class SRSContinuousTracker:
     def _validated_configuration(native) -> tuple[tuple[int, int, int], float]:
         try:
             raw_branch = (native.shoulder, native.elbow, native.wrist)
-            redundancy = float(native.redundancy)
-        except (AttributeError, TypeError, ValueError) as error:
+            redundancy = require_real(native.redundancy, name="solver redundancy")
+            if isinstance(redundancy, np.ndarray) and redundancy.ndim != 0:
+                raise ValueError("redundancy must be a scalar")
+            redundancy = float(redundancy)
+        except (AttributeError, TypeError, ValueError, OverflowError) as error:
             raise ValueError("solver returned an invalid configuration") from error
         if not isfinite(redundancy):
             raise ValueError("solver returned an invalid configuration")

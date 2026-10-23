@@ -14,7 +14,10 @@ _HOMOGENEOUS_LAST_ROW.setflags(write=False)
 
 
 def require_real(value, *, name: str):
-    """Reject recognized complex values before a real numeric conversion."""
+    """Reject complex values before conversion.
+
+    Numeric scalars stay scalars; other inputs are returned as NumPy arrays.
+    """
     if isinstance(value, (float, int, np.floating, np.integer)):
         return value
     array = np.asarray(value)
