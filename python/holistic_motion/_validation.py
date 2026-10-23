@@ -14,7 +14,8 @@ _ROTATION_TOLERANCE.setflags(write=False)
 def require_real(value, *, name: str):
     """Reject complex values before conversion.
 
-    Numeric scalars stay scalars; other inputs are returned as NumPy arrays.
+    Python and NumPy float/integer scalars stay scalar; other inputs become
+    NumPy arrays.
     """
     if isinstance(value, (float, int, np.floating, np.integer)):
         return value

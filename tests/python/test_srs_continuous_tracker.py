@@ -493,7 +493,7 @@ def test_srs_continuous_result_validates_public_snapshot():
         SRSContinuousResult(**{**values, "near_singularity": "no"})
 
 
-def test_srs_tracker_reset_is_transactional_and_owns_joint_limits():
+def test_srs_tracker_reset_is_transactional_and_owns_joint_limits(monkeypatch):
     from holistic_motion.kinematics import SRSContinuousTracker
 
     class ResetSolver:
@@ -538,6 +538,18 @@ def test_srs_tracker_reset_is_transactional_and_owns_joint_limits():
 
     with pytest.raises(RuntimeError, match="configuration failure"):
         tracker.reset(np.full(7, 0.5))
+
+    assert np.array_equal(tracker.joints, previous)
+    assert tracker.redundancy == previous_redundancy
+
+    def allocation_failure(*_args, **_kwargs):
+        raise MemoryError("reset allocation failure")
+
+    solver.fail_configuration = False
+    with monkeypatch.context() as patch:
+        patch.setattr(np, "zeros", allocation_failure)
+        with pytest.raises(MemoryError, match="reset allocation failure"):
+            tracker.reset(np.full(7, 0.5))
 
     assert np.array_equal(tracker.joints, previous)
     assert tracker.redundancy == previous_redundancy

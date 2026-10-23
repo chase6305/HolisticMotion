@@ -278,8 +278,10 @@ class SRSContinuousTracker:
         native = self.solver.configuration(values.copy())
         configuration, redundancy = self._validated_configuration(native)
 
+        # Allocate the new history before replacing the accepted state.
+        velocity = np.zeros(self._dof)
         self._joints = values.copy()
-        self._velocity = np.zeros(self._dof)
+        self._velocity = velocity
         self._configuration = configuration
         self._redundancy = redundancy
         self._pending_branch = None
