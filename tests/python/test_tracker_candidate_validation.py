@@ -189,3 +189,113 @@ def test_tracker_preserves_forward_backend_exceptions(
     with pytest.raises(ValueError, match="backend query failed"):
         tracker.solve(np.eye(4), dt=1.0)
     assert tracker.frame_index == 0
+
+
+@pytest.fixture
+def scratch_solver():
+    class Solver:
+        compatible = True
+        joint_limits = (np.full(7, -3.0), np.full(7, 3.0))
+
+        def __init__(self):
+            self.operation = None
+            self.fail = False
+
+        def scratch(self, values, operation):
+            if self.operation in (operation, "all"):
+                values[...] = np.nan
+                if self.fail:
+                    raise RuntimeError("backend scratch failure")
+
+        def configuration(self, joints):
+            result = SimpleNamespace(
+                shoulder=1, elbow=1, wrist=1, redundancy=float(joints[0])
+            )
+            self.scratch(joints, "configuration")
+            return result
+
+        def forward(self, joints):
+            result = np.eye(4)
+            result[0, 3] = joints[0]
+            self.scratch(joints, "forward")
+            return result
+
+        def jacobian(self, joints):
+            result = np.zeros((6, 7))
+            result[0, 0] = 1.0
+            self.scratch(joints, "jacobian")
+            return result
+
+        def solve(self, target, seed, _method):
+            result = seed.copy()
+            result[0] = target[0, 3]
+            self.scratch(target, "target")
+            self.scratch(seed, "seed")
+            return [result]
+
+    return Solver()
+
+
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize(
+    "operation", ["seed", "target", "configuration", "forward", "jacobian", "all"]
+)
+def test_tracker_owns_backend_query_inputs(tracker_type, operation, scratch_solver):
+    initial = np.zeros(7)
+    initial.setflags(write=False)
+    tracker = tracker_type(scratch_solver, initial)
+    target = np.eye(4)
+    target[0, 3] = 0.2
+    target.setflags(write=False)
+    scratch_solver.operation = operation
+    result = tracker.solve(target, dt=1.0)
+    expected = np.zeros(7)
+    expected[0] = 0.2
+    np.testing.assert_array_equal(initial, np.zeros(7))
+    assert target[0, 3] == 0.2
+    np.testing.assert_array_equal(result.joints, expected)
+    np.testing.assert_array_equal(result.velocity, expected)
+    np.testing.assert_array_equal(tracker.joints, expected)
+    assert result.redundancy == 0.2
+    assert tracker.frame_index == 1
+
+
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize(
+    "operation", ["seed", "target", "configuration", "forward", "jacobian"]
+)
+def test_backend_scratch_failure_preserves_tracker_history(
+    tracker_type, operation, scratch_solver
+):
+    tracker = tracker_type(scratch_solver, np.zeros(7))
+    target = np.eye(4)
+    target[0, 3] = 0.1
+    previous = tracker.solve(target, dt=1.0)
+    scratch_solver.operation = operation
+    scratch_solver.fail = True
+    target[0, 3] = 0.2
+    with pytest.raises(RuntimeError, match="backend scratch failure"):
+        tracker.solve(target, dt=1.0)
+    np.testing.assert_array_equal(tracker.joints, previous.joints)
+    np.testing.assert_array_equal(tracker.velocity, previous.velocity)
+    assert tracker.redundancy == previous.redundancy
+    assert tracker.frame_index == 1
+
+
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize("fail", [False, True])
+def test_reset_keeps_caller_coordinates_out_of_backend_scratch(
+    tracker_type, fail, scratch_solver
+):
+    tracker = tracker_type(scratch_solver, np.zeros(7))
+    initial = np.full(7, 0.25)
+    initial.setflags(write=False)
+    scratch_solver.operation = "configuration"
+    scratch_solver.fail = fail
+    if fail:
+        with pytest.raises(RuntimeError, match="backend scratch failure"):
+            tracker.reset(initial)
+    else:
+        tracker.reset(initial)
+    np.testing.assert_array_equal(initial, np.full(7, 0.25))
+    np.testing.assert_array_equal(tracker.joints, np.zeros(7) if fail else initial)

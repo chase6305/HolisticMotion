@@ -275,7 +275,7 @@ class SRSContinuousTracker:
             raise ValueError("initial_joints must contain seven finite values")
         if np.any(values < self._lower) or np.any(values > self._upper):
             raise ValueError("initial_joints violate joint limits")
-        native = self.solver.configuration(values)
+        native = self.solver.configuration(values.copy())
         configuration, redundancy = self._validated_configuration(native)
 
         self._joints = values.copy()
@@ -364,9 +364,9 @@ class SRSContinuousTracker:
             ):
                 continue
             branch, redundancy = self._validated_configuration(
-                self.solver.configuration(joints)
+                self.solver.configuration(joints.copy())
             )
-            raw_pose = self.solver.forward(joints)
+            raw_pose = self.solver.forward(joints.copy())
             try:
                 actual = validated_transform(raw_pose, name="solver forward result")
             except (TypeError, ValueError, OverflowError):
@@ -407,7 +407,9 @@ class SRSContinuousTracker:
             try:
                 candidates.extend(
                     self._finite_candidates(
-                        self.solver.solve(target, self._joints, self._seeded_method())
+                        self.solver.solve(
+                            target.copy(), self._joints.copy(), self._seeded_method()
+                        )
                     )
                 )
             except ValueError:
@@ -430,8 +432,8 @@ class SRSContinuousTracker:
                 candidates.extend(
                     self._finite_candidates(
                         self.solver.solve(
-                            target,
-                            self._joints,
+                            target.copy(),
+                            self._joints.copy(),
                             self._all_configurations_method(),
                         )
                     )
@@ -469,7 +471,9 @@ class SRSContinuousTracker:
                 yield values
 
     def _minimum_singular_value(self, joints: np.ndarray) -> float:
-        jacobian = real_array(self.solver.jacobian(joints), name="solver Jacobian")
+        jacobian = real_array(
+            self.solver.jacobian(joints.copy()), name="solver Jacobian"
+        )
         if jacobian.shape != (6, self._dof) or not np.isfinite(jacobian).all():
             raise ValueError("solver Jacobian must be a finite 6x7 matrix")
         return float(np.linalg.svd(jacobian, compute_uv=False)[-1])
@@ -552,7 +556,7 @@ class SRSContinuousTracker:
 
     def _configuration_of(self, joints: np.ndarray) -> tuple[int, int, int]:
         configuration, _ = self._validated_configuration(
-            self.solver.configuration(joints)
+            self.solver.configuration(joints.copy())
         )
         return configuration
 
