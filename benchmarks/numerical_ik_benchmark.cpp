@@ -42,17 +42,31 @@ int main() {
             expected[joint] = (joint % 2 ? -1 : 1) * (0.15 + 0.015 * joint);
         SE3d reachable;
         if (!solver.GetFK(expected, reachable)) return 1;
-        for (int scenario = 0; scenario < 3; ++scenario) {
-            const char* name = scenario == 0   ? "exact_seed"
-                               : scenario == 1 ? "nearby"
-                                               : "unreachable";
+        const char *names[] = {"exact_seed", "nearby", "unreachable",
+                               "blocked_by_limits"};
+        for (int scenario = 0; scenario < 4; ++scenario) {
+            if (scenario == 3 && dof != 1)
+                continue;
+            const char *name = names[scenario];
             SE3d target = reachable;
             if (scenario == 2)
                 target = SE3d(
                     reachable.GetTranslation() + Eigen::Vector3d(10, 10, 10),
                     reachable.GetRotation());
-            const Eigen::VectorXd initial =
+            Eigen::VectorXd initial =
                 scenario == 0 ? expected : Eigen::VectorXd::Zero(dof).eval();
+            if (scenario == 3) {
+                std::vector<JointNode> blocked{
+                    JointNode(SE3d(), Eigen::Vector3d::UnitX(),
+                              JointType::PRISMATIC, 0.0, 1.0),
+                    JointNode()};
+                blocked.back().joint_type = JointType::FIXED;
+                if (!solver.SetJointNode(blocked))
+                    return 1;
+                solver.ClearTCP();
+                initial.setOnes();
+                target = SE3d(Eigen::Vector3d(2, 0, 0), SO3d());
+            }
             IkRtn solutions;
             std::vector<double> distances;
             Eigen::VectorXd seed = initial;
@@ -73,11 +87,12 @@ int main() {
                 residual =
                     (actual.GetTransform() - target.GetTransform()).norm();
             }
-            if (success != (scenario != 2)) return 1;
+            if (success != (scenario < 2))
+                return 1;
             std::vector<double> timings;
-            const int calls = scenario == 0   ? 16384
-                              : scenario == 1 ? 1024
-                                              : 128;
+            const int calls = scenario == 0                    ? 16384
+                              : scenario == 1 || scenario == 3 ? 1024
+                                                               : 128;
             // Keep sub-microsecond exact-seed measurements above timer and
             // scheduling noise, and warm the same workload before recording.
             for (int sample = -1; sample < 7; ++sample) {

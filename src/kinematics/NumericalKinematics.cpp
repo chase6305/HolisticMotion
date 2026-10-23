@@ -125,6 +125,7 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
     if (!converged && this->dof_ > 0) {
         Eigen::MatrixXd jacobian(6, this->dof_);
         Eigen::VectorXd delta_theta(this->dof_);
+        Eigen::VectorXd previous_joints(this->dof_);
         detail::DampedIKWorkspace workspace(this->dof_);
         for (int i = 0; i < this->max_iter_num_; ++i) {
             if (!this->_GetKinJacobian(jacobian, pose_list))
@@ -147,12 +148,16 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
             if (!workspace.Solve(jacobian, error, this->damp_coeff_, this->eps_,
                                  delta_theta))
                 break;
+            previous_joints = iter_joint;
             iter_joint += this->step_size_ * delta_theta;
             for (int joint = 0; joint < this->dof_; ++joint) {
                 const auto &node = this->joint_nodes_[joint];
                 iter_joint[joint] = clamp(iter_joint[joint], node.lower_limit,
                                           node.upper_limit);
             }
+            // Stop only for identical coordinates, preserving tiny changes.
+            if ((iter_joint.array() == previous_joints.array()).all())
+                break;
             if (!this->GetAllFK(iter_joint, pose_list) ||
                 pose_list.size() <= static_cast<std::size_t>(this->dof_))
                 break;
