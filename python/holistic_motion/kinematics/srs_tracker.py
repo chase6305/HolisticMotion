@@ -54,7 +54,7 @@ class SRSContinuousOptions:
             raise ValueError(
                 "tracker weights and thresholds must be finite and non-negative"
             ) from error
-        if not all(np.isfinite(value) and value >= 0.0 for value in scalars):
+        if not all(isfinite(value) and value >= 0.0 for value in scalars):
             raise ValueError(
                 "tracker weights and thresholds must be finite and non-negative"
             )
@@ -140,8 +140,16 @@ class SRSContinuousResult:
         metrics = tuple(
             require_real(getattr(self, name), name=name) for name in metric_names
         )
-        if not all(np.isfinite(value) for value in metrics):
+        if any(np.ndim(value) != 0 for value in metrics):
+            raise ValueError("result metrics must be scalars")
+        try:
+            metrics = tuple(float(value) for value in metrics)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("result metrics must be finite") from error
+        if not all(isfinite(value) for value in metrics):
             raise ValueError("result metrics must be finite")
+        for name, value in zip(metric_names, metrics):
+            object.__setattr__(self, name, value)
         if self.minimum_singular_value < 0.0:
             raise ValueError("minimum_singular_value must be non-negative")
         if self.position_error < 0.0 or self.angle_error < 0.0:
@@ -151,13 +159,6 @@ class SRSContinuousResult:
             if not isinstance(value, (bool, np.bool_)):
                 raise TypeError(f"{name} must be boolean")
             object.__setattr__(self, name, bool(value))
-        for name in (
-            "redundancy",
-            "minimum_singular_value",
-            "position_error",
-            "angle_error",
-        ):
-            object.__setattr__(self, name, float(getattr(self, name)))
         if not isinstance(self.candidate_count, Integral) or isinstance(
             self.candidate_count, bool
         ):
