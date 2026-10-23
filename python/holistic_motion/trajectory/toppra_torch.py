@@ -21,37 +21,30 @@ except ModuleNotFoundError as error:
         "pip install 'holistic-motion[differentiable]'"
     ) from error
 
-from ._torch_constraints import (
+from ._toppra_torch_constraints import (
     _blocked_projection_choices as _blocked_projection_choices,
 )
-from ._torch_constraints import (
-    _complete_projection_choices as _complete_projection_choices,
+from ._toppra_torch_constraints import (
+    _complete_projection_choices,
+    _divide,
+    _screened_projection_choices,
 )
-from ._torch_constraints import (
+from ._toppra_torch_constraints import (
     _pair_coordinates as _pair_coordinates,
 )
-from ._torch_constraints import (
-    _projection_caps as _projection_caps_impl,
-)
-from ._torch_constraints import (
-    _screened_projection_choices as _screened_projection_choices,
-)
-from ._torch_numeric import _check as _check
-from ._torch_numeric import _divide as _divide
-from ._torch_numeric import _gather as _gather
-from ._torch_numeric import _StableDivide as _StableDivide
-from ._torch_profile import _validate_physical_limits, _validate_speed_profile
-from ._torch_spline import (
-    _parallel_tridiagonal as _parallel_tridiagonal,
-)
-from ._torch_spline import (
-    _SplineSolve as _SplineSolve,
+from ._toppra_torch_constraints import (
+    _StableDivide as _StableDivide,
 )
 
 __all__ = ["TorchToppraResult", "TorchToppraTrajectory", "retime_path_torch"]
 
 _ROUNDING_EPS = 8.0 * torch.finfo(torch.float64).eps
 _LARGE_GEOMETRY = (torch.finfo(torch.float64).max ** 0.5) / 16.0
+
+
+def _check(condition: torch.Tensor, message: str) -> None:
+    if not bool(condition.all()):
+        raise ValueError(message)
 
 
 def _count(value: int, name: str) -> int:
@@ -68,9 +61,147 @@ def _sqrt_speed(x: torch.Tensor) -> torch.Tensor:
     return torch.where(moving, torch.sqrt(torch.where(moving, x, 1.0)), 0.0)
 
 
+def _gather(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    return values.gather(1, indices[..., None].expand(-1, -1, values.shape[-1]))
+
+
 def _projection_caps(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    # Keep the established module-level diagnostic hook for branch selection.
-    return _projection_caps_impl(a, b, screened_choices=_screened_projection_choices)
+    """Eliminate y using symmetric acceleration strips and its velocity cap.
+
+    The first K columns and the next K columns are opposite half-planes:
+    abs(a_i*x + b_i*y) <= 1. Each distinct pair with nonzero b gives
+    abs(a_i*b_j - b_i*a_j)*x <= abs(b_i) + abs(b_j). Thus only K*(K-1)/2
+    pairs are needed instead of a square over all 2*K+2 half-planes.
+    """
+
+    shape = a.shape[:-1]
+    count = (a.shape[-1] - 2) // 2
+    flat_a = a[..., :count].reshape(-1, count)
+    flat_b = b[..., :count].reshape(-1, count)
+    velocity_cap = b[..., -1].reshape(-1, 1)
+    screened = (
+        a.device.type == "cpu" and a.dtype == b.dtype == torch.float64 and count >= 48
+    )
+    # Wide screened problems usually need only a few selected pairs. Do not
+    # reserve their complete quadratic index table before screening them.
+    pairs = (
+        None
+        if screened and count >= 384
+        else torch.triu_indices(count, count, offset=1, device=a.device)
+    )
+    pair_count = count * (count - 1) // 2
+    with torch.no_grad():
+        if screened:
+            chunk = max(1, (1 << 16) // count)
+            choice = torch.cat(
+                [
+                    _screened_projection_choices(
+                        flat_a[offset : offset + chunk],
+                        flat_b[offset : offset + chunk],
+                        velocity_cap[offset : offset + chunk],
+                        pairs,
+                    )
+                    for offset in range(0, flat_a.shape[0], chunk)
+                ]
+            )
+        else:
+            choice = _complete_projection_choices(flat_a, flat_b, velocity_cap, pairs)
+    is_pair = choice < pair_count
+    lookup = choice.clamp_max(pair_count - 1)
+    if pairs is None:
+        pair_left, pair_right = _pair_coordinates(lookup, count)
+    else:
+        pair_left, pair_right = pairs[0, lookup], pairs[1, lookup]
+    left = torch.where(is_pair, pair_left, choice - pair_count)
+    right = torch.where(is_pair, pair_right, count)
+    # Append the y velocity half-plane, then evaluate only the selected pair
+    # under autograd. Selection remains discrete without a quadratic tape.
+    flat_a = torch.cat((flat_a, torch.zeros_like(velocity_cap)), dim=1)
+    flat_b = torch.cat((flat_b, velocity_cap), dim=1)
+    ai = flat_a.gather(1, left[:, None]).squeeze(1)
+    aj = flat_a.gather(1, right[:, None]).squeeze(1)
+    bi = flat_b.gather(1, left[:, None]).squeeze(1)
+    bj = flat_b.gather(1, right[:, None]).squeeze(1)
+    determinant = (ai * bj - bi * aj).abs()
+    valid = torch.where(
+        is_pair, (bi != 0) & (bj != 0), ((ai < 0) & (bi > 0)) | ((ai > 0) & (bi < 0))
+    ) & (determinant > 0)
+    cap = _divide(bi.abs() + bj.abs(), torch.where(valid, determinant, 1.0))
+    return torch.where(valid, cap, torch.inf).reshape(shape)
+
+
+def _parallel_tridiagonal(
+    diagonal: torch.Tensor, off_diagonal: torch.Tensor, rhs: torch.Tensor
+) -> torch.Tensor:
+    """Solve a symmetric, strictly diagonally dominant spline system.
+
+    Eliminate both neighbors at distances 1, 2, 4, ... in parallel. Natural
+    spline diagonals are twice the sum of adjacent positive interval widths,
+    so each elimination preserves positive pivots without pivot selection.
+    Storage is linear in the number of intervals, including on CUDA.
+    """
+
+    zero = torch.zeros_like(diagonal[:, :1])
+    lower = torch.cat((zero, off_diagonal), dim=1)
+    upper = torch.cat((off_diagonal, zero), dim=1)
+    stride = 1
+    while stride < diagonal.shape[1]:
+        left = lower[:, stride:] / diagonal[:, :-stride]
+        right = upper[:, :-stride] / diagonal[:, stride:]
+        # New private buffers keep inputs and saved tensors untouched, while
+        # avoiding padded full-size products for the two neighbor updates.
+        next_diagonal = diagonal.clone()
+        next_diagonal[:, stride:].addcmul_(left, upper[:, :-stride], value=-1.0)
+        next_diagonal[:, :-stride].addcmul_(right, lower[:, stride:], value=-1.0)
+        next_rhs = rhs.clone()
+        next_rhs[:, stride:].addcmul_(left[..., None], rhs[:, :-stride], value=-1.0)
+        next_rhs[:, :-stride].addcmul_(right[..., None], rhs[:, stride:], value=-1.0)
+        if 2 * stride < diagonal.shape[1]:
+            zeros = torch.zeros_like(diagonal[:, :stride])
+            lower = torch.cat((zeros, -left * lower[:, :-stride]), dim=1)
+            upper = torch.cat((-right * upper[:, stride:], zeros), dim=1)
+        diagonal, rhs = next_diagonal, next_rhs
+        stride *= 2
+    return rhs / diagonal[..., None]
+
+
+class _SplineSolve(torch.autograd.Function):
+    """Differentiate A x = rhs through a second symmetric solve.
+
+    Save only A and x, rather than the intermediate elimination tensors.
+    Reusing this operation in backward also preserves higher derivatives.
+    """
+
+    @staticmethod
+    def forward(ctx, diagonal, off_diagonal, rhs):
+        output = _parallel_tridiagonal(diagonal, off_diagonal, rhs)
+        # Parallel elimination can lose relative accuracy in small solution
+        # components. Correct its residual with one more solve of the original
+        # system, keeping the implicit adjoint and linear storage unchanged.
+        residual = torch.addcmul(rhs, diagonal[..., None], output, value=-1.0)
+        residual[:, 1:].addcmul_(off_diagonal[..., None], output[:, :-1], value=-1.0)
+        residual[:, :-1].addcmul_(off_diagonal[..., None], output[:, 1:], value=-1.0)
+        output = output + _parallel_tridiagonal(diagonal, off_diagonal, residual)
+        ctx.save_for_backward(diagonal, off_diagonal, output)
+        return output
+
+    @staticmethod
+    def backward(ctx, gradient):
+        diagonal, off_diagonal, output = ctx.saved_tensors
+        adjoint = _SplineSolve.apply(diagonal, off_diagonal, gradient)
+        diagonal_gradient = (
+            -(adjoint * output).sum(-1) if ctx.needs_input_grad[0] else None
+        )
+        off_diagonal_gradient = (
+            -(adjoint[:, :-1] * output[:, 1:] + adjoint[:, 1:] * output[:, :-1]).sum(-1)
+            if ctx.needs_input_grad[1]
+            else None
+        )
+        return (
+            diagonal_gradient,
+            off_diagonal_gradient,
+            adjoint if ctx.needs_input_grad[2] else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -107,9 +238,6 @@ class TorchToppraTrajectory:
     flow to waypoints, limits, boundary speeds and sample times. They are
     piecewise derivatives with active constraints and segment lookups fixed;
     they are not guaranteed at switches. Zero speed uses a zero sqrt adjoint.
-
-    Follow Torch device/stream synchronization and autograd ownership rules.
-    Parallel backward passes require independent graphs and caller-owned inputs.
     """
 
     def __init__(
@@ -694,11 +822,181 @@ class TorchToppraTrajectory:
     def _validate_speed_profile(
         self, a: torch.Tensor, b: torch.Tensor, x: torch.Tensor
     ) -> None:
-        _validate_speed_profile(self, a, b, x)
+        with torch.no_grad():
+            left, right = a * x[:, :-1, None], b * x[:, 1:, None]
+            scale = torch.maximum(left.abs(), right.abs()).clamp_min(1.0)
+            _check(
+                torch.isfinite(x) & (x >= 0),
+                "path squared speeds must be finite and non-negative",
+            )
+            valid = (
+                torch.isfinite(left)
+                & torch.isfinite(right)
+                & (left + right - 1.0 <= 1e-10 * scale)
+            ).all()
+            conditioned = (scale > 1e5).any()
+            if self._limit_unit_overflow is not None:
+                conditioned = conditioned | self._limit_unit_overflow
+            valid_profile, conditioned = torch.stack((valid, conditioned)).tolist()
+            if not valid_profile:
+                raise ValueError("TOPPRA forward pass violates interval constraints")
+            self._physical_validation_needed = conditioned
 
     def _validate_physical_limits(self) -> None:
         """Certify conditioned profiles without subtracting large LP products."""
-        _validate_physical_limits(self)
+
+        with torch.no_grad():
+            speed_mantissa, speed_exponent = torch.frexp(self._speed_scale[..., None])
+            limit_mantissa, limit_exponent = torch.frexp(self._acceleration[:, None])
+            velocity_mantissa, velocity_exponent = torch.frexp(self._velocity[:, None])
+
+            def normalized_coefficient(value, velocity=False):
+                if self._coefficient_scale is not None:
+                    value = value * self._coefficient_scale
+                mantissa, exponent = torch.frexp(value)
+                if velocity:
+                    mantissa = mantissa * speed_mantissa / velocity_mantissa
+                    exponent = exponent + speed_exponent - velocity_exponent
+                else:
+                    mantissa = mantissa * speed_mantissa.square() / limit_mantissa
+                    exponent = exponent + 2 * speed_exponent - limit_exponent
+                # Split the exponent: implementations that form 2**exponent
+                # must not overflow before a small mantissa restores range.
+                half = exponent // 2
+                result = torch.ldexp(torch.ldexp(mantissa, half), exponent - half)
+                return torch.where(value != 0, result, 0.0)
+
+            # Target 1 MiB per value array; a single wide batch may exceed it.
+            chunk = max(1, (1 << 17) // (self._batch * self.dof))
+            for start in range(0, self._normalized_u.shape[1], chunk):
+                stop = min(start + chunk, self._normalized_u.shape[1])
+                grid = self._grid[:, start : stop + 1]
+                times = self._times[:, start : stop + 1]
+                index = (
+                    torch.searchsorted(
+                        self._knots.contiguous(), grid.contiguous(), right=True
+                    )
+                    - 1
+                ).clamp(0, self._a.shape[1] - 1)
+                local = (grid - self._knots.gather(1, index))[..., None]
+                raw = tuple(
+                    _gather(value, index) for value in (self._b, self._c, self._d)
+                )
+                b, c, d = (normalized_coefficient(value) for value in raw)
+                first = b + local * (2.0 * c + 3.0 * local * d)
+                second = 2.0 * c + 6.0 * local * d
+                ds = torch.diff(grid, dim=1)[..., None]
+                right_local = local[:, :-1] + ds
+                left_b, left_c, left_d = b[:, :-1], c[:, :-1], d[:, :-1]
+                first_right = left_b + right_local * (
+                    2.0 * left_c + 3.0 * right_local * left_d
+                )
+                second_right = 2.0 * left_c + 6.0 * right_local * left_d
+                first_mid = first[:, :-1] + 0.5 * ds * second[:, :-1]
+                acceleration = self._normalized_u[:, start:stop, None]
+                initial = self._normalized_speeds[:, start:stop, None]
+                x0 = initial.square()
+                x1 = x0 + (2.0 * ds) * acceleration
+                controls = torch.stack(
+                    (
+                        second[:, :-1] * x0 + first[:, :-1] * acceleration,
+                        0.5 * (second[:, :-1] * x1 + second_right * x0)
+                        + first_mid * acceleration,
+                        second_right * x1 + first_right * acceleration,
+                        second[:, 1:] * x1 + first[:, 1:] * acceleration,
+                    ),
+                    dim=2,
+                )
+                # Bound evaluation error with uncancelled original polynomial
+                # terms, including the next segment at a shared knot.
+                extent = torch.maximum(local[:, :-1].abs(), right_local.abs())
+                first_size = left_b.abs() + extent * (
+                    2.0 * left_c.abs() + 3.0 * extent * left_d.abs()
+                )
+                second_size = 2.0 * left_c.abs() + 6.0 * extent * left_d.abs()
+                first_size = torch.maximum(
+                    first_size,
+                    b[:, 1:].abs()
+                    + local[:, 1:].abs()
+                    * (
+                        2.0 * c[:, 1:].abs() + 3.0 * local[:, 1:].abs() * d[:, 1:].abs()
+                    ),
+                )
+                second_size = torch.maximum(
+                    second_size,
+                    2.0 * c[:, 1:].abs() + 6.0 * local[:, 1:].abs() * d[:, 1:].abs(),
+                )
+                epsilon = 64.0 * torch.finfo(torch.float64).eps
+                span = (torch.diff(times, dim=1) * self._speed_scale)[..., None]
+                change = acceleration * span
+                terminal = (initial + change).clamp_min(0)
+                vb, vc, vd = (
+                    normalized_coefficient(value, velocity=True) for value in raw
+                )
+                velocity_first = vb + local * (2.0 * vc + 3.0 * local * vd)
+                vp0 = velocity_first[:, :-1]
+                vp1 = vp0 + 0.5 * ds * (
+                    2.0 * vc[:, :-1] + 6.0 * local[:, :-1] * vd[:, :-1]
+                )
+                vp2 = vb[:, :-1] + right_local * (
+                    2.0 * vc[:, :-1] + 3.0 * right_local * vd[:, :-1]
+                )
+                quadratic = vp0 - 2.0 * vp1 + vp2
+                ratio = (
+                    (vp0 - vp1) / torch.where(quadratic != 0, quadratic, 1.0)
+                ).clamp(0, 1)
+                extremum = (
+                    (1.0 - ratio).square() * vp0
+                    + 2.0 * ratio * (1.0 - ratio) * vp1
+                    + ratio.square() * vp2
+                )
+                velocity_maximum = torch.maximum(
+                    torch.maximum(vp0.abs(), vp2.abs()),
+                    torch.maximum(extremum.abs(), velocity_first[:, 1:].abs()),
+                )
+                velocity_size = torch.maximum(
+                    vb[:, :-1].abs()
+                    + extent
+                    * (2.0 * vc[:, :-1].abs() + 3.0 * extent * vd[:, :-1].abs()),
+                    vb[:, 1:].abs()
+                    + local[:, 1:].abs()
+                    * (
+                        2.0 * vc[:, 1:].abs()
+                        + 3.0 * local[:, 1:].abs() * vd[:, 1:].abs()
+                    ),
+                )
+                speed_maximum = torch.maximum(initial, terminal)
+                velocity_bound = velocity_maximum * speed_maximum + (
+                    epsilon * velocity_size
+                ) * (speed_maximum + initial.abs() + change.abs())
+                _check(
+                    torch.isfinite(velocity_bound) & (velocity_bound <= 1.0 + 1e-8),
+                    "TOPPRA velocity limits are not numerically resolvable",
+                )
+                parameter_error = epsilon * (
+                    grid[:, :-1, None].abs()
+                    + (initial * span).abs()
+                    + ((0.5 * change) * span).abs()
+                )
+                speed_error = (
+                    (terminal.square() - x1).abs()
+                    + epsilon * initial.square()
+                    + epsilon * change.square()
+                    + (parameter_error * acceleration.abs()) * 2.0
+                )
+                clock_error = torch.where(
+                    second_size > 0, second_size * speed_error, 0.0
+                )
+                error = (
+                    (epsilon * second_size) * torch.maximum(x0.abs(), x1.abs())
+                    + (epsilon * first_size) * acceleration.abs()
+                    + clock_error
+                )
+                bound = controls.abs().amax(dim=2) + error
+                _check(
+                    torch.isfinite(bound) & (bound <= 1.0 + 1e-8),
+                    "TOPPRA acceleration limits are not numerically resolvable",
+                )
 
     def _controllable_to_rest(
         self, a: torch.Tensor, b: torch.Tensor, caps: torch.Tensor, end: torch.Tensor

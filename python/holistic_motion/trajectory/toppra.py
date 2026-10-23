@@ -15,31 +15,188 @@ from numbers import Integral
 import numpy as np
 
 from .._validation import real_array
-from ._numpy_constraints import (
+from ._toppra_constraints import (
     _intersect_bounds as _intersect_bounds,
 )
-from ._numpy_constraints import (
+from ._toppra_constraints import (
     _IntervalConstraints as _IntervalConstraints,
 )
-from ._numpy_constraints import (
+from ._toppra_constraints import (
     _pair_projection_caps as _pair_projection_caps,
 )
-from ._numpy_constraints import (
-    _projection_caps as _projection_caps,
-)
-from ._numpy_constraints import (
+from ._toppra_constraints import _projection_caps
+from ._toppra_constraints import (
     _screened_projection_caps as _screened_projection_caps,
 )
-from ._numpy_numeric import _scale_units as _scale_units
-from ._numpy_profile import (
-    _acceleration_bounds,
-    _repair_roundoff_profile,
-    _validate_speed_profile,
-)
-from ._numpy_spline import _NaturalCubicPath as _NaturalCubicPath
 
 _MAX_PATH_SPEED = np.sqrt(np.finfo(float).max)
 _MIN_INVERSE_CAP = 1.0 / float(np.finfo(float).max)
+_LARGE_GEOMETRY = np.sqrt(np.finfo(float).max) / 16.0
+
+
+def _scale_units(
+    value: np.ndarray,
+    coordinate_scale: np.ndarray,
+    speed_scale: float,
+    order: int,
+    *,
+    divisors: tuple = (),
+) -> np.ndarray:
+    """Combine coordinate/time units without overflowing intermediate scales."""
+
+    mantissa, exponent = np.frexp(value)
+    coordinate_mantissa, coordinate_exponent = np.frexp(coordinate_scale)
+    speed_mantissa, speed_exponent = np.frexp(speed_scale)
+    mantissa = mantissa * coordinate_mantissa
+    exponent = exponent + coordinate_exponent
+    for divisor in divisors:
+        divisor_mantissa, divisor_exponent = np.frexp(divisor)
+        mantissa = mantissa / divisor_mantissa
+        exponent = exponent - divisor_exponent
+    mantissa = mantissa * speed_mantissa**order
+    exponent = exponent + order * speed_exponent
+    with np.errstate(under="ignore"):
+        return np.ldexp(mantissa, exponent)
+
+
+class _NaturalCubicPath:
+    """Small vector-valued natural cubic spline with analytic derivatives."""
+
+    def __init__(self, grid: np.ndarray, values: np.ndarray) -> None:
+        self.grid = grid
+        h = np.diff(grid)
+        if not np.isfinite(h).all() or np.any(h <= 0.0):
+            raise ValueError("waypoint parameters must increase strictly")
+        delta = np.diff(values, axis=0)
+        self.a = values[:-1].copy()
+        self._coefficient_scale = None
+        self._normalized_coefficients = None
+        normalized = np.any(np.abs(delta) > _LARGE_GEOMETRY)
+        if not normalized:
+            with np.errstate(over="ignore", invalid="ignore"):
+                slopes = delta / h[:, None]
+                self.b, self.c, self.d = self._derivative_coefficients(h, slopes)
+            normalized = not all(
+                np.isfinite(block).all() for block in (self.b, self.c, self.d)
+            )
+        if normalized:
+            # The spline solve is linear in each coordinate. Normalize its
+            # differences, preserving large offsets in a and small axes
+            # independently, before restoring the final coefficients.
+            scale = np.max(np.abs(delta), axis=0)
+            scale = np.where(scale > 0.0, scale, 1.0)
+            with np.errstate(over="ignore", invalid="ignore"):
+                slopes = (delta / scale) / h[:, None]
+                blocks = self._derivative_coefficients(h, slopes)
+                self.b, self.c, self.d = (block * scale for block in blocks)
+            if not all(np.isfinite(block).all() for block in (self.b, self.c, self.d)):
+                raise ValueError("spline derivative coefficients must be finite")
+            self._coefficient_scale = scale
+            self._normalized_coefficients = blocks
+
+    @staticmethod
+    def _derivative_coefficients(h, slopes):
+        count = h.size + 1
+        second = np.zeros((count, slopes.shape[1]), dtype=slopes.dtype)
+        if count > 2:
+            # Natural boundaries set the endpoint second derivatives to zero.
+            # The interior system is strictly diagonally dominant and
+            # tridiagonal, so elimination needs O(count * DOF) work and storage.
+            diagonal = 2.0 * (h[:-1] + h[1:])
+            rhs = 6.0 * np.diff(slopes, axis=0)
+            for index in range(1, count - 2):
+                factor = h[index] / diagonal[index - 1]
+                diagonal[index] -= factor * h[index]
+                rhs[index] -= factor * rhs[index - 1]
+            second[-2] = rhs[-1] / diagonal[-1]
+            for index in range(count - 4, -1, -1):
+                second[index + 1] = (
+                    rhs[index] - h[index + 1] * second[index + 2]
+                ) / diagonal[index]
+        return (
+            slopes - h[:, None] * (2.0 * second[:-1] + second[1:]) / 6.0,
+            second[:-1] / 2.0,
+            np.diff(second, axis=0) / (6.0 * h[:, None]),
+        )
+
+    def evaluate(self, value: np.ndarray, order: int = 0) -> np.ndarray:
+        if order not in (0, 1, 2):
+            raise ValueError("spline derivative order must be 0, 1, or 2")
+        if self._coefficient_scale is not None:
+            return self.evaluate_all(value)[order]
+        index, delta = self._segments(value)
+        if order == 0:
+            return self.a[index] + delta * (
+                self.b[index] + delta * (self.c[index] + delta * self.d[index])
+            )
+        if order == 1:
+            return self.b[index] + delta * (
+                2.0 * self.c[index] + 3.0 * delta * self.d[index]
+            )
+        if order == 2:
+            return 2.0 * self.c[index] + 6.0 * delta * self.d[index]
+
+    def evaluate_all(
+        self, value: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate position and both derivatives with one segment lookup."""
+
+        position, first, second = self._evaluate(value)
+        if self._coefficient_scale is not None:
+            first = first * self._coefficient_scale
+            second = second * self._coefficient_scale
+        return position, first, second
+
+    def _evaluate(self, value: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Keep large-coordinate derivatives normalized until needed."""
+
+        index, delta = self._segments(value)
+        a = self.a[index]
+        coefficients = self._normalized_coefficients
+        if coefficients is None:
+            coefficients = (self.b, self.c, self.d)
+        b, c, d = (block[index] for block in coefficients)
+        if a.size == 1:
+            # Keep the short expression path for a single scalar sample.
+            correction = delta * (b + delta * (c + delta * d))
+            if self._coefficient_scale is not None:
+                correction = correction * self._coefficient_scale
+            position = a + correction
+            del a, correction
+            first = b + delta * (2.0 * c + 3.0 * delta * d)
+            del b
+            second = 2.0 * c + 6.0 * delta * d
+            return position, first, second
+        # Advanced indexing above owns all four coefficient buffers.
+        # Horner steps retain their grouping while reusing that scratch.
+        correction = delta * d
+        correction += c
+        correction *= delta
+        correction += b
+        correction *= delta
+        if self._coefficient_scale is not None:
+            correction *= self._coefficient_scale
+        a += correction
+        del correction
+        c *= 2.0
+        first = (3.0 * delta) * d
+        first += c
+        first *= delta
+        first += b
+        del b
+        d *= 6.0 * delta
+        d += c
+        return a, first, d
+
+    def _segments(self, value: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        query = np.asarray(value, dtype=float).reshape(-1)
+        index = np.clip(
+            np.searchsorted(self.grid, query, side="right") - 1,
+            0,
+            self.grid.size - 2,
+        )
+        delta = (query - self.grid[index])[:, None]
+        return index, delta
 
 
 def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
@@ -127,9 +284,6 @@ class ToppraTrajectory:
     Interval polynomial bounds are conservative; a finer grid can reduce this
     conservatism. Requested endpoint path speeds are preserved or rejected as
     infeasible, never changed by a subsequent time scaling.
-
-    Sampling is read-only after construction. Concurrent readers must leave
-    geometry, limits and stored result arrays unchanged and own their outputs.
     """
 
     def __init__(
@@ -662,17 +816,281 @@ class ToppraTrajectory:
         a: np.ndarray, b: np.ndarray, x: np.ndarray
     ) -> np.ndarray:
         """Check half-planes and return rows needing a physical-unit check."""
-        return _validate_speed_profile(a, b, x)
+        conditioned = []
+        violated = None
+        chunk = max(1, (1 << 14) // a.shape[1])
+        for begin in range(0, a.shape[0], chunk):
+            end = min(a.shape[0], begin + chunk)
+            left = a[begin:end] * x[begin:end, None]
+            right = b[begin:end] * x[begin + 1 : end + 1, None]
+            tolerance = 1e-10 * np.maximum(1.0, np.maximum(np.abs(left), np.abs(right)))
+            if np.any(left + right - 1.0 > tolerance):
+                failures = left + right - 1.0 > tolerance
+                if np.any(failures[:, -2:]):
+                    raise RuntimeError(
+                        "TOPPRA forward pass violates interval constraints"
+                    )
+                if violated is None:
+                    violated = []
+                violated.append(begin + np.flatnonzero(np.any(failures, axis=1)))
+            # Below this product scale, rounding has ample headroom against
+            # the physical acceleration check's 1e-8 tolerance.
+            if np.max(tolerance, initial=0.0) > 1e-5:
+                conditioned.append(
+                    begin + np.flatnonzero(np.any(tolerance > 1e-5, axis=1))
+                )
+        result = np.concatenate(conditioned) if conditioned else np.empty(0, dtype=int)
+        if violated is not None:
+            if result.size == 0:
+                raise RuntimeError("TOPPRA forward pass violates interval constraints")
+            # Cancellation can affect the reachable envelope outside the
+            # ill-conditioned interval itself. Every failed acceleration row
+            # must enter physical verification; velocity caps were checked
+            # above and ordinary paths retain the original invariant.
+            result = np.union1d(result, np.concatenate(violated))
+        return result
 
     def _acceleration_bounds(self, x: np.ndarray, intervals: np.ndarray) -> np.ndarray:
         """Bound physical acceleration without subtracting large LP products."""
-        return _acceleration_bounds(self, x, intervals)
+        result = np.empty(intervals.size)
+        chunk = max(1, (1 << 13) // self.dof)
+        widths = np.diff(self._grid)
+        for begin in range(0, intervals.size, chunk):
+            index = intervals[begin : begin + chunk]
+            ds = widths[index, None]
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                first, last, second_first, second_last = (
+                    _scale_units(
+                        block,
+                        1.0,
+                        self._speed_scale,
+                        2,
+                        divisors=(self.max_acceleration,),
+                    )
+                    for block in (
+                        self._q_s[index],
+                        self._q_s[index + 1],
+                        self._q_ss[index],
+                        self._q_ss[index + 1],
+                    )
+                )
+                initial = np.sqrt(x[index])[:, None] ** 2
+                u = ((x[index + 1] - x[index]) / (2.0 * ds[:, 0]))[:, None]
+                final = initial + 2.0 * ds * u
+                middle_correction = 0.5 * ds * second_first
+                middle = first + middle_correction
+                left_curvature = second_first * initial
+                right_curvature = second_last * final
+                cross_left = second_last * initial
+                cross_right = second_first * final
+                first_u, last_u = first * u, last * u
+                g0 = left_curvature + first_u
+                g1 = 0.5 * (cross_left + cross_right) + middle * u
+                g2 = right_curvature + last_u
+                # Include cancellation, unit restoration and integration errors
+                # in the certificate; a rounded zero alone is not a safe bound.
+                rounding = 64.0 * np.finfo(float).eps
+                r0 = np.abs(left_curvature) + np.abs(first_u)
+                r1 = (
+                    0.5 * (np.abs(cross_left) + np.abs(cross_right))
+                    + np.abs(first_u)
+                    + np.abs(middle_correction * u)
+                )
+                r2 = np.abs(right_curvature) + np.abs(last_u)
+                # Near a stationary point, derivative evaluation can cancel
+                # large spline terms. Bound those terms before cancellation,
+                # including the rounding of the integrated terminal speed.
+                segment, local = self._path_model._segments(self._grid[index])
+                coefficients = self._path_model._normalized_coefficients
+                coordinate_scale = self._path_model._coefficient_scale
+                if coefficients is None:
+                    coefficients = (
+                        self._path_model.b,
+                        self._path_model.c,
+                        self._path_model.d,
+                    )
+                    coordinate_scale = 1.0
+                cb, cc, cd = (
+                    np.abs(
+                        _scale_units(
+                            block[segment],
+                            coordinate_scale,
+                            self._speed_scale,
+                            2,
+                            divisors=(self.max_acceleration,),
+                        )
+                    )
+                    for block in coefficients
+                )
+                far = np.abs(local) + ds
+                first_magnitude = cb + far * (2.0 * cc + 3.0 * far * cd)
+                second_magnitude = 2.0 * cc + 6.0 * far * cd
+                state_magnitude = np.abs(initial) + np.abs(2.0 * ds * u)
+                geometry_magnitude = (
+                    second_magnitude * state_magnitude + first_magnitude * np.abs(u)
+                )
+                r0 += geometry_magnitude
+                r1 += geometry_magnitude
+                r2 += geometry_magnitude
+                result[begin : begin + index.size] = np.maximum.reduce(
+                    (
+                        np.max(np.abs(g0) + rounding * r0, axis=1),
+                        np.max(np.abs(g1) + rounding * r1, axis=1),
+                        np.max(np.abs(g2) + rounding * r2, axis=1),
+                    )
+                )
+        return result
 
     def _repair_roundoff_profile(
         self, a: np.ndarray, b: np.ndarray, x: np.ndarray, conditioned: np.ndarray
     ) -> np.ndarray:
         """Keep endpoint speeds and certify a conservative timing if needed."""
-        return _repair_roundoff_profile(self, a, b, x, conditioned)
+        tolerance = 1e-8
+        bounds = self._acceleration_bounds(x, conditioned)
+        bad = conditioned[~np.isfinite(bounds) | (bounds > 1.0 + tolerance)]
+        if bad.size == 0:
+            return x
+        intervals = np.arange(x.size - 1)
+
+        def acceptable(trial):
+            if (
+                not np.isfinite(trial).all()
+                or np.any(trial < 0.0)
+                or np.any((trial[:-1] == 0.0) & (trial[1:] == 0.0))
+            ):
+                return False
+            if trial[0] != x[0] or trial[-1] != x[-1]:
+                return False
+            # Acceleration is certified directly below. Its cancellation-
+            # sensitive half-plane residual must not reject a physical repair.
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                velocity = np.maximum(a[:, -2] * trial[:-1], b[:, -1] * trial[1:])
+            if not np.isfinite(velocity).all() or np.any(velocity > 1.0 + 1e-10):
+                return False
+            values = self._acceleration_bounds(trial, intervals)
+            return np.isfinite(values).all() and np.all(values <= 1.0 + tolerance)
+
+        def flatten(indices):
+            trial = x.copy()
+            if indices.size == 0:
+                return trial
+            groups = np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
+            for group in groups:
+                begin, end = int(group[0]), int(group[-1]) + 1
+                if begin == 0 and end == x.size - 1 and x[0] != x[-1]:
+                    continue
+                value = (
+                    x[0]
+                    if begin == 0
+                    else x[-1]
+                    if end == x.size - 1
+                    else np.min(x[begin : end + 1])
+                )
+                trial[begin : end + 1] = value
+            return trial
+
+        # Preserve the inexpensive local repair when it already certifies
+        # the whole path. Additional uncertain intervals can require their
+        # own plateau before a small global correction is useful.
+        trial = flatten(bad)
+        if acceptable(trial):
+            return trial
+        full_bounds = self._acceleration_bounds(x, intervals)
+        all_bad = np.flatnonzero(
+            ~np.isfinite(full_bounds) | (full_bounds > 1.0 + tolerance)
+        )
+        expanded = flatten(all_bad)
+
+        # Bridge an uncertain neighborhood between unchanged outer nodes.
+        # Gridpoints and spline knots remain in place; only squared speeds
+        # are interpolated, and every resulting interval is still certified.
+        bridged = x.copy()
+        neighborhood = np.unique(
+            np.clip(np.concatenate((all_bad - 1, all_bad, all_bad + 1)), 0, x.size - 2)
+        )
+        groups = (
+            np.split(neighborhood, np.flatnonzero(np.diff(neighborhood) > 1) + 1)
+            if neighborhood.size
+            else []
+        )
+        for group in groups:
+            begin, end = int(group[0]), int(group[-1]) + 1
+            fraction = (self._grid[begin : end + 1] - self._grid[begin]) / (
+                self._grid[end] - self._grid[begin]
+            )
+            bridged[begin : end + 1] = x[begin] + fraction * (x[end] - x[begin])
+            bridged[begin], bridged[end] = x[begin], x[end]
+
+        # Every proposal retains the requested endpoints. Keep the original
+        # blend as a candidate and choose the shortest verified timing, so
+        # a conservative plateau cannot worsen an existing feasible repair.
+        base = x[0] + self._grid * (x[-1] - x[0])
+        base[0], base[-1] = x[0], x[-1]
+        base_bound = float(np.max(self._acceleration_bounds(base, intervals)))
+
+        def blend(profile, full_bound):
+            if not np.isfinite(base_bound) or base_bound >= 1.0:
+                return None
+            if np.isfinite(full_bound):
+                weight = (
+                    1.0
+                    if full_bound <= 1.0
+                    else min(1.0, (1.0 - base_bound) / (full_bound - base_bound))
+                )
+            else:
+                weight = 0.5
+            for iteration in range(12):
+                candidate = base + weight * (profile - base)
+                candidate[0], candidate[-1] = x[0], x[-1]
+                if acceptable(candidate):
+                    return candidate
+                if iteration < 3:
+                    bound = float(
+                        np.max(self._acceleration_bounds(candidate, intervals))
+                    )
+                    if np.isfinite(bound):
+                        weight *= max(
+                            0.0,
+                            1.0 - 2.0 * max(bound - 1.0, 64.0 * np.finfo(float).eps),
+                        )
+                    else:
+                        weight *= 0.5
+                else:
+                    weight *= 0.5
+            return None
+
+        best, best_time = None, np.inf
+        proposals = (x, trial, expanded, bridged)
+        for index, profile in enumerate(proposals):
+            if any(np.array_equal(profile, previous) for previous in proposals[:index]):
+                continue
+            if acceptable(profile):
+                candidate = profile
+            else:
+                bound = float(np.max(self._acceleration_bounds(profile, intervals)))
+                candidate = blend(profile, bound)
+            if candidate is None:
+                continue
+            speeds = np.sqrt(candidate)
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                dt = (
+                    2.0 * np.diff(self._grid) / (speeds[:-1] + speeds[1:])
+                ) / self._speed_scale
+                times = np.cumsum(dt)
+            if (
+                not np.isfinite(times).all()
+                or np.any(dt <= 0.0)
+                or np.any(np.diff(times) <= 0.0)
+            ):
+                continue
+            time = float(times[-1])
+            if time < best_time:
+                best, best_time = candidate, time
+        if best is not None:
+            return best
+        raise ValueError(
+            "path timing is not numerically resolvable; adjust gridpoints or waypoint spacing"
+        )
 
     def _solve_to_rest(
         self, a: np.ndarray, b: np.ndarray, projected: np.ndarray, start_x: float

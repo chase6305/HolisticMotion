@@ -1,4 +1,4 @@
-"""Discrete projection selection and differentiable tensor bounds."""
+"""Constraint screening and stable arithmetic for Torch TOPPRA."""
 
 from __future__ import annotations
 
@@ -6,76 +6,47 @@ from math import isqrt
 
 import torch
 
-from ._torch_numeric import _divide
+
+class _StableDivide(torch.autograd.Function):
+    """Keep zero adjoints zero for inactive constraints and LP bounds."""
+
+    @staticmethod
+    def forward(
+        ctx, numerator: torch.Tensor, denominator: torch.Tensor
+    ) -> torch.Tensor:
+        result = numerator / denominator
+        ctx.save_for_backward(denominator, result if ctx.needs_input_grad[1] else None)
+        return result
+
+    @staticmethod
+    def backward(
+        ctx, gradient: torch.Tensor
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        denominator, result = ctx.saved_tensors
+        # Scale the incoming adjoint before multiplying by the quotient. The
+        # alternative -(result / denominator) * gradient can overflow even
+        # when the incoming adjoint is exactly zero. Infinite candidate bounds
+        # are never selected by a finite feasible solution, so their quotient
+        # factor can safely be zero for this unused denominator adjoint.
+        numerator_gradient = gradient / denominator
+        denominator_gradient = (
+            -numerator_gradient
+            * torch.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            if ctx.needs_input_grad[1]
+            else None
+        )
+        return (
+            numerator_gradient if ctx.needs_input_grad[0] else None,
+            denominator_gradient,
+        )
 
 
-def _projection_caps(
-    a: torch.Tensor, b: torch.Tensor, *, screened_choices=None
-) -> torch.Tensor:
-    """Eliminate y using symmetric acceleration strips and its velocity cap.
-
-    The first K columns and the next K columns are opposite half-planes:
-    abs(a_i*x + b_i*y) <= 1. Each distinct pair with nonzero b gives
-    abs(a_i*b_j - b_i*a_j)*x <= abs(b_i) + abs(b_j). Thus only K*(K-1)/2
-    pairs are needed instead of a square over all 2*K+2 half-planes.
-    """
-
-    if screened_choices is None:
-        screened_choices = _screened_projection_choices
-    shape = a.shape[:-1]
-    count = (a.shape[-1] - 2) // 2
-    flat_a = a[..., :count].reshape(-1, count)
-    flat_b = b[..., :count].reshape(-1, count)
-    velocity_cap = b[..., -1].reshape(-1, 1)
-    screened = (
-        a.device.type == "cpu" and a.dtype == b.dtype == torch.float64 and count >= 48
-    )
-    # Wide screened problems usually need only a few selected pairs. Do not
-    # reserve their complete quadratic index table before screening them.
-    pairs = (
-        None
-        if screened and count >= 384
-        else torch.triu_indices(count, count, offset=1, device=a.device)
-    )
-    pair_count = count * (count - 1) // 2
-    with torch.no_grad():
-        if screened:
-            chunk = max(1, (1 << 16) // count)
-            choice = torch.cat(
-                [
-                    screened_choices(
-                        flat_a[offset : offset + chunk],
-                        flat_b[offset : offset + chunk],
-                        velocity_cap[offset : offset + chunk],
-                        pairs,
-                    )
-                    for offset in range(0, flat_a.shape[0], chunk)
-                ]
-            )
-        else:
-            choice = _complete_projection_choices(flat_a, flat_b, velocity_cap, pairs)
-    is_pair = choice < pair_count
-    lookup = choice.clamp_max(pair_count - 1)
-    if pairs is None:
-        pair_left, pair_right = _pair_coordinates(lookup, count)
-    else:
-        pair_left, pair_right = pairs[0, lookup], pairs[1, lookup]
-    left = torch.where(is_pair, pair_left, choice - pair_count)
-    right = torch.where(is_pair, pair_right, count)
-    # Append the y velocity half-plane, then evaluate only the selected pair
-    # under autograd. Selection remains discrete without a quadratic tape.
-    flat_a = torch.cat((flat_a, torch.zeros_like(velocity_cap)), dim=1)
-    flat_b = torch.cat((flat_b, velocity_cap), dim=1)
-    ai = flat_a.gather(1, left[:, None]).squeeze(1)
-    aj = flat_a.gather(1, right[:, None]).squeeze(1)
-    bi = flat_b.gather(1, left[:, None]).squeeze(1)
-    bj = flat_b.gather(1, right[:, None]).squeeze(1)
-    determinant = (ai * bj - bi * aj).abs()
-    valid = torch.where(
-        is_pair, (bi != 0) & (bj != 0), ((ai < 0) & (bi > 0)) | ((ai > 0) & (bi < 0))
-    ) & (determinant > 0)
-    cap = _divide(bi.abs() + bj.abs(), torch.where(valid, determinant, 1.0))
-    return torch.where(valid, cap, torch.inf).reshape(shape)
+def _divide(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
+    # Native division already preserves zero numerator adjoints. Only its
+    # denominator adjoint needs the guarded multiplication order.
+    if torch.is_grad_enabled() and denominator.requires_grad:
+        return _StableDivide.apply(numerator, denominator)
+    return numerator / denominator
 
 
 def _complete_projection_choices(flat_a, flat_b, velocity_cap, pairs):
