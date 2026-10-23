@@ -543,11 +543,15 @@ def test_srs_tracker_reset_is_transactional_and_owns_joint_limits():
     assert tracker.redundancy == previous_redundancy
 
 
-def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
-    from holistic_motion.kinematics import (
-        SRSContinuousOptions,
-        SRSContinuousTracker,
-    )
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+@pytest.mark.parametrize(
+    "error_type", [RuntimeError, KeyboardInterrupt, SystemExit, MemoryError]
+)
+def test_tracker_rolls_back_hysteresis_after_native_failure(prefix, error_type):
+    from holistic_motion import kinematics
+
+    tracker_type = getattr(kinematics, prefix + "ContinuousTracker")
+    options_type = getattr(kinematics, prefix + "ContinuousOptions")
 
     class FailingSolver:
         compatible = True
@@ -555,6 +559,7 @@ def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
 
         def __init__(self):
             self.jacobian_calls = 0
+            self.failure = error_type
 
         @staticmethod
         def configuration(joints):
@@ -567,8 +572,9 @@ def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
 
         def jacobian(self, _joints):
             self.jacobian_calls += 1
-            if self.jacobian_calls > 1:
-                raise RuntimeError("native Jacobian failure")
+            if self.jacobian_calls > 1 and self.failure is not None:
+                failure, self.failure = self.failure, None
+                raise failure("native Jacobian failure")
             return np.eye(6, 7)
 
         @staticmethod
@@ -576,13 +582,20 @@ def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
             return [np.full(7, -0.1), np.full(7, 0.5)]
 
     solver = FailingSolver()
-    tracker = SRSContinuousTracker(
+    tracker = tracker_type(
         solver,
         np.zeros(7),
-        SRSContinuousOptions(branch_hysteresis_frames=3),
+        options_type(
+            branch_hysteresis_frames=3,
+            position_weight=0.0,
+            velocity_weight=0.0,
+            acceleration_weight=0.0,
+            branch_switch_penalty=0.0,
+            joint_limit_weight=0.0,
+        ),
     )
 
-    with pytest.raises(RuntimeError, match="native Jacobian failure"):
+    with pytest.raises(error_type, match="native Jacobian failure"):
         tracker.solve(np.eye(4), dt=1.0)
 
     assert np.array_equal(tracker.joints, np.zeros(7))
@@ -590,3 +603,11 @@ def test_srs_tracker_rolls_back_hysteresis_after_native_failure():
     assert tracker.frame_index == 0
     assert tracker._pending_branch is None
     assert tracker._pending_count == 0
+
+    # Equal scores keep candidate order fixed. Only accepted frames count
+    # toward the three-frame branch switch after the interrupted solve.
+    for frame in range(3):
+        result = tracker.solve(np.eye(4), dt=1.0)
+        assert result.branch_changed is (frame == 2)
+        assert result.configuration == ((-1 if frame == 2 else 1), 1, 1)
+        assert tracker.frame_index == frame + 1

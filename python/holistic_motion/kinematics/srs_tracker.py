@@ -326,7 +326,7 @@ class SRSContinuousTracker:
                 angle_error=angle_error,
                 candidate_count=len(evaluated),
             )
-        except Exception:
+        except BaseException:
             self._pending_branch, self._pending_count = previous_pending
             raise
 
