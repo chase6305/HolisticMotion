@@ -525,12 +525,12 @@ class PinocchioRetargetingSolver:
             raise TypeError("targets must be a mapping")
         self.mode_manager.validate_targets(targets)
         plan = self._mode_plan()
-        normalized = {
-            name: targets[name]
-            if isinstance(targets[name], RetargetingTarget)
-            else RetargetingTarget(targets[name])
-            for name in plan.targets
-        }
+        normalized = {}
+        for name in plan.targets:
+            target = targets[name]
+            if not isinstance(target, RetargetingTarget):
+                target = RetargetingTarget(target)
+            normalized[name] = target
         return normalized
 
     def _mode_plan(self) -> _RetargetingModePlan:

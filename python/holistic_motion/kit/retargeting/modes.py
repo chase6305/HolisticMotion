@@ -99,7 +99,11 @@ DEFAULT_MODE_SPECS = MappingProxyType(
 
 
 class RetargetingModeManager:
-    """Validate, select, and describe retargeting modes."""
+    """Validate, select, and describe retargeting modes.
+
+    Mode selection is mutable. Each solver worker owns its manager; immutable
+    mode specs can be shared when constructing independent managers.
+    """
 
     def __init__(
         self,
