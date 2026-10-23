@@ -54,14 +54,13 @@ bool PoseWithinTolerance(const NumericalKinematics &solver, const SE3d &target,
     SE3d actual;
     if (!solver.GetFK(joints, actual))
         return false;
-    const Eigen::Matrix4d delta =
-        actual.Inverse().GetTransform() * target.GetTransform();
-    const double translation_error = delta.block<3, 1>(0, 3).norm();
-    const double cosine =
-        clamp((delta.block<3, 3>(0, 0).trace() - 1.0) * 0.5, -1.0, 1.0);
+    const double translation_error =
+        (target.GetTranslation() - actual.GetTranslation()).norm();
+    const double angle_error = std::abs(
+        GetRAngle(target.GetRotation() * actual.GetRotation().transpose()));
     return std::isfinite(translation_error) &&
            translation_error <= kTranslationTolerance &&
-           std::acos(cosine) <= kAngleTolerance;
+           angle_error <= kAngleTolerance;
 }
 
 } // namespace

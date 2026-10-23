@@ -80,7 +80,7 @@ bool Check(FEPKinematics &solver, const Eigen::MatrixXd &joints) {
     return true;
 }
 
-bool CheckNearSingularIK() {
+bool CheckIKPoseTolerance() {
     const Eigen::Vector3d axes[] = {
         Eigen::Vector3d::UnitZ(), Eigen::Vector3d::UnitY(),
         Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
@@ -122,13 +122,32 @@ bool CheckNearSingularIK() {
             }
         }
     }
+    // A seed already inside the angular acceptance bound must remain valid
+    // even when acos(trace) rounds that angle across the cutoff.
+    const auto seed = Eigen::VectorXd::Zero(7).eval();
+    for (const auto &axis : {Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY(),
+                             Eigen::Vector3d::UnitZ()}) {
+        SE3d target;
+        if (!solver.GetFK(seed, target))
+            return false;
+        target = SE3d(
+            target.GetTranslation(),
+            SO3d(Eigen::AngleAxisd(1e-5 - 5e-12, axis).toRotationMatrix()));
+        std::vector<Eigen::VectorXd> solutions;
+        if (!solver.Solve(target, seed, FEPSolveMethod::SEEDED_NUMERICAL,
+                          solutions) ||
+            solutions.empty()) {
+            std::cerr << "FEP rejected a seed inside its angular tolerance\n";
+            return false;
+        }
+    }
     return true;
 }
 
 } // namespace
 
 int main() {
-    if (!CheckNearSingularIK())
+    if (!CheckIKPoseTolerance())
         return 1;
     std::cout << "FEP CUDA compiled/runtime: "
               << FEPKinematics::IsCudaCompiled() << "/"
