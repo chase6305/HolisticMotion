@@ -77,6 +77,36 @@ def test_tracker_keeps_nested_real_and_strided_candidates(tracker_type):
     np.testing.assert_array_equal(candidates[0], [0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
 
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize("reuse", ["iterator", "refresh"])
+def test_tracker_snapshots_candidates_before_backend_reuses_storage(
+    tracker_type, reuse, output_solver, monkeypatch
+):
+    buffer = np.zeros(7)
+    calls = 0
+
+    def candidates():
+        buffer[:] = 0.0
+        yield buffer
+        buffer[:] = 0.5
+        yield buffer
+
+    def solve(_target, _seed, _method):
+        nonlocal calls
+        calls += 1
+        if reuse == "iterator":
+            return candidates()
+        buffer[:] = 0.0 if calls == 1 else 0.5
+        return [buffer]
+
+    monkeypatch.setattr(output_solver, "solve", solve)
+    tracker = tracker_type(output_solver, np.zeros(7))
+    result = tracker.solve(np.eye(4), dt=1.0)
+    np.testing.assert_array_equal(result.joints, np.zeros(7))
+    assert result.candidate_count == 2
+    assert calls == 2
+
+
 @pytest.fixture
 def output_solver():
     class Solver:

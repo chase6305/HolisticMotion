@@ -483,7 +483,8 @@ class SRSContinuousTracker:
             except (TypeError, ValueError, OverflowError):
                 continue
             if values.shape == (self._dof,) and np.isfinite(values).all():
-                yield values
+                # Enumeration and refresh queries may reuse backend storage.
+                yield values.copy()
 
     def _minimum_singular_value(self, joints: np.ndarray) -> float:
         jacobian = real_array(
