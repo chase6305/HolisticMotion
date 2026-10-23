@@ -25,6 +25,9 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
     Each seed is refined with the inherited adaptive damped optimizer.  The
     best converged result is returned, or the finite result with the smallest
     normalized task error when none of the seeds converges.
+
+    This instance reuses the inherited workspace and history; use a separate
+    prepared solver per worker and do not overlap queries with configuration.
     """
 
     def __init__(
