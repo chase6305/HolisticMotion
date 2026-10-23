@@ -312,7 +312,15 @@ class SRSContinuousTracker:
                 f"no {self._solver_label} candidate satisfies continuity limits"
             )
         evaluated.sort(key=lambda item: item.score)
-        previous_pending = self._pending_branch, self._pending_count
+        previous_state = (
+            self._joints,
+            self._velocity,
+            self._configuration,
+            self._redundancy,
+            self._frame_index,
+            self._pending_branch,
+            self._pending_count,
+        )
         try:
             selected = self._apply_hysteresis(evaluated)
             previous_branch = self._configuration
@@ -331,16 +339,23 @@ class SRSContinuousTracker:
                 angle_error=selected.angle_error,
                 candidate_count=len(evaluated),
             )
+            self._joints = selected.joints
+            self._velocity = selected.velocity
+            self._configuration = selected.configuration
+            self._redundancy = redundancy
+            self._frame_index += 1
+            return result
         except BaseException:
-            self._pending_branch, self._pending_count = previous_pending
+            (
+                self._joints,
+                self._velocity,
+                self._configuration,
+                self._redundancy,
+                self._frame_index,
+                self._pending_branch,
+                self._pending_count,
+            ) = previous_state
             raise
-
-        self._joints = selected.joints
-        self._velocity = selected.velocity
-        self._configuration = selected.configuration
-        self._redundancy = redundancy
-        self._frame_index += 1
-        return result
 
     def _evaluate_candidates(self, candidates, pose, predicted, dt):
         evaluated = []

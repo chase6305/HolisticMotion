@@ -299,3 +299,41 @@ def test_reset_keeps_caller_coordinates_out_of_backend_scratch(
         tracker.reset(initial)
     np.testing.assert_array_equal(initial, np.full(7, 0.25))
     np.testing.assert_array_equal(tracker.joints, np.zeros(7) if fail else initial)
+
+
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize("attribute", ["_velocity", "_frame_index"])
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit, MemoryError])
+def test_interrupted_history_update_keeps_previous_frame(
+    tracker_type, attribute, error_type, scratch_solver
+):
+    class InterruptibleTracker(tracker_type):
+        interrupt_attribute = None
+
+        def __setattr__(self, name, value):
+            if name == self.interrupt_attribute:
+                self.interrupt_attribute = None
+                raise error_type("interrupted history update")
+            super().__setattr__(name, value)
+
+    tracker = InterruptibleTracker(scratch_solver, np.zeros(7))
+    target = np.eye(4)
+    target[0, 3] = 0.1
+    first = tracker.solve(target, dt=1.0)
+    tracker.interrupt_attribute = attribute
+    target[0, 3] = 0.2
+
+    with pytest.raises(error_type, match="interrupted history update"):
+        tracker.solve(target, dt=1.0)
+
+    np.testing.assert_array_equal(tracker.joints, first.joints)
+    np.testing.assert_array_equal(tracker.velocity, first.velocity)
+    assert tracker.configuration == first.configuration
+    assert tracker.redundancy == first.redundancy
+    assert tracker.frame_index == 1
+
+    result = tracker.solve(target, dt=1.0)
+    assert result.joints[0] == 0.2
+    assert result.velocity[0] == 0.1
+    assert result.acceleration[0] == 0.0
+    assert tracker.frame_index == 2
