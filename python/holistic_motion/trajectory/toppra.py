@@ -199,12 +199,8 @@ class _NaturalCubicPath:
         return index, delta
 
 
-def _real_array(value, name: str, *, copy: bool = False) -> np.ndarray:
-    return real_array(value, name=name, copy=copy)
-
-
 def _positive_vector(value: Sequence[float], dof: int, name: str) -> np.ndarray:
-    result = _real_array(value, name, copy=True).reshape(-1)
+    result = real_array(value, name=name, copy=True).reshape(-1)
     if result.shape != (dof,) or not np.isfinite(result).all():
         raise ValueError(f"{name} must be a finite vector of size {dof}")
     if np.any(result <= 0.0):
@@ -230,7 +226,7 @@ class ToppraResult:
             "times",
         )
         for name in arrays:
-            value = _real_array(getattr(self, name), name, copy=True)
+            value = real_array(getattr(self, name), name=name, copy=True)
             if value.ndim != 1 or not np.isfinite(value).all():
                 raise ValueError(f"{name} must be a finite one-dimensional array")
             value.setflags(write=False)
@@ -297,7 +293,7 @@ class ToppraTrajectory:
         gridpoints: Sequence[float] | None = None,
         grid_size: int = 200,
     ) -> None:
-        points = _real_array(waypoints, "waypoints")
+        points = real_array(waypoints, name="waypoints")
         if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 1:
             raise ValueError("waypoints must have shape (count >= 2, dof >= 1)")
         if not np.isfinite(points).all():
@@ -379,7 +375,7 @@ class ToppraTrajectory:
                 + [waypoint_s[-1:]]
             )
         else:
-            grid = _real_array(gridpoints, "gridpoints").reshape(-1)
+            grid = real_array(gridpoints, name="gridpoints").reshape(-1)
             if (
                 grid.size < 2
                 or not np.isfinite(grid).all()
@@ -1186,7 +1182,7 @@ class ToppraTrajectory:
     def sample(
         self, times: Sequence[float]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        query = _real_array(times, "sample times").reshape(-1)
+        query = real_array(times, name="sample times").reshape(-1)
         if not np.isfinite(query).all():
             raise ValueError("sample times must be finite")
         clipped = np.clip(query, 0.0, self.duration)

@@ -7,17 +7,20 @@ import numpy as np
 
 def solve_box_qp(
     hessian: np.ndarray,
-    gradient: np.ndarray,
+    linear_term: np.ndarray,
     lower: np.ndarray,
     upper: np.ndarray,
     *,
     unconstrained: Optional[np.ndarray] = None,
     linear_solve,
 ) -> np.ndarray:
-    """Solve a positive-definite QP with a feasible active-set method."""
+    """Minimize ``0.5 * x.T @ hessian @ x - linear_term.T @ x`` within bounds.
+
+    Use a feasible active-set method and the caller's existing linear solver.
+    """
 
     if unconstrained is None:
-        unconstrained = linear_solve(hessian, gradient)
+        unconstrained = linear_solve(hessian, linear_term)
     if np.all(unconstrained >= lower) and np.all(unconstrained <= upper):
         return unconstrained
     solution = np.clip(unconstrained, lower, upper)
@@ -32,13 +35,13 @@ def solve_box_qp(
     # A common positive objective scale must not change the active set.
     # An absolute floor here can accept arbitrary clipped minimizers when
     # task weights and regularization are uniformly small.
-    scale = float(np.max(np.abs(gradient)))
+    scale = float(np.max(np.abs(linear_term)))
     kkt_tolerance = 1e-10 * scale
     for _ in range(10 * solution.size + 10):
         free = status == 0
         active = ~free
         if np.any(free):
-            rhs = gradient[free]
+            rhs = linear_term[free]
             if np.any(active):
                 rhs = rhs - hessian[np.ix_(free, active)] @ solution[active]
             free_solution = linear_solve(hessian[np.ix_(free, free)], rhs)
@@ -67,13 +70,13 @@ def solve_box_qp(
                 continue
             solution[free_indices] = free_solution
 
-        derivative = hessian @ solution - gradient
-        lower_violation = (status == -1) & (derivative < -kkt_tolerance)
-        upper_violation = (status == 1) & (derivative > kkt_tolerance)
+        objective_gradient = hessian @ solution - linear_term
+        lower_violation = (status == -1) & (objective_gradient < -kkt_tolerance)
+        upper_violation = (status == 1) & (objective_gradient > kkt_tolerance)
         if not np.any(lower_violation | upper_violation):
             break
         violations = np.zeros(solution.size)
-        violations[lower_violation] = -derivative[lower_violation]
-        violations[upper_violation] = derivative[upper_violation]
+        violations[lower_violation] = -objective_gradient[lower_violation]
+        violations[upper_violation] = objective_gradient[upper_violation]
         status[int(np.argmax(violations))] = 0
     return solution

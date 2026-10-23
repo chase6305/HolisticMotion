@@ -175,13 +175,17 @@ def _screened_projection_caps(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     result = np.full(a.shape[0], np.inf)
     indices = np.flatnonzero(eligible)
     if indices.size:
-        cc, dd, nz = c[indices], d[indices], nonzero[indices]
+        oriented_a, absolute_b, nonzero_b = c[indices], d[indices], nonzero[indices]
         del c, d, nonzero, maximum, minimum
-        r = np.divide(cc, dd, out=np.zeros_like(cc), where=nz)
-        w = np.divide(1.0, dd, out=np.zeros_like(dd), where=nz)
+        ratios = np.divide(
+            oriented_a, absolute_b, out=np.zeros_like(oriented_a), where=nonzero_b
+        )
+        inverse_weights = np.divide(
+            1.0, absolute_b, out=np.zeros_like(absolute_b), where=nonzero_b
+        )
         row = np.arange(indices.size)
-        high = np.argmax(np.where(nz, r, -np.inf), axis=1)
-        low = np.argmin(np.where(nz, r, np.inf), axis=1)
+        high = np.argmax(np.where(nonzero_b, ratios, -np.inf), axis=1)
+        low = np.argmin(np.where(nonzero_b, ratios, np.inf), axis=1)
 
         def pair_cap(first, second):
             left, right = np.minimum(first, second), np.maximum(first, second)
@@ -208,28 +212,36 @@ def _screened_projection_caps(a: np.ndarray, b: np.ndarray) -> np.ndarray:
             # A negligible pilot term can underflow even when every original
             # pair operation is normal. Keep the caller's policy for the LP.
             with np.errstate(under="ignore"):
-                weighted = inverse[:, None] * w
-            h = np.argmax(np.where(nz, r - weighted, -np.inf), axis=1)
-            lower_index = np.argmin(np.where(nz, r + weighted, np.inf), axis=1)
+                weighted = inverse[:, None] * inverse_weights
+            upper_index = np.argmax(
+                np.where(nonzero_b, ratios - weighted, -np.inf), axis=1
+            )
+            lower_index = np.argmin(
+                np.where(nonzero_b, ratios + weighted, np.inf), axis=1
+            )
             del weighted
-            candidate = pair_cap(h, lower_index)
+            candidate = pair_cap(upper_index, lower_index)
             improved = candidate < best
             if not np.any(improved):
                 break
             best[improved] = candidate[improved]
-            high[improved], low[improved] = h[improved], lower_index[improved]
+            high[improved], low[improved] = upper_index[improved], lower_index[improved]
         inverse = np.divide(
             1.0, best, out=np.zeros_like(best), where=np.isfinite(best) & (best > 0.0)
         )
-        center = -(cc[row, high] + cc[row, low]) / (dd[row, high] + dd[row, low])
-        magnitude = np.max(np.abs(cc), axis=1) + np.max(dd, axis=1) * np.abs(center)
+        center = -(oriented_a[row, high] + oriented_a[row, low]) / (
+            absolute_b[row, high] + absolute_b[row, low]
+        )
+        magnitude = np.max(np.abs(oriented_a), axis=1) + np.max(
+            absolute_b, axis=1
+        ) * np.abs(center)
         # Residual, determinant, sum, division and reciprocal errors together
         # are bounded by 32 eps times this magnitude in the guarded range.
         # A 128 eps gap leaves room for their rounding in either direction.
         tolerance = 128.0 * np.finfo(float).eps * np.maximum(magnitude, inverse)
         with np.errstate(under="ignore"):
-            residual = np.abs(cc + dd * center[:, None])
-        active = nz & (residual >= inverse[:, None] - tolerance[:, None])
+            residual = np.abs(oriented_a + absolute_b * center[:, None])
+        active = nonzero_b & (residual >= inverse[:, None] - tolerance[:, None])
         active[row, high] = True
         active[row, low] = True
         active_count = np.count_nonzero(active, axis=1)
@@ -238,7 +250,7 @@ def _screened_projection_caps(a: np.ndarray, b: np.ndarray) -> np.ndarray:
             # Equal oriented normals yield bit-identical absolute determinants
             # against every other strip. Keep one exact representative while
             # all original strips remain in the backward/forward solves.
-            crowded_c, crowded_d = cc[crowded], dd[crowded]
+            crowded_c, crowded_d = oriented_a[crowded], absolute_b[crowded]
             crowded_active = active[crowded]
             order = np.lexsort((crowded_d, crowded_c, ~crowded_active), axis=1)
             sorted_c = np.take_along_axis(crowded_c, order, axis=1)
@@ -271,7 +283,18 @@ def _screened_projection_caps(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         eligible[indices[~accepted]] = False
         accepted_rows, columns = np.nonzero(active & accepted[:, None])
         selected_rows = indices[accepted_rows]
-        del cc, dd, nz, r, w, residual, active, center, magnitude, tolerance
+        del (
+            oriented_a,
+            absolute_b,
+            nonzero_b,
+            ratios,
+            inverse_weights,
+            residual,
+            active,
+            center,
+            magnitude,
+            tolerance,
+        )
         chunk = max(1, (1 << 13) // count)
         for offset in range(0, columns.size, chunk):
             rows = selected_rows[offset : offset + chunk]

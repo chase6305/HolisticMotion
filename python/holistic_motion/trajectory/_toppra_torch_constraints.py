@@ -276,12 +276,12 @@ def _screened_projection_choices(aa, bb, cap, pairs):
     for _ in range(4):
         inverse = torch.where(torch.isfinite(best) & (best > 0), 1.0 / best, 0.0)
         weighted = inverse[:, None] * inverse_weights
-        h = torch.where(nonzero, ratios - weighted, -torch.inf).argmax(1)
+        upper_index = torch.where(nonzero, ratios - weighted, -torch.inf).argmax(1)
         lower_index = torch.where(nonzero, ratios + weighted, torch.inf).argmin(1)
-        candidate = pair_cap(h, lower_index)
+        candidate = pair_cap(upper_index, lower_index)
         improved = candidate < best
         best = torch.minimum(best, candidate)
-        high = torch.where(improved, h, high)
+        high = torch.where(improved, upper_index, high)
         low = torch.where(improved, lower_index, low)
     inverse = torch.where(torch.isfinite(best) & (best > 0), 1.0 / best, 0.0)
     center = -(c.gather(1, high[:, None]) + c.gather(1, low[:, None])) / (
