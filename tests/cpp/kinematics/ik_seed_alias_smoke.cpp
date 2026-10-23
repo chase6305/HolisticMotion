@@ -1,10 +1,13 @@
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <vector>
 
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 #include "holistic_motion/kinematics/OPWKinematics.h"
 #include "holistic_motion/kinematics/URKinematics.h"
+#include "holistic_motion/kinematics/fep/FEPKinematics.h"
+#include "holistic_motion/kinematics/srs/SRSKinematics.h"
 
 using namespace holistic_motion::robotics;
 
@@ -14,8 +17,7 @@ bool CheckAliases(KinematicsBase &solver, const Eigen::VectorXd &joints) {
     SE3d reachable;
     if (!solver.GetFK(joints, reachable))
         return false;
-    const SE3d unreachable(reachable.GetTranslation() +
-                               Eigen::Vector3d(100, 0, 0),
+    const SE3d unreachable(reachable.GetTranslation() + Eigen::Vector3d(100, 0, 0),
                            reachable.GetRotation());
     for (bool nearest : {false, true}) {
         for (bool last : {false, true}) {
@@ -24,22 +26,21 @@ bool CheckAliases(KinematicsBase &solver, const Eigen::VectorXd &joints) {
                 const Eigen::VectorXd other = joints.array() + 0.1;
                 solutions.PushBack(last ? other : joints);
                 solutions.PushBack(last ? joints : other);
-                auto &seed = last ? solutions.ik_joints.back()
-                                  : solutions.ik_joints.front();
+                auto &seed =
+                    last ? solutions.ik_joints.back() : solutions.ik_joints.front();
                 std::vector<double> distances;
                 double distance = -1.0;
                 const auto &target = failure ? unreachable : reachable;
                 const bool success =
-                    nearest
-                        ? solver.GetNearestIK(target, solutions, seed, distance)
-                        : solver.GetIK(target, solutions, seed, distances);
+                    nearest ? solver.GetNearestIK(target, solutions, seed, distance)
+                            : solver.GetIK(target, solutions, seed, distances);
                 // The output call invalidates its old element references.
                 // Examine only the newly returned storage from this point.
                 if (success == failure)
                     return false;
                 if (failure) {
-                    if (!solutions.ik_joints.empty() ||
-                        solutions.ik_number != 0 || !distances.empty())
+                    if (!solutions.ik_joints.empty() || solutions.ik_number != 0 ||
+                        !distances.empty())
                         return false;
                     continue;
                 }
@@ -55,8 +56,46 @@ bool CheckAliases(KinematicsBase &solver, const Eigen::VectorXd &joints) {
                 }
                 for (const auto &solution : solutions.ik_joints) {
                     SE3d actual;
-                    if (!solver.GetFK(solution, actual) ||
-                        !actual.IsApprox(target))
+                    if (!solver.GetFK(solution, actual) || !actual.IsApprox(target))
+                        return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+template <class Solver, class Method>
+bool CheckSpecializedAliases(Solver &solver, const Eigen::VectorXd &joints,
+                             std::initializer_list<Method> methods) {
+    solver.SetMaxIterNum(4);
+    SE3d reachable;
+    if (!solver.GetFK(joints, reachable))
+        return false;
+    const SE3d unreachable(reachable.GetTranslation() + Eigen::Vector3d(100, 0, 0),
+                           reachable.GetRotation());
+    for (auto method : methods) {
+        for (bool failure : {false, true}) {
+            const auto &target = failure ? unreachable : reachable;
+            std::vector<Eigen::VectorXd> expected;
+            const bool expected_success =
+                solver.Solve(target, joints, method, expected);
+            if ((failure && expected_success) ||
+                (!failure && method == Method::SEEDED_NUMERICAL && !expected_success))
+                return false;
+            for (bool last : {false, true}) {
+                const Eigen::VectorXd other = joints.array() + 0.1;
+                std::vector<Eigen::VectorXd> actual{last ? other : joints,
+                                                    last ? joints : other};
+                const auto &seed = last ? actual.back() : actual.front();
+                const bool success = solver.Solve(target, seed, method, actual);
+                if (success != expected_success || actual.size() != expected.size())
+                    return false;
+                for (std::size_t index = 0; index < actual.size(); ++index) {
+                    SE3d pose;
+                    if (!actual[index].isApprox(expected[index], 1e-12) ||
+                        !solver.GetFK(actual[index], pose) ||
+                        !pose.GetTransform().isApprox(target.GetTransform(), 1e-5))
                         return false;
                 }
             }
@@ -69,8 +108,7 @@ bool CheckAliases(KinematicsBase &solver, const Eigen::VectorXd &joints) {
 
 int main() {
     std::vector<JointNode> numerical_nodes{
-        JointNode(SE3d(), Eigen::Vector3d::UnitX(), JointType::PRISMATIC, -2,
-                  2),
+        JointNode(SE3d(), Eigen::Vector3d::UnitX(), JointType::PRISMATIC, -2, 2),
         JointNode()};
     numerical_nodes.back().joint_type = JointType::FIXED;
     NumericalKinematics numerical(numerical_nodes);
@@ -92,16 +130,15 @@ int main() {
     IkRtn retry;
     retry.PushBack(Eigen::VectorXd::Constant(1, 2 * M_PI - 0.1));
     double distance = -1;
-    if (!turning.GetNearestIK(SE3d(), retry, retry.ik_joints.front(),
-                              distance) ||
+    if (!turning.GetNearestIK(SE3d(), retry, retry.ik_joints.front(), distance) ||
         retry.ik_number != 1 ||
         std::abs(retry.ik_joints.front()[0] - 2 * M_PI) > 1e-12 ||
         std::abs(distance - 0.1) > 1e-12)
         return 1;
 
-    std::vector<JointNode> nodes(6, JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
-                                              JointType::REVOLUTE, -2 * M_PI,
-                                              2 * M_PI));
+    std::vector<JointNode> nodes(6,
+                                 JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
+                                           JointType::REVOLUTE, -2 * M_PI, 2 * M_PI));
     OPWParameters opw;
     opw.a1 = 0.15;
     opw.a2 = -0.10;
@@ -127,6 +164,29 @@ int main() {
     joints << 0.25, -0.70, 0.85, -0.45, 0.65, -0.20;
     if (!CheckAliases(opw_solver, joints) || !CheckAliases(ur_solver, joints)) {
         std::cerr << "aliased analytic IK seed failed\n";
+        return 1;
+    }
+    std::vector<JointNode> seven_nodes;
+    for (int joint = 0; joint < 7; ++joint)
+        seven_nodes.emplace_back(
+            SE3d(Eigen::Vector3d(0.02, -0.01 * joint, 0.1), SO3d()),
+            Eigen::Vector3d::Unit(joint % 3), JointType::REVOLUTE, -3.0, 3.0);
+    seven_nodes.emplace_back();
+    seven_nodes.back().joint_type = JointType::FIXED;
+    Eigen::VectorXd seven(7);
+    seven << 0.6, -0.7, 0.8, -0.9, 1.0, -1.1, 1.2;
+    SRSKinematics srs(seven_nodes);
+    FEPKinematics fep(seven_nodes);
+    if (!CheckSpecializedAliases(
+            srs, seven,
+            {SRSSolveMethod::SEEDED_NUMERICAL, SRSSolveMethod::CONFIGURATION,
+             SRSSolveMethod::ALL_CONFIGURATIONS, SRSSolveMethod::NEAREST_REDUNDANCY}) ||
+        !CheckSpecializedAliases(
+            fep, seven,
+            {FEPSolveMethod::SEEDED_NUMERICAL, FEPSolveMethod::CONFIGURATION,
+             FEPSolveMethod::ALL_CONFIGURATIONS, FEPSolveMethod::NEAREST_REDUNDANCY,
+             FEPSolveMethod::COMPATIBILITY})) {
+        std::cerr << "aliased specialized IK seed failed\n";
         return 1;
     }
     return 0;

@@ -74,6 +74,75 @@ def _write_offset_srs_urdf(path):
     )
 
 
+@pytest.mark.parametrize(
+    "lower,upper", [("-1e308", "1e308"), ("-1e308", "3"), ("-3", "1e308")]
+)
+def test_srs_closed_form_handles_broad_finite_joint_limits(tmp_path, lower, upper):
+    import holistic_motion as hm
+
+    path = tmp_path / "broad_limits.urdf"
+    _write_ideal_srs_urdf(path)
+    path.write_text(
+        path.read_text().replace(
+            'lower="-3" upper="3"', f'lower="{lower}" upper="{upper}"'
+        )
+    )
+    solver = hm.Robot(str(path)).kinematics
+    joints = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    target = solver.forward(joints)
+    configuration = solver.configuration(joints)
+    solution = solver.analytic_solution(target, configuration, joints)
+    assert np.isfinite(solution).all()
+    assert np.all(solution >= float(lower))
+    assert np.all(solution <= float(upper))
+    np.testing.assert_allclose(solver.forward(solution), target, atol=1e-8)
+
+
+@pytest.mark.parametrize("elbow", [-0.9, -0.3, 0.3, 0.9])
+def test_analytic_elbow_seed_uses_reported_canonical_branch(tmp_path, elbow):
+    import holistic_motion as hm
+
+    path = tmp_path / "elbow_branch.urdf"
+    _write_ideal_srs_urdf(path)
+    solver = hm.Robot(str(path)).kinematics
+    joints = np.array([0.2, -0.35, 0.3, elbow, 0.25, 0.4, -0.2])
+    target = solver.forward(joints)
+    configuration = solver.configuration(joints)
+    guess = joints.copy()
+    guess[3] = 0.0
+    result = solver.analytic_elbow_seed(target, configuration, guess)
+    assert result[3] == pytest.approx(elbow, abs=1e-9)
+    np.testing.assert_array_equal(result[[0, 1, 2, 4, 5, 6]], guess[[0, 1, 2, 4, 5, 6]])
+
+
+@pytest.mark.parametrize("joint", [1, 3, 5])
+@pytest.mark.parametrize("turns", [-3, -1, 1, 3])
+def test_srs_configuration_and_solution_preserve_whole_turns(tmp_path, joint, turns):
+    import holistic_motion as hm
+
+    path = tmp_path / "multi_turn.urdf"
+    _write_ideal_srs_urdf(path)
+    path.write_text(
+        path.read_text().replace('lower="-3" upper="3"', 'lower="-30" upper="30"')
+    )
+    solver = hm.Robot(str(path)).kinematics
+    joints = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    original = solver.configuration(joints)
+    target = solver.forward(joints)
+    joints[joint] += turns * 2.0 * np.pi
+    configuration = solver.configuration(joints)
+    assert (configuration.shoulder, configuration.elbow, configuration.wrist) == (
+        original.shoulder,
+        original.elbow,
+        original.wrist,
+    )
+    delta = configuration.redundancy - original.redundancy
+    assert np.arctan2(np.sin(delta), np.cos(delta)) == pytest.approx(0.0, abs=1e-8)
+    np.testing.assert_allclose(solver.forward(joints), target, atol=1e-10)
+    solution = solver.analytic_solution(target, configuration, joints)
+    np.testing.assert_allclose(solution, joints, atol=1e-7)
+
+
 def test_srs_null_space_projection_and_path(tmp_path):
     import holistic_motion as hm
 
@@ -284,13 +353,20 @@ def test_srs_closed_form_solution_from_urdf_parameters(tmp_path, seed_shift):
         assert abs(redundancy_delta) < 1e-6
 
 
-def test_srs_closed_form_candidate_refines_offset_chain(tmp_path):
+@pytest.mark.parametrize("tool_kind", ["identity", "translated", "rotated"])
+def test_srs_closed_form_candidate_refines_offset_chain(tmp_path, tool_kind):
     import holistic_motion as hm
 
     urdf = tmp_path / "offset_srs.urdf"
     _write_offset_srs_urdf(urdf)
     solver = hm.Robot(str(urdf)).kinematics
     assert solver.analyze_geometry().closed_form_compatible
+    tool = np.eye(4)
+    if tool_kind != "identity":
+        tool[:3, 3] = [0.04, -0.02, 0.03]
+    if tool_kind == "rotated":
+        tool[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+    assert solver.set_tcp(tool)
     joints = np.array(
         [
             0.51478342,

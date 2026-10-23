@@ -2,15 +2,26 @@
 
 #include "DampedIKWorkspace.h"
 #include "FrameValidation.h"
+#include "ForwardKinematics.h"
 #include "SeedAlias.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <typeinfo>
 
 namespace holistic_motion {
 namespace robotics {
+
+KinematicsCapabilities NumericalKinematics::GetCapabilities() const {
+    auto result = KinematicsBase::GetCapabilities();
+    result.family = KinematicsFamily::NUMERICAL;
+    result.default_ik_algorithm = IKAlgorithm::NUMERICAL;
+    result.supports_jacobian = true;
+    result.supports_concurrent_queries = typeid(*this) == typeid(NumericalKinematics);
+    return result;
+}
 namespace {
 
 double TranslationNorm(const Eigen::Vector3d &value) {
@@ -42,8 +53,14 @@ void NumericalKinematics::SetDOF(int dof) {
     }
 }
 
+bool NumericalKinematics::UsesDefaultForwardKinematics() const noexcept {
+    return typeid(*this) == typeid(NumericalKinematics);
+}
+
 bool NumericalKinematics::GetFK(const Eigen::VectorXd& target_joint,
                                 SE3d& pose) const {
+    if (UsesDefaultForwardKinematics())
+        return detail::ComputeTerminalFK(*this, target_joint, pose);
     std::vector<SE3d> pose_list;
     if (this->GetAllFK(target_joint, pose_list) && !pose_list.empty()) {
         pose = pose_list.back();
@@ -60,12 +77,13 @@ bool NumericalKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
         return GetIK(target_pose, ik_solutions, stable_seed, dist);
     }
 
-    return SolveIK(target_pose, ik_solutions, joint_seed, dist, nullptr);
+    return SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, nullptr);
 }
 
-bool NumericalKinematics::SolveIK(
-    const SE3d &target_pose, IkRtn &ik_solutions, Eigen::VectorXd &joint_seed,
-    std::vector<double> &dist, const Eigen::VectorXd *nearest_reference) const {
+bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutions,
+                                      Eigen::VectorXd &joint_seed,
+                                      std::vector<double> &dist,
+                                      const Eigen::VectorXd *nearest_reference) const {
     holistic_motion::utility::LogDebug("GetNearstIK:Begin to get position IK.");
     ik_solutions.Clear();
     dist.clear();
@@ -217,7 +235,7 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
     }
 
     std::vector<double> dist;
-    if (SolveIK(target_pose, ik_solutions, joint_seed, dist, &joint_seed)) {
+    if (SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, &joint_seed)) {
         // ik_solutions
         if (ik_solutions.success) {
             min_dist = dist.front();
@@ -229,8 +247,7 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
 
     ik_solutions.Clear();
     Eigen::VectorXd zero_joint_seed = Eigen::VectorXd::Zero(this->dof_);
-    if (SolveIK(target_pose, ik_solutions, zero_joint_seed, dist,
-                &joint_seed)) {
+    if (SolveIKImpl(target_pose, ik_solutions, zero_joint_seed, dist, &joint_seed)) {
         // ik_solutions
         if (ik_solutions.success) {
             min_dist = dist.front();
@@ -311,12 +328,10 @@ bool NumericalKinematics::GetDamp(double& damp) const {
 
 bool NumericalKinematics::GetJacobian(const Eigen::VectorXd& joint_pos,
                                       Eigen::MatrixXd& jacobian) const {
-    // if (joint_pos.size() != this->dof_) {
-    //     holistic_motion::utility::LogWarning("Joint position size[{}] not match
-    //     dof[{}].",
-    //                               joint_pos.size(), this->dof_);
-    //     return false;
-    // }
+    if (UsesDefaultForwardKinematics()) {
+        jacobian.resize(6, this->dof_);
+        return detail::ComputeJacobian(*this, joint_pos, jacobian);
+    }
     std::vector<SE3d> pose_list;
     if (!this->GetAllFK(joint_pos, pose_list)) {
         return false;

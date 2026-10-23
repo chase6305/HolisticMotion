@@ -1,9 +1,8 @@
 """Block pruning preserves stable greedy selection across distance tiles."""
 
-import tracemalloc
-
 import numpy as np
 import pytest
+from optional_dependencies import tracemalloc_or_skip
 from holistic_motion.geometry import SphereFitOptions, fit_spheres
 
 
@@ -77,6 +76,7 @@ def test_pruned_candidates_follow_the_original_containment_order(
 
 
 def test_duplicate_pruning_keeps_pairwise_workspace_bounded():
+    tracemalloc = tracemalloc_or_skip()
     generator = np.random.default_rng(281)
     interior = np.repeat(generator.uniform(-0.6, 0.6, (32, 3)), 640, axis=0)
     surface = generator.normal(size=(8, 3))

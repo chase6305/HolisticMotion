@@ -42,6 +42,68 @@ def test_fep_batch_fk_matches_scalar_and_validates_input(tmp_path):
 
 
 @pytest.mark.parametrize("backend_name", ["CPU", "AUTO", "CUDA"])
+def test_oblique_large_angles_keep_scalar_and_batch_phase(tmp_path, backend_name):
+    import holistic_motion as hm
+
+    path = tmp_path / "large_oblique_turn.urdf"
+    path.write_text(
+        _seven_axis_urdf()
+        .replace('xyz="0 0 1"', 'xyz="1 1 1"', 1)
+        .replace('lower="-2" upper="2"', 'lower="-1e308" upper="1e308"')
+    )
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    if backend_name == "CUDA" and not solver.cuda_available:
+        pytest.skip("native CUDA backend is unavailable")
+    states = np.zeros((129, 7))
+    states[:, 0] = np.resize([1e20, -1e20, 1e155, -1e155, 1e200, 1e308, -1e308], 129)
+    axis = np.ones(3) / np.sqrt(3.0)
+    skew = np.array(
+        [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]
+    )
+    expected = np.tile(np.eye(4), (states.shape[0], 1, 1))
+    expected[:, :3, :3] += np.sin(states[:, 0, None, None]) * skew + (
+        1 - np.cos(states[:, 0, None, None])
+    ) * (skew @ skew)
+    expected[:, :3, 3] = expected[:, :3, :3] @ np.array([0.0, 0.0, 0.6])
+    scalar = np.stack([solver.forward(row) for row in states])
+    np.testing.assert_allclose(scalar, expected, rtol=0, atol=3e-15)
+    batch = solver.forward_batch(states, getattr(hm.FEPBackend, backend_name))
+    np.testing.assert_allclose(batch, expected, rtol=0, atol=3e-15)
+
+
+@pytest.mark.parametrize("backend_name", ["CPU", "AUTO", "CUDA"])
+@pytest.mark.parametrize(
+    "axis",
+    [
+        "-0.36318104719500244 1.0634338443935962 -1.634851455255571",
+        "1.571415911246069 -1.2244654067099312 -0.2982382350002157",
+        "-1.1244560386652949 0.9442287122141714 1.0885412608548457",
+    ],
+)
+def test_large_oblique_phase_uses_same_axis_scale_on_every_backend(
+    tmp_path, backend_name, axis
+):
+    import holistic_motion as hm
+
+    path = tmp_path / "host_axis_scale.urdf"
+    path.write_text(
+        _seven_axis_urdf()
+        .replace('xyz="0 0 1"', f'xyz="{axis}"', 1)
+        .replace('lower="-2" upper="2"', 'lower="-1e308" upper="1e308"')
+    )
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    if backend_name == "CUDA" and not solver.cuda_available:
+        pytest.skip("native CUDA backend is unavailable")
+    states = np.zeros((129, 7))
+    states[:, 0] = np.resize([1e20, -1e20, 1e200, -1e200, 1e308, -1e308], 129)
+    expected = solver.forward_batch(states, hm.FEPBackend.CPU)
+    scalar = np.stack([solver.forward(row) for row in states])
+    np.testing.assert_allclose(scalar, expected, rtol=0, atol=3e-15)
+    actual = solver.forward_batch(states, getattr(hm.FEPBackend, backend_name))
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=3e-15)
+
+
+@pytest.mark.parametrize("backend_name", ["CPU", "AUTO", "CUDA"])
 def test_fep_batch_rejects_nonfinite_output_after_finite_input(tmp_path, backend_name):
     import holistic_motion as hm
 
@@ -64,15 +126,23 @@ def test_fep_batch_rejects_nonfinite_output_after_finite_input(tmp_path, backend
 
 @pytest.mark.parametrize("layout", ["C", "F", "strided"])
 @pytest.mark.parametrize("batch_size", [0, 1, 32, 129])
-def test_fep_batch_layouts_and_tcp_updates(tmp_path, layout, batch_size):
+@pytest.mark.parametrize("backend_name", ["CPU", "AUTO", "CUDA"])
+@pytest.mark.parametrize("axis_scale", [1.0, 1.5])
+def test_fep_batch_layouts_and_tcp_updates(
+    tmp_path, layout, batch_size, backend_name, axis_scale
+):
     import holistic_motion as hm
 
     path = tmp_path / "oblique_axis.urdf"
     path.write_text(
-        _seven_axis_urdf().replace('xyz="0 1 0"', 'xyz="0.6 0 0.8"'),
+        _seven_axis_urdf().replace(
+            'xyz="0 1 0"', f'xyz="{0.6 * axis_scale} 0 {0.8 * axis_scale}"'
+        ),
         encoding="utf-8",
     )
     solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    if backend_name == "CUDA" and not solver.cuda_available:
+        pytest.skip("native CUDA backend is unavailable")
     states = np.random.default_rng(17).uniform(-1.5, 1.5, size=(batch_size, 7))
     if layout == "strided":
         storage = np.empty((batch_size, 14))
@@ -90,7 +160,7 @@ def test_fep_batch_layouts_and_tcp_updates(tmp_path, layout, batch_size):
     )
     for tcp in (np.eye(4), tool, np.eye(4)):
         assert solver.set_tcp(tcp)
-        actual = solver.forward_batch(states, hm.FEPBackend.CPU)
+        actual = solver.forward_batch(states, getattr(hm.FEPBackend, backend_name))
         assert actual.shape == (batch_size, 4, 4)
         if batch_size:
             expected = np.stack([solver.forward(state) for state in states])

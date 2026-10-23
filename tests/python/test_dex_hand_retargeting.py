@@ -9,6 +9,11 @@ import weakref
 import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import DexHandRetargetingSolver
+from optional_dependencies import (
+    optional_module_or_skip,
+    python_pinocchio_or_skip,
+    skip_native_collision_runtime,
+)
 
 
 def hand_urdf(tmp_path, *, mimic=False, continuous=False, multiplier=-1.0, offset=0.4):
@@ -38,8 +43,9 @@ def hand_urdf(tmp_path, *, mimic=False, continuous=False, multiplier=-1.0, offse
 
 
 def make_solver(tmp_path, *, mimic=False, multiplier=-1.0, offset=0.4, **options):
-    for name in ("nlopt", "pinocchio", "dex_retargeting"):
-        pytest.importorskip(name, exc_type=ImportError)
+    python_pinocchio_or_skip()
+    for name in ("nlopt", "dex_retargeting"):
+        optional_module_or_skip(name)
     defaults = {"temporal_weight": 0.0, "vector_tolerance": 1e-5}
     defaults.update(options)
     return DexHandRetargetingSolver(
@@ -50,6 +56,32 @@ def make_solver(tmp_path, *, mimic=False, multiplier=-1.0, offset=0.4, **options
         keypoint_pairs=[[0, 1], [0, 2]] if mimic else [[0, 1]],
         **defaults,
     )
+
+
+@pytest.mark.parametrize("axis", ["1.5 0 0", "1e200 0 0", "1e-200 0 0", "0 0 0"])
+def test_hand_import_uses_unit_axes_without_changing_caller_asset(tmp_path, axis):
+    python_pinocchio_or_skip()
+    optional_module_or_skip("dex_retargeting")
+    path = hand_urdf(tmp_path)
+    path.write_text(path.read_text().replace('xyz="1 0 0"', f'xyz="{axis}"'))
+    original = path.read_bytes()
+    options = dict(
+        joint_names=["z_drive"],
+        origin_links=["palm"],
+        task_links=["tip"],
+        keypoint_pairs=[[0, 1]],
+        temporal_weight=0.0,
+        vector_tolerance=1e-5,
+    )
+    if axis == "0 0 0":
+        with pytest.raises(ValueError, match="axis"):
+            DexHandRetargetingSolver(path, **options)
+    else:
+        solver = DexHandRetargetingSolver(path, **options)
+        result = solver.solve([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0]])
+        assert result.success
+        assert result.joint_positions["z_drive"] == pytest.approx(0.2, abs=1e-5)
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize("mimic", [False, True])
@@ -130,7 +162,7 @@ def test_solves_and_holds_inside_torch_inference_context(tmp_path, mimic, contex
 @pytest.mark.parametrize("mimic", [False, True])
 @pytest.mark.parametrize("context", ["enable_grad", "no_grad", "inference_mode"])
 def test_hand_created_during_inference_can_solve(tmp_path, mimic, context):
-    torch = pytest.importorskip("torch", exc_type=ImportError)
+    torch = optional_module_or_skip("torch")
     with torch.inference_mode():
         solver = make_solver(tmp_path, mimic=mimic)
         assert torch.is_inference_mode_enabled()
@@ -296,7 +328,7 @@ def test_infeasible_mimic_model_is_rejected(tmp_path, multiplier, offset):
     [(5.0, 0.3, 0.34), (-5.0, -0.3, 0.34), (7.0, 0.1, 0.07), (-7.0, -0.1, 0.07)],
 )
 def test_locked_mimic_keeps_representable_source(tmp_path, multiplier, offset, source):
-    pytest.importorskip("dex_retargeting", exc_type=ImportError)
+    python_pinocchio_or_skip("dex_retargeting")
     follower = multiplier * source + offset
     path = hand_urdf(tmp_path, mimic=True, multiplier=multiplier, offset=offset)
     path.write_text(
@@ -393,7 +425,7 @@ def test_mimic_large_finite_coefficients_keep_exact_bounds(sign):
 
 @pytest.mark.parametrize("angle", [-0.8, 0.3, 1.0])
 def test_revolute_finger_uses_real_rotational_jacobian(tmp_path, angle):
-    pytest.importorskip("dex_retargeting", exc_type=ImportError)
+    python_pinocchio_or_skip("dex_retargeting")
     path = tmp_path / "finger.urdf"
     path.write_text("""<robot name="finger">
       <link name="palm"/><link name="finger"/><link name="tip"/>
@@ -587,7 +619,7 @@ def test_invalid_native_output_is_not_published(tmp_path, monkeypatch, values):
 
 
 def test_whole_body_continuous_model_is_rejected(tmp_path):
-    pytest.importorskip("dex_retargeting", exc_type=ImportError)
+    python_pinocchio_or_skip("dex_retargeting")
     with pytest.raises(ValueError, match="scalar-joint"):
         DexHandRetargetingSolver(
             hand_urdf(tmp_path, continuous=True),
@@ -610,6 +642,7 @@ def test_import_keeps_hand_dependencies_optional():
 
 
 def test_missing_optional_dependency_has_install_hint(tmp_path, monkeypatch):
+    skip_native_collision_runtime()
     original = builtins.__import__
 
     def blocked(name, *args, **kwargs):
@@ -655,7 +688,7 @@ def test_joint_or_unknown_frame_is_rejected_before_native_lookup(tmp_path, name)
 
 
 def test_coupled_finger_converges_with_tight_vector_tolerance(tmp_path):
-    pytest.importorskip("dex_retargeting", exc_type=ImportError)
+    python_pinocchio_or_skip("dex_retargeting")
     path = tmp_path / "serial_finger.urdf"
     pieces = ['<robot name="finger"><link name="base"/>']
     for i, length in enumerate((0.0, 0.04, 0.03)):
@@ -727,7 +760,7 @@ def test_satisfied_frame_holds_without_native_optimization(
 def test_locked_hand_reports_feasibility_without_native_optimization(
     tmp_path, monkeypatch, lock, satisfied
 ):
-    pytest.importorskip("dex_retargeting", exc_type=ImportError)
+    python_pinocchio_or_skip("dex_retargeting")
     path = hand_urdf(tmp_path, mimic=lock != "source")
     original_bounds = (
         'lower="0.1" upper="0.3"' if lock == "mimic" else 'lower="0" upper="0.4"'

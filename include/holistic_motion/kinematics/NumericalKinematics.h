@@ -6,96 +6,103 @@ namespace robotics {
 
 enum class IkMethod { SVD, DAMP_SVD, JACOBIAN_TRANSPOSE, CCD };
 
+/// Numerical queries own their workspace and support concurrent read-only calls
+/// with separate seeds/outputs. Model, frame and limit setters require
+/// exclusion. Custom derived classes inherit conservative concurrent-query
+/// capabilities; override GetCapabilities() explicitly to opt in.
 class NumericalKinematics : public KinematicsBase {
 public:
-    /// The last node is a fixed tool transform (UNKNOWN is also accepted).
-    /// Empty or invalid models throw std::invalid_argument. A single fixed node
-    /// represents a zero-coordinate model.
-    explicit NumericalKinematics(const std::vector<JointNode>& joint_node);
-    virtual ~NumericalKinematics() {
-        holistic_motion::utility::LogDebug("Destructing NumericalKinematics...");
-    };
+  KinematicsCapabilities GetCapabilities() const override;
 
-    /// Compatibility setter: only the model-derived DOF is accepted. Other
-    /// values throw std::invalid_argument without changing model-sized state.
-    void SetDOF(int dof);
+  /// The last node is a fixed tool transform (UNKNOWN is also accepted).
+  /// Empty or invalid models throw std::invalid_argument. A single fixed node
+  /// represents a zero-coordinate model.
+  explicit NumericalKinematics(const std::vector<JointNode> &joint_node);
+  virtual ~NumericalKinematics() = default;
 
-    /// \brief get the forward kinematics
-    ///
-    /// \param target_joint
-    /// \param pose
-    /// \return bool success or not
-    virtual bool GetFK(const Eigen::VectorXd& target_joint,
-                       SE3d& pose) const override final;
+  /// Compatibility setter: only the model-derived DOF is accepted. Other
+  /// values throw std::invalid_argument without changing model-sized state.
+  void SetDOF(int dof);
 
-    /// \brief get all inverse kinematics
-    ///
-    /// \param target_pose
-    /// \param ik_solutions
-    /// \param joints_seed
-    /// \return bool success or not
-    virtual bool GetIK(const SE3d& target_pose,
-                       IkRtn& ik_solutions,
-                       Eigen::VectorXd& joint_seed,
-                       std::vector<double>& dist) const override final;
+  /// \brief Get the terminal pose without retaining intermediate frames.
+  /// Unknown derived classes retain virtual GetAllFK dispatch.
+  ///
+  /// \param target_joint
+  /// \param pose
+  /// \return bool success or not
+  virtual bool GetFK(const Eigen::VectorXd &target_joint,
+                     SE3d &pose) const override final;
 
-    /// \brief get the nearst inverse kinematics
-    /// Returns one solution minimizing weighted movement from the caller's
-    /// finite seed, including when convergence requires a zero-seed retry.
-    ///
-    /// \param target_pose
-    /// \param ik_solutions
-    /// \param joints_seed
-    /// \return bool success or not
-    virtual bool GetNearstIK(const SE3d& target_pose,
-                             IkRtn& ik_solutions,
-                             Eigen::VectorXd& joint_seed,
-                             double& min_dist) const override final;
+  /// \brief get all inverse kinematics
+  ///
+  /// \param target_pose
+  /// \param ik_solutions
+  /// \param joints_seed
+  /// \return bool success or not
+  virtual bool GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                     Eigen::VectorXd &joint_seed,
+                     std::vector<double> &dist) const override final;
 
-    bool GetJacobian(const Eigen::VectorXd& joint_pos,
-                     Eigen::MatrixXd& jacobian) const;
+  /// \brief get the nearst inverse kinematics
+  /// Returns one solution minimizing weighted movement from the caller's
+  /// finite seed, including when convergence requires a zero-seed retry.
+  ///
+  /// \param target_pose
+  /// \param ik_solutions
+  /// \param joints_seed
+  /// \return bool success or not
+  virtual bool GetNearstIK(const SE3d &target_pose, IkRtn &ik_solutions,
+                           Eigen::VectorXd &joint_seed,
+                           double &min_dist) const override final;
 
-    bool SetMaxIterNum(const int& max_iter_num);
+  bool GetJacobian(const Eigen::VectorXd &joint_pos, Eigen::MatrixXd &jacobian) const;
 
-    bool GetMaxIterNum(int& max_iter_num) const;
+  bool SetMaxIterNum(const int &max_iter_num);
 
-    bool SetTransErrTh(const double& trans_err_th);
+  bool GetMaxIterNum(int &max_iter_num) const;
 
-    bool GetTransErrTh(double& trans_err_th) const;
+  bool SetTransErrTh(const double &trans_err_th);
 
-    bool SetAngleErrTh(const double& angle_err_th);
+  bool GetTransErrTh(double &trans_err_th) const;
 
-    bool GetAngleErrTh(double& angle_err_th) const;
+  bool SetAngleErrTh(const double &angle_err_th);
 
-    bool SetStepSize(const double& step_size);
+  bool GetAngleErrTh(double &angle_err_th) const;
 
-    bool GetStepSize(double& step_size) const;
+  bool SetStepSize(const double &step_size);
 
-    bool SetDamp(const double& damp);
+  bool GetStepSize(double &step_size) const;
 
-    bool GetDamp(double& damp) const;
+  bool SetDamp(const double &damp);
+
+  bool GetDamp(double &damp) const;
+
+protected:
+    /// Opt in only when GetAllFK retains the default chain-model semantics.
+    /// Unknown derived classes keep virtual GetAllFK dispatch by default.
+    virtual bool UsesDefaultForwardKinematics() const noexcept;
 
 private:
-    bool SolveIK(const SE3d& target_pose, IkRtn& ik_solutions,
-                 Eigen::VectorXd& joint_seed, std::vector<double>& dist,
-                 const Eigen::VectorXd* nearest_reference) const;
+  bool SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutions,
+                   Eigen::VectorXd &joint_seed, std::vector<double> &dist,
+                   const Eigen::VectorXd *nearest_reference) const;
 
-    /// \brief Computes the kinematic Jacobian matrix for the robotic
-    /// manipulator.
-    ///
-    /// @param jacobian An output parameter that will be filled with the
-    /// calculated Jacobian matrix.
-    /// @param pose_list A list of poses representing the configuration of the
-    /// robotic manipulator's segments.
-    /// @return Returns true if the Jacobian matrix was successfully calculated.
-    bool _GetKinJacobian(Eigen::MatrixXd& jacobian,
-                         const std::vector<SE3d>& pose_list) const;
+  /// \brief Computes the kinematic Jacobian matrix for the robotic
+  /// manipulator.
+  ///
+  /// @param jacobian An output parameter that will be filled with the
+  /// calculated Jacobian matrix.
+  /// @param pose_list A list of poses representing the configuration of the
+  /// robotic manipulator's segments.
+  /// @return Returns true if the Jacobian matrix was successfully calculated.
+  bool _GetKinJacobian(Eigen::MatrixXd &jacobian,
+                       const std::vector<SE3d> &pose_list) const;
 
-    /// \brief Retrieves the bounds for controllable joints of the robotic
-    /// manipulator.
-    ///
-    /// \return bool success or not
-    bool _GetControllableJointBounds() const;
+  /// \brief Retrieves the bounds for controllable joints of the robotic
+  /// manipulator.
+  ///
+  /// \return bool success or not
+  bool _GetControllableJointBounds() const;
 
 private:
     double eps_ = 1e-4;  ///< About the iteration accuracy of the displacement

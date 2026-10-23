@@ -7,6 +7,7 @@ from holistic_motion.kit.retargeting import (
     RetargetingModeSpec,
     RetargetingTarget,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def test_builtin_arm_and_whole_body_modes():
@@ -260,7 +261,7 @@ def test_pinocchio_linear_solve_falls_back_to_least_squares(monkeypatch):
 
 
 def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path, monkeypatch):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "retargeting.urdf"
     urdf.write_text(
         """<robot name="retargeting">
@@ -395,7 +396,7 @@ def test_pinocchio_solver_accepts_arm_and_whole_body_targets(tmp_path, monkeypat
 
 
 def test_pinocchio_solver_reports_unreachable_fixed_model_without_crashing(tmp_path):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "fixed.urdf"
     urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
     solver = PinocchioRetargetingSolver(urdf, {"left_hand": "base"}, {"left_arm": []})

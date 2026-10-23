@@ -307,8 +307,45 @@ int main() {
         return Fail(__LINE__);
     huge_nodes[0].joint_type = JointType::REVOLUTE;
     NumericalKinematics huge_rotation(huge_nodes);
-    if (huge_rotation.GetAllFK(Eigen::VectorXd::Constant(1, 1e200), poses) ||
+    if (!huge_rotation.GetAllFK(Eigen::VectorXd::Constant(1, 1e200), poses) ||
+        !poses.back().GetRotation().isApprox(
+            Eigen::AngleAxisd(2e200, Eigen::Vector3d::UnitX()).toRotationMatrix(),
+            1e-12))
+        return Fail(__LINE__);
+    // The angle itself, rather than its squared norm, must overflow here.
+    if (huge_rotation.GetAllFK(Eigen::VectorXd::Constant(1, 1e308), poses) ||
         !poses.empty())
         return Fail(__LINE__);
+
+    // Configuration filtering must use the same oblique-axis motion as FK.
+    std::vector<JointNode> oblique_nodes(
+        6, JointNode(SE3d(0.2, 0.1, 0.3, 0.0, 0.0, 0.0, 1.0),
+                     Eigen::Vector3d::Ones().normalized(),
+                     JointType::REVOLUTE, -3.0, 3.0));
+    oblique_nodes.emplace_back();
+    oblique_nodes.back().joint_type = JointType::FIXED;
+    Eigen::VectorXd oblique_q(6);
+    oblique_q << 1.711518684233507, 1.7151561451572688, 2.8148161051371146,
+        1.4883586374573916, 0.9333048557466572, 2.6333072650031477;
+    NumericalKinematics oblique(oblique_nodes);
+    if (!oblique.GetAllFK(oblique_q, poses) ||
+        poses[2].GetTranslation().z() <= poses[1].GetTranslation().z())
+        return Fail(__LINE__);
+    RobotConfigManager elbow_up;
+    elbow_up.SetElbowUp(true);
+    IkRtn oblique_solutions;
+    if (!oblique_solutions.PushBack(oblique_q) ||
+        !oblique_solutions.LimitRobotConfig(oblique_nodes, elbow_up) ||
+        oblique_solutions.ik_number != 1)
+        return Fail(__LINE__);
+    for (int count : {0, 1, 3}) {
+        oblique_solutions.Clear();
+        oblique_solutions.PushBack(oblique_q);
+        if (oblique_solutions.LimitRobotConfig(
+                std::vector<JointNode>(oblique_nodes.begin(),
+                                       oblique_nodes.begin() + count), elbow_up) ||
+            !oblique_solutions.ik_joints.empty())
+            return Fail(__LINE__);
+    }
     return 0;
 }

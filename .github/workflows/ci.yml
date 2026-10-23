@@ -36,15 +36,24 @@ jobs:
           HOLISTICMOTION_PURE_PYTHON: "1"
           PYTHONPATH: python
         run: |
-          python -m pytest tests/python/test_toppra_torch.py tests/python/test_toppra.py tests/python/test_toppra_scaling.py -q
+          python -m pytest tests/python/test_toppra_torch*.py tests/python/test_toppra.py tests/python/test_toppra_scaling.py -q
           python -m pytest tests/python/test_import.py -k 'pure_python or numpy_trajectory' -q
 
   quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Reject whitespace errors
-        run: git diff --check HEAD
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$DIFF_BASE" && "$DIFF_BASE" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --check "$DIFF_BASE" HEAD
+          else
+            git show --format= --check HEAD
+          fi
 
   test:
     runs-on: ubuntu-latest
@@ -63,6 +72,31 @@ jobs:
         env:
           JOBS: "2"
         run: ./scripts/build.sh --tests --no-cuda
+      - name: Check installed SDK component isolation
+        env:
+          HOLISTICMOTION_TEST_SDK_PREFIX: build/install
+          HOLISTICMOTION_TEST_TOOLCHAIN: build/build/Release/generators/conan_toolchain.cmake
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/python/test_cmake_components.py -q
+      - name: Install the independent Python robotics runtime
+        run: python -m pip install 'pin>=3.8,<5'
+      - name: Check lazy collision and native core with Python Pinocchio
+        env:
+          PYTHONPATH: build/install
+          HOLISTICMOTION_PURE_PYTHON: "0"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: >-
+          python -m pytest tests/python/test_runtime.py
+          tests/python/test_lazy_collision.py -q
+      - name: Verify Conan package identities include Python and CUDA capabilities
+        env:
+          HOLISTICMOTION_TEST_CONAN_PYTHON_ABI: "1"
+          HOLISTICMOTION_TEST_CONAN_CUDA_ARCHITECTURES: "1"
+          HOLISTICMOTION_TEST_TOOLCHAIN: build/build/Release/generators/conan_toolchain.cmake
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: >-
+          python -m pytest tests/python/test_conan_python_abi.py
+          tests/python/test_conan_cuda_architectures.py -q
       - name: Validate exported core package and consumer
         run: >-
           conan create . --no-remote
@@ -73,11 +107,15 @@ jobs:
 
   python-core:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
       - name: Install build tools
         run: >-
           python -m pip install 'conan>=2.28' 'numpy>=1.23'
@@ -89,13 +127,22 @@ jobs:
           BUILD_DIR: build-core
           JOBS: "2"
         run: ./scripts/build.sh --tests --no-cuda --no-collision
-      - name: Check trajectory arrays with NumPy 1.23
+      - name: Check missing and optional collision components in the installed SDK
+        env:
+          HOLISTICMOTION_TEST_SDK_PREFIX: build-core/install
+          HOLISTICMOTION_TEST_TOOLCHAIN: build-core/build/Release/generators/conan_toolchain.cmake
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: python -m pytest tests/python/test_cmake_components.py -q
+      - name: Check trajectory arrays and coordinates with NumPy 1.23
+        if: matrix.python == '3.9'
         run: |
           python -m venv "$RUNNER_TEMP/numpy123"
           "$RUNNER_TEMP/numpy123/bin/python" -m pip install 'numpy==1.23.5' 'pytest>=7'
           PYTHONPATH="$PWD/build-core/install" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-            "$RUNNER_TEMP/numpy123/bin/python" -m pytest tests/python/test_trajectory_sampling.py -q
+            "$RUNNER_TEMP/numpy123/bin/python" -m pytest \
+            tests/python/test_trajectory_sampling.py tests/python/test_joint_position_map.py -q
       - name: Configure C++ sanitizers and Eigen assertions
+        if: matrix.python == '3.12'
         run: >-
           cmake -S . -B build-sanitizers
           -DCMAKE_TOOLCHAIN_FILE="$PWD/build-core/build/Release/generators/conan_toolchain.cmake"
@@ -106,6 +153,23 @@ jobs:
           -DHOLISTICMOTION_ENABLE_COLLISION=OFF
           -DHOLISTICMOTION_ENABLE_SANITIZERS=ON
       - name: Build and test with ASan and UBSan
+        if: matrix.python == '3.12'
         run: |
           cmake --build build-sanitizers --parallel 2
           ctest --test-dir build-sanitizers --output-on-failure --no-tests=error
+      - name: Verify exported Python bindings and installed consumer
+        run: >-
+          conan create . --no-remote
+          -o '&:shared=True' -o '&:with_python=True'
+          -o '&:with_tests=False' -o '&:with_cuda=False'
+          -o '&:with_collision=False' -c tools.build:jobs=2
+      - name: Install Python Pinocchio alongside the collision-free core
+        if: matrix.python == '3.12'
+        run: python -m pip install 'pin>=3.8,<5'
+      - name: Exercise the supported combined runtime in both import orders
+        if: matrix.python == '3.12'
+        env:
+          PYTHONPATH: build-core/install
+        run: >-
+          python -m pytest tests/python/test_runtime.py
+          tests/python/test_joint_position_map.py tests/python/test_pink_retargeting.py -q

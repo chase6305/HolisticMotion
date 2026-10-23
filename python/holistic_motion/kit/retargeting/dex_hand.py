@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import perf_counter
 from types import MappingProxyType
 from typing import Optional
@@ -15,6 +16,7 @@ from typing import Optional
 import numpy as np
 
 from .pinocchio_solver import _positive_float, _readonly_array
+from ._urdf import normalized_urdf_xml
 
 
 def _names(values, name):
@@ -26,17 +28,37 @@ def _names(values, name):
     return result
 
 
+def _mimic_parameters(urdf):
+    result = []
+    for joint in urdf.findall("joint"):
+        mimic = joint.find("mimic")
+        if mimic is None:
+            continue
+        try:
+            multiplier = float(mimic.get("multiplier", "1"))
+            offset = float(mimic.get("offset", "0"))
+        except ValueError as error:
+            raise ValueError("mimic coefficients must be finite") from error
+        if not np.isfinite([multiplier, offset]).all():
+            raise ValueError("mimic coefficients must be finite")
+        result.append((joint.get("name"), mimic.get("joint"), multiplier, offset))
+    return result
+
+
 def _load_dex():
-    try:
-        import nlopt
-        from dex_retargeting.kinematics_adaptor import MimicJointKinematicAdaptor
-        from dex_retargeting.optimizer import VectorOptimizer
-        from dex_retargeting.robot_wrapper import RobotWrapper
-    except ImportError as error:
-        raise ImportError(
-            "DexHandRetargetingSolver requires the optional hand backend; "
-            "install 'holistic-motion[hand-retargeting]' (Torch is required)"
-        ) from error
+    from ...runtime import _python_pinocchio_import
+
+    with _python_pinocchio_import():
+        try:
+            import nlopt
+            from dex_retargeting.kinematics_adaptor import MimicJointKinematicAdaptor
+            from dex_retargeting.optimizer import VectorOptimizer
+            from dex_retargeting.robot_wrapper import RobotWrapper
+        except ImportError as error:
+            raise ImportError(
+                "DexHandRetargetingSolver requires the optional hand backend; "
+                "install 'holistic-motion[hand-retargeting]' (Torch is required)"
+            ) from error
     return nlopt, RobotWrapper, VectorOptimizer, MimicJointKinematicAdaptor
 
 
@@ -160,6 +182,9 @@ class DexHandRetargetingSolver:
     The adapter applies no temporal output filter and no implicit model download.
     Internal derivatives also work inside Torch no-grad and inference contexts;
     the caller's gradient and inference modes are restored after each evaluation.
+
+    The optimizer, robot workspace and last solution are mutable. Each worker
+    must own an independently initialized instance; serialize reset and queries.
     """
 
     def __init__(
@@ -200,7 +225,9 @@ class DexHandRetargetingSolver:
             pairs[:, 0] == pairs[:, 1]
         ):
             raise ValueError("vector origins and endpoints must differ")
-        urdf = ET.parse(path).getroot()
+        urdf_xml = normalized_urdf_xml(path)
+        urdf = ET.fromstring(urdf_xml)
+        mimic_parameters = _mimic_parameters(urdf)
         link_names = {link.get("name") for link in urdf.findall("link")}
         if (set(origins) | set(tasks)) - link_names:
             raise ValueError("vector endpoints must name URDF links, not joints")
@@ -232,7 +259,13 @@ class DexHandRetargetingSolver:
                 return np.asarray(value, dtype=float).reshape(6, self.model.nv)
 
         try:
-            self._robot = ScalarHandRobot(str(path))
+            # The pinned upstream wrapper accepts a file path and only builds
+            # kinematics. Keep the caller's asset untouched and the normalized
+            # source local to this initialization, including on Windows.
+            with TemporaryDirectory(prefix="holistic-motion-hand-model-") as folder:
+                model_path = Path(folder) / "hand.urdf"
+                model_path.write_text(urdf_xml, encoding="utf-8")
+                self._robot = ScalarHandRobot(str(model_path))
         except NotImplementedError as error:
             raise ValueError(
                 "hand backend requires a scalar-joint hand URDF (nq == nv)"
@@ -265,21 +298,11 @@ class DexHandRetargetingSolver:
         self._mimic_names = set()
         target_limits = self._limits[self._target].copy()
         sources, mimics, multipliers, offsets = [], [], [], []
-        for joint in urdf.findall("joint"):
-            mimic = joint.find("mimic")
-            if mimic is None:
-                continue
-            source, name = mimic.get("joint"), joint.get("name")
+        for name, source, multiplier, offset in mimic_parameters:
             if source not in names or name not in self.joint_names or name in names:
                 raise ValueError(
                     "mimic joints must have a directly optimized source and cannot be optimized themselves"
                 )
-            multiplier, offset = (
-                float(mimic.get("multiplier", "1")),
-                float(mimic.get("offset", "0")),
-            )
-            if not np.isfinite([multiplier, offset]).all():
-                raise ValueError("mimic coefficients must be finite")
             low, high = self._limits[self.joint_names.index(name)]
             index = names.index(source)
             if multiplier == 0.0:

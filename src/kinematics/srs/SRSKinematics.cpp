@@ -1,4 +1,6 @@
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
+#include "../JointPeriod.h"
+#include "../SeedAlias.h"
 #include "SRSKinematicsInternal.h"
 
 #include <algorithm>
@@ -9,6 +11,15 @@
 #include <Eigen/SVD>
 
 namespace holistic_motion::robotics {
+
+KinematicsCapabilities SRSKinematics::GetCapabilities() const {
+    auto result = NumericalKinematics::GetCapabilities();
+    result.family = KinematicsFamily::SRS;
+    result.supports_concurrent_queries = true;
+    result.supports_redundancy = IsCompatible();
+    result.supports_closed_form_ik = AnalyzeGeometry().closed_form_compatible;
+    return result;
+}
 
 bool SRSKinematics::IsCompatible() const noexcept {
     if (GetDOF() != 7 || joint_nodes_.size() != 8)
@@ -22,18 +33,20 @@ bool SRSKinematics::IsCompatible() const noexcept {
                        });
 }
 
-void SRSKinematics::OnKinematicModelChanged() {
-    geometry_analysis_cache_.reset();
-}
-
 namespace {
 
 int Direction(double value) { return value < 0.0 ? -1 : 1; }
 
+int AngleDirection(double angle) {
+    if (angle >= -M_PI && angle <= M_PI)
+        return Direction(angle);
+    // Branch labels describe a physical angle, independent of its turn count.
+    return Direction(std::atan2(std::sin(angle), std::cos(angle)));
+}
+
 bool IsRigidTransform(const Eigen::Matrix4d &transform) {
     if (!transform.allFinite() ||
-        !transform.row(3).isApprox(
-                Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9))
+        !transform.row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9))
         return false;
     const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
     return (rotation.transpose() * rotation)
@@ -58,27 +71,36 @@ Eigen::Matrix4d Mdh(double alpha, double distance, double theta) {
     return result;
 }
 
-struct CanonicalSRSModel {
-    Eigen::Matrix4d base{Eigen::Matrix4d::Identity()};
-    Eigen::Matrix4d tool{Eigen::Matrix4d::Identity()};
-    Eigen::Matrix<double, 7, 1> offsets;
-    std::array<int, 7> directions;
-    double upper{0.0};
-    double lower{0.0};
-};
+using CanonicalSRSModel = srs_detail::CanonicalModel;
 
-bool BuildCanonicalModel(const SRSKinematics &solver, CanonicalSRSModel &model) {
+bool ComputeCanonicalModel(const SRSKinematics &solver, CanonicalSRSModel &model) {
     const auto geometry = solver.AnalyzeGeometry();
     if (!geometry.closed_form_compatible)
         return false;
-    Eigen::VectorXd zero = Eigen::VectorXd::Zero(7);
-    Eigen::MatrixXd jacobian;
-    if (!solver.GetJacobian(zero, jacobian))
-        return false;
     std::array<Eigen::Vector3d, 7> observed;
-    for (int i = 0; i < 7; ++i)
-        observed[i] = jacobian.block<3, 1>(3, i).normalized();
+    SE3d chain_zero;
+    Eigen::Vector3d elbow_origin = Eigen::Vector3d::Zero();
+    const auto &nodes = solver.GetJointNodesView();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        chain_zero = chain_zero * nodes[i].origin_pose;
+        if (i == 3)
+            elbow_origin = chain_zero.GetTranslation();
+        if (i < observed.size()) {
+            observed[i] = (chain_zero.GetRotation() * nodes[i].axis).normalized();
+            model.axis_norms[i] = detail::JointAxisNorm(nodes[i].axis);
+        }
+    }
+    if (!chain_zero.Coeffs().allFinite())
+        return false;
     Eigen::Vector3d z = observed[0];
+    // Axis orientation defines positive joint motion, not the upper link's
+    // direction. Choose the base gauge on the link side so reversing the first
+    // axis cannot invert the canonical model's positive link displacement.
+    const Eigen::Vector3d elbow =
+        elbow_origin +
+        observed[3] * observed[3].dot(geometry.shoulder_center - elbow_origin);
+    if (z.dot(elbow - geometry.shoulder_center) < 0.0)
+        z = -z;
     Eigen::Vector3d y = observed[1] - z * z.dot(observed[1]);
     if (y.norm() < 1e-8)
         return false;
@@ -166,55 +188,51 @@ bool BuildCanonicalModel(const SRSKinematics &solver, CanonicalSRSModel &model) 
                 distances[i] == 1.0 ? (i == 2 ? model.upper : model.lower) : 0.0;
         canonical_zero *= Mdh(alpha[i], distance, model.offsets[i]);
     }
-    SE3d actual_zero;
-    if (!solver.GetFK(zero, actual_zero))
-        return false;
-    model.tool = canonical_zero.inverse() * model.base.inverse() *
-                 actual_zero.GetTransform();
+    model.tool =
+        canonical_zero.inverse() * model.base.inverse() * chain_zero.GetTransform();
     return model.tool.allFinite();
 }
 
 bool WrapToJointLimits(double value, const JointNode &node, double reference,
                        double &wrapped) {
     constexpr double tolerance = 1e-9;
-    constexpr double period = 2.0 * M_PI;
+    const double period = detail::CoordinatePeriod(node);
     if (!std::isfinite(value) || !std::isfinite(reference) ||
         !std::isfinite(node.lower_limit) || !std::isfinite(node.upper_limit) ||
         node.lower_limit > node.upper_limit) {
         return false;
     }
-    const long long minimum_turn = static_cast<long long>(
-            std::ceil((node.lower_limit - tolerance - value) / period));
-    const long long maximum_turn = static_cast<long long>(
-            std::floor((node.upper_limit + tolerance - value) / period));
-    if (minimum_turn > maximum_turn)
-        return false;
-    const long long reference_turn =
-            static_cast<long long>(std::llround((reference - value) / period));
-    const long long selected_turn =
-            std::clamp(reference_turn, minimum_turn, maximum_turn);
-    wrapped = value + static_cast<double>(selected_turn) * period;
-    return wrapped >= node.lower_limit - tolerance &&
-           wrapped <= node.upper_limit + tolerance;
+    // Share the bounded nearest-branch selection with ordinary IK. Floating
+    // turn indices handle broad finite limits without integer conversion
+    // overflow, and reject shifts that cannot retain the original phase.
+    return detail::NearestPeriodicValue(
+        std::max(node.lower_limit, node.lower_limit_set) - tolerance,
+        std::min(node.upper_limit, node.upper_limit_set) + tolerance, value, reference,
+        wrapped, node, period);
 }
 
-double WeightedDistance(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs) {
+double WeightedDistance(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
+                        const std::vector<JointNode> &nodes) {
     // The elbow redundancy itself should not dominate branch selection.
     static const std::array<double, 7> weights{2.0, 2.0, 2.0, 0.0, 1.0, 1.0, 1.0};
     double result = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        const double delta = std::remainder(lhs[i] - rhs[i], 2.0 * M_PI);
+        const double delta =
+            std::remainder(lhs[i] - rhs[i], detail::CoordinatePeriod(nodes[i]));
         result += weights[static_cast<std::size_t>(i)] * delta * delta;
     }
     return result;
 }
 
-double WrappedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs) {
+double WrappedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
+                              const std::vector<JointNode> &nodes) {
     if (lhs.size() != rhs.size())
         return std::numeric_limits<double>::infinity();
     double result = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        const double delta = std::remainder(lhs[i] - rhs[i], 2.0 * M_PI);
+        const double delta =
+            std::remainder(lhs[i] - rhs[i], detail::CoordinatePeriod(nodes[i])) *
+            detail::JointAxisNorm(nodes[i].axis);
         result += delta * delta;
     }
     return result;
@@ -228,7 +246,7 @@ bool HasStrictPose(const SRSKinematics &solver, const SE3d &target,
         return false;
     }
     const Eigen::Matrix4d delta =
-            actual.GetTransform().inverse() * target.GetTransform();
+        actual.GetTransform().inverse() * target.GetTransform();
     return delta.block<3, 1>(0, 3).norm() < 1e-5 &&
            Eigen::AngleAxisd(delta.block<3, 3>(0, 0)).angle() < 1e-5;
 }
@@ -241,6 +259,7 @@ bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
     // Small link offsets in real URDFs can leave a residual in the canonical
     // SRS model. Keep its result as the local seed instead of restarting IK.
     NumericalKinematics refinement(solver.GetJointNode());
+    refinement.SetTCP(solver.GetTCP());
     refinement.SetMaxIterNum(100);
     refinement.SetTransErrTh(1e-8);
     refinement.SetAngleErrTh(1e-8);
@@ -257,26 +276,45 @@ bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
 
 } // namespace
 
+void SRSKinematics::OnKinematicModelChanged() {
+    geometry_analysis_ = ComputeGeometryAnalysis();
+    canonical_model_.reset();
+    if (!AnalyzeGeometry().closed_form_compatible)
+        return;
+    auto model = std::make_shared<srs_detail::CanonicalModel>();
+    if (ComputeCanonicalModel(*this, *model))
+        canonical_model_ = std::move(model);
+}
+
+bool SRSKinematics::GetCanonicalModel(srs_detail::CanonicalModel &model) const {
+    if (!canonical_model_)
+        return false;
+    model = *canonical_model_;
+    model.tool = (model.tool * GetTCP().GetTransform()).eval();
+    return model.tool.allFinite();
+}
+
 SRSConfiguration SRSKinematics::GetConfiguration(const Eigen::VectorXd &joints) const {
     if (!IsCompatible() || joints.size() != 7 || !joints.allFinite()) {
         return {};
     }
     CanonicalSRSModel model;
-    if (!BuildCanonicalModel(*this, model)) {
+    if (!GetCanonicalModel(model)) {
         return {Direction(joints[1]), Direction(joints[3]), Direction(joints[5]),
                 joints[2]};
     }
     Eigen::Matrix<double, 7, 1> model_joints;
     for (int i = 0; i < 7; ++i) {
-        model_joints[i] = model.directions[i] * joints[i] + model.offsets[i];
+        model_joints[i] =
+            model.directions[i] * (joints[i] * model.axis_norms[i]) + model.offsets[i];
     }
-    return {Direction(model_joints[1]), Direction(model_joints[3]),
-            Direction(model_joints[5]), GetArmAngle(joints)};
+    return {AngleDirection(model_joints[1]), AngleDirection(model_joints[3]),
+            AngleDirection(model_joints[5]), GetArmAngle(joints)};
 }
 
 double SRSKinematics::GetArmAngle(const Eigen::VectorXd &joints) const {
     CanonicalSRSModel model;
-    if (joints.size() != 7 || !joints.allFinite() || !BuildCanonicalModel(*this, model))
+    if (joints.size() != 7 || !joints.allFinite() || !GetCanonicalModel(model))
         return 0.0;
     Eigen::Vector3d elbow, wrist, elbow_axis;
     const auto geometry = AnalyzeGeometry();
@@ -290,8 +328,8 @@ double SRSKinematics::GetArmAngle(const Eigen::VectorXd &joints) const {
     if (distance < 1e-10)
         return 0.0;
     const Eigen::Vector3d direction = wrist_model / distance;
-    const double elbow_sign =
-            Direction(model.directions[3] * joints[3] + model.offsets[3]);
+    const double elbow_sign = AngleDirection(
+        model.directions[3] * (joints[3] * model.axis_norms[3]) + model.offsets[3]);
     const double cosine = clamp((model.upper * model.upper + distance * distance -
                                  model.lower * model.lower) /
                                         (2.0 * model.upper * distance),
@@ -333,7 +371,7 @@ bool SRSKinematics::SolveConfiguration(const SE3d &target,
         return true;
     }
     CanonicalSRSModel model;
-    if (BuildCanonicalModel(*this, model)) {
+    if (GetCanonicalModel(model)) {
         // A rejected analytic branch must not be replaced by unconstrained IK:
         // matching S/E/W signs alone does not preserve the requested arm angle.
         return false;
@@ -385,8 +423,9 @@ bool SRSKinematics::GetAnalyticElbowSeed(const SE3d &target,
                                          const Eigen::VectorXd &seed,
                                          Eigen::VectorXd &analytic_seed) const {
     const auto geometry = AnalyzeGeometry();
+    CanonicalSRSModel model;
     if (!geometry.closed_form_compatible || seed.size() != 7 || !seed.allFinite() ||
-        !target.GetTransform().allFinite()) {
+        !target.GetTransform().allFinite() || !GetCanonicalModel(model)) {
         return false;
     }
     Eigen::VectorXd zero = Eigen::VectorXd::Zero(7);
@@ -412,10 +451,12 @@ bool SRSKinematics::GetAnalyticElbowSeed(const SE3d &target,
     const double model_elbow =
             Direction(static_cast<double>(configuration.elbow)) * std::acos(cosine);
     analytic_seed = seed;
-    analytic_seed[3] = (model_elbow - geometry.elbow_angle_offset) /
-                       geometry.elbow_angle_direction;
-    analytic_seed[3] = clamp(analytic_seed[3], joint_nodes_[3].lower_limit,
-                             joint_nodes_[3].upper_limit);
+    analytic_seed[3] = (model_elbow - model.offsets[3]) / model.directions[3] /
+                       model.axis_norms[3];
+    analytic_seed[3] = clamp(
+        analytic_seed[3],
+        std::max(joint_nodes_[3].lower_limit, joint_nodes_[3].lower_limit_set),
+        std::min(joint_nodes_[3].upper_limit, joint_nodes_[3].upper_limit_set));
     return analytic_seed.allFinite();
 }
 
@@ -425,7 +466,7 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
                                         Eigen::VectorXd &solution) const {
     CanonicalSRSModel model;
     if (seed.size() != 7 || !seed.allFinite() || !target.GetTransform().allFinite() ||
-        !BuildCanonicalModel(*this, model))
+        !GetCanonicalModel(model))
         return false;
     const Eigen::Matrix4d pose =
             model.base.inverse() * target.GetTransform() * model.tool.inverse();
@@ -478,7 +519,8 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
     model_solution[1] =
             shoulder_sign * std::acos(clamp(shoulder_rotation(2, 2), -1.0, 1.0));
     if (std::abs(std::sin(model_solution[1])) < 1e-8) {
-        model_solution[0] = model.directions[0] * seed[0] + model.offsets[0];
+        model_solution[0] =
+            model.directions[0] * (seed[0] * model.axis_norms[0]) + model.offsets[0];
         model_solution[2] =
                 std::atan2(shoulder_rotation(1, 0), shoulder_rotation(0, 0)) -
                 model_solution[0];
@@ -492,7 +534,8 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
     const double wrist_sign = Direction(static_cast<double>(configuration.wrist));
     model_solution[5] = wrist_sign * std::acos(clamp(wrist_rotation(1, 2), -1.0, 1.0));
     if (std::abs(std::sin(model_solution[5])) < 1e-8) {
-        model_solution[4] = model.directions[4] * seed[4] + model.offsets[4];
+        model_solution[4] =
+            model.directions[4] * (seed[4] * model.axis_norms[4]) + model.offsets[4];
         model_solution[6] = std::atan2(-wrist_rotation(2, 0), wrist_rotation(0, 0)) -
                             model_solution[4];
     } else {
@@ -505,8 +548,8 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
     solution.resize(7);
     const auto& nodes = GetJointNodesView();
     for (int i = 0; i < 7; ++i) {
-        const double user_value =
-                (model_solution[i] - model.offsets[i]) / model.directions[i];
+        const double user_value = (model_solution[i] - model.offsets[i]) /
+                                  model.directions[i] / model.axis_norms[i];
         if (!WrapToJointLimits(user_value, nodes[i], seed[i], solution[i])) {
             return false;
         }
@@ -525,6 +568,10 @@ bool SRSKinematics::GetAnalyticSolution(const SE3d &target,
 bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                           SRSSolveMethod method,
                           std::vector<Eigen::VectorXd> &solutions) const {
+    if (detail::SeedAliasesSolutions(solutions, seed)) {
+        const Eigen::VectorXd stable_seed = seed;
+        return Solve(target, stable_seed, method, solutions);
+    }
     solutions.clear();
     if (!IsCompatible() || seed.size() != 7 || !seed.allFinite() ||
         !IsRigidTransform(target.GetTransform())) {
@@ -534,7 +581,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     auto add = [&](const Eigen::VectorXd &candidate) {
         const bool duplicate = std::any_of(
                 solutions.begin(), solutions.end(), [&](const auto &existing) {
-                    return WrappedDistanceSquared(existing, candidate) < 1e-8;
+                    return WrappedDistanceSquared(existing, candidate, joint_nodes_) < 1e-8;
                 });
         if (!duplicate)
             solutions.push_back(candidate);
@@ -562,7 +609,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     } else if (method == SRSSolveMethod::ALL_CONFIGURATIONS) {
         // Preserve the exact seed branch first, then enumerate S/E/W signs.
         CanonicalSRSModel model;
-        if (BuildCanonicalModel(*this, model)) {
+        if (GetCanonicalModel(model)) {
             Eigen::VectorXd solution;
             if (SolveConfiguration(target, seed_configuration, seed, solution))
                 add(solution);
@@ -604,7 +651,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
 
     std::sort(solutions.begin(), solutions.end(),
               [&](const auto &lhs, const auto &rhs) {
-                  return WeightedDistance(lhs, seed) < WeightedDistance(rhs, seed);
+                  return WeightedDistance(lhs, seed, joint_nodes_) < WeightedDistance(rhs, seed, joint_nodes_);
               });
     return !solutions.empty();
 }
@@ -641,8 +688,7 @@ SRSSolveReport SRSKinematics::SolveDetailed(const SE3d &target,
         double minimum_singular_value = 0.0;
         double maximum_singular_value = 0.0;
         if (GetJacobian(solution, jacobian)) {
-            const Eigen::JacobiSVD<Eigen::MatrixXd> svd(
-                    jacobian, Eigen::ComputeThinU | Eigen::ComputeThinV);
+            const Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian);
             if (svd.singularValues().size() > 0) {
                 minimum_singular_value = svd.singularValues().tail<1>()[0];
                 maximum_singular_value = svd.singularValues()[0];
@@ -657,9 +703,10 @@ SRSSolveReport SRSKinematics::SolveDetailed(const SE3d &target,
         Eigen::VectorXd margins(solution.size());
         for (Eigen::Index index = 0; index < solution.size(); ++index) {
             const auto &node = joint_nodes_[static_cast<std::size_t>(index)];
+            const double lower = std::max(node.lower_limit, node.lower_limit_set);
+            const double upper = std::min(node.upper_limit, node.upper_limit_set);
             margins[index] = std::max(
-                    0.0, std::min(solution[index] - node.lower_limit,
-                                  node.upper_limit - solution[index]));
+                0.0, std::min(solution[index] - lower, upper - solution[index]));
             margin = std::min(margin, margins[index]);
         }
         report.minimum_joint_limit_margins.push_back(margin);

@@ -64,6 +64,53 @@ def native_module():
     return native
 
 
+@pytest.mark.parametrize("kind", ["solver", "trajectory"])
+def test_native_cleanup_does_not_invoke_failing_handlers(tmp_path, kind):
+    native_module()
+    model = tmp_path / "cleanup.urdf"
+    model.write_text("""<robot name="cleanup"><link name="base"/><link name="tip"/>
+<joint name="joint" type="revolute"><parent link="base"/><child link="tip"/>
+<axis xyz="0 0 1"/><limit lower="-3" upper="3" effort="1" velocity="1"/>
+</joint></robot>""")
+    command = """
+import gc, logging, sys
+import holistic_motion as hm
+import numpy as np
+gc.disable()
+if sys.argv[2] == 'solver':
+    objects = [hm.Robot(sys.argv[1]).kinematics]
+else:
+    points = np.array([[0., 0.], [.2, .1], [.4, 0.]])
+    objects = [hm.RnTrajectory(points, np.ones(2), np.ones(2), np.ones(2),
+                               blend_tolerance=.01, profile=profile)
+               for profile in ('double_s', 'trapezoidal')]
+class Cycle:
+    pass
+cycle = Cycle()
+cycle.self = cycle
+cycle.objects = objects
+del objects, cycle
+class FailingHandler(logging.Handler):
+    def emit(self, record):
+        raise RuntimeError('cleanup must not call this handler')
+hm.setup_logging('DEBUG', [FailingHandler()])
+for _ in range(3):
+    gc.collect()
+hm.reset_logging()
+print('cleanup completed')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", command, str(model), kind],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "cleanup completed"
+
+
 def test_import_is_quiet_and_preserves_application_root(tmp_path):
     env = dict(os.environ, HOLISTICMOTION_PURE_PYTHON="1", HOLISTICMOTION_DEBUG="0")
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "python")

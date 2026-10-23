@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <typeinfo>
 
 namespace {
 
@@ -21,6 +22,15 @@ double SafeAsin(double value) {
 
 namespace holistic_motion {
 namespace robotics {
+
+KinematicsCapabilities URKinematics::GetCapabilities() const {
+    auto result = KinematicsBase::GetCapabilities();
+    result.family = KinematicsFamily::UR;
+    result.default_ik_algorithm = IKAlgorithm::ANALYTIC;
+    result.supports_closed_form_ik = true;
+    result.supports_concurrent_queries = typeid(*this) == typeid(URKinematics);
+    return result;
+}
 
 bool URKinematics::GetFK(const Eigen::VectorXd &target_joint,
                          SE3d &pose) const {

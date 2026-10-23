@@ -10,10 +10,11 @@ from holistic_motion.kit.retargeting import (
     SupportPolygonTask,
     ZmpTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, solver_type, **options):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "kinematic_only.urdf"
     urdf.write_text("""<robot name="kinematic_only">
         <link name="base"/><link name="tool"/>

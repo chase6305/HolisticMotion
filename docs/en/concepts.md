@@ -21,7 +21,14 @@ names retain first-match resolution. A cyclic parent traversal terminates with
 The core `holistic_motion` library contains robot models, kinematics,
 manifolds, null-space path generation, and trajectories. Collision queries live
 in the optional `holistic_motion_collision` companion library so ordinary
-kinematics users do not acquire Pinocchio and Coal unnecessarily.
+kinematics users do not acquire Pinocchio and Coal unnecessarily. Python mirrors
+this boundary with separate core and collision extensions: ordinary package
+imports load the core, and collision types or planning factories load collision
+on first use. Core algorithms can share a process with Python Pinocchio while
+the Conan collision extension remains unloaded.
+Offline geometry preprocessing also loads on first access to `hm.geometry`;
+ordinary imports do not initialize NumPy. Numerical array operations load it
+when needed.
 
 ## Coordinates
 
@@ -42,6 +49,76 @@ small transverse derivatives. Inverse Jacobians still require representable
 entries and remain singular at full turns. Eigen autodiff scalar exponentials
 and Jacobians are checked against finite differences.
 
+## Joint names and coordinate mappings
+
+A configuration `q` has length `nq`; velocities, displacement increments and
+distance gradients have length `nv`. Native `Robot` stores one scalar per
+independent joint, with `nq = nv = model_dof`. Pinocchio stores continuous joints
+as `[cos(theta), sin(theta)]`, giving `nq=2, nv=1`. Configuration indices must
+not be used as tangent-space gradient indices.
+
+`robot.dof` and `robot.kinematics` describe the default selected chain.
+`robot.model_dof`, `robot.nq` and `robot.nv` describe all independent scalar
+joints, including other branches. Pass chain-sized positions to that solver;
+use names to embed them into a full collision/retargeting configuration.
+
+`Robot`'s scalar representation excludes floating, planar and mimic follower
+coordinates. Supply those through the collision/retargeting model's reference
+configuration. `joint_coordinates` exposes `name, idx_q, nq, idx_v, nv` snapshots.
+`create_joint_position_map(names)` selects scalar joints in the requested order:
+
+```python
+names = robot.chain_joint_names("base", "left_tool")
+mapping = collision_model.create_joint_position_map(names)
+context = collision_model.neutral_configuration()
+full_q = mapping.configuration_with_joint_positions(context, chain_q)
+chain_q = mapping.joint_positions(full_q)
+chain_gradient = mapping.joint_velocities(full_distance_gradient)
+```
+
+Mappings copy the reference and preserve unselected arms or a floating base.
+Duplicate/unknown names and selected multi-DOF joints are rejected. Continuous
+extraction returns principal angles without turn history. Units and joint-axis
+conventions must agree across models. Recreate snapshots after topology changes.
+Python Pinocchio models use the same semantics through
+`holistic_motion.configuration.JointPositionMap.from_model(model, names)`;
+retargeting solvers also expose `create_joint_position_map()`.
+
+`Robot`, both native collision models and the Python retargeting/hand solvers
+normalize imported revolute, continuous and prismatic URDF axes to unit
+directions using stable scaling. Axis magnitude does not
+scale joint angles or distances; negative directions retain their sign. Zero
+or nonfinite scalar-joint axes are rejected. This corrects the previous native
+URDF behavior that multiplied motion by the axis magnitude, and rejects zero
+axes before a collision backend can produce a non-rigid placement. Caller
+URDF files are preserved.
+Imported unit axes also have exactly unit length under the native norm
+calculation; this prevents rounding in the axis length from changing the phase
+of an extremely large joint angle relative to Pinocchio.
+Direct C++ `JointNode` construction retains its explicit axis scale, so manually built
+chains must still use axes consistent with their collision/retargeting model.
+`LoadURDF()` replaces the model only after construction and validation succeed;
+failed parsing or validation preserves the previous model and solver.
+Deferred `LoadVisuals()` publishes metadata from the same parsed URDF snapshot
+as kinematics. Working-directory changes, source replacement or source removal
+cannot select another visual model. It retains only visual metadata while
+deferred and reads no mesh assets; publication does not parse the URDF again.
+`GetURDFPath()` / `robot.urdf_path` retain the caller's original path.
+Native model import rejects reversed position-limit intervals on every bounded
+scalar joint, including branches outside the default kinematic chain. Equal
+bounds remain valid locked positions; continuous joints have no position bounds.
+
+Mappings transform coordinates without propagating mimic constraints or
+checking hardware limits/collisions. Native collision models expose
+`validate_configuration(q)` for full dimensions, finite values and normalized
+continuous/quaternion blocks, without updating query workspaces. Named-joint
+planning factories validate preserved manifold context during construction.
+
+Continuous `joint_lower_limits` / `joint_upper_limits` return an angular
+planning interval `[-pi, pi]`, rather than cosine/sine component bounds. Named
+collision planning factories mark those joints as periodic. Use a caller-defined
+scalar planning space when turn counts must be constrained.
+
 ## Initialization and runtime phases
 
 Keep model construction and configuration outside real-time loops. `Robot`,
@@ -54,11 +131,111 @@ planner object, while each `plan()` or `optimize()` call owns only request-local
 search state. Geometry sphere fitting is an offline initialization operation;
 the generated sphere model is the runtime artifact.
 
-Stateful solvers and collision models reuse mutable workspaces and are not
+Stateful retargeting solvers and collision models reuse mutable workspaces and are not
 safe for concurrent calls on the same instance. Use one prepared instance per
 runtime worker when parallel queries are required.
 
+## Instance ownership and concurrency
+
+| Class or operation | Contract for a shared instance |
+|---|---|
+| `Robot` tree queries and mapping construction | Read concurrently only while model fields and visual data remain unchanged; synchronize loading and edits |
+| `JointPositionMap` | Immutable topology snapshot with independent outputs; shareable |
+| Numerical, OPW, UR and FEP read-only solving | Separate caller-owned seeds/outputs and no concurrent model, TCP, frame or limit updates |
+| `SRSKinematics` | Geometry and the immutable canonical model are prepared at construction/model updates; read-only queries may share an instance with separate seeds/outputs and unchanged configuration |
+| `NullSpacePlanner` | Per-call path and workspace; the retained SRS solver may be shared while its configuration remains unchanged |
+| `SRSContinuousTracker` / `FEPContinuousTracker` | Mutable history; construct a tracker per worker; the native solver may be shared for read-only queries |
+| `PinocchioRetargetingSolver`, `PinkRetargetingSolver`, `CuroboRetargetingSolver` | Mutable Pinocchio Data and solve history; prepare independently per worker and give callbacks compatible state ownership |
+| `DexHandRetargetingSolver` | Mutable hand-model workspace, optimizer and last solution; initialize per worker |
+| `RetargetingModeManager` | Mutable mode selection; create one manager per solver worker, sharing only immutable `mode_specs` |
+| Both native collision models | Queries update FK/collision workspaces; use one instance per worker |
+| `SamplingPlanner` and `PathOptimizer` | Search state belongs to the call, but all callbacks must also support concurrent calls; native collision adapters and sphere-distance caches require separate worker instances |
+| Built-in C++ trajectories and NumPy TOPPRA sampling | Concurrent read-only sampling after construction, with unchanged geometry, limits and result arrays; custom path segments define their own contract |
+| PyTorch TOPPRA | Follow PyTorch device/stream and autograd rules; use independent graphs for parallel backward passes |
+| `SimulationSession` | One state producer; overlapping/reentrant reset/step/close operations are rejected; adapters own device synchronization and buffer lifetimes |
+
+The Python GIL is not a thread-safety guarantee: numerical libraries and device
+operations may release it, and callbacks may reenter. Keep `prepare()`, mode
+changes and configuration updates outside a worker's active query.
+Built-in `solve_ik()`, the SRS/FEP specialized `solve()` and
+`solve_configuration()` methods, SRS detailed/user-frame solve variants, and FEP
+`forward_batch()` release the GIL during native computation. Inputs, including
+branch configurations, are copied first; output conversion runs with the GIL.
+This permits Python workers to share an unchanged solver with independent
+outputs. It does not permit concurrent solver setters or shared tracker history.
+Custom solvers, including subclasses of numerical/OPW/UR solvers, retain the GIL
+unless they explicitly override capabilities to declare concurrent queries.
+That opt-in also covers Python execution without the GIL.
+Planning and path optimization offer the explicit Python keyword
+`release_gil=True`; inputs and request configuration are copied before release,
+and Python callbacks reacquire the GIL. Their default calling mode remains
+compatible with native callbacks that require it.
+Built-in numerical, SRS and FEP scalar FK queries compute only the terminal pose;
+`GetAllFK()` still returns the complete frame sequence. Custom numerical subclasses
+retain virtual `GetAllFK()` dispatch unless they opt into default chain semantics
+through the protected `UsesDefaultForwardKinematics()` hook.
+Construct collision adapters with independent models for each worker. Copying
+a planner or a closure does not clone its captured model or shared distance cache.
+Copying a C++ `Robot` also shares its `Joint`/`Link` objects and default solver.
+Construct fresh models when workers edit the tree or solver configuration;
+construct fresh mode managers from shared immutable specs for retargeting workers.
+
 ## Seven-axis kinematics
+
+SRS prepares its canonical frame/offset model during construction and model
+updates, without caching query targets or workspace. Changing TCP takes effect
+on the next query; copying a solver shares only immutable preparation data.
+Detailed reports compute singular values without unused singular vectors, and
+joint-limit margins use the intersection of hardware and user limits. Closed-form
+branch selection uses the same bounded periodic-coordinate logic as ordinary IK.
+Direct C++ joint-axis scales are retained in canonical coordinates and elbow
+seeds; imported URDF axes remain normalized. Offset-chain refinement preserves
+TCP and the active limit intersection.
+The canonical base gauge follows the upper-link side independently of the first
+joint axis's sign. Canonical shoulder/elbow/wrist signs and arm angle describe
+physical phases, so adding full coordinate periods preserves their values.
+SRS and FEP candidate comparisons use each joint's coordinate period
+`2*pi/axis.norm()`. Duplicate detection compares physical angular phases; branch
+ranking keeps joint-coordinate distances. FEP passes the same periods to CPU
+and CUDA scoring and bounds redundancy sampling by physical half turns.
+
+Inspect `solver.capabilities` in Python or `GetCapabilities()` through the C++
+`KinematicsBase` interface before selecting optional operations. The snapshot
+reports the solver family, default IK algorithm, DOF, Jacobian, redundancy,
+closed-form IK, batch FK, compiled CUDA and concurrent-query support. It does
+not initialize CUDA or guarantee reachability for a particular target. Custom
+C++ solvers inherit conservative defaults and can override the query.
+`KinematicsBase` is also a Python alias for the historical `AnalyticKinematics`
+base class; the historical name remains available.
+
+SRS and FEP inherit numerical `inverse()` / `GetNearestIK()` entry points.
+Their specialized `solve()` methods are explicit alternatives. A seven-R
+chain may have SRS type without passing the geometry prerequisites for
+closed-form IK; `supports_closed_form_ik` reports that distinction using the
+default geometry tolerance. Passing a custom tolerance to `analyze_geometry()`
+does not change this capability or the configured solver. FEP currently uses
+numerical correction and does not advertise closed-form IK.
+
+`solve_ik(target, seed, selection=IKSelection.NEAREST)` provides a common
+owned report for all built-in solvers. Its `status` distinguishes `SUCCESS`,
+`INVALID_INPUT` and `NO_SOLUTION`, and `algorithm` records the common entry
+point's numerical or analytic algorithm. The seed is unchanged; failures have
+empty `solutions` and `distances`. Use `IKSelection.ALL` to request the
+candidates available from the supplied seed; this does not guarantee all IK
+solutions. Invalid Python types/shapes still raise during argument conversion.
+The C++ equivalent is `KinematicsBase::SolveIK()` returning `IKSolveReport`.
+The existing `inverse()`, `solve_all()` and specialized solve APIs remain
+available with their existing behavior.
+
+```python
+import holistic_motion as hm
+
+report = robot.kinematics.solve_ik(target_pose, seed)
+if report.success:
+    joints = report.solutions[0]
+elif report.status == hm.IKSolveStatus.INVALID_INPUT:
+    raise ValueError("invalid IK target or seed")
+```
 
 `SRSKinematics` is selected for compatible seven-revolute spherical
 shoulder/wrist chains. Its null-space projection rejects non-finite inputs and
@@ -88,7 +265,11 @@ q_command = result.joints
 The tracker expands periodic angles near the predicted state, applies branch
 hysteresis, filters candidates by pose and dynamic limits, and reports
 singularity, branch-change, velocity, acceleration, and residual diagnostics.
-The native `SRSKinematics` remains stateless and can still be used directly.
+The native `SRSKinematics` keeps no streaming-target history and can still be
+used directly. Geometry measurements are computed at construction and after
+successful model updates; `analyze_geometry(tolerance)` only classifies that
+read-only snapshot. Concurrent queries with different tolerances do not write
+shared state. Configuration updates still require external synchronization.
 Use `solve_detailed(target, seed, method)` when the caller needs a non-throwing
 status plus each solution's configuration, minimum Jacobian singular value,
 per-joint limit margins, near-singularity flag, and limit-hit flag. The existing
@@ -101,7 +282,7 @@ using the SDK-compatible `user_T_base * base_T_tcp` convention. Use the
 or reset that state.
 
 `FEPKinematics` supports offset seven-axis chains and batched FK. CPU is used
-for small batches; `AUTO` selects CUDA only when a runtime device is available
+for small batches without initializing CUDA; `AUTO` selects CUDA only when a runtime device is available
 and the batch is large enough to amortize transfers. Returned FEP IK solutions
 are independently checked to 10 µm and 10 µrad after optional high-precision
 refinement. Explicit `CUDA` requests fail instead of silently falling back.
@@ -164,6 +345,14 @@ regularization terms overflow or lose subnormal precision.
 Translation norms retain tiny nonzero errors when their component squares
 underflow. Rotation errors use `atan2` to preserve angles whose trace rounds to
 three; FK also retains tiny revolute motions when their norm squares vanish.
+It uses a scaled norm when squaring a large rotation vector overflows, retaining
+finite rotation magnitudes and rejecting angles or translations that themselves
+cannot be represented.
+Scalar FK, CPU/CUDA batch FK and periodic-coordinate conversion use the same
+host-prepared axis scale. This avoids changing a large angle's phase by rounding
+the norm of `q * axis` or recomputing the scale on the device. Six-DoF legacy
+elbow-up filtering also uses scalar axis-angle motion; malformed prefix geometry
+or candidate coordinates clear its solution output instead of being indexed.
 
 C++ solver construction validates joint fields and coordinate layout before
 allocating model-sized state. Numerical models reserve their last node for a
@@ -192,7 +381,8 @@ use their sine/cosine phase when ordinary remainder reduction loses accuracy;
 returned wraps must preserve that phase to `1e-10`. Nonperiodic coordinates are
 only checked against their interval. An already in-limit configuration with no
 other periodic representation skips turn enumeration and its workspace.
-For nonunit rotational axes, the coordinate period is `2*pi/axis.norm()`.
+For nonunit rotational axes supplied through C++ `JointNode`, the coordinate
+period is `2*pi/axis.norm()`; URDF-imported axes are unit directions.
 Wrapping checks the physical rotation angle used by FK, including oblique axes.
 
 Expansion is limited to 65536 configurations by default, counted before any
@@ -207,6 +397,16 @@ also select one representation per joint directly, so they can succeed when
 enumerating all turn combinations would exceed the all-solutions budget.
 Nearest wrapping checks nonperiodic coordinates without changing them and
 rejects NaN limits or an unrepresentable selected periodic phase.
+
+`IkRtn` result postprocessing uses `ik_joints` as its source of truth and
+reconciles the cached `ik_number`. Deduplication keeps lexicographically first
+representatives: two solutions merge only when every coordinate differs by less
+than the finite nonnegative tolerance; zero tolerance merges exact duplicates.
+This deterministic greedy rule does not treat approximate equality as transitive.
+Distance sorting preserves the input order of ties and consumes caller-supplied
+finite distances. Deduplication, sorting and joint filtering clear `joint_states`;
+malformed input clears solution outputs, and failed sorting also clears distances.
+Each mutable result belongs to one caller or worker.
 
 ## Scope
 

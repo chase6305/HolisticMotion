@@ -9,13 +9,14 @@ from holistic_motion.kit.retargeting import (
     PostureTask,
     RetargetingTarget,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize("weight, translation", [(1e-300, 1e-30), (1.0, 1e-160)])
 def test_immobile_pinocchio_mode_preserves_tiny_nonzero_residual(
     tmp_path, weight, translation
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "fixed_tool.urdf"
     urdf.write_text("""<robot name="fixed_tool">
       <link name="base"/><link name="tool"/>
@@ -48,7 +49,7 @@ def test_immobile_pinocchio_mode_preserves_tiny_nonzero_residual(
 def test_immobile_mode_skips_derivatives_and_releases_arm_mode(
     tmp_path, monkeypatch, solver_type, method, restriction, reached
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     velocity = 0 if restriction == "velocity" else 2
     lower, upper = (0, 0) if restriction == "position" else (-2, 2)
     urdf = tmp_path / "locked_torso.urdf"

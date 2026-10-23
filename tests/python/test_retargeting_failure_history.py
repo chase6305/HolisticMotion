@@ -3,10 +3,11 @@
 import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import PinocchioRetargetingSolver
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def make_solver(tmp_path, *, movable=True):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "history.urdf"
     urdf.write_text("""<robot name="history">
       <link name="base"/><link name="tool"/>

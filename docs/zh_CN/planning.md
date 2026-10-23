@@ -119,6 +119,9 @@ path = optimized.path
 （`finite_difference_step`）估计代价梯度，再与解析几何梯度组合；
 `state_cost_step_size` 在组合方向归一化前缩放 clearance 梯度。保持
 `clearance=0` 和 `state_cost_weight=0` 会完全关闭该阶段。
+创建具有正 `clearance` 的网格或球体碰撞优化器时，模型必须含有活动碰撞对。
+两次调用之间清空碰撞对时，已有优化器暂时关闭碰撞校验和间距代价；恢复碰撞对后
+重新启用。碰撞对修改不能与优化调用重叠。
 相邻迭代会交替采用正向和反向路点扫描，以减小原地更新产生的方向偏差。
 
 通用接口可通过 `optimizer.set_state_cost(callable)` 使用相同机制。代价必须有限、
@@ -216,6 +219,81 @@ shortcut 的改进判断采用相对舍入容差，全局缩放关节权重不�
 未配置 state validator 时会完全跳过边采样；有限关节的合法端点通过凸插值即可
 保证限位可行性。
 此时 `collision_checks` 保持为零；配置 validator 后，该统计值等于实际回调次数。
+
+## 规划与轨迹之间的关节空间契约
+
+`JointSpace` 是限位、度量权重、周期关节和可选关节名称顺序的不可变快照。
+规划器和路径优化器均可接收它，避免后处理阶段丢失搜索时的度量与周期拓扑：
+
+```python
+space = hm.JointSpace(lower, upper, joint_names)
+space = space.with_joint_weights(weights).with_continuous_joints([0])
+planner = hm.SamplingPlanner(space, state_validator=is_valid)
+optimizer = hm.PathOptimizer(planner.joint_space, state_validator=is_valid)
+```
+
+原有限位构造与 setter 保持兼容；setter 只替换该消费者的空间，不改变已有快照或
+其他消费者。命名碰撞工厂在 `joint_space.joint_names` 中保留选定关节顺序。
+快照不包含 validator、碰撞模型、代价回调或共享工作区，这些状态需分别提供。
+复制只保留共享的只读坐标数据，不重新分配限位、权重或名称数组；builder 会创建
+新快照，因此已有副本和结果保持原值。C++ 快照移动后，源对象仍保留可用坐标数据。
+规划和优化结果也保存本次请求的 `joint_space`，之后的 setter 不会改变既有路径
+对应的坐标契约。
+
+每次请求会在调用校验或目标函数前独立持有端点或路径坐标、选项和回调包装。
+重入修改调用方输入、选项对象或规划器回调只影响后续请求，当前请求始终使用
+同一份已验证的采样分辨率、度量和目标。
+回调捕获的模型、列表或共享工作区保持原有归属，不会深拷贝；C++ 按值复制的可变
+函数对象则使用请求局部状态，需要共享时应显式捕获共享状态。并发调用 setter
+仍需调用方同步。
+
+C++ `NullSpacePlanner::Plan()` 可以将旧输出路径中的行用作新的起点或偏好向量，
+SRS/FEP `Solve()` 也可以将旧输出候选用作种子。这些调用会在替换输出容器前保留
+所需输入值。
+
+Python 的 `SRSKinematics.null_space_velocity()` 与 `NullSpacePlanner.plan()`
+复制输入后在原生计算期间释放 GIL。只读查询可共享求解器或规划器，每次查询持有
+独立输出；模型、坐标系和限位更新仍须外部同步。
+
+Python 的 `SamplingPlanner.plan()` 和 `PathOptimizer.optimize()` 接受仅限关键字的 `release_gil=True`，用于并行
+执行原生计算。绑定先持有 GIL 复制输入、选项和规划器或优化器，再为本次请求释放
+GIL；Python 回调会自动重新获取它。默认 `release_gil=False` 保留既有原生回调的
+调用契约；启用后，访问 Python API 的 C++ 回调须自行获取 GIL。回调捕获的碰撞模型
+和其他可变工作区仍需由各 worker 分别持有。可在启动 worker 前创建副本：
+
+```python
+worker_models = [collision.clone() for _ in range(4)]
+worker_planners = [
+    hm.SamplingPlanner.from_collision_joints(model, joint_names, context)
+    for model in worker_models
+]
+```
+
+每个副本保留源对象当前的障碍物和碰撞对选择，并持有新的查询工作区。复制期间
+源对象应无活动查询或更新。每个并发请求使用不同的规划器与模型，再通过
+`plan(..., release_gil=True)` 并行执行原生计算。
+
+CPython 的校验、代价和梯度回调参与循环引用回收，包括捕获自身规划器或优化器的
+回调，以及反向引用工厂规划器或优化器的碰撞模型。工厂回调的每个副本独立持有
+其 Python 碰撞对象引用；借用模型仍由外部 C++ 所有者管理原生生命周期。替换或清除全部相关回调后，活动请求与外部 C++ 副本结束时即可释放
+该资源。执行中的请求会独立持有回调引用，直到请求结束。通过借用引用暴露给 Python
+的 C++ 规划对象仍遵循其 C++ 所有者的生命周期；Python 回收不会清除该外部对象
+中的回调。
+包含 Python 回调或资源的 C++ 副本应在对应解释器关闭前释放。
+这些回调在复制或销毁时会获取 GIL；嵌入端等待执行这些操作的 worker 结束时，
+应释放 GIL。
+在 PyPy 上应避免回调捕获自身所有者，或在使用结束后显式调用
+`set_state_validator(None)`、`set_state_cost(None)` 和
+`set_state_cost_gradient(None)`；已测试的 PyPy 3.10 回收器不会回收原生回调循环。
+
+将包含周期关节的规划结果交给标量轨迹插值器前，应调用
+`result.joint_space.unwrap_path(result.path)`。它按规划使用的最短圆弧展开各边，
+有界坐标保持原值，展开后的连续坐标可以超出其规划代表区间。
+例如 `pi - 0.1` 到 `-pi + 0.1` 会展开为正向 `0.2` 弧度，而不是穿过零点的近一整圈。
+空路径、非法源状态和无法表示的展开步进会被拒绝；周回平移须使各源角度的正弦与
+余弦分量误差均不超过 1e-10。该操作保留折线的周期拓扑；
+样条或非零 blending 仍可能改变几何，需另行验证。离散碰撞检查不能证明采样点之间
+的连续路径无碰撞。
 
 ## Demo
 

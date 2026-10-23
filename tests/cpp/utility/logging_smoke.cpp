@@ -1,3 +1,8 @@
+#include "holistic_motion/kinematics/NumericalKinematics.h"
+#include "holistic_motion/kinematics/OPWKinematics.h"
+#include "holistic_motion/kinematics/URKinematics.h"
+#include "holistic_motion/trajectory/TrajectoryDoubleS.h"
+#include "holistic_motion/trajectory/TrajectoryTrapezium.h"
 #include "holistic_motion/utility/Logging.h"
 
 #include <spdlog/sinks/null_sink.h>
@@ -65,6 +70,38 @@ int main() {
             Require(std::string(error.what()).find('\x1b') == std::string::npos,
                     "ANSI in exception");
         }
+        // User sinks may throw during ordinary calls, but resource cleanup
+        // must not invoke them from noexcept destructors or stack unwinding.
+        logger.SetRecordFunction([](const LogRecord &) {});
+        using namespace holistic_motion::robotics;
+        std::vector<std::shared_ptr<void>> cleanup;
+        std::vector<JointNode> nodes(7);
+        for (int i = 0; i < 6; ++i)
+            nodes[i] = JointNode(SE3d(), Eigen::Vector3d::UnitZ(), JointType::REVOLUTE,
+                                 -3.0, 3.0);
+        nodes.back().joint_type = JointType::FIXED;
+        cleanup.push_back(std::make_shared<NumericalKinematics>(nodes));
+        cleanup.push_back(std::make_shared<OPWKinematics>(OPWParameters{}, nodes));
+        cleanup.push_back(std::make_shared<URKinematics>(URParameters{}, nodes));
+        using Group = Rn<double, 2>;
+        std::vector<Group> points(3);
+        points[0].Coeffs() << 0.0, 0.0;
+        points[1].Coeffs() << 0.2, 0.1;
+        points[2].Coeffs() << 0.4, 0.0;
+        for (int degree : {2, 5}) {
+            auto path =
+                std::make_shared<PathBezierCurve<Group>>(points, degree, false, 0.01);
+            auto limits = std::make_shared<TrajectoryConstraints>(
+                Eigen::Vector2d::Ones(), Eigen::Vector2d::Ones(),
+                Eigen::Vector2d::Ones());
+            cleanup.push_back(std::make_shared<TrajectoryDoubleS<Group>>(path, limits));
+            cleanup.push_back(
+                std::make_shared<TrajectoryTrapezium<Group>>(path, limits));
+        }
+        logger.SetRecordFunction(
+            [](const LogRecord &) { throw std::runtime_error("cleanup sink failed"); });
+        cleanup.clear();
+        logger.SetRecordFunction([](const LogRecord &) {});
         auto foreign = std::make_shared<spdlog::logger>(
             "HOLISTIC_MOTION", std::make_shared<spdlog::sinks::null_sink_mt>());
         spdlog::register_logger(foreign);

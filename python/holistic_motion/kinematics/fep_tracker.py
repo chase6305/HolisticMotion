@@ -22,7 +22,11 @@ class FEPContinuousResult(SRSContinuousResult):
 
 
 class FEPContinuousTracker(SRSContinuousTracker):
-    """Track continuous FEP solutions with branch and dynamic constraints."""
+    """Track continuous FEP solutions with branch and dynamic constraints.
+
+    History is mutable: use one tracker per worker and serialize reset, option
+    changes and steps. The native FEP solver retains its read-only query contract.
+    """
 
     _solver_label = "FEP"
     _options_type = FEPContinuousOptions

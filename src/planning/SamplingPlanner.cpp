@@ -573,75 +573,50 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
 } // namespace
 
 SamplingPlanner::SamplingPlanner(Eigen::VectorXd lower_limits,
-                                 Eigen::VectorXd upper_limits,
-                                 StateValidator validator)
-    : lower_limits_(std::move(lower_limits)),
-      upper_limits_(std::move(upper_limits)), validator_(std::move(validator)) {
-    if (lower_limits_.size() == 0 ||
-        lower_limits_.size() != upper_limits_.size() ||
-        !lower_limits_.allFinite() || !upper_limits_.allFinite() ||
-        (lower_limits_.array() >= upper_limits_.array()).any()) {
-        throw std::invalid_argument(
-            "joint limits must be finite, ordered, and non-empty");
-    }
-    const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = detail::DefaultJointWeights(ranges);
-    if (!ranges.allFinite() || !weights_.allFinite() ||
-        (weights_.array() <= 0.0).any())
-        throw std::invalid_argument(
-            "joint limit ranges must produce finite positive default weights");
-    continuous_.assign(static_cast<std::size_t>(lower_limits_.size()), false);
-}
+                                 Eigen::VectorXd upper_limits, StateValidator validator)
+    : SamplingPlanner(JointSpace(std::move(lower_limits), std::move(upper_limits)),
+                      std::move(validator)) {}
+
+SamplingPlanner::SamplingPlanner(JointSpace joint_space, StateValidator validator)
+    : joint_space_(std::move(joint_space)), validator_(std::move(validator)) {}
 
 void SamplingPlanner::SetStateValidator(StateValidator validator) {
     validator_ = std::move(validator);
 }
 
 void SamplingPlanner::SetJointWeights(const Eigen::VectorXd &weights) {
-    if (weights.size() != lower_limits_.size() || !weights.allFinite() ||
-        (weights.array() <= 0.0).any()) {
-        throw std::invalid_argument("joint weights must be finite, positive, "
-                                    "and dimensionally compatible");
-    }
-    weights_ = weights;
+    joint_space_ = joint_space_.WithJointWeights(weights);
 }
 
 void SamplingPlanner::SetContinuousJoints(
     const std::vector<std::size_t> &indices) {
-    std::vector<bool> continuous(static_cast<std::size_t>(lower_limits_.size()),
-                                 false);
-    for (std::size_t index : indices) {
-        if (index >= continuous.size())
-            throw std::out_of_range("continuous joint index");
-        if (upper_limits_[static_cast<Eigen::Index>(index)] -
-                lower_limits_[static_cast<Eigen::Index>(index)] <
-            2.0 * detail::kPi - 1e-9) {
-            throw std::invalid_argument(
-                "continuous joints require a range of at least 2*pi");
-        }
-        const Eigen::Index axis = static_cast<Eigen::Index>(index);
-        if (!detail::HasRepresentablePeriod(lower_limits_[axis],
-                                            upper_limits_[axis]))
-            throw std::invalid_argument(
-                "continuous joint limits cannot represent a full revolution");
-        continuous[index] = true;
-    }
-    continuous_ = std::move(continuous);
+    joint_space_ = joint_space_.WithContinuousJoints(indices);
 }
 
-PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
-                                     const Eigen::VectorXd &goal,
-                                     const PlanningOptions &options) const {
+PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &requested_start,
+                                     const Eigen::VectorXd &requested_goal,
+                                     const PlanningOptions &requested_options) const {
+    // Callbacks may reenter Python and edit the caller's options or replace
+    // this planner's validator. Keep the validated request and its callable
+    // alive for the entire search; replacements affect the next request.
+    const PlanningOptions options = requested_options;
+    const StateValidator validator = validator_;
     PlanningResult result;
+    result.joint_space = joint_space_;
+    const auto &space = *result.joint_space;
+    const auto &lower_limits = space.GetLowerLimits();
+    const auto &upper_limits = space.GetUpperLimits();
+    const auto &weights = space.GetJointWeights();
+    const auto &continuous = space.GetContinuousMask();
     const auto started = std::chrono::steady_clock::now();
     auto finish = [&](PlanningStatus status, std::string message) {
         result.status = status;
         result.message = std::move(message);
         result.statistics.planning_time_ms =
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - started)
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      started)
                 .count();
-        return result;
+        return std::move(result);
     };
     const bool finite_options = std::isfinite(options.timeout_seconds) &&
                                 std::isfinite(options.extension_range) &&
@@ -651,9 +626,9 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
         options.algorithm == SamplingAlgorithm::RRT_CONNECT ||
         options.algorithm == SamplingAlgorithm::RRT_STAR ||
         options.algorithm == SamplingAlgorithm::INFORMED_RRT_STAR;
-    if (start.size() != lower_limits_.size() ||
-        goal.size() != lower_limits_.size() || !start.allFinite() ||
-        !goal.allFinite() || !finite_options || !supported_algorithm ||
+    if (requested_start.size() != lower_limits.size() ||
+        requested_goal.size() != lower_limits.size() || !requested_start.allFinite() ||
+        !requested_goal.allFinite() || !finite_options || !supported_algorithm ||
         options.timeout_seconds <= 0.0 || options.max_iterations == 0 ||
         options.extension_range <= 0.0 || options.edge_resolution <= 0.0 ||
         options.goal_bias < 0.0 || options.goal_bias > 1.0 ||
@@ -661,21 +636,23 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &start,
         return finish(PlanningStatus::INVALID_PROBLEM,
                       "invalid dimensions or planning options");
     }
-    const auto deadline =
-        detail::DeadlineAfter(started, options.timeout_seconds);
+    const auto deadline = detail::DeadlineAfter(started, options.timeout_seconds);
     auto in_bounds = [&](const Eigen::VectorXd &state) {
-        return (state.array() >= lower_limits_.array()).all() &&
-               (state.array() <= upper_limits_.array()).all();
+        return (state.array() >= lower_limits.array()).all() &&
+               (state.array() <= upper_limits.array()).all();
     };
+    // Native callbacks can edit or resize the caller's endpoint vectors just
+    // as Python callbacks can replace options. Own the validated coordinates
+    // before any callback runs, including the initial endpoint checks.
+    const Eigen::VectorXd start = requested_start;
+    const Eigen::VectorXd goal = requested_goal;
     if (!in_bounds(start))
-        return finish(PlanningStatus::INVALID_START,
-                      "start is outside joint limits");
+        return finish(PlanningStatus::INVALID_START, "start is outside joint limits");
     if (!in_bounds(goal))
-        return finish(PlanningStatus::INVALID_GOAL,
-                      "goal is outside joint limits");
+        return finish(PlanningStatus::INVALID_GOAL, "goal is outside joint limits");
 
-    PlanningContext context(lower_limits_, upper_limits_, weights_, continuous_,
-                            validator_, options, result.statistics, deadline);
+    PlanningContext context(lower_limits, upper_limits, weights, continuous, validator,
+                            options, result.statistics, deadline);
     const bool start_valid = context.IsStateValid(start);
     if (context.TimedOut())
         return finish(PlanningStatus::TIMEOUT, "planning time limit reached");

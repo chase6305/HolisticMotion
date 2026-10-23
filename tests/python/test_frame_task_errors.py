@@ -8,6 +8,7 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 def rotation_z(angle):
@@ -18,7 +19,7 @@ def rotation_z(angle):
 def make_solver(
     tmp_path, solver_type, yaw, task, active=True, movable_orientation=False
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "cartesian_tool.urdf"
     tool_type = "revolute" if movable_orientation else "fixed"
     tool_limits = (

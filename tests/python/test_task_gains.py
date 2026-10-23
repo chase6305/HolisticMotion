@@ -11,6 +11,7 @@ from holistic_motion.kit.retargeting import (
     SupportPolygonTask,
     ZmpTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize("value", [np.complex64(0.5), np.complex128(0.5 + 1j)])
@@ -30,7 +31,7 @@ def test_frame_task_rejects_complex_cost_arrays(dtype):
 
 
 def make_solver(tmp_path, solver_type, kind, gain, posture_gain):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "sliding_mass.urdf"
     urdf.write_text("""<robot name="sliding_mass">
         <link name="base"/><link name="tool"><inertial>

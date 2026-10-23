@@ -6,11 +6,12 @@ import sys
 from pathlib import Path
 
 import pytest
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize("mode", ["left_arm", "right_arm", "dual_arm"])
 def test_classic_torso_first_example(tmp_path, mode):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     urdf = tmp_path / "upper_body.urdf"
     urdf.write_text("""<robot name="upper_body">
       <link name="base"/><link name="torso_link"/>

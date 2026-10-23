@@ -3,12 +3,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <Eigen/Core>
 
+#include "holistic_motion/planning/JointSpace.h"
+
 namespace holistic_motion::robotics::planning {
+namespace detail {
+struct PlanningCallbackAccess;
+}
 
 enum class SamplingAlgorithm { RRT_CONNECT, RRT_STAR, INFORMED_RRT_STAR };
 
@@ -53,6 +59,9 @@ struct PlanningResult {
   std::vector<Eigen::VectorXd> path;
   PlanningStatistics statistics;
   std::string message;
+  /// Space used for this request, independent of later planner setters.
+  /// Empty only for a default-constructed result not returned by Plan().
+  std::optional<JointSpace> joint_space;
 
   bool Success() const { return status == PlanningStatus::EXACT_SOLUTION; }
 };
@@ -60,12 +69,22 @@ struct PlanningResult {
 // Lightweight joint-space sampling planner implemented by HolisticMotion.
 // The validator receives complete configurations and is deliberately
 // independent of any particular collision library.
+// Each search snapshots endpoints, options, joint space and callback wrappers.
+// Reentrant
+// edits affect subsequent requests; captured callback state retains its usual
+// ownership. Shared-instance calls require thread-safe callbacks and no
+// concurrent setters; a shared collision-model callback is not thread-safe.
 class SamplingPlanner {
+    friend struct detail::PlanningCallbackAccess;
 public:
   using StateValidator = std::function<bool(const Eigen::VectorXd &)>;
 
   SamplingPlanner(Eigen::VectorXd lower_limits, Eigen::VectorXd upper_limits,
                   StateValidator validator = {});
+  explicit SamplingPlanner(JointSpace joint_space, StateValidator validator = {});
+
+  /// Independent topology snapshot; callbacks and their state are not copied.
+  JointSpace GetJointSpace() const { return joint_space_; }
 
   void SetStateValidator(StateValidator validator);
   void SetJointWeights(const Eigen::VectorXd &weights);
@@ -75,10 +94,7 @@ public:
                       const PlanningOptions &options = {}) const;
 
 private:
-  Eigen::VectorXd lower_limits_;
-  Eigen::VectorXd upper_limits_;
-  Eigen::VectorXd weights_;
-  std::vector<bool> continuous_;
+  JointSpace joint_space_;
   StateValidator validator_;
 };
 

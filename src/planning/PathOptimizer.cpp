@@ -365,26 +365,13 @@ class OptimizationContext {
 
 } // namespace
 
-PathOptimizer::PathOptimizer(Eigen::VectorXd lower_limits,
-                             Eigen::VectorXd upper_limits,
+PathOptimizer::PathOptimizer(Eigen::VectorXd lower_limits, Eigen::VectorXd upper_limits,
                              StateValidator validator)
-    : lower_limits_(std::move(lower_limits)),
-      upper_limits_(std::move(upper_limits)), validator_(std::move(validator)) {
-    if (lower_limits_.size() == 0 ||
-        lower_limits_.size() != upper_limits_.size() ||
-        !lower_limits_.allFinite() || !upper_limits_.allFinite() ||
-        (lower_limits_.array() >= upper_limits_.array()).any()) {
-        throw std::invalid_argument(
-            "joint limits must be finite, ordered, and non-empty");
-    }
-    const Eigen::VectorXd ranges = upper_limits_ - lower_limits_;
-    weights_ = detail::DefaultJointWeights(ranges);
-    if (!ranges.allFinite() || !weights_.allFinite() ||
-        (weights_.array() <= 0.0).any())
-        throw std::invalid_argument(
-            "joint limit ranges must produce finite positive default weights");
-    continuous_.assign(static_cast<std::size_t>(lower_limits_.size()), false);
-}
+    : PathOptimizer(JointSpace(std::move(lower_limits), std::move(upper_limits)),
+                    std::move(validator)) {}
+
+PathOptimizer::PathOptimizer(JointSpace joint_space, StateValidator validator)
+    : joint_space_(std::move(joint_space)), validator_(std::move(validator)) {}
 
 void PathOptimizer::SetStateValidator(StateValidator validator) {
     validator_ = std::move(validator);
@@ -400,52 +387,40 @@ void PathOptimizer::SetStateCostGradient(
 }
 
 void PathOptimizer::SetJointWeights(const Eigen::VectorXd &weights) {
-    if (weights.size() != lower_limits_.size() || !weights.allFinite() ||
-        (weights.array() <= 0.0).any())
-        throw std::invalid_argument(
-            "joint weights must be finite and positive");
-    weights_ = weights;
+    joint_space_ = joint_space_.WithJointWeights(weights);
 }
 
 void PathOptimizer::SetContinuousJoints(
     const std::vector<std::size_t> &indices) {
-    std::vector<bool> continuous(static_cast<std::size_t>(lower_limits_.size()),
-                                 false);
-    for (std::size_t index : indices) {
-        if (index >= continuous.size())
-            throw std::out_of_range("continuous joint index");
-        if (upper_limits_[static_cast<Eigen::Index>(index)] -
-                lower_limits_[static_cast<Eigen::Index>(index)] <
-            2.0 * detail::kPi - 1e-9)
-            throw std::invalid_argument(
-                "continuous joints require a range of at least 2*pi");
-        const Eigen::Index axis = static_cast<Eigen::Index>(index);
-        if (!detail::HasRepresentablePeriod(lower_limits_[axis],
-                                            upper_limits_[axis]))
-            throw std::invalid_argument(
-                "continuous joint limits cannot represent a full revolution");
-        continuous[index] = true;
-    }
-    continuous_ = std::move(continuous);
+    joint_space_ = joint_space_.WithContinuousJoints(indices);
 }
 
 PathOptimizationResult
 PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
-                        const PathOptimizationOptions &options) const {
+                        const PathOptimizationOptions &requested_options) const {
+    const PathOptimizationOptions options = requested_options;
+    const StateValidator validator = validator_;
+    const StateCost state_cost = state_cost_;
+    const StateCostGradient state_cost_gradient = state_cost_gradient_;
     PathOptimizationResult result;
+    result.joint_space = joint_space_;
+    const auto &space = *result.joint_space;
+    const auto &lower_limits = space.GetLowerLimits();
+    const auto &upper_limits = space.GetUpperLimits();
+    const auto &weights = space.GetJointWeights();
+    const auto &continuous = space.GetContinuousMask();
     const auto started = std::chrono::steady_clock::now();
     auto finish = [&](PathOptimizationStatus status, std::string message) {
         result.status = status;
         result.message = std::move(message);
         result.statistics.optimization_time_ms =
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - started)
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                      started)
                 .count();
-        return result;
+        return std::move(result);
     };
     if (path.size() < 2 || options.max_iterations == 0 ||
-        !std::isfinite(options.timeout_seconds) ||
-        !std::isfinite(options.step_size) ||
+        !std::isfinite(options.timeout_seconds) || !std::isfinite(options.step_size) ||
         !std::isfinite(options.line_search_decay) ||
         !std::isfinite(options.edge_resolution) ||
         !std::isfinite(options.length_weight) ||
@@ -453,32 +428,28 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         !std::isfinite(options.state_cost_weight) ||
         !std::isfinite(options.finite_difference_step) ||
         !std::isfinite(options.state_cost_step_size) ||
-        !std::isfinite(options.minimum_improvement) ||
-        options.timeout_seconds <= 0.0 || options.step_size <= 0.0 ||
-        options.step_size > 1.0 || options.line_search_steps == 0 ||
-        options.line_search_decay <= 0.0 || options.line_search_decay >= 1.0 ||
-        options.edge_resolution <= 0.0 || options.length_weight < 0.0 ||
-        options.smoothness_weight < 0.0 || options.state_cost_weight < 0.0 ||
-        options.finite_difference_step <= 0.0 ||
+        !std::isfinite(options.minimum_improvement) || options.timeout_seconds <= 0.0 ||
+        options.step_size <= 0.0 || options.step_size > 1.0 ||
+        options.line_search_steps == 0 || options.line_search_decay <= 0.0 ||
+        options.line_search_decay >= 1.0 || options.edge_resolution <= 0.0 ||
+        options.length_weight < 0.0 || options.smoothness_weight < 0.0 ||
+        options.state_cost_weight < 0.0 || options.finite_difference_step <= 0.0 ||
         options.state_cost_step_size < 0.0 ||
-        options.length_weight + options.smoothness_weight +
-                options.state_cost_weight <=
+        options.length_weight + options.smoothness_weight + options.state_cost_weight <=
             0.0 ||
         options.minimum_improvement < 0.0) {
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "invalid path or optimization options");
     }
-    const auto deadline =
-        detail::DeadlineAfter(started, options.timeout_seconds);
-    OptimizationContext context(lower_limits_, upper_limits_, weights_,
-                                continuous_, validator_, state_cost_,
-                                state_cost_gradient_, options,
+    const auto deadline = detail::DeadlineAfter(started, options.timeout_seconds);
+    OptimizationContext context(lower_limits, upper_limits, weights, continuous,
+                                validator, state_cost, state_cost_gradient, options,
                                 result.statistics, deadline);
     result.path = path;
     for (const auto &state : result.path) {
-        if (state.size() != lower_limits_.size() || !state.allFinite() ||
-            (state.array() < lower_limits_.array()).any() ||
-            (state.array() > upper_limits_.array()).any()) {
+        if (state.size() != lower_limits.size() || !state.allFinite() ||
+            (state.array() < lower_limits.array()).any() ||
+            (state.array() > upper_limits.array()).any()) {
             result.path.clear();
             return finish(PathOptimizationStatus::INVALID_PATH,
                           "path contains an invalid state");
@@ -534,7 +505,7 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     std::vector<double> state_costs;
     double total_state_cost = 0.0;
     if (options.state_cost_weight > 0.0) {
-        if (!state_cost_) {
+        if (!state_cost) {
             result.path.clear();
             result.feasible = false;
             return finish(PathOptimizationStatus::INVALID_PATH,
@@ -568,13 +539,12 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "path objective is not finite");
     }
-    detail::PathGeometryWorkspace geometry(weights_, continuous_,
-                                           options.length_weight,
+    detail::PathGeometryWorkspace geometry(weights, continuous, options.length_weight,
                                            options.smoothness_weight);
-    Eigen::VectorXd gradient(lower_limits_.size());
-    Eigen::VectorXd direction(lower_limits_.size());
-    Eigen::VectorXd previous(lower_limits_.size());
-    Eigen::VectorXd candidate(lower_limits_.size());
+    Eigen::VectorXd gradient(lower_limits.size());
+    Eigen::VectorXd direction(lower_limits.size());
+    Eigen::VectorXd previous(lower_limits.size());
+    Eigen::VectorXd candidate(lower_limits.size());
     bool any_update = false;
     for (std::size_t sweep = 0; sweep < options.max_iterations; ++sweep) {
         ++result.statistics.iterations;

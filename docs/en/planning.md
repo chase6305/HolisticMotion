@@ -61,6 +61,100 @@ sample sequence. Motion validation still applies to every new connection.
 
 ## Python example
 
+`JointSpace` is an immutable snapshot of scalar limits, joint weights, periodic
+coordinates and optional joint names in vector order. Both planning and path
+optimization accept it, so the post-processing stage can retain the search
+metric and topology:
+
+```python
+space = hm.JointSpace(lower, upper, joint_names)
+space = space.with_joint_weights(weights).with_continuous_joints([0])
+planner = hm.SamplingPlanner(space, state_validator=is_valid)
+optimizer = hm.PathOptimizer(planner.joint_space, state_validator=is_valid)
+```
+
+The existing limit-based constructors and setters remain available. A setter
+replaces only that consumer's space; snapshots and other consumers remain
+unchanged. Named collision factories retain their selected joint order in
+`joint_space.joint_names`. The snapshot does not contain validators, collision
+models, costs or shared workspaces; supply these separately for each consumer.
+Copies retain shared read-only coordinate data without allocating new limit,
+weight or name arrays. Builders allocate a new snapshot, so neither copies nor
+previous results change. Moved-from C++ snapshots retain usable coordinate data.
+Planning and optimization results also retain the request's `joint_space`, so
+later setter calls cannot change the coordinate contract of an earlier path.
+
+Each request owns its endpoint/path coordinates, options and callback wrappers
+before invoking a validator or objective. Reentrant edits to caller inputs,
+options or planner callbacks affect subsequent requests; the active request keeps one
+validated sampling resolution, metric and objective. Objects captured by the
+callbacks retain their existing ownership: a captured model, list or shared
+workspace is not cloned. C++ mutable functors copied by value have request-local
+state; capture explicitly shared state when that is intended. Concurrent setter
+calls still require synchronization.
+
+The C++ `NullSpacePlanner::Plan()` can reuse start and preference vectors from
+its previous output path. SRS/FEP `Solve()` can also use a previous output
+candidate as its seed. These calls retain the input values before replacing
+the output container.
+
+Python `SRSKinematics.null_space_velocity()` and `NullSpacePlanner.plan()`
+copy their inputs and release the GIL during native computation. Read-only
+queries may share a solver/planner with independent output paths; model, frame
+and limit updates require external synchronization.
+
+Python `SamplingPlanner.plan()` and `PathOptimizer.optimize()` accept the keyword-only `release_gil=True` for
+parallel native work. The binding copies inputs, options and the planner or
+optimizer while holding the GIL, then releases it for that request. Python
+callbacks acquire it automatically. Existing native callbacks keep their current
+calling contract by default (`release_gil=False`); with release enabled, C++
+callbacks using Python APIs must acquire the GIL themselves. Captured collision
+models and other mutable callback workspaces still require separate worker
+instances. Create them before starting the workers:
+
+```python
+worker_models = [collision.clone() for _ in range(4)]
+worker_planners = [
+    hm.SamplingPlanner.from_collision_joints(model, joint_names, context)
+    for model in worker_models
+]
+```
+
+Each clone preserves the source's current obstacles and collision pair selection
+and owns fresh query workspaces. The source must have no active query or edit
+during cloning. Use a different planner/model pair for each concurrent request;
+then call its `plan(..., release_gil=True)` to allow native parallel work.
+
+On CPython, validator, cost and gradient callbacks participate in cycle collection,
+including callbacks that capture their planner or optimizer and collision
+models that hold a back-reference to a factory-created owner. Factory callback
+copies retain the Python collision object they query; external C++ ownership
+still governs borrowed models. Clearing/replacing all such callbacks
+releases that resource once active request and external C++ copies finish. An active request
+retains its own callback references until it finishes. A planning object exposed
+as a borrowed C++ reference keeps the lifetime rules of its C++ owner; Python
+collection does not clear callbacks on that external object.
+Release C++ copies containing Python callbacks or resources before shutting down
+their Python interpreter. Copying or destroying these Python-retaining callbacks
+acquires the GIL; embedding code must release it while waiting for a worker that
+performs those operations.
+On PyPy, avoid callbacks capturing their owner or clear them explicitly with
+`set_state_validator(None)`, `set_state_cost(None)` and
+`set_state_cost_gradient(None)` when finished; native callback cycles are not
+reclaimed by the tested PyPy 3.10 collector.
+
+Before passing a periodic plan to a scalar trajectory interpolator, use
+`result.joint_space.unwrap_path(result.path)`. This lifts each continuous edge
+to the same shortest arc used by planning. Bounded coordinates are unchanged;
+lifted continuous values may leave their representative planning interval.
+For example, an edge from `pi - 0.1` to `-pi + 0.1` becomes a positive `0.2`
+radian step rather than an almost full revolution through zero. Empty/invalid
+source paths and unrepresentable lifted steps are rejected. Whole-turn shifts
+must preserve each source angle's sine/cosine within 1e-10. This operation
+preserves the polyline's topology; spline interpolation or nonzero blending
+can still change its geometry and requires independent validation. Discrete
+collision checking does not certify the continuous path between samples.
+
 ```python
 collision = hm.CollisionModel(urdf_path, [str(urdf_path.parent)])
 joint_names = left_arm_joints + right_arm_joints
@@ -140,6 +234,10 @@ central finite differences (`finite_difference_step`) and combines it with the
 analytic geometric gradient. `state_cost_step_size` scales the clearance
 gradient before the combined direction is normalized. Leaving `clearance=0` and
 `state_cost_weight=0` disables this stage completely.
+Constructing a mesh or sphere collision optimizer with positive `clearance`
+requires active collision pairs. If pairs are cleared between calls, the
+existing optimizer temporarily disables collision validity and clearance costs;
+restoring pairs re-enables them. Pair changes must not overlap optimization.
 Forward and reverse waypoint sweeps alternate between iterations to reduce
 the directional bias of in-place updates.
 

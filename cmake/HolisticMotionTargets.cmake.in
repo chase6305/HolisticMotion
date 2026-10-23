@@ -1,0 +1,6 @@
+# Compatibility entry point for consumers that directly include the complete
+# historical target set. find_package() loads the requested components instead.
+include("${CMAKE_CURRENT_LIST_DIR}/HolisticMotionCoreTargets.cmake")
+if(@HOLISTICMOTION_ENABLE_COLLISION@)
+    include("${CMAKE_CURRENT_LIST_DIR}/HolisticMotionCollisionTargets.cmake")
+endif()

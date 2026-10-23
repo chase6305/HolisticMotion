@@ -1,11 +1,14 @@
 #pragma once
 
+#include <memory>
+
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 
-#include <optional>
-#include <utility>
-
 namespace holistic_motion::robotics {
+
+namespace srs_detail {
+struct CanonicalModel;
+}
 
 enum class SRSSolveMethod {
     SEEDED_NUMERICAL,
@@ -58,10 +61,17 @@ struct SRSSolveReport {
 
 // Solver utilities for redundant 7R manipulators with spherical
 // shoulder/wrist layouts. All inputs use radians and SI units.
+/// Geometry is prepared during construction and model updates. Read-only
+/// solving/analysis calls may share an instance with separate seeds/outputs;
+/// model, frame and limit updates require external synchronization.
 class SRSKinematics final : public NumericalKinematics {
 public:
-    explicit SRSKinematics(const std::vector<JointNode>& joint_nodes)
-        : NumericalKinematics(joint_nodes) {}
+  KinematicsCapabilities GetCapabilities() const override;
+
+  explicit SRSKinematics(const std::vector<JointNode> &joint_nodes)
+      : NumericalKinematics(joint_nodes) {
+      OnKinematicModelChanged();
+  }
 
     bool IsCompatible() const noexcept;
 
@@ -76,6 +86,7 @@ public:
 
     double GetArmAngle(const Eigen::VectorXd& joints) const;
 
+    /// A seed may refer to an element of the previous solutions vector.
     bool Solve(const SE3d& target,
                const Eigen::VectorXd& seed,
                SRSSolveMethod method,
@@ -101,10 +112,15 @@ public:
                              Eigen::VectorXd& solution) const;
 
 private:
-    void OnKinematicModelChanged() override;
+    bool UsesDefaultForwardKinematics() const noexcept override { return true; }
 
-    mutable std::optional<std::pair<double, SRSGeometryAnalysis>>
-            geometry_analysis_cache_;
+    void OnKinematicModelChanged() override;
+    SRSGeometryAnalysis ComputeGeometryAnalysis() const;
+
+    bool GetCanonicalModel(srs_detail::CanonicalModel &model) const;
+
+    SRSGeometryAnalysis geometry_analysis_;
+    std::shared_ptr<const srs_detail::CanonicalModel> canonical_model_;
 };
 
 }  // namespace holistic_motion::robotics

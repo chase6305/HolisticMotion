@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "holistic_motion/robot/JointPositionMap.h"
 #include <Eigen/Core>
 
 namespace holistic_motion::robotics::collision {
@@ -37,6 +38,9 @@ struct CollisionReport {
 
 // Pinocchio/Coal-backed collision geometry kept separate from Robot so meshes
 // are loaded only when collision checking is explicitly requested.
+// Queries mutate Pinocchio/Coal workspaces. Use one instance per worker and do
+// not change obstacles or collision pairs during an active query.
+// Scalar URDF axes are validated and normalized before model construction.
 class CollisionModel {
 public:
   explicit CollisionModel(const std::string &urdf_path,
@@ -49,8 +53,20 @@ public:
   CollisionModel(const CollisionModel &) = delete;
   CollisionModel &operator=(const CollisionModel &) = delete;
 
+  /// Deep-copy the current model, geometry, obstacles and collision pairs with
+  /// fresh query workspaces. Does not reread the URDF or mesh files. Clone a
+  /// quiescent source before starting workers; concurrent edits/queries on the
+  /// source require external synchronization.
+  CollisionModel Clone() const;
+
   int GetConfigurationSize() const;
   int GetVelocitySize() const;
+  /// Validate nq, finite values and normalized manifold blocks. This does not
+  /// check joint limits or collisions and does not change query workspaces.
+  void ValidateConfiguration(const Eigen::VectorXd &configuration) const;
+  std::vector<JointCoordinate> GetJointCoordinates() const;
+  JointPositionMap
+  CreateJointPositionMap(const std::vector<std::string> &joint_names) const;
   std::size_t GetGeometryCount() const;
   std::size_t GetCollisionPairCount() const;
   std::vector<std::string> GetGeometryNames() const;
@@ -93,6 +109,7 @@ public:
 
 private:
   class Impl;
+  explicit CollisionModel(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
 

@@ -1,4 +1,6 @@
 #include "holistic_motion/collision/SphereCollisionModel.h"
+#include "JointCoordinates.h"
+#include "../robot/URDFModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -77,7 +79,10 @@ class SphereCollisionModel::Impl {
         : spheres(std::move(input_spheres)) {
         if (urdf_path.empty())
             throw std::invalid_argument("URDF path must not be empty");
-        pinocchio::urdf::buildModel(urdf_path, model);
+        const auto urdf_model = urdf_internal::LoadModel(urdf_path);
+        if (!urdf_model)
+            throw std::invalid_argument("Unable to load URDF: " + urdf_path);
+        pinocchio::urdf::buildModel(urdf_model, model);
         data = std::make_unique<pinocchio::Data>(model);
         if (spheres.empty())
             throw std::invalid_argument(
@@ -123,6 +128,10 @@ class SphereCollisionModel::Impl {
         if (!q.allFinite())
             throw std::invalid_argument(
                 "configuration must contain finite values");
+        if (model.nq != model.nv && !pinocchio::isNormalized(model, q, 1e-8))
+            throw std::invalid_argument(
+                "configuration must satisfy the model manifold (normalized "
+                "continuous pairs/quaternions)");
     }
 
     void Update(const Eigen::VectorXd &q) {
@@ -303,6 +312,52 @@ int SphereCollisionModel::GetConfigurationSize() const {
     return impl_->model.nq;
 }
 int SphereCollisionModel::GetVelocitySize() const { return impl_->model.nv; }
+void SphereCollisionModel::ValidateConfiguration(
+    const Eigen::VectorXd &q) const {
+    impl_->ValidateConfiguration(q);
+}
+std::vector<JointCoordinate> SphereCollisionModel::GetJointCoordinates() const {
+    return detail::JointCoordinates(impl_->model);
+}
+
+JointPositionMap SphereCollisionModel::CreateJointPositionMap(
+    const std::vector<std::string> &names) const {
+    return detail::PositionMap(impl_->model, names);
+}
+
+Eigen::VectorXd SphereCollisionModel::ConfigurationFromJointPositions(
+    const std::map<std::string, double> &positions) const {
+    std::vector<std::string> names;
+    Eigen::VectorXd values(static_cast<Eigen::Index>(positions.size()));
+    names.reserve(positions.size());
+    Eigen::Index i = 0;
+    for (const auto &entry : positions) {
+        names.push_back(entry.first);
+        values[i++] = entry.second;
+    }
+    return CreateJointPositionMap(names).ConfigurationWithJointPositions(
+        pinocchio::neutral(impl_->model), values);
+}
+
+Eigen::VectorXd SphereCollisionModel::ConfigurationWithJointPositions(
+    const Eigen::VectorXd &reference, const std::vector<std::string> &names,
+    const Eigen::VectorXd &positions) const {
+    auto result = CreateJointPositionMap(names).ConfigurationWithJointPositions(
+        reference, positions);
+    ValidateConfiguration(result);
+    return result;
+}
+
+Eigen::VectorXd SphereCollisionModel::GetJointLowerLimits(
+    const std::vector<std::string> &names) const {
+    return detail::JointLimits(impl_->model, names, false);
+}
+
+Eigen::VectorXd SphereCollisionModel::GetJointUpperLimits(
+    const std::vector<std::string> &names) const {
+    return detail::JointLimits(impl_->model, names, true);
+}
+
 std::size_t SphereCollisionModel::GetSphereCount() const {
     return impl_->spheres.size();
 }

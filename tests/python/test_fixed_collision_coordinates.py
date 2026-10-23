@@ -8,6 +8,7 @@ from holistic_motion.kit.retargeting import (
     PinkRetargetingSolver,
     PostureTask,
 )
+from optional_dependencies import python_pinocchio_or_skip
 
 
 @pytest.mark.parametrize(
@@ -20,7 +21,7 @@ from holistic_motion.kit.retargeting import (
 def test_fixed_waist_is_not_sampled_while_arm_collision_gradient_is_preserved(
     tmp_path, monkeypatch, solver_type, method, restriction
 ):
-    pytest.importorskip("pinocchio", exc_type=ImportError)
+    python_pinocchio_or_skip()
     continuous = restriction == "continuous_zero_velocity"
     waist_type = "continuous" if continuous else "revolute"
     limits = (

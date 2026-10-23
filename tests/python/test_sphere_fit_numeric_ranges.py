@@ -1,10 +1,10 @@
 """Distance regressions with representable results outside squared range."""
 
 import math
-import tracemalloc
 
 import numpy as np
 import pytest
+from optional_dependencies import tracemalloc_or_skip
 from holistic_motion.geometry import (
     SphereFitOptions,
     SphereSpec,
@@ -140,6 +140,7 @@ def test_unrepresentable_final_gap_is_rejected_explicitly():
 
 
 def test_exceptional_distance_workspace_is_bounded():
+    tracemalloc = tracemalloc_or_skip()
     query = np.zeros((64, 3))
     surface = np.ones((8192, 3)) * 1e200
     tracemalloc.start()
@@ -153,6 +154,7 @@ def test_exceptional_distance_workspace_is_bounded():
 
 
 def test_distance_range_classification_workspace_is_bounded():
+    tracemalloc = tracemalloc_or_skip()
     points = np.ones((200_000, 3))
     tracemalloc.start()
     try:

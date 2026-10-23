@@ -21,7 +21,38 @@ Breathe.
 :members:
 ```
 
+## Kinematics capabilities
+
+```{doxygenstruct} holistic_motion::robotics::KinematicsCapabilities
+:members:
+```
+
+All built-in solvers expose `GetCapabilities()` through `KinematicsBase`.
+The default IK algorithm describes the common `GetIK()` and `GetNearestIK()`
+entry points; specialized SRS/FEP solve methods remain explicit.
+
+```{doxygenstruct} holistic_motion::robotics::IKSolveReport
+:members:
+```
+
+`KinematicsBase::SolveIK()` returns an owned report and preserves the caller's
+seed. Failure statuses distinguish invalid inputs from unavailable solutions.
+
+## Named joint coordinates
+
+```{doxygenstruct} holistic_motion::robotics::JointCoordinate
+:members:
+```
+
+```{doxygenclass} holistic_motion::robotics::JointPositionMap
+:members:
+```
+
 ## Sampling planner
+
+```{doxygenclass} holistic_motion::robotics::planning::JointSpace
+:members:
+```
 
 ```{doxygenclass} holistic_motion::robotics::planning::SamplingPlanner
 :members:

@@ -32,16 +32,14 @@ private:
                             Tangent &torsion) const;
 
 public:
-    virtual ~PathSegmentBase() {
-        holistic_motion::utility::LogDebug("Destructing PathSegmentBase");
-    }
+  virtual ~PathSegmentBase() = default;
 
-    /// \brief judge whether there is a trajectory length to determine its
-    /// effectiveness
-    bool IsValid() const {
-        return std::isfinite(length_) && length_ >= 0.0 && std::isfinite(sp_) &&
-               std::isfinite(sp_ + length_);
-    }
+  /// \brief judge whether there is a trajectory length to determine its
+  /// effectiveness
+  bool IsValid() const {
+      return std::isfinite(length_) && length_ >= 0.0 && std::isfinite(sp_) &&
+             std::isfinite(sp_ + length_);
+  }
 
     double GetStartParameter() const { return sp_; }
 
@@ -114,43 +112,43 @@ private:
     using Tangent = typename LieGroup::Tangent;
 
 public:
-    virtual ~PathBase() { holistic_motion::utility::LogDebug("Destructing PathBase"); };
+  virtual ~PathBase() = default;
 
-    /// \brief check colinear or overlap
-    ///  waypoints need to be 1x7,
-    ///  Position and attitude are represented by 4x4 matrix or 1x7 (xyz and
-    ///  quaternion), Joints are represented by 1x6(currently commonly used as
-    ///  6-axis industrial robotic arms)
-    ///
-    /// \param waypoints waypoints of the path
-    void _CheckPathWaypoints(std::vector<LieGroup> &waypoints);
+  /// \brief check colinear or overlap
+  ///  waypoints need to be 1x7,
+  ///  Position and attitude are represented by 4x4 matrix or 1x7 (xyz and
+  ///  quaternion), Joints are represented by 1x6(currently commonly used as
+  ///  6-axis industrial robotic arms)
+  ///
+  /// \param waypoints waypoints of the path
+  void _CheckPathWaypoints(std::vector<LieGroup> &waypoints);
 
-    /// \brief judge whether the path is valid
-    bool IsValid() const { return this->valid_; };
+  /// \brief judge whether the path is valid
+  bool IsValid() const { return this->valid_; };
 
-    /// \brief get the path type
-    PathType GetType() const { return this->path_type_; }
+  /// \brief get the path type
+  PathType GetType() const { return this->path_type_; }
 
-    /// \brief get the waypoints of the path
-    const std::vector<LieGroup> &GetWaypoints() const { return waypoints_; }
+  /// \brief get the waypoints of the path
+  const std::vector<LieGroup> &GetWaypoints() const { return waypoints_; }
 
-    /// \brief get the blend tolerance of the path
-    double GetBlendTolerance() const { return this->blend_tolerance_; }
+  /// \brief get the blend tolerance of the path
+  double GetBlendTolerance() const { return this->blend_tolerance_; }
 
-    /// \brief get the length of the path
-    ///
-    /// \param target Eigen::VectorXd
-    /// \param weights Eigen::VectorXd
-    /// \return double
-    double GetLength() const { return this->length_; }
+  /// \brief get the length of the path
+  ///
+  /// \param target Eigen::VectorXd
+  /// \param weights Eigen::VectorXd
+  /// \return double
+  double GetLength() const { return this->length_; }
 
-    /// \brief get all segment of the path
-    ///
-    /// \param s path parameter
-    /// \return std::shared_ptr<PathSegmentBase>
-    std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> GetPathSegments() const {
-        return path_segments_;
-    }
+  /// \brief get all segment of the path
+  ///
+  /// \param s path parameter
+  /// \return std::shared_ptr<PathSegmentBase>
+  std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> GetPathSegments() const {
+      return path_segments_;
+  }
 
     /// \brief get number of the path segments
     ///

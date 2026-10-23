@@ -2,6 +2,16 @@
 
 <div class="language-switcher"><a href="../en/python_api.html">English</a> · 简体中文</div>
 
+## 坐标映射与运行时诊断
+
+```{eval-rst}
+.. automodule:: holistic_motion.configuration
+   :members:
+
+.. automodule:: holistic_motion.runtime
+   :members:
+```
+
 ## 连续运动学
 
 ```{eval-rst}

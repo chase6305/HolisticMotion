@@ -3,6 +3,8 @@
 #include <memory>
 #include <vector>
 
+#include <Eigen/SVD>
+
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
 #include "holistic_motion/planning/NullSpacePlanner.h"
 
@@ -30,6 +32,19 @@ int main() {
     std::vector<Eigen::VectorXd> normal_path, scaled_path;
     if (!planner.Plan(nominal, direction, 2, 0.01, normal_path))
         return 6;
+    for (bool alias_start : {false, true}) {
+        for (bool alias_direction : {false, true}) {
+            std::vector<Eigen::VectorXd> reused{nominal, direction};
+            const auto &start = alias_start ? reused.front() : nominal;
+            const auto &preference = alias_direction ? reused.back() : direction;
+            if (!planner.Plan(start, preference, 2, 0.01, reused) ||
+                reused.size() != normal_path.size())
+                return 13;
+            for (std::size_t index = 0; index < reused.size(); ++index)
+                if (!reused[index].isApprox(normal_path[index], 1e-11))
+                    return 14;
+        }
+    }
     for (double scale : {1e-300, 1e300}) {
         if (!planner.Plan(nominal, scale * direction, 2, 0.01, scaled_path) ||
             normal_path.size() != scaled_path.size())
@@ -55,8 +70,7 @@ int main() {
         return 9;
     const Eigen::VectorXd locked = Eigen::VectorXd::Zero(7);
     if (!shared_solver->SetUserJointLimits(locked, locked) ||
-        planner.Plan(locked, direction, 2, 0.01, scaled_path) ||
-        !scaled_path.empty()) {
+        planner.Plan(locked, direction, 2, 0.01, scaled_path) || !scaled_path.empty()) {
         std::cerr << "null-space planner accepted a stationary corrected path\n";
         return 12;
     }
@@ -68,8 +82,8 @@ int main() {
         Eigen::MatrixXd projection(7, 7);
         for (Eigen::Index axis = 0; axis < 7; ++axis) {
             Eigen::VectorXd preferred = Eigen::VectorXd::Unit(7, axis), velocity;
-            // In particular, exercise the 6-by-7 thin SVD with Eigen assertions
-            // enabled in the sanitizer build of the library itself.
+            // Exercise the rectangular 6-by-7 Jacobian projection with Eigen
+            // assertions enabled in the sanitizer build of the library itself.
             if (!solver.GetNullSpaceVelocity(q, preferred, velocity))
                 return 3;
             projection.col(axis) = velocity;
@@ -100,6 +114,82 @@ int main() {
                          "preferred velocity\n";
             return 10;
         }
+    }
+    // Compare the fixed workspace against a dynamic thin-SVD reference across
+    // random-like configurations, different axis scales, TCPs and rank losses.
+    for (int model = 0; model < 8; ++model) {
+        auto scaled_nodes = nodes;
+        for (int joint = 0; joint < 7; ++joint) {
+            const double magnitude = std::pow(2.0, (joint + model) % 7 - 3);
+            scaled_nodes[joint].axis *= (model % 2 ? -magnitude : magnitude);
+        }
+        SRSKinematics scaled_solver(scaled_nodes);
+        if (!scaled_solver.SetTCP(
+                SE3d(Eigen::Vector3d(0.02, -0.04, 0.1), SO3d(0.2, -0.3, 0.1))))
+            return 15;
+        for (int sample = 0; sample < 64; ++sample) {
+            Eigen::VectorXd joints(7), preferred(7), actual;
+            for (int joint = 0; joint < 7; ++joint) {
+                joints[joint] = sample == 0 ? 0.0 : 0.5 * std::sin(sample + joint);
+                preferred[joint] = std::cos(0.3 * sample + 0.7 * joint);
+            }
+            // Build J through public full-frame FK, independently of the
+            // direct Jacobian traversal used by the null-space implementation.
+            std::vector<SE3d> frames;
+            if (!scaled_solver.GetAllFK(joints, frames))
+                return 16;
+            Eigen::MatrixXd jacobian(6, 7);
+            for (int joint = 0; joint < 7; ++joint) {
+                const Eigen::Vector3d axis =
+                    frames[joint].GetRotation() * scaled_nodes[joint].axis;
+                jacobian.col(joint).head<3>() = axis.cross(
+                    frames.back().GetTranslation() - frames[joint].GetTranslation());
+                jacobian.col(joint).tail<3>() = axis;
+            }
+            Eigen::JacobiSVD<Eigen::MatrixXd> svd(jacobian, Eigen::ComputeThinV);
+            Eigen::VectorXd coefficients = svd.matrixV().transpose() * preferred;
+            const double threshold = std::max(1e-10, svd.singularValues()[0] * 1e-8);
+            for (int index = 0; index < 6; ++index)
+                if (svd.singularValues()[index] <= threshold)
+                    coefficients[index] = 0.0;
+            const Eigen::VectorXd reference = preferred - svd.matrixV() * coefficients;
+            if (!scaled_solver.GetNullSpaceVelocity(joints, preferred, actual) ||
+                (actual - reference).norm() > 2e-11 ||
+                (jacobian * actual).norm() > 1e-7 * jacobian.norm())
+                return 17;
+        }
+    }
+    for (double scale : {1e-10, 1e-6, 1.0, 1e100, 1e150, 1e154}) {
+        auto scaled_nodes = nodes;
+        for (int joint = 0; joint < 7; ++joint)
+            scaled_nodes[joint].axis *= scale;
+        SRSKinematics scaled_solver(scaled_nodes);
+        const Eigen::VectorXd joints = nominal / scale;
+        Eigen::MatrixXd jacobian;
+        if (!scaled_solver.GetJacobian(joints, jacobian) || !jacobian.allFinite())
+            return 18;
+        Eigen::JacobiSVD<Eigen::MatrixXd> reference_svd(jacobian, Eigen::ComputeThinV);
+        if (reference_svd.info() != Eigen::Success ||
+            !reference_svd.singularValues().allFinite())
+            return 19;
+        const Eigen::VectorXd preferred = Eigen::VectorXd::LinSpaced(7, -1., 1.);
+        Eigen::VectorXd coefficients = reference_svd.matrixV().transpose() * preferred;
+        const double threshold =
+            std::max(1e-10, reference_svd.singularValues()[0] * 1e-8);
+        for (int index = 0; index < 6; ++index)
+            if (reference_svd.singularValues()[index] <= threshold)
+                coefficients[index] = 0.0;
+        const Eigen::VectorXd reference =
+            preferred - reference_svd.matrixV() * coefficients;
+        Eigen::VectorXd actual;
+        if (!scaled_solver.GetNullSpaceVelocity(joints, preferred, actual) ||
+            (actual - reference).norm() > 2e-11)
+            return 20;
+        Eigen::VectorXd inplace_joints = joints;
+        if (!scaled_solver.GetNullSpaceVelocity(inplace_joints, preferred,
+                                                inplace_joints) ||
+            (inplace_joints - reference).norm() > 2e-11)
+            return 21;
     }
     return 0;
 }

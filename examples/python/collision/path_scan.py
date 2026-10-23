@@ -33,6 +33,16 @@ def main() -> None:
     parser.add_argument("--urdf", type=Path, required=True)
     parser.add_argument("--q-start", type=configuration, required=True)
     parser.add_argument("--q-end", type=configuration, required=True)
+    parser.add_argument(
+        "--joint-names",
+        nargs="+",
+        help="Interpret endpoints as scalar joint positions in this name order.",
+    )
+    parser.add_argument(
+        "--context",
+        type=configuration,
+        help="Full nq reference for named joints; defaults to model neutral.",
+    )
     parser.add_argument("--samples", type=int, default=101)
     parser.add_argument("--package-dir", action="append", default=[], type=Path)
     args = parser.parse_args()
@@ -43,15 +53,45 @@ def main() -> None:
         str(args.urdf.expanduser().resolve()),
         [str(path.expanduser().resolve()) for path in args.package_dir],
     )
-    if args.q_start.shape != (model.nq,) or args.q_end.shape != (model.nq,):
-        parser.error(f"--q-start and --q-end each need {model.nq} values")
+    mapping = None
+    if args.joint_names:
+        try:
+            mapping = model.create_joint_position_map(args.joint_names)
+        except ValueError as error:
+            parser.error(str(error))
+        context = (
+            model.neutral_configuration() if args.context is None else args.context
+        )
+        size = len(args.joint_names)
+    else:
+        if args.context is not None:
+            parser.error("--context requires --joint-names")
+        if model.nq != model.nv:
+            parser.error(
+                "non-Euclidean configurations require --joint-names; "
+                "interpolating cosine/sine or quaternion components is invalid"
+            )
+        size = model.nq
+    if args.q_start.shape != (size,) or args.q_end.shape != (size,):
+        parser.error(f"--q-start and --q-end each need {size} values")
+
+    def full_configuration(positions):
+        if mapping is None:
+            return positions
+        return mapping.configuration_with_joint_positions(context, positions)
+
+    try:
+        model.validate_configuration(full_configuration(args.q_start))
+        model.validate_configuration(full_configuration(args.q_end))
+    except ValueError as error:
+        parser.error(str(error))
     if not model.pair_count:
         parser.error("model has no active collision pairs")
 
     first_collision = None
     minimum = None
     for index, alpha in enumerate(np.linspace(0.0, 1.0, args.samples)):
-        q = (1.0 - alpha) * args.q_start + alpha * args.q_end
+        q = full_configuration((1.0 - alpha) * args.q_start + alpha * args.q_end)
         nearest = model.minimum_distance(q)
         if minimum is None or nearest.distance < minimum[0]:
             minimum = (nearest.distance, alpha, nearest)
