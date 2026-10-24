@@ -232,7 +232,10 @@ the native adapter adds a squared hinge cost when the minimum collision
 distance falls below it. The optimizer estimates the state-cost gradient with
 central finite differences (`finite_difference_step`) and combines it with the
 analytic geometric gradient. `state_cost_step_size` scales the clearance
-gradient before the combined direction is normalized. Leaving `clearance=0` and
+gradient before the combined direction is normalized. A zero
+`state_cost_step_size` skips analytic and finite-difference gradient queries;
+state-cost values still participate in candidate acceptance and the reported
+objective. Leaving `clearance=0` and
 `state_cost_weight=0` disables this stage completely.
 Constructing a mesh or sphere collision optimizer with positive `clearance`
 requires active collision pairs. If pairs are cleared between calls, the
