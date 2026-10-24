@@ -4,6 +4,51 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize(
+    "lower,direction", [(-np.pi, 1.0), (0.0, 1.0), (-2 * np.pi, -1.0)]
+)
+@pytest.mark.parametrize("distance", [0.1, 1e-10, 1e-16, 1e-100])
+def test_continuous_interpolation_preserves_small_in_range_angles(
+    lower, direction, distance
+):
+    import holistic_motion as hm
+
+    planner = hm.SamplingPlanner([lower], [lower + 2 * np.pi])
+    planner.set_continuous_joints([0])
+    options = hm.PlanningOptions()
+    options.interpolate_path = True
+    options.interpolation_points = 3
+    options.simplify_path = False
+    goal = direction * distance
+    result = planner.plan([0.0], [goal], options)
+
+    assert result.success
+    np.testing.assert_array_equal(result.path, [[0.0], [goal / 2], [goal]])
+
+
+@pytest.mark.parametrize("scale", [1e-10, 1e-20, 1e-100, 1e-150])
+def test_continuous_optimizer_preserves_the_requested_small_step(scale):
+    import holistic_motion as hm
+
+    optimizer = hm.PathOptimizer([-np.pi] * 2, [np.pi] * 2)
+    optimizer.set_continuous_joints([0, 1])
+    options = hm.PathOptimizationOptions()
+    options.length_weight = 1.0
+    options.smoothness_weight = 0.0
+    options.minimum_improvement = 0.0
+    options.step_size = 0.35 * scale
+    options.max_iterations = 1
+    path = np.array([[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]) * scale
+    result = optimizer.optimize(path, options)
+
+    assert result.success
+    assert result.statistics.accepted_updates == 1
+    np.testing.assert_allclose(
+        np.asarray(result.path)[1], np.array([0.5, 0.65]) * scale, rtol=1e-14, atol=0.0
+    )
+    np.testing.assert_array_equal(np.asarray(result.path)[[0, -1]], path[[0, -1]])
+
+
 def test_unwrap_rejects_lifting_that_changes_a_source_angle_phase():
     import holistic_motion as hm
 
