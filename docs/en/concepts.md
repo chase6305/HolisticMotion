@@ -199,6 +199,10 @@ SRS and FEP candidate comparisons use each joint's coordinate period
 ranking keeps joint-coordinate distances. FEP passes the same periods to CPU
 and CUDA scoring and bounds redundancy sampling by physical half turns.
 
+UR IK keeps a compatible wrist seed and selects a nearby reachable roll at
+straight or folded wrists. Returned coordinates are checked after joint-limit
+wrapping with an SE(3) tangent tolerance of `1e-10` (metres and radians).
+
 Inspect `solver.capabilities` in Python or `GetCapabilities()` through the C++
 `KinematicsBase` interface before selecting optional operations. The snapshot
 reports the solver family, default IK algorithm, DOF, Jacobian, redundancy,
