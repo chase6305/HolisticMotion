@@ -1,3 +1,4 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 import numpy as np
@@ -78,6 +79,23 @@ def test_complex_tracker_scalar_option_is_rejected(prefix, name):
         options_type(**{name: np.complex128(1.0 + 1j)})
 
 
+@pytest.fixture
+def result_values():
+    return {
+        "joints": np.zeros(7),
+        "velocity": np.zeros(7),
+        "acceleration": np.zeros(7),
+        "configuration": (1, 1, 1),
+        "redundancy": 0.0,
+        "branch_changed": False,
+        "near_singularity": False,
+        "minimum_singular_value": 1.0,
+        "position_error": 0.0,
+        "angle_error": 0.0,
+        "candidate_count": 1,
+    }
+
+
 @pytest.mark.parametrize("prefix", ["SRS", "FEP"])
 @pytest.mark.parametrize(
     "name",
@@ -92,22 +110,10 @@ def test_complex_tracker_scalar_option_is_rejected(prefix, name):
     ],
 )
 @pytest.mark.parametrize("imaginary", [0.0, 1.0])
-def test_complex_tracker_result_is_rejected(prefix, name, imaginary):
+def test_complex_tracker_result_is_rejected(prefix, name, imaginary, result_values):
     from holistic_motion import kinematics
 
-    values = {
-        "joints": np.zeros(7),
-        "velocity": np.zeros(7),
-        "acceleration": np.zeros(7),
-        "configuration": (1, 1, 1),
-        "redundancy": 0.0,
-        "branch_changed": False,
-        "near_singularity": False,
-        "minimum_singular_value": 1.0,
-        "position_error": 0.0,
-        "angle_error": 0.0,
-        "candidate_count": 1,
-    }
+    values = result_values
     invalid = np.complex128(0.25 + imaginary * 1j)
     values[name] = (
         np.full(7, invalid)
@@ -117,3 +123,58 @@ def test_complex_tracker_result_is_rejected(prefix, name, imaginary):
     result_type = getattr(kinematics, prefix + "ContinuousResult")
     with pytest.raises(TypeError, match="real"):
         result_type(**values)
+
+
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+@pytest.mark.parametrize(
+    "name", ["redundancy", "minimum_singular_value", "position_error", "angle_error"]
+)
+@pytest.mark.parametrize(
+    "value", [[0.25], [0.25, 0.5], np.array([0.25]), np.array([[0.25]])]
+)
+def test_tracker_result_metrics_reject_non_scalar_shapes(
+    prefix, name, value, result_values
+):
+    from holistic_motion import kinematics
+
+    result_type = getattr(kinematics, prefix + "ContinuousResult")
+    with pytest.raises(ValueError, match="scalar"):
+        result_type(**{**result_values, name: value})
+
+
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+@pytest.mark.parametrize(
+    "name", ["redundancy", "minimum_singular_value", "position_error", "angle_error"]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        np.float64(0.25),
+        np.array(0.25),
+        Decimal("0.25"),
+        np.array(Decimal("0.25"), dtype=object),
+    ],
+)
+def test_tracker_result_metrics_accept_real_scalar_values(
+    prefix, name, value, result_values
+):
+    from holistic_motion import kinematics
+
+    result_type = getattr(kinematics, prefix + "ContinuousResult")
+    result = result_type(**{**result_values, name: value})
+    assert type(getattr(result, name)) is float
+    assert getattr(result, name) == 0.25
+
+
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+@pytest.mark.parametrize(
+    "name", ["redundancy", "minimum_singular_value", "position_error", "angle_error"]
+)
+def test_tracker_result_metrics_own_numpy_scalars(prefix, name, result_values):
+    from holistic_motion import kinematics
+
+    value = np.array(0.25)
+    result_type = getattr(kinematics, prefix + "ContinuousResult")
+    result = result_type(**{**result_values, name: value})
+    value[...] = np.nan
+    assert getattr(result, name) == 0.25
