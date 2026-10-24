@@ -171,6 +171,10 @@ SRS/FEP 继承的 `inverse()` / `GetNearestIK()` 使用数值 IK，专用 `solve
 `analyze_geometry()` 的自定义容差只影响本次报告，不改变能力快照或求解配置。
 FEP 当前使用数值修正，因此不声明闭式 IK 能力。
 
+OPW IK 在腕部伸直或折叠时保留与目标相容的种子，并正确处理关节偏置和轴方向。
+候选仍须满足关节限位和过滤条件；最终 FK 残差按 SE(3) 切空间坐标检查，容差为
+`1e-10`，平移单位为米，旋转单位为弧度。
+
 所有内置求解器提供统一的
 `solve_ik(target, seed, selection=IKSelection.NEAREST)`，返回独立持有数据的报告。
 `status` 区分 `SUCCESS`、`INVALID_INPUT` 和 `NO_SOLUTION`，`algorithm` 报告

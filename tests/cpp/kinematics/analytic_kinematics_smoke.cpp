@@ -47,6 +47,42 @@ bool CheckRoundTrip(Solver& solver, const Eigen::VectorXd& joints) {
     return true;
 }
 
+bool CheckOPWWristSeeds(OPWParameters params,
+                       const std::vector<JointNode> &nodes) {
+    params.offsets = {0.10, -0.20, 0.05, 0.30, 0.17, -0.11};
+    params.rotation_directions = {-1, 1, -1, -1, -1, 1};
+    OPWKinematics solver(params, nodes);
+    solver.DisableRobotConfig();
+    for (double wrist : {0.0, M_PI, -M_PI, 1e-13, -1e-13, 1e-8, -1e-8}) {
+        Eigen::VectorXd internal(6);
+        internal << 0.20, -0.55, 0.75, 0.90, wrist, -0.35;
+        Eigen::VectorXd reference(6);
+        for (int joint = 0; joint < 6; ++joint)
+            reference[joint] = (internal[joint] + params.offsets[joint]) *
+                               params.rotation_directions[joint];
+        SE3d target;
+        if (!solver.GetFK(reference, target))
+            return false;
+        Eigen::VectorXd seed = reference;
+        IkRtn solutions;
+        std::vector<double> distances;
+        if (!solver.GetIK(target, solutions, seed, distances) ||
+            solutions.ik_number < 1 || solutions.ik_number > 8 ||
+            distances.size() != solutions.ik_joints.size() ||
+            (solutions.ik_joints.front() - reference).cwiseAbs().maxCoeff() >
+                1e-6 ||
+            seed != reference)
+            return false;
+        for (const auto &solution : solutions.ik_joints) {
+            SE3d recovered;
+            if (!solver.GetFK(solution, recovered) ||
+                !target.IsApprox(recovered, 1e-10))
+                return false;
+        }
+    }
+    return true;
+}
+
 template <typename Solver>
 bool CheckInvalidTargets(Solver &solver, const Eigen::VectorXd &joints) {
     SE3d valid;
@@ -104,6 +140,10 @@ int main() {
     opw.rotation_directions.fill(1);
     OPWKinematics opw_solver(opw, joints);
     opw_solver.DisableRobotConfig();
+    if (!CheckOPWWristSeeds(opw, joints)) {
+        std::cerr << "OPW wrist recovery changed the physical seed\n";
+        return 1;
+    }
 
     URParameters ur;
     ur.d1 = 0.089159;
