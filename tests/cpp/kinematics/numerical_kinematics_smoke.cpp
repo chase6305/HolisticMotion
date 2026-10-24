@@ -8,7 +8,54 @@
 
 using namespace holistic_motion::robotics;
 
+class CountedKinematics : public NumericalKinematics {
+  public:
+    using NumericalKinematics::NumericalKinematics;
+    bool GetAllFK(const Eigen::VectorXd &joints,
+                  std::vector<SE3d> &poses) const override {
+        ++fk_evaluations;
+        return NumericalKinematics::GetAllFK(joints, poses);
+    }
+    mutable int fk_evaluations{0};
+};
+
 int main() {
+    {
+        std::vector<JointNode> nodes{JointNode(SE3d(), Eigen::Vector3d::UnitX(),
+                                               JointType::PRISMATIC, 0.0, 1.0),
+                                     JointNode()};
+        nodes.back().joint_type = JointType::FIXED;
+        CountedKinematics solver(nodes);
+        Eigen::VectorXd seed = Eigen::VectorXd::Ones(1);
+        IkRtn solutions;
+        std::vector<double> distances;
+        const SE3d blocked(Eigen::Vector3d(2, 0, 0), SO3d());
+        if (solver.GetIK(blocked, solutions, seed, distances) ||
+            solver.fk_evaluations > 2 || !solutions.ik_joints.empty() ||
+            !distances.empty()) {
+            std::cerr << "blocked IK repeated an unchanged configuration\n";
+            return 1;
+        }
+        // The first clamped step must still repair a seed outside its limits.
+        seed[0] = 2.0;
+        const SE3d boundary(Eigen::Vector3d(1, 0, 0), SO3d());
+        if (!solver.GetIK(boundary, solutions, seed, distances) ||
+            solutions.ik_joints.empty() ||
+            std::abs(solutions.ik_joints.front()[0] - 1.0) > 1e-12) {
+            std::cerr << "stagnation detection prevented seed clamping\n";
+            return 1;
+        }
+        if (!solver.SetTransErrTh(1e-200))
+            return 1;
+        seed.setZero();
+        const SE3d tiny(Eigen::Vector3d(1e-180, 0, 0), SO3d());
+        if (!solver.GetIK(tiny, solutions, seed, distances) ||
+            solutions.ik_joints.empty() ||
+            std::abs(solutions.ik_joints.front()[0] - 1e-180) >= 1e-200) {
+            std::cerr << "tiny representable IK steps were discarded\n";
+            return 1;
+        }
+    }
     {
         std::vector<JointNode> nodes{JointNode(SE3d(), Eigen::Vector3d::UnitZ(),
                                                JointType::REVOLUTE, -M_PI,

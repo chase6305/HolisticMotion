@@ -231,6 +231,9 @@ seven timed groups: respectively 16384, 1024, and 128 calls per group for those
 three scenarios. CSV includes median microseconds per call, success, FK
 evaluation count, pose residual, and joint checksum. Compare success and FK
 counts before comparing times; zero residual on a failed solve is a placeholder.
+The `blocked_by_limits` case uses a one-axis prismatic joint and identity TCP,
+with 1024 calls per group. Numerical IK stops when clamped coordinates are
+exactly unchanged; tiny representable steps continue normally.
 The `damped_ik_workspace_smoke` test separately checks rank-deficient and
 rectangular solves against regularized normal equations, while an Eigen guard
 forbids heap allocation during the workspace's solve step, including its first use.
