@@ -320,10 +320,11 @@ bool URKinematics::GetIK(const SE3d &target_pose,
             const double bend =
                 std::atan2(this->params_.a3 * elbow_sine,
                            this->params_.a2 + this->params_.a3 * elbow_cosine);
+            const double angle234 = std::atan2(x04x, x04y);
             for (size_t k = 0; k < 2; ++k) {
                 const double angle2 = bearing + (k == 0 ? -bend : bend);
                 const double angle3 = k == 0 ? elbow_angle : -elbow_angle;
-                double angle4 = std::atan2(x04x, x04y) - angle2 - angle3;
+                double angle4 = angle234 - angle2 - angle3;
                 if (angle4 < 0.0)
                     angle4 += 2.0 * M_PI;
 
