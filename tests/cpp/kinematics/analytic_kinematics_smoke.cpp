@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -88,6 +89,59 @@ bool CheckInvalidTargets(Solver &solver, const Eigen::VectorXd &joints) {
            solutions.ik_number == 1 && distance >= 0;
 }
 
+bool CheckURWristSeeds(URKinematics &solver) {
+    Eigen::VectorXd boundary(6);
+    boundary << 1.4194765200901409, 1.0629799500401418, -1.2532023476994558,
+        -1.3831535007271476, 0.0, -0.45114230123374144;
+    SE3d boundary_target;
+    solver.GetFK(boundary, boundary_target);
+    Eigen::VectorXd boundary_seed = boundary;
+    IkRtn boundary_solutions;
+    std::vector<double> boundary_distances;
+    if (!solver.GetIK(boundary_target, boundary_solutions, boundary_seed,
+                      boundary_distances) ||
+        std::none_of(boundary_solutions.ik_joints.begin(),
+                     boundary_solutions.ik_joints.end(), [&](const auto &value) {
+                         return value[4] == 0.0 && value.isApprox(boundary, 1e-7);
+                     }))
+        return false;
+    for (double wrist : {0.0, 0.65}) {
+        for (double value : {0.0, -0.0, -2.0 * M_PI, 2.0 * M_PI,
+                             -4.0 * M_PI, 4.0 * M_PI, -1e200, 1e200,
+                             -std::numeric_limits<double>::max(),
+                             std::numeric_limits<double>::max()}) {
+            Eigen::VectorXd joints(6);
+            joints << 0.25, -0.70, 0.85, -0.45, wrist,
+                std::atan2(std::sin(value), std::cos(value));
+            SE3d target;
+            if (!solver.GetFK(joints, target))
+                return false;
+            Eigen::VectorXd seed = joints;
+            seed[5] = value;
+            IkRtn solutions;
+            std::vector<double> distances;
+            if (!solver.GetIK(target, solutions, seed, distances) ||
+                distances.size() != solutions.ik_joints.size() ||
+                seed[5] != value)
+                return false;
+            bool preserved_wrist_seed = false;
+            for (const auto &solution : solutions.ik_joints) {
+                SE3d recovered;
+                if (!solution.allFinite() || !solver.GetFK(solution, recovered) ||
+                    !target.IsApprox(recovered))
+                    return false;
+                preserved_wrist_seed = preserved_wrist_seed ||
+                    (std::abs(solution[4]) < 1e-7 &&
+                     std::abs(std::sin(solution[5]) - std::sin(value)) < 1e-10 &&
+                     std::abs(std::cos(solution[5]) - std::cos(value)) < 1e-10);
+            }
+            if (wrist == 0.0 && !preserved_wrist_seed)
+                return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -133,6 +187,10 @@ int main() {
     if (!CheckRoundTrip(opw_solver, wrist_singular) ||
         !CheckRoundTrip(ur_solver, wrist_singular)) {
         std::cerr << "analytic wrist-singularity round trip failed\n";
+        return 1;
+    }
+    if (!CheckURWristSeeds(ur_solver)) {
+        std::cerr << "UR wrist seed normalization failed\n";
         return 1;
     }
 

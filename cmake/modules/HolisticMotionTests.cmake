@@ -84,6 +84,7 @@ function(holistic_motion_register_tests)
         analytic_kinematics_smoke_test
         tests/cpp/kinematics/analytic_kinematics_smoke.cpp
         holistic_motion)
+    set_tests_properties(analytic_kinematics_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
         numerical_kinematics_smoke_test
         tests/cpp/kinematics/numerical_kinematics_smoke.cpp

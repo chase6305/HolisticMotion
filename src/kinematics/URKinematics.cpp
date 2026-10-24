@@ -121,11 +121,12 @@ bool URKinematics::GetIK(const SE3d &target_pose,
 
     double q6_des = joint_seed[5];
 
-    while (q6_des > 2.0 * M_PI) {
-        q6_des -= 2.0 * M_PI;
-    }
-    while (q6_des < 0) {
-        q6_des += 2.0 * M_PI;
+    if (q6_des < 0.0 || q6_des > 2.0 * M_PI) {
+        // Trigonometric reduction preserves the phase even for huge seeds.
+        q6_des = std::atan2(std::sin(q6_des), std::cos(q6_des));
+        if (q6_des < 0.0) {
+            q6_des += 2.0 * M_PI;
+        }
     }
 
     // angle1
@@ -201,9 +202,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
             if (std::abs(div + 1) < Epsilon) {
                 div = -1.0;
             }
-            if (div < -1.0 - Epsilon || div > 1.0 + Epsilon) {
-                continue;
-            }
+            // Roundoff can put a valid wrist cosine just outside [-1, 1].
             double arccos = SafeAcos(div);
             angle5[i][0] = arccos;
             angle5[i][1] = 2.0 * M_PI - arccos;

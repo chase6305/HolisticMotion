@@ -47,3 +47,44 @@ def test_analytic_parameters_validate_joint_limits():
     params.rotation_directions = [0] * 6
     with pytest.raises(ValueError, match="axis directions"):
         hm.URKinematics(params, lower, upper)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        [
+            1.5506516568704931,
+            1.739176493450888,
+            1.708435863837303,
+            1.3566595383461058,
+            0.0,
+            -1.5075893761186798,
+        ],
+        [
+            0.8714005623823116,
+            1.3548801678359264,
+            1.555609976910908,
+            -0.190975494656332,
+            0.0,
+            1.1633365826976252,
+        ],
+    ],
+)
+def test_ur_wrist_boundary_preserves_seeded_branch(reference):
+    import holistic_motion as hm
+
+    params = hm.URParameters()
+    params.d1, params.a2, params.a3 = 0.089159, -0.425, -0.39225
+    params.d4, params.d5, params.d6 = 0.10915, 0.09465, 0.0823
+    params.rotation_directions = [1] * 6
+    solver = hm.URKinematics(params, *_limits())
+    reference = np.array(reference)
+    target = solver.forward(reference)
+    solutions = solver.solve_all(target, reference)
+    assert any(
+        solution[4] == 0.0 and np.allclose(solution, reference, atol=1e-7, rtol=0)
+        for solution in solutions
+    )
+    np.testing.assert_allclose(
+        solver.inverse(target, reference), reference, atol=1e-7, rtol=0
+    )
