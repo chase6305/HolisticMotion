@@ -1,6 +1,5 @@
-from types import SimpleNamespace
-
 from decimal import Decimal
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
