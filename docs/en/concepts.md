@@ -216,6 +216,11 @@ default geometry tolerance. Passing a custom tolerance to `analyze_geometry()`
 does not change this capability or the configured solver. FEP currently uses
 numerical correction and does not advertise closed-form IK.
 
+OPW IK preserves a compatible seed at straight or folded wrists, including
+joint offsets and reversed axes. Candidates still pass joint limits and filters;
+their FK residual is checked with an SE(3) tangent tolerance of `1e-10`
+(translation in metres, rotation in radians).
+
 `solve_ik(target, seed, selection=IKSelection.NEAREST)` provides a common
 owned report for all built-in solvers. Its `status` distinguishes `SUCCESS`,
 `INVALID_INPUT` and `NO_SOLUTION`, and `algorithm` records the common entry
