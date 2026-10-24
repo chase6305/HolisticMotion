@@ -140,3 +140,24 @@ def test_ur_singular_wrist_keeps_arm_reachable(scale, elbow, wrist, requested_ro
     for solution in solutions:
         np.testing.assert_allclose(solver.forward(solution), target, atol=1e-10, rtol=0)
     np.testing.assert_array_equal(seed, original_seed)
+
+
+@pytest.mark.parametrize("cause", ["angle_sum", "transform_product"])
+def test_ur_fk_rejects_nonfinite_results(cause):
+    import holistic_motion as hm
+
+    params = hm.URParameters()
+    params.d1, params.a2, params.a3 = 0.089159, -0.425, -0.39225
+    params.d4, params.d5, params.d6 = 0.10915, 0.09465, 0.0823
+    params.rotation_directions = [1] * 6
+    joints = np.zeros(6)
+    if cause == "angle_sum":
+        joints[1:3] = np.finfo(float).max
+    else:
+        transform = np.eye(4)
+        transform[:3, 3] = np.finfo(float).max
+        params.base_transform = transform
+        params.tool_transform = transform
+    solver = hm.URKinematics(params, *_limits())
+    with pytest.raises(ValueError, match="invalid analytic FK"):
+        solver.forward(joints)

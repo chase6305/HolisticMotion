@@ -18,6 +18,33 @@ using holistic_motion::robotics::URParameters;
 
 namespace {
 
+template <typename Solver, typename Parameters>
+bool CheckInvalidFKOutputs(Parameters params,
+                           const std::vector<JointNode> &joints) {
+    const SE3d original(0.1, -0.2, 0.3, 0, 0, 0, 1);
+    const auto rejects_without_changing_pose = [&](Solver &solver,
+                                                  const Eigen::VectorXd &q) {
+        SE3d pose = original;
+        return !solver.GetFK(q, pose) &&
+               pose.Coeffs().isApprox(original.Coeffs(), 0.0);
+    };
+    Solver solver(params, joints);
+    Eigen::VectorXd overflow = Eigen::VectorXd::Zero(6);
+    overflow[1] = std::numeric_limits<double>::max() *
+                  params.rotation_directions[1];
+    overflow[2] = std::numeric_limits<double>::max() *
+                  params.rotation_directions[2];
+    if (!rejects_without_changing_pose(solver, overflow))
+        return false;
+
+    const double largest = std::numeric_limits<double>::max();
+    params.T_b_ob = params.T_oe_e =
+        SE3d(largest, largest, largest, 0, 0, 0, 1);
+    Solver large_transform_solver(params, joints);
+    return rejects_without_changing_pose(large_transform_solver,
+                                         Eigen::VectorXd::Zero(6));
+}
+
 std::vector<JointNode> MakeJoints() {
     std::vector<JointNode> joints;
     joints.reserve(6);
@@ -170,6 +197,10 @@ int main() {
     ur.rotation_directions.fill(1);
     URKinematics ur_solver(ur, joints);
     ur_solver.DisableRobotConfig();
+    if (!CheckInvalidFKOutputs<URKinematics>(ur, joints)) {
+        std::cerr << "UR FK overflow changed the caller's pose\n";
+        return 1;
+    }
 
     Eigen::VectorXd q(6);
     q << 0.25, -0.70, 0.85, -0.45, 0.65, -0.20;
