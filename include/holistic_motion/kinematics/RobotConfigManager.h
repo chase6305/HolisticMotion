@@ -73,7 +73,6 @@ public:
             config_ = (config_ & ~RobotConfig::BASE_FRONT) |
                       RobotConfig::BASE_BACK;
         }
-        UpdateEnableConfig();
     }
 
     /// \brief Set the elbow orientation to up or down.
@@ -87,7 +86,6 @@ public:
             config_ = (config_ & ~RobotConfig::ELBOW_UP) |
                       RobotConfig::ELBOW_DOWN;
         }
-        UpdateEnableConfig();
     }
 
     /// \brief Set the wrist orientation to flip or not flip.
@@ -101,7 +99,6 @@ public:
             config_ = (config_ & ~RobotConfig::WRIST_FLIP) |
                       RobotConfig::WRIST_NOT_FLIP;
         }
-        UpdateEnableConfig();
     }
 
     /// \brief Get the base orientation.
@@ -147,7 +144,6 @@ public:
     /// \brief Disables all configurations.
     void Disable() {
         config_ = RobotConfig::NONE;
-        UpdateEnableConfig();
     }
 
 private:
@@ -159,25 +155,6 @@ private:
     /// otherwise.
     inline bool IsFlagSet(RobotConfig config, RobotConfig flag) const {
         return static_cast<int>(config & flag) != 0;
-    }
-
-    /// \brief Update the enable configuration based on the current settings.
-    ///
-    /// This function checks if any of the specific configuration flags
-    /// (BASE_FRONT, BASE_BACK, ELBOW_UP, ELBOW_DOWN, WRIST_FLIP,
-    /// WRIST_NOT_FLIP) are set in the current configuration. If any of these
-    /// flags are set, the ENABLE_CONFIG flag is added to the configuration.
-    /// Otherwise, the ENABLE_CONFIG flag is removed from the configuration.
-    void UpdateEnableConfig() {
-        if (static_cast<int>(config_) &
-            static_cast<int>(RobotConfig::BASE_FRONT | RobotConfig::BASE_BACK |
-                             RobotConfig::ELBOW_UP | RobotConfig::ELBOW_DOWN |
-                             RobotConfig::WRIST_FLIP |
-                             RobotConfig::WRIST_NOT_FLIP)) {
-            config_ = config_;
-        } else {
-            config_ = config_;
-        }
     }
 
     RobotConfig config_ = RobotConfig::NONE;

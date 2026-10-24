@@ -338,6 +338,61 @@ int main() {
         !oblique_solutions.LimitRobotConfig(oblique_nodes, elbow_up) ||
         oblique_solutions.ik_number != 1)
         return Fail(__LINE__);
+    // Joint 2 turns the following offset upward or downward. Rejected
+    // candidates can occur consecutively, between retained candidates, or at
+    // the end.
+    std::vector<JointNode> filter_nodes(
+        6, JointNode(SE3d(), Eigen::Vector3d::UnitY(), JointType::REVOLUTE,
+                     -4.0, 4.0));
+    filter_nodes[2].origin_pose = SE3d(0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0);
+    filter_nodes[3].origin_pose = SE3d(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+    filter_nodes.emplace_back();
+    filter_nodes.back().joint_type = JointType::FIXED;
+    const std::vector<std::vector<bool>> keep_cases{
+        {false},
+        {true},
+        {false, false},
+        {true, true},
+        {false, true, false, true, false},
+        {true, false, true, false},
+        {false, false, true},
+        {true, false, false}};
+    for (const auto &keep : keep_cases) {
+        IkRtn filtered;
+        std::vector<Eigen::VectorXd> expected;
+        for (std::size_t index = 0; index < keep.size(); ++index) {
+            Eigen::VectorXd candidate = Eigen::VectorXd::Zero(6);
+            candidate[2] = keep[index] ? std::acos(-1.0) : 0.0;
+            candidate[4] = static_cast<double>(index) / 10.0;
+            if (!filtered.PushBack(candidate))
+                return Fail(__LINE__);
+            if (keep[index])
+                expected.push_back(candidate);
+        }
+        const bool accepted = filtered.LimitRobotConfig(filter_nodes, elbow_up);
+        if (accepted != !expected.empty() || filtered.success != accepted ||
+            filtered.ik_number != static_cast<int>(expected.size()) ||
+            filtered.ik_joints.size() != expected.size())
+            return Fail(__LINE__);
+        for (std::size_t index = 0; index < expected.size(); ++index)
+            if ((filtered.ik_joints[index].array() != expected[index].array())
+                    .any())
+                return Fail(__LINE__);
+    }
+    // A late invalid transform still clears candidates already compacted.
+    auto overflowing_nodes = filter_nodes;
+    overflowing_nodes[0].axis *= 1e308;
+    IkRtn failed_filter;
+    Eigen::VectorXd filter_candidate = Eigen::VectorXd::Zero(6);
+    failed_filter.PushBack(filter_candidate);
+    filter_candidate[2] = std::acos(-1.0);
+    failed_filter.PushBack(filter_candidate);
+    filter_candidate[0] = 2.0;
+    failed_filter.PushBack(filter_candidate);
+    if (failed_filter.LimitRobotConfig(overflowing_nodes, elbow_up) ||
+        failed_filter.success || failed_filter.ik_number != 0 ||
+        !failed_filter.ik_joints.empty())
+        return Fail(__LINE__);
     for (int count : {0, 1, 3}) {
         oblique_solutions.Clear();
         oblique_solutions.PushBack(oblique_q);
