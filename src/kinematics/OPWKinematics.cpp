@@ -5,6 +5,7 @@
 #include "SeedAlias.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <typeinfo>
 
@@ -34,8 +35,7 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
         return false;
     }
 
-    double q[6];
-    Eigen::VectorXd s(6), c(6);
+    std::array<double, 6> q, s, c;
     for (size_t i = 0; i < 6; ++i) {
         q[i] = target_joint[i] * this->params_.rotation_directions[i] -
                this->params_.offsets[i];
