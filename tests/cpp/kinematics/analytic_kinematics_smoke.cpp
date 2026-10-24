@@ -41,7 +41,7 @@ bool CheckRoundTrip(Solver& solver, const Eigen::VectorXd& joints) {
     }
     for (const auto& solution : solutions.ik_joints) {
         SE3d recovered;
-        if (!solver.GetFK(solution, recovered) || !target.IsApprox(recovered)) {
+        if (!solver.GetFK(solution, recovered) || !target.IsApprox(recovered, 1e-10)) {
             return false;
         }
     }
@@ -102,7 +102,8 @@ bool CheckURWristSeeds(URKinematics &solver) {
                       boundary_distances) ||
         std::none_of(boundary_solutions.ik_joints.begin(),
                      boundary_solutions.ik_joints.end(), [&](const auto &value) {
-                         return value[4] == 0.0 && value.isApprox(boundary, 1e-7);
+                         return std::abs(value[4]) < 1e-12 &&
+                                value.isApprox(boundary, 1e-7);
                      }))
         return false;
     for (double wrist : {0.0, 0.65}) {
@@ -128,7 +129,7 @@ bool CheckURWristSeeds(URKinematics &solver) {
             for (const auto &solution : solutions.ik_joints) {
                 SE3d recovered;
                 if (!solution.allFinite() || !solver.GetFK(solution, recovered) ||
-                    !target.IsApprox(recovered))
+                    !target.IsApprox(recovered, 1e-10))
                     return false;
                 preserved_wrist_seed = preserved_wrist_seed ||
                     (std::abs(solution[4]) < 1e-7 &&

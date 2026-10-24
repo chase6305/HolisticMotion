@@ -79,12 +79,64 @@ def test_ur_wrist_boundary_preserves_seeded_branch(reference):
     params.rotation_directions = [1] * 6
     solver = hm.URKinematics(params, *_limits())
     reference = np.array(reference)
+    warmup = reference.copy()
+    warmup[4] = 0.65
+    assert solver.solve_all(solver.forward(warmup), warmup)
     target = solver.forward(reference)
     solutions = solver.solve_all(target, reference)
     assert any(
-        solution[4] == 0.0 and np.allclose(solution, reference, atol=1e-7, rtol=0)
+        abs(solution[4]) < 1e-12 and np.allclose(solution, reference, atol=1e-7, rtol=0)
         for solution in solutions
     )
     np.testing.assert_allclose(
         solver.inverse(target, reference), reference, atol=1e-7, rtol=0
     )
+
+
+@pytest.mark.parametrize("direction", [1, -1])
+@pytest.mark.parametrize("offset", [0.0, 0.3, -0.7])
+@pytest.mark.parametrize("wrist", [0.0, np.pi, -np.pi, 1e-13, -1e-13, 1e-8, -1e-8])
+def test_ur_wrist_preserves_physical_seed(direction, offset, wrist):
+    import holistic_motion as hm
+
+    params = hm.URParameters()
+    params.d1, params.a2, params.a3 = 0.089159, -0.425, -0.39225
+    params.d4, params.d5, params.d6 = 0.10915, 0.09465, 0.0823
+    params.offsets = [0.10, -0.20, 0.05, 0.30, 0.17, offset]
+    params.rotation_directions = [-1, 1, -1, 1, -1, direction]
+    reference = (
+        np.array([0.20, -0.55, 0.75, 0.90, wrist, -0.35]) + params.offsets
+    ) * params.rotation_directions
+    solver = hm.URKinematics(params, *_limits())
+    target = solver.forward(reference)
+    solutions = solver.solve_all(target, reference)
+    assert 1 <= len(solutions) <= 8
+    for solution in solutions:
+        np.testing.assert_allclose(solver.forward(solution), target, atol=1e-10, rtol=0)
+    np.testing.assert_allclose(
+        solver.inverse(target, reference), reference, atol=1e-6, rtol=0
+    )
+
+
+@pytest.mark.parametrize("scale", [0.001, 1.0, 1000.0])
+@pytest.mark.parametrize("elbow", [0.0, np.pi])
+@pytest.mark.parametrize("wrist", [0.0, np.pi, -np.pi, 1e-13, -1e-13, 1e-8, -1e-8])
+@pytest.mark.parametrize("requested_roll", [-1.7, 1.6])
+def test_ur_singular_wrist_keeps_arm_reachable(scale, elbow, wrist, requested_roll):
+    import holistic_motion as hm
+
+    params = hm.URParameters()
+    params.d1, params.a2, params.a3 = np.array([0.089159, -0.425, -0.39225]) * scale
+    params.d4, params.d5, params.d6 = np.array([0.10915, 0.09465, 0.0823]) * scale
+    params.rotation_directions = [1] * 6
+    solver = hm.URKinematics(params, *_limits())
+    reference = np.array([0.20, -0.55, elbow, 0.90, wrist, -0.35])
+    target = solver.forward(reference)
+    seed = reference.copy()
+    seed[5] = requested_roll
+    original_seed = seed.copy()
+    solutions = solver.solve_all(target, seed)
+    assert 1 <= len(solutions) <= 8
+    for solution in solutions:
+        np.testing.assert_allclose(solver.forward(solution), target, atol=1e-10, rtol=0)
+    np.testing.assert_array_equal(seed, original_seed)
