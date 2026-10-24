@@ -117,7 +117,8 @@ path = optimized.path
 `security_margin` 是不可越过的硬可行边界；`clearance` 是软目标。最小碰撞距离
 低于它时，原生适配器会加入平方 hinge 代价。优化器使用中心有限差分
 （`finite_difference_step`）估计代价梯度，再与解析几何梯度组合；
-`state_cost_step_size` 在组合方向归一化前缩放 clearance 梯度。保持
+`state_cost_step_size` 在组合方向归一化前缩放 clearance 梯度。设为零时跳过解析或
+有限差分梯度查询；代价值仍参与候选路径的接受判断和目标函数统计。保持
 `clearance=0` 和 `state_cost_weight=0` 会完全关闭该阶段。
 创建具有正 `clearance` 的网格或球体碰撞优化器时，模型必须含有活动碰撞对。
 两次调用之间清空碰撞对时，已有优化器暂时关闭碰撞校验和间距代价；恢复碰撞对后
