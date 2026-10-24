@@ -169,6 +169,27 @@ def test_opw_collinear_arm_recovers_target(arm_angle, scale, elbow, wrist, seed_
         np.testing.assert_allclose(solver.forward(solution), target, atol=1e-10, rtol=0)
 
 
+@pytest.mark.parametrize("cause", ["angle_sum", "transform_product"])
+def test_opw_fk_rejects_nonfinite_results(cause):
+    import holistic_motion as hm
+
+    params = hm.OPWParameters()
+    params.a1, params.a2, params.b = 0.15, -0.10, 0.0
+    params.c1, params.c2, params.c3, params.c4 = 0.45, 0.60, 0.10, 0.10
+    params.rotation_directions = [1] * 6
+    joints = np.zeros(6)
+    if cause == "angle_sum":
+        joints[1:3] = np.finfo(float).max
+    else:
+        transform = np.eye(4)
+        transform[:3, 3] = np.finfo(float).max
+        params.base_transform = transform
+        params.tool_transform = transform
+    solver = hm.OPWKinematics(params, *_limits())
+    with pytest.raises(ValueError, match="invalid analytic FK"):
+        solver.forward(joints)
+
+
 def test_analytic_parameters_validate_joint_limits():
     import holistic_motion as hm
 

@@ -17,6 +17,33 @@ using holistic_motion::robotics::URParameters;
 
 namespace {
 
+template <typename Solver, typename Parameters>
+bool CheckInvalidFKOutputs(Parameters params,
+                           const std::vector<JointNode> &joints) {
+    const SE3d original(0.1, -0.2, 0.3, 0, 0, 0, 1);
+    const auto rejects_without_changing_pose = [&](Solver &solver,
+                                                  const Eigen::VectorXd &q) {
+        SE3d pose = original;
+        return !solver.GetFK(q, pose) &&
+               pose.Coeffs().isApprox(original.Coeffs(), 0.0);
+    };
+    Solver solver(params, joints);
+    Eigen::VectorXd overflow = Eigen::VectorXd::Zero(6);
+    overflow[1] = std::numeric_limits<double>::max() *
+                  params.rotation_directions[1];
+    overflow[2] = std::numeric_limits<double>::max() *
+                  params.rotation_directions[2];
+    if (!rejects_without_changing_pose(solver, overflow))
+        return false;
+
+    const double largest = std::numeric_limits<double>::max();
+    params.T_b_ob = params.T_oe_e =
+        SE3d(largest, largest, largest, 0, 0, 0, 1);
+    Solver large_transform_solver(params, joints);
+    return rejects_without_changing_pose(large_transform_solver,
+                                         Eigen::VectorXd::Zero(6));
+}
+
 std::vector<JointNode> MakeJoints() {
     std::vector<JointNode> joints;
     joints.reserve(6);
@@ -140,6 +167,10 @@ int main() {
     opw.rotation_directions.fill(1);
     OPWKinematics opw_solver(opw, joints);
     opw_solver.DisableRobotConfig();
+    if (!CheckInvalidFKOutputs<OPWKinematics>(opw, joints)) {
+        std::cerr << "OPW FK overflow changed the caller's pose\n";
+        return 1;
+    }
     if (!CheckOPWWristSeeds(opw, joints)) {
         std::cerr << "OPW wrist recovery changed the physical seed\n";
         return 1;

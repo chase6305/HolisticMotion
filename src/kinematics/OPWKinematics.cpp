@@ -84,8 +84,14 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
                 0, 0, 0, 1;
     /* clang-format on */
 
-    pose = this->params_.T_b_ob * SE3d(T_ob_oe) * this->params_.T_oe_e;
-    pose = pose * this->tcp_;
+    if (!T_ob_oe.allFinite())
+        return false;
+    SE3d computed_pose = this->params_.T_b_ob * SE3d(T_ob_oe) *
+                         this->params_.T_oe_e;
+    computed_pose = computed_pose * this->tcp_;
+    if (!detail::IsValidFrame(computed_pose))
+        return false;
+    pose = computed_pose;
     holistic_motion::utility::LogDebug("GetFK:Success to get FK");
     return true;
 }
