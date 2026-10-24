@@ -258,12 +258,15 @@ inline double NormalizeCoordinate(double value, Eigen::Index index,
                                   const Eigen::VectorXd &lower,
                                   const Eigen::VectorXd &upper,
                                   const std::vector<bool> &continuous) {
-  if (continuous[static_cast<std::size_t>(index)]) {
-    return lower[index] +
-           std::fmod(std::fmod(value - lower[index], 2.0 * kPi) + 2.0 * kPi,
-                     2.0 * kPi);
-  }
-  return std::clamp(value, lower[index], upper[index]);
+    if (continuous[static_cast<std::size_t>(index)]) {
+        // Keep canonical angles exact, including tiny representable steps.
+        if (value >= lower[index] && value < lower[index] + 2.0 * kPi)
+            return value;
+        return lower[index] +
+               std::fmod(std::fmod(value - lower[index], 2.0 * kPi) + 2.0 * kPi,
+                         2.0 * kPi);
+    }
+    return std::clamp(value, lower[index], upper[index]);
 }
 
 inline Eigen::VectorXd Normalize(Eigen::VectorXd state,
