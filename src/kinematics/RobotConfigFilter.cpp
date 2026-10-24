@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <utility>
 
 namespace holistic_motion::robotics {
 
@@ -73,8 +74,11 @@ bool IkRtn::LimitRobotConfig(const std::vector<JointNode> &joint_nodes,
         std::vector<SE3d> pose_list;
         int num = 4;
 
-        for (auto it = this->ik_joints.begin(); it != this->ik_joints.end();) {
-            const Eigen::VectorXd &target_joint = *it;
+        std::size_t retained_count = 0;
+        for (std::size_t candidate_index = 0;
+             candidate_index < this->ik_joints.size(); ++candidate_index) {
+            const Eigen::VectorXd &target_joint =
+                this->ik_joints[candidate_index];
             pose_list.clear();
             pose_list.reserve(num + 1);
 
@@ -120,14 +124,17 @@ bool IkRtn::LimitRobotConfig(const std::vector<JointNode> &joint_nodes,
             if (robot_config.IsElbowUp()) {
                 if (p2.z() < p1.z()) {
                     if (p3.z() > p2.z()) {
-                        this->ik_joints.erase(it);
                         continue;
                     }
                 }
             }
 
-            ++it;
+            if (retained_count != candidate_index)
+                this->ik_joints[retained_count] =
+                    std::move(this->ik_joints[candidate_index]);
+            ++retained_count;
         }
+        this->ik_joints.resize(retained_count);
         break;
     }
     default:
