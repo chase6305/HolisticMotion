@@ -20,6 +20,84 @@ def cost_options(step, update):
     return options
 
 
+@pytest.mark.parametrize("analytic", [False, True])
+@pytest.mark.parametrize("reject_move", [False, True])
+def test_zero_cost_gradient_gain_keeps_candidate_cost_checks(analytic, reject_move):
+    samples = []
+
+    def cost(q):
+        samples.append(q.copy())
+        return 100.0 * (0.2 - q[0]) ** 2 if reject_move else 1.0
+
+    def disabled_gradient(_q):
+        raise AssertionError("zero-gain gradient must not be called")
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_state_cost(cost)
+    if analytic:
+        optimizer.set_state_cost_gradient(disabled_gradient)
+    options = cost_options(0.001, 0.1)
+    options.smoothness_weight = 1.0
+    options.state_cost_step_size = 0.0
+    result = optimizer.optimize([[-0.5], [0.2], [0.5]], options)
+
+    assert result.success
+    assert result.statistics.state_cost_gradient_evaluations == 0
+    assert result.statistics.state_cost_evaluations == len(samples) == 2
+    np.testing.assert_allclose(samples, [[0.2], [0.1]], atol=1e-15, rtol=0.0)
+    assert result.path[1][0] == pytest.approx(0.2 if reject_move else 0.1)
+    assert result.statistics.accepted_updates == (0 if reject_move else 1)
+
+
+@pytest.mark.parametrize("analytic", [False, True])
+def test_zero_cost_gradient_gain_keeps_a_cost_only_path_stationary(analytic):
+    samples = []
+
+    def cost(q):
+        samples.append(q.copy())
+        return float(np.dot(q, q))
+
+    def disabled_gradient(_q):
+        raise AssertionError("zero-gain gradient must not be called")
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_state_cost(cost)
+    if analytic:
+        optimizer.set_state_cost_gradient(disabled_gradient)
+    options = cost_options(0.001, 0.1)
+    options.state_cost_step_size = 0.0
+    path = [[-0.5], [0.2], [0.5]]
+    result = optimizer.optimize(path, options)
+
+    assert result.status == hm.PathOptimizationStatus.UNCHANGED
+    np.testing.assert_array_equal(result.path, path)
+    assert result.statistics.state_cost_evaluations == len(samples) == 1
+    assert result.statistics.state_cost_gradient_evaluations == 0
+
+
+@pytest.mark.parametrize("gain", [np.nextafter(0.0, 1.0), 1e-100, 0.1])
+def test_positive_cost_gradient_gain_still_requests_the_gradient(gain):
+    gradient_samples = []
+
+    def gradient(q):
+        gradient_samples.append(q.copy())
+        return 2.0 * q
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_state_cost(lambda q: float(np.dot(q, q)))
+    optimizer.set_state_cost_gradient(gradient)
+    options = cost_options(0.001, 0.1)
+    options.state_cost_step_size = gain
+    result = optimizer.optimize([[-0.5], [0.5], [0.8]], options)
+
+    assert result.success
+    assert (
+        result.statistics.state_cost_gradient_evaluations == len(gradient_samples) == 1
+    )
+    assert result.statistics.state_cost_evaluations == 2
+    assert result.path[1][0] == pytest.approx(0.4)
+
+
 @pytest.mark.parametrize("direction", [-1.0, 1.0])
 @pytest.mark.parametrize("step", [1e-4, 0.1])
 def test_asymmetric_samples_descend_near_joint_limit(direction, step):

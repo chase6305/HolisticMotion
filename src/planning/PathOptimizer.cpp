@@ -561,7 +561,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 options.state_cost_weight > 0.0 ? state_costs[i] : 0.0;
             geometry.SetWaypoint(result.path, i);
             geometry.Gradient(gradient);
-            if (options.state_cost_weight > 0.0) {
+            if (options.state_cost_weight > 0.0 &&
+                options.state_cost_step_size > 0.0) {
                 gradient += options.state_cost_weight *
                             options.state_cost_step_size *
                             context.StateCostGradient(result.path[i],
