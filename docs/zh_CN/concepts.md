@@ -158,6 +158,9 @@ SRS 与 FEP 按各关节的坐标周期 `2*pi/axis.norm()` 比较候选；去重
 分支排序保持关节坐标距离。FEP 的 CPU/CUDA 评分使用相同周期，冗余采样范围按物理
 半圈计算。
 
+UR IK 保留与目标相容的腕部种子，并在腕部伸直或折叠时选择邻近的可达滚转角。
+返回的关节值在限位展开后按 SE(3) 切空间残差检查，容差为 `1e-10`，单位为米和弧度。
+
 选择可选操作前，可读取 Python 的 `solver.capabilities` 或通过 C++
 `KinematicsBase::GetCapabilities()` 查询。结果快照包含求解器家族、默认 IK 算法、
 自由度、Jacobian、冗余求解、闭式 IK、批量 FK、已编译 CUDA 和并发查询能力。

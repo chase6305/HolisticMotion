@@ -20,6 +20,7 @@ public:
   virtual ~URKinematics() = default;
 
   /// \brief get the forward kinematics
+  /// Non-finite inputs or results return false without changing pose.
   ///
   /// \param target_joint
   /// \param pose
