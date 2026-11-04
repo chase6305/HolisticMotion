@@ -28,6 +28,39 @@ auto WithRealInput(Result (Class::*method)(const Input &) const,
     };
 }
 
+template <class Model> void BindJointCoordinates(py::class_<Model> &binding) {
+    binding.def_property_readonly("nq", &Model::GetConfigurationSize)
+        .def_property_readonly("nv", &Model::GetVelocitySize)
+        .def("validate_configuration",
+             WithRealInput(&Model::ValidateConfiguration, "configuration"),
+             py::arg("configuration"))
+        .def_property_readonly("joint_coordinates", &Model::GetJointCoordinates)
+        .def("create_joint_position_map", &Model::CreateJointPositionMap, py::arg("joint_names"))
+        .def("neutral_configuration", &Model::NeutralConfiguration)
+        .def(
+            "configuration_from_joint_positions",
+            [](const Model &self, const py::dict &positions) {
+                std::map<std::string, double> checked;
+                for (const auto &item : positions)
+                    checked.emplace(py::cast<std::string>(item.first),
+                                    CheckedRealEigen<double>(item.second, "joint_positions"));
+                return self.ConfigurationFromJointPositions(checked);
+            },
+            pybind11::arg("joint_positions"))
+        .def(
+            "configuration_with_joint_positions",
+            [](const Model &self, const py::object &reference,
+               const std::vector<std::string> &names, const py::object &positions) {
+                return self.ConfigurationWithJointPositions(
+                    CheckedRealEigen<Eigen::VectorXd>(reference, "reference"), names,
+                    CheckedRealEigen<Eigen::VectorXd>(positions, "joint_positions"));
+            },
+            pybind11::arg("reference"), pybind11::arg("joint_names"),
+            pybind11::arg("joint_positions"))
+        .def("joint_lower_limits", &Model::GetJointLowerLimits, pybind11::arg("joint_names"))
+        .def("joint_upper_limits", &Model::GetJointUpperLimits, pybind11::arg("joint_names"));
+}
+
 } // namespace
 
 void BindCollision(pybind11::module_ &module) {
@@ -105,57 +138,19 @@ void BindCollision(pybind11::module_ &module) {
                     &CollisionResult::nearest_point_first)
       .def_readonly("nearest_point_second",
                     &CollisionResult::nearest_point_second);
-  pybind11::class_<CollisionModel>(module, "CollisionModel")
-      .def(
-          pybind11::init<const std::string &, const std::vector<std::string> &, bool>(),
-          pybind11::arg("urdf_path"),
-          pybind11::arg("package_dirs") = std::vector<std::string>{},
-          pybind11::arg("exclude_adjacent") = true)
+  auto mesh = pybind11::class_<CollisionModel>(module, "CollisionModel");
+  BindJointCoordinates(mesh);
+  mesh.def(pybind11::init<const std::string &, const std::vector<std::string> &, bool>(),
+           pybind11::arg("urdf_path"), pybind11::arg("package_dirs") = std::vector<std::string>{},
+           pybind11::arg("exclude_adjacent") = true)
       .def("clone", &CollisionModel::Clone,
            "Deep-copy the current geometry and pairs with independent query "
            "workspaces; the source must have no active edits or queries.")
-      .def_property_readonly("nq", &CollisionModel::GetConfigurationSize)
-      .def_property_readonly("nv", &CollisionModel::GetVelocitySize)
-      .def("validate_configuration",
-           WithRealInput(&CollisionModel::ValidateConfiguration, "configuration"),
-           py::arg("configuration"))
-      .def_property_readonly("joint_coordinates", &CollisionModel::GetJointCoordinates)
-      .def("create_joint_position_map", &CollisionModel::CreateJointPositionMap,
-           py::arg("joint_names"))
       .def_property_readonly("geometry_count", &CollisionModel::GetGeometryCount)
       .def_property_readonly("pair_count", &CollisionModel::GetCollisionPairCount)
       .def_property_readonly("geometry_names", &CollisionModel::GetGeometryNames)
-      .def_property_readonly("collision_link_names",
-                             &CollisionModel::GetCollisionLinkNames)
+      .def_property_readonly("collision_link_names", &CollisionModel::GetCollisionLinkNames)
       .def_property_readonly("collision_pairs", &CollisionModel::GetCollisionPairs)
-      .def("neutral_configuration", &CollisionModel::NeutralConfiguration)
-      .def(
-          "configuration_from_joint_positions",
-          [](const CollisionModel &self, const py::dict &positions) {
-              std::map<std::string, double> checked;
-              for (const auto &item : positions)
-                  checked.emplace(
-                      py::cast<std::string>(item.first),
-                      CheckedRealEigen<double>(item.second, "joint_positions"));
-              return self.ConfigurationFromJointPositions(checked);
-          },
-          pybind11::arg("joint_positions"))
-      .def(
-          "configuration_with_joint_positions",
-          [](const CollisionModel &self, const py::object &reference,
-             const std::vector<std::string> &names, const py::object &positions) {
-              return self.ConfigurationWithJointPositions(
-                  CheckedRealEigen<Eigen::VectorXd>(reference, "reference"),
-                  names,
-                  CheckedRealEigen<Eigen::VectorXd>(positions,
-                                                    "joint_positions"));
-          },
-          pybind11::arg("reference"), pybind11::arg("joint_names"),
-          pybind11::arg("joint_positions"))
-      .def("joint_lower_limits", &CollisionModel::GetJointLowerLimits,
-           pybind11::arg("joint_names"))
-      .def("joint_upper_limits", &CollisionModel::GetJointUpperLimits,
-           pybind11::arg("joint_names"))
       .def(
           "add_box_obstacle",
           [](CollisionModel &self, const std::string &name, const py::object &size,
@@ -167,19 +162,17 @@ void BindCollision(pybind11::module_ &module) {
           pybind11::arg("name"), pybind11::arg("size"), pybind11::arg("pose"))
       .def("remove_obstacle", &CollisionModel::RemoveObstacle, pybind11::arg("name"))
       .def("remove_collision_pair", &CollisionModel::RemoveCollisionPair)
-      .def("remove_collision_pairs_by_links",
-           &CollisionModel::RemoveCollisionPairsByLinks, pybind11::arg("first_link"),
-           pybind11::arg("second_link"))
+      .def("remove_collision_pairs_by_links", &CollisionModel::RemoveCollisionPairsByLinks,
+           pybind11::arg("first_link"), pybind11::arg("second_link"))
       .def("remove_adjacent_pairs", &CollisionModel::RemoveAdjacentCollisionPairs)
       .def("reset_collision_pairs", &CollisionModel::ResetCollisionPairs,
            pybind11::arg("exclude_adjacent") = true)
       .def("clear_collision_pairs", &CollisionModel::ClearCollisionPairs)
-      .def("set_collision_groups", &CollisionModel::SetCollisionGroups,
-           pybind11::arg("groups"), pybind11::arg("group_pairs"))
+      .def("set_collision_groups", &CollisionModel::SetCollisionGroups, pybind11::arg("groups"),
+           pybind11::arg("group_pairs"))
       .def(
           "in_collision",
-          [](CollisionModel &self, const py::object &configuration,
-             bool stop_at_first) {
+          [](CollisionModel &self, const py::object &configuration, bool stop_at_first) {
               return self.InCollision(CheckedRealEigen<Eigen::VectorXd>(
                                           configuration, "configuration"),
                                       stop_at_first);
@@ -187,8 +180,8 @@ void BindCollision(pybind11::module_ &module) {
           pybind11::arg("configuration"), pybind11::arg("stop_at_first") = true)
       .def(
           "is_within_distance",
-          [](CollisionModel &self, const py::object &configuration,
-             const py::object &margin, bool stop_at_first) {
+          [](CollisionModel &self, const py::object &configuration, const py::object &margin,
+             bool stop_at_first) {
               return self.IsWithinDistance(
                   CheckedRealEigen<Eigen::VectorXd>(configuration,
                                                     "configuration"),
@@ -197,36 +190,21 @@ void BindCollision(pybind11::module_ &module) {
           },
           pybind11::arg("configuration"), pybind11::arg("security_margin"),
           pybind11::arg("stop_at_first") = true)
-      .def("collisions",
-           WithRealInput(&CollisionModel::ComputeCollisions, "configuration"),
+      .def("collisions", WithRealInput(&CollisionModel::ComputeCollisions, "configuration"),
            pybind11::arg("configuration"))
-      .def("minimum_distance",
-           WithRealInput(&CollisionModel::MinimumDistance, "configuration"),
+      .def("minimum_distance", WithRealInput(&CollisionModel::MinimumDistance, "configuration"),
            pybind11::arg("configuration"))
       .def("evaluate", WithRealInput(&CollisionModel::Evaluate, "configuration"),
            pybind11::arg("configuration"));
-  pybind11::class_<SphereCollisionModel>(module, "SphereCollisionModel")
-      .def(pybind11::init<const std::string &, std::vector<CollisionSphere>,
-                          bool>(),
+  auto spheres = pybind11::class_<SphereCollisionModel>(module, "SphereCollisionModel");
+  BindJointCoordinates(spheres);
+  spheres
+      .def(pybind11::init<const std::string &, std::vector<CollisionSphere>, bool>(),
            pybind11::arg("urdf_path"), pybind11::arg("spheres"),
            pybind11::arg("exclude_same_link") = true)
-      .def_property_readonly("nq", &SphereCollisionModel::GetConfigurationSize)
-      .def_property_readonly("nv", &SphereCollisionModel::GetVelocitySize)
-      .def("validate_configuration",
-           WithRealInput(&SphereCollisionModel::ValidateConfiguration,
-                         "configuration"),
-           py::arg("configuration"))
-      .def_property_readonly("joint_coordinates",
-                             &SphereCollisionModel::GetJointCoordinates)
-      .def("create_joint_position_map",
-           &SphereCollisionModel::CreateJointPositionMap,
-           py::arg("joint_names"))
-      .def_property_readonly("sphere_count",
-                             &SphereCollisionModel::GetSphereCount)
-      .def_property_readonly("pair_count",
-                             &SphereCollisionModel::GetCollisionPairCount)
-      .def_property_readonly("pair_revision",
-                             &SphereCollisionModel::GetCollisionPairRevision)
+      .def_property_readonly("sphere_count", &SphereCollisionModel::GetSphereCount)
+      .def_property_readonly("pair_count", &SphereCollisionModel::GetCollisionPairCount)
+      .def_property_readonly("pair_revision", &SphereCollisionModel::GetCollisionPairRevision)
       .def_property_readonly("spheres",
                              [](const SphereCollisionModel &model) {
                                  // The Python sphere type is mutable. Return
@@ -236,71 +214,35 @@ void BindCollision(pybind11::module_ &module) {
                                  return std::vector<CollisionSphere>(
                                      model.GetSpheres());
                              })
-      .def_property_readonly("collision_pairs",
-                             &SphereCollisionModel::GetCollisionPairs)
-      .def("neutral_configuration", &SphereCollisionModel::NeutralConfiguration)
-      .def(
-          "configuration_from_joint_positions",
-          [](const SphereCollisionModel &self, const py::dict &positions) {
-              std::map<std::string, double> checked;
-              for (const auto &item : positions)
-                  checked.emplace(
-                      py::cast<std::string>(item.first),
-                      CheckedRealEigen<double>(item.second, "joint_positions"));
-              return self.ConfigurationFromJointPositions(checked);
-          },
-          pybind11::arg("joint_positions"))
-      .def(
-          "configuration_with_joint_positions",
-          [](const SphereCollisionModel &self, const py::object &reference,
-             const std::vector<std::string> &names,
-             const py::object &positions) {
-              return self.ConfigurationWithJointPositions(
-                  CheckedRealEigen<Eigen::VectorXd>(reference, "reference"),
-                  names,
-                  CheckedRealEigen<Eigen::VectorXd>(positions,
-                                                    "joint_positions"));
-          },
-          pybind11::arg("reference"), pybind11::arg("joint_names"),
-          pybind11::arg("joint_positions"))
-      .def("joint_lower_limits", &SphereCollisionModel::GetJointLowerLimits,
-           pybind11::arg("joint_names"))
-      .def("joint_upper_limits", &SphereCollisionModel::GetJointUpperLimits,
-           pybind11::arg("joint_names"))
-
+      .def_property_readonly("collision_pairs", &SphereCollisionModel::GetCollisionPairs)
       .def("set_collision_groups", &SphereCollisionModel::SetCollisionGroups,
            pybind11::arg("groups"), pybind11::arg("group_pairs"))
       .def("reset_collision_pairs", &SphereCollisionModel::ResetCollisionPairs,
            pybind11::arg("exclude_same_link") = true)
       .def("clear_collision_pairs", &SphereCollisionModel::ClearCollisionPairs)
       .def("world_spheres",
-           WithRealInput(&SphereCollisionModel::ComputeWorldSpheres,
-                         "configuration"),
+           WithRealInput(&SphereCollisionModel::ComputeWorldSpheres, "configuration"),
            pybind11::arg("configuration"))
       .def(
           "in_collision",
-          [](SphereCollisionModel &self, const py::object &configuration,
-             const py::object &margin, bool stop_at_first) {
+          [](SphereCollisionModel &self, const py::object &configuration, const py::object &margin,
+             bool stop_at_first) {
               return self.InCollision(
                   CheckedRealEigen<Eigen::VectorXd>(configuration,
                                                     "configuration"),
                   CheckedRealEigen<double>(margin, "security_margin"),
                   stop_at_first);
           },
-          pybind11::arg("configuration"),
-          pybind11::arg("security_margin") = 0.0,
+          pybind11::arg("configuration"), pybind11::arg("security_margin") = 0.0,
           pybind11::arg("stop_at_first") = true)
       .def("minimum_distance",
-           WithRealInput(&SphereCollisionModel::MinimumDistance,
-                         "configuration"),
+           WithRealInput(&SphereCollisionModel::MinimumDistance, "configuration"),
            pybind11::arg("configuration"))
       .def("minimum_distance_gradient",
-           WithRealInput(&SphereCollisionModel::MinimumDistanceGradient,
-                         "configuration"),
+           WithRealInput(&SphereCollisionModel::MinimumDistanceGradient, "configuration"),
            pybind11::arg("configuration"))
       .def("minimum_distance_with_gradient",
-           WithRealInput(&SphereCollisionModel::MinimumDistanceWithGradient,
-                         "configuration"),
+           WithRealInput(&SphereCollisionModel::MinimumDistanceWithGradient, "configuration"),
            pybind11::arg("configuration"))
       .def(
           "distances",
@@ -313,8 +255,7 @@ void BindCollision(pybind11::module_ &module) {
           },
           pybind11::arg("configuration"), pybind11::arg("maximum_distance"))
       .def("batch_minimum_distances",
-           WithRealInput(&SphereCollisionModel::BatchMinimumDistances,
-                         "configurations"),
+           WithRealInput(&SphereCollisionModel::BatchMinimumDistances, "configurations"),
            pybind11::arg("configurations"));
 }
 

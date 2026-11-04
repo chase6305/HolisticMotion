@@ -15,6 +15,7 @@ from typing import Optional, Union
 
 import numpy as np
 
+from ..._validation import require_real
 from .pink_solver import PinkRetargetingSolver
 from .pinocchio_solver import RetargetingResult, RetargetingTarget
 
@@ -41,6 +42,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
             raise TypeError("num_seeds must be an integer")
         if num_seeds < 1:
             raise ValueError("num_seeds must be positive")
+        require_real(seed_spread, name="seed_spread")
         if not np.isfinite(seed_spread) or seed_spread < 0.0:
             raise ValueError("seed_spread must be finite and non-negative")
         if isinstance(sampler_seed, bool) or not isinstance(sampler_seed, Integral):
@@ -93,7 +95,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         started = perf_counter()
         desired_poses, frame_weights = self._prepare_targets(targets)
         primary = self._configuration(seed) if seed is not None else self._last_q.copy()
-        seeds = [primary.copy()] if enforce_acceleration else self._iter_seeds(primary)
+        seeds = [primary] if enforce_acceleration else self._iter_seeds(primary)
         best = None
         best_rank = None
         best_index = 0
@@ -129,7 +131,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
                     best = result
                     best_rank = rank
                     best_index = index
-                    best_velocity = self._last_velocity.copy()
+                    best_velocity = self._last_velocity
                 if self.stop_on_success and result.success:
                     break
             final = replace(

@@ -1,8 +1,11 @@
+set(HOLISTICMOTION_MODEL_SOURCES
+    src/robot/RobotModel.cpp
+    src/robot/Joint.cpp)
+
 set(HOLISTICMOTION_CORE_SOURCES
     src/utility/Logging.cpp
     src/utility/BuildIdentity.cpp
     src/robot/Robot.cpp
-    src/robot/Joint.cpp
     src/kinematics/KinematicsBase.cpp
     src/kinematics/ForwardKinematics.cpp
     src/kinematics/NumericalKinematics.cpp

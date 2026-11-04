@@ -57,8 +57,14 @@ if(TARGET CUDA::cudart)
 else()
   set(cuda false)
 endif()
+get_target_property(model_type HolisticMotion::model TYPE)
+if(model_type STREQUAL "SHARED_LIBRARY")
+  set(shared true)
+else()
+  set(shared false)
+endif()
 file(WRITE "${CMAKE_BINARY_DIR}/capabilities.json"
-  "{\"collision\":${collision},\"cuda\":${cuda}}")
+  "{\"collision\":${collision},\"cuda\":${cuda},\"shared\":${shared}}")
 """)
     build = source / "build"
     run(
@@ -76,7 +82,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/capabilities.json"
     return arguments, capability
 
 
-@pytest.mark.parametrize("component", ["core", "collision"])
+@pytest.mark.parametrize("component", ["model", "core", "collision"])
 def test_installed_component_builds_with_only_its_dependencies(
     sdk, tmp_path, component
 ):
@@ -84,21 +90,38 @@ def test_installed_component_builds_with_only_its_dependencies(
     repository = Path(__file__).resolve().parents[2]
     build = tmp_path / "consumer"
     flags = [f"-DHOLISTICMOTION_CONSUMER_COMPONENTS={component}"]
-    if component == "core":
+    if component in ("model", "core"):
         flags += [
             "-DCMAKE_DISABLE_FIND_PACKAGE_pinocchio=ON",
             "-DCMAKE_DISABLE_FIND_PACKAGE_coal=ON",
         ]
-        targets = ["coordinate_consumer", "trajectory_consumer", "fep_consumer"]
+        if component == "model":
+            flags += [
+                "-DCMAKE_DISABLE_FIND_PACKAGE_spdlog=ON",
+                "-DCMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit=ON",
+            ]
+            if capability["shared"]:
+                flags += [
+                    "-DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON",
+                    "-DCMAKE_DISABLE_FIND_PACKAGE_urdfdom=ON",
+                ]
+            targets = ["model_consumer"]
+        else:
+            if capability["shared"]:
+                flags += ["-DCMAKE_DISABLE_FIND_PACKAGE_spdlog=ON"]
+            targets = ["coordinate_consumer", "trajectory_consumer", "fep_consumer"]
     else:
         flags += [
             "-DHOLISTICMOTION_CONSUMER_TEST_COLLISION=ON",
+            "-DCMAKE_DISABLE_FIND_PACKAGE_pinocchio=ON",
+            "-DCMAKE_DISABLE_FIND_PACKAGE_coal=ON",
+            "-DCMAKE_DISABLE_FIND_PACKAGE_urdfdom=ON",
             "-DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON",
             "-DCMAKE_DISABLE_FIND_PACKAGE_spdlog=ON",
             "-DCMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit=ON",
         ]
         targets = ["collision_consumer"]
-    expected = component == "core" or capability["collision"]
+    expected = component in ("model", "core") or capability["collision"]
     output = run(
         arguments + ["-S", str(repository / "test_package"), "-B", str(build)] + flags,
         success=expected,
@@ -423,16 +446,20 @@ def test_collision_sanitizers_require_a_matching_dependency_cohort(sdk, tmp_path
     assert "Pinocchio/Eigen" in output
 
 
-def test_unavailable_optional_collision_preserves_core(sdk, tmp_path):
-    arguments, _ = sdk
+def test_optional_collision_preserves_core_without_backend_sdks(sdk, tmp_path):
+    arguments, capability = sdk
     (tmp_path / "CMakeLists.txt").write_text("""cmake_minimum_required(VERSION 3.22)
 project(OptionalCollision LANGUAGES CXX)
 find_package(HolisticMotion REQUIRED CONFIG COMPONENTS core OPTIONAL_COMPONENTS collision)
-if(NOT TARGET HolisticMotion::holistic_motion OR HolisticMotion_collision_FOUND)
+if(NOT TARGET HolisticMotion::holistic_motion)
   message(FATAL_ERROR "optional collision discovery changed core availability")
 endif()
-if(TARGET HolisticMotion::collision)
-  message(FATAL_ERROR "unavailable collision target was imported")
+if(EXPECT_COLLISION)
+  if(NOT HolisticMotion_collision_FOUND OR NOT TARGET HolisticMotion::collision)
+    message(FATAL_ERROR "available shared collision component was not imported")
+  endif()
+elseif(HolisticMotion_collision_FOUND OR TARGET HolisticMotion::collision)
+  message(FATAL_ERROR "unavailable collision component was imported")
 endif()
 """)
     run(
@@ -444,6 +471,7 @@ endif()
             str(tmp_path / "build"),
             "-DCMAKE_DISABLE_FIND_PACKAGE_pinocchio=ON",
             "-DCMAKE_DISABLE_FIND_PACKAGE_coal=ON",
+            f"-DEXPECT_COLLISION={'ON' if capability['collision'] else 'OFF'}",
         ]
     )
 
@@ -455,6 +483,8 @@ def test_unavailable_optional_core_preserves_collision(sdk, tmp_path, dependency
         pytest.skip("requires an SDK with the collision component")
     if dependency == "CUDAToolkit" and not capability["cuda"]:
         pytest.skip("requires a CUDA-enabled core")
+    if dependency == "spdlog" and capability["shared"]:
+        pytest.skip("shared core has no spdlog SDK dependency")
     (tmp_path / "CMakeLists.txt").write_text("""cmake_minimum_required(VERSION 3.22)
 project(OptionalCore LANGUAGES CXX)
 find_package(HolisticMotion REQUIRED CONFIG COMPONENTS collision OPTIONAL_COMPONENTS core)

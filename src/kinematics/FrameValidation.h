@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "holistic_motion/kinematics/utility.h"
+#include "holistic_motion/kinematics/Types.h"
 
 namespace holistic_motion {
 namespace robotics {

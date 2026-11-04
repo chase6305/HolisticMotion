@@ -9,6 +9,49 @@
 
 using namespace holistic_motion::robotics;
 
+namespace holistic_motion::robotics {
+struct JacobianFallback;
+namespace internal {
+template <> struct traits<JacobianFallback> : traits<R3Tangentd> {};
+} // namespace internal
+struct JacobianFallback : TangentBase<JacobianFallback> {
+    Eigen::Matrix3d Rjac() const {
+        return (Eigen::Matrix3d() << 2, .2, 0, .1, 3, .4, 0, .3, 4).finished();
+    }
+    Eigen::Matrix3d Ljac() const { return Rjac().transpose(); }
+};
+} // namespace holistic_motion::robotics
+
+template <class Tangent> void CheckGenericInverse(const Tangent &tangent) {
+    static_assert(internal::has_rjacinv<Tangent>::value);
+    static_assert(internal::has_ljacinv<Tangent>::value);
+    const TangentBase<Tangent> &generic = tangent;
+    if (!generic.Rjacinv().isApprox(tangent.Rjacinv(), 0.0) ||
+        !generic.Ljacinv().isApprox(tangent.Ljacinv(), 0.0))
+        throw std::runtime_error("generic tangent did not use its concrete inverse Jacobian");
+}
+
+void CheckGenericInverses() {
+    R3Tangentd translation(Eigen::Vector3d(.1, .2, .3));
+    SO2Tangentd angle(.2);
+    SO3Tangentd rotation(Eigen::Vector3d(.2, -.1, .4));
+    SE2Tangentd planar;
+    planar.Coeffs() << .1, .2, .3;
+    SE3Tangentd spatial;
+    spatial.Coeffs() << .1, .2, .3, .2, -.1, .4;
+    CheckGenericInverse(translation);
+    CheckGenericInverse(angle);
+    CheckGenericInverse(rotation);
+    CheckGenericInverse(planar);
+    CheckGenericInverse(spatial);
+    static_assert(!internal::has_rjacinv<JacobianFallback>::value);
+    static_assert(!internal::has_ljacinv<JacobianFallback>::value);
+    const JacobianFallback fallback;
+    if (!(fallback.Rjacinv() * fallback.Rjac()).isApprox(Eigen::Matrix3d::Identity(), 1e-14) ||
+        !(fallback.Ljacinv() * fallback.Ljac()).isApprox(Eigen::Matrix3d::Identity(), 1e-14))
+        throw std::runtime_error("generic tangent inverse fallback is invalid");
+}
+
 template <typename Scalar> void CheckHalfTurns() {
     using Vector = Eigen::Matrix<Scalar, 3, 1>;
     using Matrix = Eigen::Matrix<Scalar, 3, 3>;
@@ -31,8 +74,7 @@ template <typename Scalar> void CheckHalfTurns() {
                 Matrix log_jacobian;
                 const auto logarithm = rotation.Log(log_jacobian);
                 if (!log_jacobian.allFinite() ||
-                    (log_jacobian * logarithm.Rjac() - Matrix::Identity()).norm() >
-                        tolerance)
+                    (log_jacobian * logarithm.Rjac() - Matrix::Identity()).norm() > tolerance)
                     throw std::runtime_error("rotation Log Jacobian is inaccurate");
 
                 for (Scalar scale : {Scalar(0.01), Scalar(1), Scalar(10000)}) {
@@ -42,8 +84,7 @@ template <typename Scalar> void CheckHalfTurns() {
                         (recovered.GetTranslation() - pose.GetTranslation()).norm() >
                             tolerance * pose.GetTranslation().norm() ||
                         (recovered.AsSO3() - rotation).Coeffs().norm() > tolerance)
-                        throw std::runtime_error(
-                            "half-turn SE3 round trip lost accuracy");
+                        throw std::runtime_error("half-turn SE3 round trip lost accuracy");
                 }
             }
         }
@@ -56,8 +97,8 @@ template <typename Scalar> void CheckAntipodalSmallRotations() {
     const Vector axis = Vector(1, -2, 3).normalized();
     const Scalar boundary = Scalar(2) * std::sqrt(Constants<Scalar>::eps);
     const Scalar tolerance = Scalar(64) * std::numeric_limits<Scalar>::epsilon();
-    for (Scalar factor : {Scalar(0), Scalar(0.001), Scalar(0.5), Scalar(0.99),
-                          Scalar(1.01), Scalar(2)}) {
+    for (Scalar factor :
+         {Scalar(0), Scalar(0.001), Scalar(0.5), Scalar(0.99), Scalar(1.01), Scalar(2)}) {
         const SO3Tangent<Scalar> tangent(axis * (boundary * factor));
         const auto rotation = tangent.Exp();
         auto antipodal = rotation;
@@ -85,58 +126,42 @@ template <typename Scalar> void CheckRotationVectorScales() {
     const int exponent = std::numeric_limits<Scalar>::max_exponent10 - 8;
     const Scalar large = std::pow(Scalar(10), Scalar(exponent));
     const Scalar small = Scalar(1) / large;
-    const Scalar subnormal_square =
-        std::sqrt(std::numeric_limits<Scalar>::min()) / Scalar(10);
-    const Scalar tolerance =
-        Scalar(32) * std::numeric_limits<Scalar>::epsilon();
-    for (Scalar angle : {Scalar(0), Scalar(0.2), -Scalar(0.7), small, -small,
-                         subnormal_square, -subnormal_square, large, -large}) {
-        const SO3<Scalar> rotation(Scalar(0), Scalar(0), angle,
-                                   EulerAnglesType::rota_vec);
+    const Scalar subnormal_square = std::sqrt(std::numeric_limits<Scalar>::min()) / Scalar(10);
+    const Scalar tolerance = Scalar(32) * std::numeric_limits<Scalar>::epsilon();
+    for (Scalar angle : {Scalar(0), Scalar(0.2), -Scalar(0.7), small, -small, subnormal_square,
+                         -subnormal_square, large, -large}) {
+        const SO3<Scalar> rotation(Scalar(0), Scalar(0), angle, EulerAnglesType::rota_vec);
         const Scalar expected_z = std::sin(angle / Scalar(2));
         const Scalar expected_w = std::cos(angle / Scalar(2));
-        if (!rotation.Coeffs().allFinite() ||
-            rotation.Coeffs()[0] != Scalar(0) ||
+        if (!rotation.Coeffs().allFinite() || rotation.Coeffs()[0] != Scalar(0) ||
             rotation.Coeffs()[1] != Scalar(0) ||
             std::abs(rotation.Coeffs()[3] - expected_w) > tolerance ||
             (expected_z == Scalar(0)
                  ? rotation.Coeffs()[2] != Scalar(0)
-                 : std::abs(rotation.Coeffs()[2] / expected_z - Scalar(1)) >
-                       tolerance))
-            throw std::runtime_error(
-                "rotation vector norm lost a finite rotation");
+                 : std::abs(rotation.Coeffs()[2] / expected_z - Scalar(1)) > tolerance))
+            throw std::runtime_error("rotation vector norm lost a finite rotation");
     }
-    const SO3<Scalar> tiny_rotation(small, Scalar(2) * small,
-                                    -Scalar(3) * small,
+    const SO3<Scalar> tiny_rotation(small, Scalar(2) * small, -Scalar(3) * small,
                                     EulerAnglesType::rota_vec);
-    const Eigen::Matrix<Scalar, 3, 1> expected(small / Scalar(2), small,
-                                               -Scalar(1.5) * small);
+    const Eigen::Matrix<Scalar, 3, 1> expected(small / Scalar(2), small, -Scalar(1.5) * small);
     for (int axis = 0; axis < 3; ++axis)
-        if (std::abs(tiny_rotation.Coeffs()[axis] / expected[axis] -
-                     Scalar(1)) > tolerance)
+        if (std::abs(tiny_rotation.Coeffs()[axis] / expected[axis] - Scalar(1)) > tolerance)
             throw std::runtime_error("tiny rotation vector lost its axis");
-    const Scalar subnormal_angle =
-        Scalar(16) * std::numeric_limits<Scalar>::denorm_min();
-    const SO3<Scalar> denormal(Scalar(0), Scalar(0), subnormal_angle,
-                               EulerAnglesType::rota_vec);
-    if (!denormal.Coeffs().allFinite() ||
-        denormal.Coeffs()[2] != subnormal_angle / Scalar(2))
+    const Scalar subnormal_angle = Scalar(16) * std::numeric_limits<Scalar>::denorm_min();
+    const SO3<Scalar> denormal(Scalar(0), Scalar(0), subnormal_angle, EulerAnglesType::rota_vec);
+    if (!denormal.Coeffs().allFinite() || denormal.Coeffs()[2] != subnormal_angle / Scalar(2))
         throw std::runtime_error("subnormal rotation vector lost its phase");
 }
 
 template <typename Scalar> void CheckLargeTangents() {
     using Vector = Eigen::Matrix<Scalar, 3, 1>;
     using Matrix = Eigen::Matrix<Scalar, 3, 3>;
-    const Scalar tolerance =
-        Scalar(64) * std::numeric_limits<Scalar>::epsilon();
+    const Scalar tolerance = Scalar(64) * std::numeric_limits<Scalar>::epsilon();
     const std::array<Scalar, 4> angles{
         Scalar(1) / std::numeric_limits<Scalar>::epsilon(),
-        std::pow(Scalar(10),
-                 Scalar(std::numeric_limits<Scalar>::max_exponent10 / 3 + 4)),
-        std::pow(Scalar(10),
-                 Scalar(std::numeric_limits<Scalar>::max_exponent10 / 2 + 4)),
-        std::pow(Scalar(10),
-                 Scalar(std::numeric_limits<Scalar>::max_exponent10 - 8))};
+        std::pow(Scalar(10), Scalar(std::numeric_limits<Scalar>::max_exponent10 / 3 + 4)),
+        std::pow(Scalar(10), Scalar(std::numeric_limits<Scalar>::max_exponent10 / 2 + 4)),
+        std::pow(Scalar(10), Scalar(std::numeric_limits<Scalar>::max_exponent10 - 8))};
     const auto check = [&](const Matrix &actual, const Matrix &expected) {
         if (!actual.allFinite())
             throw std::runtime_error("large SO3 Jacobian is not finite");
@@ -145,8 +170,7 @@ template <typename Scalar> void CheckLargeTangents() {
                 if (std::abs(actual(row, column) - expected(row, column)) >
                     tolerance * std::abs(expected(row, column)) +
                         Scalar(8) * std::numeric_limits<Scalar>::denorm_min())
-                    throw std::runtime_error(
-                        "large SO3 Jacobian lost an analytic entry");
+                    throw std::runtime_error("large SO3 Jacobian lost an analytic entry");
     };
     for (int axis = 0; axis < 3; ++axis) {
         const Vector direction = Vector::Unit(axis);
@@ -161,8 +185,7 @@ template <typename Scalar> void CheckLargeTangents() {
                 Matrix expected = Matrix::Zero();
                 expected(axis, axis) = Scalar(1);
                 expected(first, first) = expected(second, second) = sinc;
-                expected(first, second) =
-                    -(Scalar(1) - std::cos(angle)) / angle;
+                expected(first, second) = -(Scalar(1) - std::cos(angle)) / angle;
                 expected(second, first) = -expected(first, second);
                 check(tangent.Ljac(), expected);
                 check(tangent.Rjac(), expected.transpose());
@@ -177,12 +200,10 @@ template <typename Scalar> void CheckLargeTangents() {
                 check(tangent.Ljacinv(), inverse);
                 check(tangent.Rjacinv(), inverse.transpose());
                 if (!rotation.Coeffs().allFinite() ||
-                    (rotation.Coeffs().template head<3>() -
-                     direction * std::sin(half))
-                            .norm() > tolerance ||
+                    (rotation.Coeffs().template head<3>() - direction * std::sin(half)).norm() >
+                        tolerance ||
                     std::abs(rotation.Coeffs()[3] - std::cos(half)) > tolerance)
-                    throw std::runtime_error(
-                        "large SO3 exponential lost its rotation");
+                    throw std::runtime_error("large SO3 exponential lost its rotation");
             }
         }
     }
@@ -190,6 +211,7 @@ template <typename Scalar> void CheckLargeTangents() {
 
 int main() {
     try {
+        CheckGenericInverses();
         CheckHalfTurns<double>();
         CheckHalfTurns<float>();
         CheckAntipodalSmallRotations<double>();

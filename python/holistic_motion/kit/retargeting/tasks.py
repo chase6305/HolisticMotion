@@ -9,20 +9,10 @@ from typing import Union
 
 import numpy as np
 
-from ..._validation import real_array, require_real
+from ..._validation import finite_scalar as _finite_scalar
+from ..._validation import real_array
 
 Cost = Union[float, Sequence[float]]
-
-
-def _finite_scalar(value, name: str) -> float:
-    require_real(value, name=name)
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as error:
-        raise TypeError(f"{name} must be numeric") from error
-    if not np.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
 
 
 def _joint_costs(value, name: str) -> Mapping[str, float]:
@@ -41,14 +31,17 @@ def _joint_costs(value, name: str) -> Mapping[str, float]:
 
 def _cost_vector(value: Cost, size: int, name: str) -> np.ndarray:
     result = real_array(value, name=name)
-    if result.ndim == 0:
+    scalar = result.ndim == 0
+    if scalar:
         result = np.full(size, float(result))
-    result = result.reshape(-1)
+    else:
+        result = result.reshape(-1)
     if result.shape != (size,) or not np.isfinite(result).all():
         raise ValueError(f"{name} must be a finite scalar or vector of size {size}")
     if np.any(result < 0.0):
         raise ValueError(f"{name} must be non-negative")
-    result = result.copy()
+    if not scalar:
+        result = result.copy()
     result.setflags(write=False)
     return result
 
@@ -175,10 +168,11 @@ class SupportPolygonTask:
         if np.any(np.abs(turns) <= 1e-12) or np.any(turns * turns[0] < 0.0):
             raise ValueError("support polygon must be strictly convex")
         if turns[0] < 0.0:
-            vertices = vertices[::-1].copy()
+            vertices = vertices[::-1]
             # Reversing vertices reverses and negates the incident edges.
             directions = -np.roll(directions[::-1], -1, axis=0)
             relative = relative[::-1]
+        vertices = vertices.copy()
         cost = _finite_scalar(self.cost, "support polygon cost")
         margin = _finite_scalar(self.margin, "support polygon margin")
         gain = _finite_scalar(self.gain, "gain")
@@ -199,8 +193,6 @@ class SupportPolygonTask:
         )
         if np.any(all_edge_distances < -1e-12):
             raise ValueError("support polygon must be strictly convex and ordered")
-        vertices = vertices.copy()
-        normals = normals.copy()
         with np.errstate(over="ignore", invalid="ignore"):
             offsets = np.sum(normals * vertices, axis=1)
         if not np.isfinite(offsets).all():

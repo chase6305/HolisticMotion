@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
 import numpy as np
 
 _IDENTITY_ROTATION = np.eye(3)
@@ -73,6 +75,18 @@ def real_array(value, *, name: str, copy: bool = False) -> np.ndarray:
         if copy
         else np.asarray(array, dtype=float)
     )
+
+
+def finite_scalar(value, name: str) -> float:
+    """Convert a real scalar, preserving the public numeric error messages."""
+    value = require_real(value, name=name)
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be numeric") from error
+    if not isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
 
 
 def validated_transform(value, *, name: str, readonly: bool = False) -> np.ndarray:

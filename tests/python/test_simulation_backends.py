@@ -3,6 +3,7 @@
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -210,6 +211,19 @@ def test_invalid_dt_does_not_mutate_physics(dt):
         assert session.step(1, 0.1).state.step_id == 1
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_numpy_complex_dt_does_not_mutate_physics(dtype, imaginary):
+    np = pytest.importorskip("numpy")
+    events = []
+    with SimulationSession(Physics(events)) as session:
+        session.reset()
+        with pytest.raises(TypeError, match="real duration"):
+            session.step(1, getattr(np, dtype)(0.1 + imaginary * 1j))
+        assert events == ["reset"]
+        assert session.step(1, 0.1).state.step_id == 1
+
+
 def test_failed_factory_closes_previously_created_adapters():
     events = []
     backends = registry(events)
@@ -250,12 +264,79 @@ def test_session_requires_explicit_reset():
         session.step(1, 0.1)
 
 
-def test_plain_import_does_not_load_optional_backends():
+def test_simulation_import_does_not_load_unrelated_toolkits_or_backends():
     subprocess.run(
         [
             sys.executable,
             "-c",
-            "from holistic_motion.kit.simulation import BackendRegistry; import sys; assert all(n not in sys.modules for n in ('newton', 'warp', 'viser', 'rerun', 'pyglet', 'torch')); BackendRegistry()",
+            """
+import sys
+from holistic_motion.kit.simulation import BackendRegistry
+assert all(name not in sys.modules for name in (
+    'holistic_motion.kinematics', 'holistic_motion.kit.retargeting',
+    'newton', 'warp', 'viser', 'rerun', 'pyglet', 'torch',
+))
+BackendRegistry()
+""",
+        ],
+        check=True,
+    )
+
+
+def test_simulation_import_works_without_site_packages():
+    import holistic_motion as hm
+
+    package_root = Path(hm.__file__).resolve().parent.parent
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            f"""
+import os
+import sys
+os.environ['HOLISTICMOTION_PURE_PYTHON'] = '1'
+sys.path.insert(0, {str(package_root)!r})
+from holistic_motion.kit.simulation import BackendRegistry
+BackendRegistry()
+assert all(name not in sys.modules for name in (
+    'numpy', 'torch', 'pinocchio', 'viser',
+    'holistic_motion.kinematics', 'holistic_motion.kit.retargeting',
+))
+""",
+        ],
+        check=True,
+    )
+
+
+def test_toolkit_module_exports_preserve_imports_and_discovery():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+from importlib import import_module
+import holistic_motion.kit as kit
+expected = {'kinematics', 'retargeting', 'simulation'}
+assert set(kit.__all__) == expected
+assert expected <= set(dir(kit))
+namespace = {}
+exec('from holistic_motion.kit import *', namespace)
+for name in expected:
+    path = (
+        'holistic_motion.kinematics'
+        if name == 'kinematics'
+        else f'holistic_motion.kit.{name}'
+    )
+    assert namespace[name] is getattr(kit, name) is import_module(path)
+try:
+    kit.unknown_toolkit
+except AttributeError as error:
+    assert 'unknown_toolkit' in str(error)
+else:
+    raise AssertionError('unknown toolkit must raise AttributeError')
+""",
         ],
         check=True,
     )

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <vector>
@@ -49,20 +50,70 @@ std::vector<JointNode> MakeJoints() {
     std::vector<JointNode> joints;
     joints.reserve(6);
     for (int index = 0; index < 6; ++index) {
-        joints.emplace_back(SE3d(), Eigen::Vector3d::UnitZ(),
-                            JointType::REVOLUTE, -2.0 * M_PI, 2.0 * M_PI);
+        joints.emplace_back(SE3d(), Eigen::Vector3d::UnitZ(), JointType::REVOLUTE, -2.0 * M_PI,
+                            2.0 * M_PI);
     }
     return joints;
+}
+
+template <class Solver, class Parameters>
+bool CheckInvalidParameters(const Parameters &valid, const std::vector<JointNode> &nodes,
+                            std::initializer_list<double Parameters::*> geometry) {
+    const auto rejects = [&](const Parameters &parameters) {
+        try {
+            Solver solver(parameters, nodes);
+        } catch (const std::invalid_argument &) {
+            return true;
+        }
+        return false;
+    };
+    auto missing_geometry = valid;
+    for (auto field : geometry)
+        missing_geometry.*field = 0;
+    if (!rejects(missing_geometry))
+        return false;
+    for (double invalid :
+         {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        for (auto field : geometry) {
+            auto parameters = valid;
+            parameters.*field = invalid;
+            if (!rejects(parameters))
+                return false;
+        }
+        for (int index = 0; index < 6; ++index) {
+            auto parameters = valid;
+            parameters.offsets[index] = invalid;
+            if (!rejects(parameters))
+                return false;
+        }
+    }
+    for (int index = 0; index < 6; ++index) {
+        for (signed char direction : {-2, 0, 2}) {
+            auto parameters = valid;
+            parameters.rotation_directions[index] = direction;
+            if (!rejects(parameters))
+                return false;
+        }
+    }
+    for (auto transform : {&Parameters::T_b_ob, &Parameters::T_oe_e}) {
+        auto parameters = valid;
+        (parameters.*transform).Coeffs().template tail<4>().setZero();
+        if (!rejects(parameters))
+            return false;
+    }
+    return true;
 }
 
 template <typename Solver>
 bool CheckRoundTrip(Solver& solver, const Eigen::VectorXd& joints) {
     SE3d target;
-    if (!solver.GetFK(joints, target)) return false;
+    if (!solver.GetFK(joints, target))
+        return false;
     Eigen::VectorXd seed = joints;
     IkRtn solutions;
     std::vector<double> distances;
-    if (!solver.GetIK(target, solutions, seed, distances)) return false;
+    if (!solver.GetIK(target, solutions, seed, distances))
+        return false;
     if (solutions.ik_number < 1 || distances.size() != solutions.ik_joints.size()) {
         return false;
     }
@@ -136,11 +187,9 @@ bool CheckInvalidTargets(Solver &solver, const Eigen::VectorXd &joints) {
                 nearest ? solver.GetNearestIK(target, solutions, seed, distance)
                         : solver.GetIK(target, solutions, seed, distances);
             if (success || solutions.success || solutions.ik_number != 0 ||
-                solutions.joint_states.rows() != 0 ||
-                solutions.joint_states.cols() != 0 ||
+                solutions.joint_states.rows() != 0 || solutions.joint_states.cols() != 0 ||
                 !solutions.ik_joints.empty() || !seed.isApprox(joints, 0.0) ||
-                (!nearest && !distances.empty()) ||
-                (nearest && distance != 99.0))
+                (!nearest && !distances.empty()) || (nearest && distance != 99.0))
                 return false;
         }
     }
@@ -246,6 +295,18 @@ int main() {
         return 1;
     }
 
+    if (!CheckInvalidParameters<OPWKinematics>(
+            opw, joints,
+            {&OPWParameters::a1, &OPWParameters::a2, &OPWParameters::b, &OPWParameters::c1,
+             &OPWParameters::c2, &OPWParameters::c3, &OPWParameters::c4}) ||
+        !CheckInvalidParameters<URKinematics>(ur, joints,
+                                              {&URParameters::d1, &URParameters::a2,
+                                               &URParameters::a3, &URParameters::d4,
+                                               &URParameters::d5, &URParameters::d6})) {
+        std::cerr << "invalid analytic parameters were accepted\n";
+        return 1;
+    }
+
     Eigen::VectorXd q(6);
     q << 0.25, -0.70, 0.85, -0.45, 0.65, -0.20;
     if (!CheckRoundTrip(opw_solver, q) || !CheckRoundTrip(ur_solver, q)) {
@@ -268,6 +329,34 @@ int main() {
     if (!CheckURWristSeeds(ur_solver)) {
         std::cerr << "UR wrist seed normalization failed\n";
         return 1;
+    }
+
+    // Reducing a finite seed must take bounded work even when subtracting one
+    // turn cannot change its floating-point representation.
+    SE3d singular_target;
+    if (!ur_solver.GetFK(wrist_singular, singular_target))
+        return 1;
+    for (double angle : {0.0, 2.0 * M_PI, -2.0 * M_PI, 4.0 * M_PI, 1e20, -1e20, 1e308, -1e308}) {
+        Eigen::VectorXd seed = wrist_singular;
+        seed[5] = angle;
+        IkRtn solutions;
+        std::vector<double> distances;
+        ur_solver.GetIK(singular_target, solutions, seed, distances);
+        for (const auto &solution : solutions.ik_joints) {
+            SE3d pose;
+            if (!ur_solver.GetFK(solution, pose) || !pose.IsApprox(singular_target))
+                return 1;
+        }
+    }
+
+    // A failed FK must preserve the caller's last valid output.
+    Eigen::VectorXd overflowing = Eigen::VectorXd::Constant(6, 1e308);
+    for (auto *solver :
+         std::vector<holistic_motion::robotics::KinematicsBase *>{&opw_solver, &ur_solver}) {
+        SE3d sentinel(1, 2, 3, 0, 0, 0, 1);
+        const SE3d previous = sentinel;
+        if (solver->GetFK(overflowing, sentinel) || !sentinel.IsApprox(previous))
+            return 1;
     }
 
     Eigen::Matrix4d unreachable_matrix = Eigen::Matrix4d::Identity();

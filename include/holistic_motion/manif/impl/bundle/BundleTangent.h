@@ -61,21 +61,6 @@ struct traits<BundleTangent<_Scalar, _T...>> {
                     int(_T<_Scalar>::Tangent::LieAlg::RowsAtCompileTime)...)>;
 };
 
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<BundleTangent<_Scalar, _T...>>::DoFIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<BundleTangent<_Scalar, _T...>>::RepSizeIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<BundleTangent<_Scalar, _T...>>::AlgIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<BundleTangent<_Scalar, _T...>>::Dim;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<BundleTangent<_Scalar, _T...>>::DoF;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<BundleTangent<_Scalar, _T...>>::RepSize;
 
 }  // namespace internal
 
@@ -166,12 +151,9 @@ template <int... _Idx>
 BundleTangent<_Scalar, _T...>::BundleTangent(
         internal::intseq<_Idx...>,
         const typename _T<_Scalar>::Tangent&... elements) {
-    // c++11 "fold expression"
-    auto l = {
-            ((data_.template segment<Element<_Idx>::RepSize>(std::get<_Idx>(
-                      internal::traits<Type>::RepSizeIdx)) = elements.Coeffs()),
-             0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(data_.template segment<Element<_Idx>::RepSize>(
+                           std::get<_Idx>(internal::traits<Type>::RepSizeIdx)) = elements.Coeffs()),
+     ...);
 }
 
 template <typename _Scalar, template <typename> class... _T>

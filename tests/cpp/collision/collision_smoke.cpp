@@ -152,6 +152,33 @@ int main() {
         obstacle_pose(0, 3) = 0.5;
         model.AddBoxObstacle("test_wall", Eigen::Vector3d(0.2, 0.5, 0.5),
                              obstacle_pose);
+        if (model.ResetCollisionPairs(false) != 2)
+            return 7;
+        // Selective distance queries retain the full report's pair order,
+        // signed distances and witness points as the colliding set changes.
+        for (double position : {0.1, 0.3, 0.6, 0.9}) {
+            const auto state = Eigen::VectorXd::Constant(1, position).eval();
+            const auto expected = model.Evaluate(state).collisions;
+            const auto actual = model.ComputeCollisions(state);
+            if (actual.size() != expected.size())
+                return 8;
+            for (std::size_t index = 0; index < actual.size(); ++index) {
+                const auto &collision = actual[index];
+                const auto &reference = expected[index];
+                if (collision.pair_index != reference.pair_index ||
+                    collision.first_geometry != reference.first_geometry ||
+                    collision.second_geometry != reference.second_geometry ||
+                    std::abs(collision.distance - reference.distance) > 1e-12 ||
+                    (collision.nearest_point_first - reference.nearest_point_first)
+                            .norm() > 1e-12 ||
+                    (collision.nearest_point_second - reference.nearest_point_second)
+                            .norm() > 1e-12)
+                    return 9;
+            }
+        }
+        if (model.RemoveCollisionPairsByLinks("base", "base") != 0 ||
+            model.GetCollisionPairCount() != 2)
+            return 10;
         if (model.SetCollisionGroups(
                 {{"robot", {"slider"}}, {"environment", {"test_wall"}}},
                 {{"robot", "environment"}}) != 1) {

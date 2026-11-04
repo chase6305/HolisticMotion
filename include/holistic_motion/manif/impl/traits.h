@@ -3,6 +3,7 @@
 
 #include <array>
 #include <type_traits>
+#include <utility>
 
 namespace holistic_motion {
 namespace robotics {
@@ -13,11 +14,6 @@ template <typename Derived>
 struct TangentBase;
 
 namespace internal {
-
-// template <typename T>
-// inline constexpr bool constexpr_false() {
-//    return false;
-//}
 
 template <typename T>
 struct constexpr_false : std::false_type {};
@@ -78,56 +74,32 @@ struct traitscast<_Class<_Scalar, _Dim>, _NewScalar> {
 template <typename Scalar>
 struct is_ad : std::integral_constant<bool, false> {};
 
-//! @brief Has function 'rjacinv' traits
+template <typename T, typename = void> struct has_normalize : std::false_type {};
+template <typename T>
+struct has_normalize<T, std::void_t<decltype(std::declval<T &>().Normalize())>> : std::true_type {};
+
+// Detect concrete inverse-Jacobian implementations. The inherited fallback is
+// a function template, whose unresolved address does not count as an override.
 template <class, typename T>
 struct has_rjacinv_impl : std::false_type {};
-template <typename T>
-struct has_rjacinv_impl<decltype(void(std::declval<T>().rjacinv())), T>
-    : std::true_type {};
+template <typename T> struct has_rjacinv_impl<decltype(void(&T::Rjacinv)), T> : std::true_type {};
 template <typename T>
 struct has_rjacinv : has_rjacinv_impl<void, T> {};
 
-//! @brief Has function 'ljacinv' traits
 template <class, typename T>
 struct has_ljacinv_impl : std::false_type {};
-template <typename T>
-struct has_ljacinv_impl<decltype(void(std::declval<T>().ljacinv())), T>
-    : std::true_type {};
+template <typename T> struct has_ljacinv_impl<decltype(void(&T::Ljacinv)), T> : std::true_type {};
 template <typename T>
 struct has_ljacinv : has_ljacinv_impl<void, T> {};
 
-/**
- * @brief intseq: std::integer_sequence-equivalent
- */
-template <int... _I>
-struct intseq {
-    using value_type = int;
-    static constexpr std::size_t size() noexcept { return sizeof...(_I); }
-};
-
-/**
- * @brief concatenate two intseqs
- */
-template <typename _Seq1, typename _Seq2>
-struct intseq_join;
-
-template <template <int...> class _IntSeq, int... _I1, int... _I2>
-struct intseq_join<_IntSeq<_I1...>, _IntSeq<_I2...>> {
-    using type = _IntSeq<_I1..., _I2...>;
-};
+template <int... Indices> using intseq = std::integer_sequence<int, Indices...>;
 
 /**
  * @brief generate intseq 0, 1, ..., N-1
  */
 template <std::size_t _N>
 struct make_intseq {
-    using type = typename intseq_join<typename make_intseq<_N - 1>::type,
-                                      intseq<_N - 1>>::type;
-};
-
-template <>
-struct make_intseq<0> {
-    using type = intseq<>;
+    using type = std::make_integer_sequence<int, _N>;
 };
 
 template <std::size_t _N>
@@ -143,27 +115,18 @@ constexpr T accumulate(T t, Rest... rest) {
     return t + accumulate(rest...);
 }
 
-template <int N, int i, int j, int... Args>
-struct compute_indices_gen {
-    static constexpr std::array<int, sizeof...(Args) + 1> get() {
-        return compute_indices_gen<N - 1, i + j, Args..., i + j>::get();
-    }
-};
-template <int i, int j, int... Args>
-struct compute_indices_gen<1, i, j, Args...> {
-    static constexpr std::array<int, sizeof...(Args) + 1> get() {
-        return {{0, Args...}};
-    }
-};
 //! @brief Compute indices given block-sizes
 template <int... Args>
 constexpr std::array<int, sizeof...(Args)> compute_indices() {
-    return compute_indices_gen<sizeof...(Args), 0, Args...>::get();
+    const std::array<int, sizeof...(Args)> sizes{Args...};
+    std::array<int, sizeof...(Args)> indices{};
+    for (std::size_t index = 1; index < indices.size(); ++index)
+        indices[index] = indices[index - 1] + sizes[index - 1];
+    return indices;
 }
 
 // traits to check if a template parameter has a LieGroupBase base.
-template <typename Derived>
-void test_lie_group_base(LieGroupBase<Derived>&& s) {}
+template <typename Derived> void test_lie_group_base(LieGroupBase<Derived> &&);
 
 template <class, typename T>
 struct is_holistic_motion_group_impl : std::false_type {};
@@ -174,8 +137,7 @@ template <typename T>
 struct is_holistic_motion_group : is_holistic_motion_group_impl<void, T> {};
 
 // traits to check if a template parameter has a TangentBase base.
-template <typename Derived>
-void test_tangent_base(TangentBase<Derived>&& s) {}
+template <typename Derived> void test_tangent_base(TangentBase<Derived> &&);
 
 template <class, typename T>
 struct is_holistic_motion_tangent_impl : std::false_type {};

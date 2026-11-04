@@ -10,7 +10,7 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import wraps
-from numbers import Integral
+from numbers import Complex, Integral, Real
 from threading import Lock
 from typing import Any, Optional, Protocol
 
@@ -179,6 +179,8 @@ class SimulationSession:
             )
         if isinstance(dt, bool):
             raise TypeError("dt must be a real duration, not boolean")
+        if isinstance(dt, Complex) and not isinstance(dt, Real):
+            raise TypeError("dt must be a real duration")
         dt = float(dt)
         next_time = self._state.sim_time + dt
         if not math.isfinite(dt) or dt <= 0.0 or not math.isfinite(next_time):

@@ -11,7 +11,7 @@
 namespace holistic_motion::robotics::detail {
 
 // A balanced, immutable partition of candidate coordinates. Only the retained
-// flags and subtree counts change during the deterministic greedy pass. Query
+// flags and active-subtree flags change during the deterministic greedy pass. Query
 // pruning follows coordinate differences directly, without rounded q +/- eps
 // boxes or a nontransitive approximate ordering relation.
 class RetainedSolutionIndex {
@@ -29,25 +29,26 @@ class RetainedSolutionIndex {
 
     void Retain(std::size_t point) {
         nodes_[point].retained = true;
-        for (std::size_t node = point; node != kNone;
+        for (std::size_t node = point; node != kNone && !nodes_[node].active;
              node = nodes_[node].parent)
-            ++nodes_[node].count;
+            nodes_[node].active = true;
     }
 
+    bool IsRetained(std::size_t point) const { return nodes_[point].retained; }
+
   private:
-    static constexpr std::size_t kNone =
-        std::numeric_limits<std::size_t>::max();
+    static constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
     struct Node {
         std::size_t left{kNone};
         std::size_t right{kNone};
         std::size_t parent{kNone};
         Eigen::Index axis{0};
-        int count{0};
+        bool active{false};
         bool retained{false};
     };
 
-    std::size_t Build(std::vector<std::size_t> &order, std::size_t begin,
-                      std::size_t end, std::size_t parent) {
+    std::size_t Build(std::vector<std::size_t> &order, std::size_t begin, std::size_t end,
+                      std::size_t parent) {
         if (begin == end)
             return kNone;
         Eigen::Index axis = 0;
@@ -66,8 +67,7 @@ class RetainedSolutionIndex {
             }
         }
         const std::size_t middle = begin + (end - begin) / 2;
-        std::nth_element(order.begin() + begin, order.begin() + middle,
-                         order.begin() + end,
+        std::nth_element(order.begin() + begin, order.begin() + middle, order.begin() + end,
                          [&](std::size_t first, std::size_t second) {
                              const double lhs = points_[first][axis];
                              const double rhs = points_[second][axis];
@@ -82,29 +82,18 @@ class RetainedSolutionIndex {
         return index;
     }
 
-    bool HasNeighbor(std::size_t index, const Eigen::VectorXd &point,
-                     double tolerance) const {
-        if (index == kNone || nodes_[index].count == 0)
+    bool HasNeighbor(std::size_t index, const Eigen::VectorXd &point, double tolerance) const {
+        if (index == kNone || !nodes_[index].active)
             return false;
         const auto &node = nodes_[index];
         const auto &pivot = points_[index];
-        if (node.retained) {
-            bool near = true;
-            for (Eigen::Index joint = 0; joint < point.size(); ++joint) {
-                if (std::abs(point[joint] - pivot[joint]) >= tolerance) {
-                    near = false;
-                    break;
-                }
-            }
-            if (near)
-                return true;
-        }
+        if (node.retained && ((point - pivot).array().abs() < tolerance).all())
+            return true;
         const double delta = point[node.axis] - pivot[node.axis];
         const std::size_t near = delta < 0.0 ? node.left : node.right;
         const std::size_t far = delta < 0.0 ? node.right : node.left;
         return HasNeighbor(near, point, tolerance) ||
-               (std::abs(delta) < tolerance &&
-                HasNeighbor(far, point, tolerance));
+               (std::abs(delta) < tolerance && HasNeighbor(far, point, tolerance));
     }
 
     const std::vector<Eigen::VectorXd> &points_;

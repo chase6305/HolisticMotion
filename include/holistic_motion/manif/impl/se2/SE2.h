@@ -147,9 +147,9 @@ public:
 
     // SE2 specific API
 
-    using Base::angle;
-    using Base::imag;
-    using Base::real;
+    using Base::Angle;
+    using Base::Imag;
+    using Base::Real;
     using Base::x;
     using Base::y;
 

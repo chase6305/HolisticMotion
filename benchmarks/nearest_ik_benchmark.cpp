@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "holistic_motion/kinematics/NumericalKinematics.h"
+#include "holistic_motion/utility/Logging.h"
 
 using namespace holistic_motion::robotics;
 

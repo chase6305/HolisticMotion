@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 from numbers import Integral
 
 import numpy as np
@@ -706,11 +707,12 @@ class ToppraTrajectory:
             )
         self._grid = grid
         with np.errstate(over="ignore", invalid="ignore"):
-            self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
-        if not all(
-            np.isfinite(value).all() for value in (self._path, self._q_s, self._q_ss)
-        ):
+            path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
+        if not all(np.isfinite(value).all() for value in (path, self._q_s, self._q_ss)):
             raise ValueError("physical spline positions and derivatives must be finite")
+        # Sampling evaluates the spline directly. Release these grid positions
+        # before allocating the timing constraints, retaining only derivatives.
+        del path
         self._speed_scale = 1.0
         self._range_safe_velocity_caps = None
         self._solver_velocity = self.max_velocity
@@ -1462,7 +1464,7 @@ class ToppraTrajectory:
         controllable[-1] = (end_x, end_x)
         for index in range(len(constraints) - 1, -1, -1):
             lo, hi = constraints[index].project(*controllable[index + 1])
-            if not np.isfinite([lo, hi]).all() or lo > hi + 1e-12 * max(
+            if not (isfinite(lo) and isfinite(hi)) or lo > hi + 1e-12 * max(
                 abs(lo), abs(hi)
             ):
                 raise ValueError(f"path is infeasible near gridpoint {index}")

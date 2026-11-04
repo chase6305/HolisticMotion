@@ -1,9 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -23,17 +25,26 @@ struct JointCoordinate {
 };
 
 /// Immutable, backend-independent mapping of ordered scalar joint positions.
-/// Build once per selected chain. All operations are const and own their
-/// output; an instance can be shared between workers without sharing model
-/// workspaces. Multi-DOF blocks (e.g. a free flyer) may remain in the reference
-/// configuration but cannot be selected as scalar joint positions.
+/// Build once per selected chain. Conversions own their output; GetJoints()
+/// borrows metadata. An instance can be shared between workers without sharing
+/// model workspaces. Multi-DOF blocks (e.g. a free flyer) may remain in the
+/// reference configuration but cannot be selected as scalar joint positions.
 class JointPositionMap {
   public:
     JointPositionMap(int nq, int nv, std::vector<JointCoordinate> joints)
         : nq_(nq), nv_(nv), joints_(std::move(joints)) {
         if (nq < 0 || nv < 0)
             throw std::invalid_argument("model nq and nv must be non-negative");
-        std::set<std::string> names;
+        // Ordered disjoint blocks need no per-coordinate index sets.
+        const bool ordered_indices =
+            std::adjacent_find(joints_.begin(), joints_.end(),
+                               [](const auto &first, const auto &second) {
+                                   return first.idx_q >= second.idx_q ||
+                                          (first.nq == 2 &&
+                                           first.idx_q + 1 == second.idx_q) ||
+                                          first.idx_v >= second.idx_v;
+                               }) == joints_.end();
+        std::set<std::string_view> names;
         std::set<int> q_indices, v_indices;
         for (const auto &joint : joints_) {
             if (joint.name.empty() || !names.insert(joint.name).second)
@@ -48,13 +59,15 @@ class JointPositionMap {
                 throw std::invalid_argument(
                     "joint coordinate block is outside model nq/nv: " +
                     joint.name);
-            for (int i = 0; i < joint.nq; ++i)
-                if (!q_indices.insert(joint.idx_q + i).second)
+            if (!ordered_indices) {
+                for (int i = 0; i < joint.nq; ++i)
+                    if (!q_indices.insert(joint.idx_q + i).second)
+                        throw std::invalid_argument(
+                            "joint configuration blocks must not overlap");
+                if (!v_indices.insert(joint.idx_v).second)
                     throw std::invalid_argument(
-                        "joint configuration blocks must not overlap");
-            if (!v_indices.insert(joint.idx_v).second)
-                throw std::invalid_argument(
-                    "joint velocity blocks must not overlap");
+                        "joint velocity blocks must not overlap");
+            }
         }
     }
 

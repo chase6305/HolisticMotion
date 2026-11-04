@@ -41,6 +41,7 @@ def compose(make_physics, make_camera):
 ```
 
 将返回的 session 用作上下文管理器，先 `reset()`，再 `step(action, dt)`。
+步长必须是有限的正实数；非法步长（包括 NumPy 复数标量）会在推进物理适配器前被拒绝。
 物理协议实现 `reset`、`step`、`close`，相机协议实现 `capture(StateFrame)`
 和 `close`，可视化协议实现 `publish(StateFrame)` 和 `close`。已经创建的
 适配器也可直接传给 `SimulationSession`。

@@ -11,7 +11,7 @@
 #endif
 #endif
 
-#include <spdlog/fmt/fmt.h>
+#include <fmt/format.h>
 
 // The maximum size of a logging file. (default: 10MB)
 #define DEFAULT_LOGGER_BUFFER_SIZE 10

@@ -1,4 +1,6 @@
 #include "holistic_motion/kinematics/URKinematics.h"
+#include "holistic_motion/utility/Logging.h"
+#include <fmt/ranges.h>
 
 #include "FrameValidation.h"
 
@@ -25,6 +27,20 @@ double SafeAsin(double value) {
 
 namespace holistic_motion {
 namespace robotics {
+
+URKinematics::URKinematics(URParameters urp, const std::vector<JointNode> &joint_node)
+    : params_(urp) {
+    if (!std::isfinite(params_.d1) || !std::isfinite(params_.a2) || !std::isfinite(params_.a3) ||
+        !std::isfinite(params_.d4) || !std::isfinite(params_.d5) || !std::isfinite(params_.d6) ||
+        std::abs(params_.a2) <= 1e-12 || std::abs(params_.a3) <= 1e-12 ||
+        !detail::IsValidFrame(params_.T_b_ob) || !detail::IsValidFrame(params_.T_oe_e) ||
+        !std::all_of(params_.offsets.begin(), params_.offsets.end(),
+                     [](double value) { return std::isfinite(value); }) ||
+        !std::all_of(params_.rotation_directions.begin(), params_.rotation_directions.end(),
+                     [](signed char value) { return value == 1 || value == -1; }))
+        throw std::invalid_argument("invalid UR geometry, offsets, axis directions, or transforms");
+    InitializeJointModel(joint_node, 6);
+}
 
 KinematicsCapabilities URKinematics::GetCapabilities() const {
     auto result = KinematicsBase::GetCapabilities();
@@ -91,9 +107,7 @@ bool URKinematics::GetFK(const Eigen::VectorXd &target_joint,
     return true;
 }
 
-bool URKinematics::GetIK(const SE3d &target_pose,
-                         IkRtn &ik_solutions,
-                         Eigen::VectorXd &joint_seed,
+bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::VectorXd &joint_seed,
                          std::vector<double> &dist) const {
     if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
         Eigen::VectorXd stable_seed = joint_seed;
@@ -115,8 +129,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     }
 
     SE3d T_ob_oe = target_pose * this->tcp_.Inverse();
-    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe *
-              this->params_.T_oe_e.Inverse();
+    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe * this->params_.T_oe_e.Inverse();
 
     Eigen::Matrix4d T_b_e = T_ob_oe.GetTransform();
 
@@ -383,9 +396,8 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {
-            temp_dist +=
-                    std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
-                             this->ik_nearst_weight_[j]);
+            temp_dist += std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
+                                  this->ik_nearst_weight_[j]);
         }
         dist.push_back(temp_dist);
     }
@@ -403,42 +415,6 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     holistic_motion::utility::LogDebug(
             "GetIK: Failed to get position IK, success:[{}], ik_number:[{}]",
             ik_solutions.success, ik_solutions.ik_number);
-    return false;
-}
-
-bool URKinematics::GetNearstIK(const SE3d &target_pose,
-                               IkRtn &ik_solutions,
-                               Eigen::VectorXd &joint_seed,
-                               double &min_dist) const {
-    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
-        Eigen::VectorXd stable_seed = joint_seed;
-        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
-    }
-
-    holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK");
-
-    if (joint_seed.size() != this->dof_) {
-        joint_seed = this->home_joints_;
-    }
-
-    std::vector<double> dist;
-    if (GetIK(target_pose, ik_solutions, joint_seed, dist)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            if (!dist.empty()) {
-                min_dist = dist.front();
-            }
-            if (ik_solutions.ik_number != 1) {
-                ik_solutions.ik_number = 1;
-                ik_solutions.ik_joints.erase(ik_solutions.ik_joints.begin() + 1,
-                                             ik_solutions.ik_joints.end());
-            }
-            holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
-    }
-
-    holistic_motion::utility::LogWarning("GetNearstIK: Failed to get nearst IK.");
     return false;
 }
 

@@ -115,7 +115,7 @@ def make_trajectory(robot, profile: dict, args: argparse.Namespace):
 
 def link_paths(robot, topology, joint_names, configurations, link_names):
     paths = {name: [] for name in link_names}
-    positions = {joint.name: 0.0 for joint in robot.actuated_joints}
+    positions = {joint.name: 0.0 for joint in robot.all_actuated_joints}
     for configuration in configurations:
         positions.update(zip(joint_names, configuration))
         transforms = tree_transforms(robot, positions, topology)
@@ -130,7 +130,7 @@ def main() -> None:
         raise SystemExit("--rate must be positive; sample and grid sizes must be >= 2")
     profile = json.loads(args.profile.read_text(encoding="utf-8"))
     urdf_path = (args.urdf or (args.asset_root / profile["urdf"])).resolve()
-    robot = hm.Robot(str(urdf_path), True)
+    robot = hm.RobotModel(str(urdf_path), True)
     topology = tree_topology(robot)
     trajectory, joint_names, max_velocity, max_acceleration = make_trajectory(
         robot, profile, args
@@ -162,7 +162,7 @@ def main() -> None:
 
     server = viser.ViserServer(port=args.port)
     configure_scene(server.scene, ground_width=4.0)
-    positions = {joint.name: 0.0 for joint in robot.actuated_joints}
+    positions = {joint.name: 0.0 for joint in robot.all_actuated_joints}
     positions.update(zip(joint_names, configurations[0]))
     initial_tree = tree_transforms(robot, positions, topology)
     handles = {}

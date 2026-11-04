@@ -18,7 +18,8 @@ from typing import Optional, Union
 
 import numpy as np
 
-from .._validation import real_array, require_real
+from .._validation import finite_scalar as _finite_float
+from .._validation import real_array
 
 PathLike = Union[str, Path]
 
@@ -27,17 +28,6 @@ PathLike = Union[str, Path]
 # and their three squared components in normal range on the ordinary path.
 _SMALL_COORDINATE = 4.0 * np.sqrt(np.finfo(float).tiny) / np.finfo(float).eps
 _LARGE_COORDINATE = np.sqrt(np.finfo(float).max / 16.0)
-
-
-def _finite_float(value, name: str) -> float:
-    value = require_real(value, name=name)
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as error:
-        raise TypeError(f"{name} must be numeric") from error
-    if not np.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
 
 
 def _validated_sphere_links(links) -> dict[str, tuple[SphereSpec, ...]]:

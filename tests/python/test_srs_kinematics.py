@@ -307,6 +307,46 @@ def test_srs_distinct_solve_methods(tmp_path):
     assert invalid.status == hm.SRSSolveStatus.INVALID_INPUT
 
 
+@pytest.mark.parametrize("joint_scale", [0.0, 1e-8, 1e-4, 1.0])
+@pytest.mark.parametrize("tool_offset", [0.0, 0.1])
+def test_srs_report_matches_independent_jacobian_spectrum(
+    tmp_path, joint_scale, tool_offset
+):
+    import holistic_motion as hm
+
+    urdf = tmp_path / "srs_diagnostics.urdf"
+    _write_ideal_srs_urdf(urdf)
+    solver = hm.Robot(str(urdf)).kinematics
+    joints = joint_scale * np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    configuration = solver.configuration(joints)
+    tool = np.eye(4)
+    tool[:3, 3] = [tool_offset, -0.5 * tool_offset, 0.25 * tool_offset]
+    solver.set_tcp(tool)
+    actual = solver.configuration(joints)
+    assert (actual.shoulder, actual.elbow, actual.wrist) == (
+        configuration.shoulder,
+        configuration.elbow,
+        configuration.wrist,
+    )
+    assert actual.redundancy == pytest.approx(configuration.redundancy, abs=1e-12)
+
+    target = solver.forward(joints)
+    report = solver.solve_detailed(target, joints, hm.SRSSolveMethod.SEEDED_NUMERICAL)
+    assert report.status == hm.SRSSolveStatus.SUCCESS
+    assert report.solutions
+    for index, solution in enumerate(report.solutions):
+        spectrum = np.linalg.svd(solver.jacobian(solution), compute_uv=False)
+        assert report.minimum_singular_values[index] == pytest.approx(
+            spectrum[-1], abs=1e-12, rel=1e-8
+        )
+        assert report.near_singularities[index] == (
+            spectrum[-1] <= max(1e-10, spectrum[0] * 1e-8)
+        )
+        np.testing.assert_allclose(
+            report.joint_limit_margins[index], 3.0 - np.abs(solution), atol=1e-10
+        )
+
+
 def test_srs_explicit_tool_and_user_frame_boundaries(tmp_path):
     import holistic_motion as hm
 
@@ -412,3 +452,27 @@ def test_srs_closed_form_candidate_refines_offset_chain(tmp_path, tool_kind):
         configuration.elbow,
         configuration.wrist,
     )
+
+
+@pytest.mark.parametrize("method_value", [-1, 99])
+def test_srs_rejects_unknown_solve_method(tmp_path, method_value):
+    import holistic_motion as hm
+
+    path = tmp_path / "unknown_method.urdf"
+    _write_ideal_srs_urdf(path)
+    solver = hm.Robot(str(path)).kinematics
+    seed = np.array([0.2, -0.35, 0.3, -0.6, 0.25, 0.4, -0.2])
+    target = solver.forward(seed)
+    method = hm.SRSSolveMethod(method_value)
+    report = solver.solve_detailed(target, seed, method)
+    assert report.status == hm.SRSSolveStatus.INVALID_INPUT
+    assert report.method == method
+    assert not report.solutions
+    assert not report.configurations
+    assert not report.minimum_singular_values
+    assert not report.minimum_joint_limit_margins
+    assert not report.joint_limit_margins
+    assert not report.near_singularities
+    assert not report.joint_limit_hits
+    with pytest.raises(ValueError):
+        solver.solve(target, seed, method)

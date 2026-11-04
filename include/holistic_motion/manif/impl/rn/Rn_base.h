@@ -101,7 +101,7 @@ public:
     // Rn specific functions
 
     /**
-     * @brief Get the transformation matrix (2D isometry).
+     * @brief Get the homogeneous translation matrix of size (Dim+1)x(Dim+1).
      * @note T = | 0 t |
      *           | 0 1 |
      */

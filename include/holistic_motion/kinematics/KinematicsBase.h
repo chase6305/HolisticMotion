@@ -1,13 +1,13 @@
 #pragma once
+#include <limits>
+#include <memory>
+
 #include "holistic_motion/kinematics/Capabilities.h"
 #include "holistic_motion/kinematics/IKSolveReport.h"
 #include "holistic_motion/kinematics/utility.h"
 
 namespace holistic_motion {
 namespace robotics {
-// TODO:
-// 1.may add numerical Solution to base, etc
-// 2.add some utility functions
 /// Configuration updates must not overlap queries. Derived solvers may own
 /// mutable caches even behind const methods; consult the derived-class
 /// contract. Seeds and output buffers belong to the caller and must not be
@@ -55,7 +55,7 @@ public:
   /// \param target_pose: target TCP pose
   /// \param ik_solutions: the inverse kinematics
   /// \param joint_seed: most recently solved joint
-  /// \param dist: the distance of each joint from joint_seed
+  /// \param dist Per-solution weighted coordinate movement from joint_seed
   /// \return bool
   virtual bool GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
                      Eigen::VectorXd &joint_seed, std::vector<double> &dist) const = 0;
@@ -65,10 +65,12 @@ public:
   /// \param target_pose: target TCP pose
   /// \param ik_solutions: the nearst inverse kinematics
   /// \param joint_seed: most recently solved joint
-  /// \param dist: the distance from joint_seed
+  /// \param min_dist Selected solution's weighted coordinate movement
   /// \return bool
+  /// The default selects the first sorted GetIK result. Solvers with a
+  /// specialized nearest search override this operation.
   virtual bool GetNearstIK(const SE3d &target_pose, IkRtn &ik_solutions,
-                           Eigen::VectorXd &joint_seed, double &min_dist) const = 0;
+                           Eigen::VectorXd &joint_seed, double &min_dist) const;
 
   /// Correctly spelled compatibility-neutral alias for GetNearstIK().
   bool GetNearestIK(const SE3d &target_pose, IkRtn &ik_solutions,
@@ -306,28 +308,12 @@ protected:
 
     virtual void OnKinematicModelChanged() {}
 
-    bool initalize_ = false;  ///< Whether it has been initialized successfully
     int dof_{0};  ///< The number of controllable joints of the robot
-    SE3d tcp_ = SE3d(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0);  ///< Transformation matrix from "tool end" to "flange end"
-    SE3d userframe_ =
-            SE3d(0.0,
-                 0.0,
-                 0.0,
-                 0.0,
-                 0.0,
-                 0.0,
-                 1.0);  ///< Transformation matrix from "base" to "user frame"
+    SE3d tcp_;    ///< Transformation from tool end to flange end
+    SE3d userframe_;                      ///< Transformation from base to user frame
     Eigen::VectorXd ik_nearst_weight_;    ///< Delta weight for each joint
-    Eigen::VectorXd home_joints_;         ///< home joints in urdf
+    Eigen::VectorXd home_joints_;         ///< Configured fallback IK seed
     std::vector<JointNode> joint_nodes_;  ///< joint upper and lower limits
-    std::vector<IkRtn> joint_solutions_;  ///< joint solutions
 
     const double Epsilon = std::numeric_limits<double>::epsilon();
 

@@ -134,17 +134,28 @@ inline Eigen::VectorXd DefaultJointWeights(const Eigen::VectorXd &ranges) {
 // allocate a dynamic Eigen vector for each node in the search tree.
 class JointSpaceMetric {
   public:
-    JointSpaceMetric(const Eigen::VectorXd &weights,
-                     const std::vector<bool> &continuous)
+    JointSpaceMetric(const Eigen::VectorXd &weights, const std::vector<bool> &continuous)
         : weights_(weights), geometry_(weights),
-          continuous_(continuous.begin(), continuous.end()),
-          has_continuous_(std::any_of(continuous.begin(), continuous.end(),
-                                      [](bool value) { return value; })) {}
+          continuous_(
+              std::any_of(continuous.begin(), continuous.end(), [](bool value) { return value; })
+                  ? continuous.begin()
+                  : continuous.end(),
+              continuous.end()) {}
 
     Eigen::Index Dimension() const { return weights_.size(); }
-    bool HasContinuous() const { return has_continuous_; }
+    bool HasContinuous() const { return !continuous_.empty(); }
     bool IsContinuous(Eigen::Index index) const {
-        return continuous_[static_cast<std::size_t>(index)];
+        return HasContinuous() && continuous_[static_cast<std::size_t>(index)];
+    }
+    bool SameState(const Eigen::VectorXd &from, const Eigen::VectorXd &to) const {
+        if (!HasContinuous())
+            return from == to;
+        for (Eigen::Index index = 0; index < from.size(); ++index) {
+            const double delta = to[index] - from[index];
+            if ((IsContinuous(index) ? WrappedDifference(delta) : delta) != 0.0)
+                return false;
+        }
+        return true;
     }
     double SquaredAxisDistance(double delta, Eigen::Index index) const {
         const double squared = delta * delta;
@@ -156,7 +167,7 @@ class JointSpaceMetric {
 
     double SquaredDistance(const Eigen::VectorXd &from,
                            const Eigen::VectorXd &to) const {
-        if (!has_continuous_)
+        if (!HasContinuous())
             return geometry_.SquaredNorm(to - from);
 
         double squared_distance = 0.0;
@@ -178,7 +189,7 @@ class JointSpaceMetric {
 
     double Distance(const Eigen::VectorXd &from,
                     const Eigen::VectorXd &to) const {
-        if (!has_continuous_)
+        if (!HasContinuous())
             return geometry_.Norm(to - from);
         const double squared = SquaredDistance(from, to);
         if (std::isnormal(squared))
@@ -240,17 +251,22 @@ class JointSpaceMetric {
     // Distance queries visit every joint for every candidate. Cache bytes to
     // avoid unpacking vector<bool> bits in that inner loop.
     const std::vector<std::uint8_t> continuous_;
-    const bool has_continuous_;
 };
 
-inline Eigen::VectorXd Difference(const Eigen::VectorXd &from,
-                                  const Eigen::VectorXd &to,
-                                  const std::vector<bool> &continuous) {
-    Eigen::VectorXd difference = to - from;
+inline void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                           const std::vector<bool> &continuous,
+                           Eigen::VectorXd &difference) {
+    difference = to - from;
     for (Eigen::Index index = 0; index < difference.size(); ++index) {
         if (continuous[static_cast<std::size_t>(index)])
             difference[index] = WrappedDifference(difference[index]);
     }
+}
+
+inline Eigen::VectorXd Difference(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                                  const std::vector<bool> &continuous) {
+    Eigen::VectorXd difference;
+    DifferenceInto(from, to, continuous, difference);
     return difference;
 }
 

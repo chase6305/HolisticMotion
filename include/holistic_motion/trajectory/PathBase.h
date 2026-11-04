@@ -12,8 +12,6 @@ template <typename LieGroup> class SegmentEvaluationSampler;
 }
 
 template <typename LieGroup> class TrajectoryBase;
-template <typename LieGroup> class TrajectoryDoubleS;
-template <typename LieGroup> class TrajectoryTrapezium;
 
 template <typename LieGroup>
 class PathSegmentBase : public std::enable_shared_from_this<PathSegmentBase<LieGroup>> {
@@ -21,21 +19,16 @@ private:
     using Tangent = typename LieGroup::Tangent;
     friend class TrajectoryBase<LieGroup>;
     friend class detail::SegmentEvaluationSampler<LieGroup>;
-    friend class TrajectoryDoubleS<LieGroup>;
-    friend class TrajectoryTrapezium<LieGroup>;
 
     // Share geometry work for a complete trajectory state. Custom segments
     // retain their virtual scalar-query behavior.
     void ComputeJet(double s, LieGroup &position, Tangent &tangent, Tangent &curvature,
                     Tangent &torsion) const;
-    void ComputeDerivatives(double s, Tangent &tangent, Tangent &curvature,
-                            Tangent &torsion) const;
 
 public:
   virtual ~PathSegmentBase() = default;
 
-  /// \brief judge whether there is a trajectory length to determine its
-  /// effectiveness
+  /// Whether the parameter interval is finite and has nonnegative length.
   bool IsValid() const {
       return std::isfinite(length_) && length_ >= 0.0 && std::isfinite(sp_) &&
              std::isfinite(sp_ + length_);
@@ -48,17 +41,13 @@ public:
     /// \return PathSegType
     PathSegType GetPathSegType() const { return path_seg_type_; };
 
-    /// \brief get the length of the path segment
-    ///
-    /// \param target Eigen::VectorXd
-    /// \param weights Eigen::VectorXd
-    /// \return double
+    /// Length of this segment in the path parameter.
     double GetLength() const { return length_; }
 
     /// \brief get the config of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup configuration.
     virtual LieGroup GetConfig(double s) const = 0;
 
     /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
@@ -67,22 +56,19 @@ public:
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup tangent.
     virtual Tangent GetTangent(double s) const = 0;
 
     /// \brief get the curvature of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup tangent.
     virtual Tangent GetCurvature(double s) const {
         ValidateQuery(s);
         return Tangent::ZeroHelper();
     };
 
-    /// \brief get the curvature of the s path
-    ///
-    /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// Second derivative of the tangent with respect to s.
     virtual Tangent GetTorsion(double s) const {
         ValidateQuery(s);
         return Tangent::ZeroHelper();
@@ -100,8 +86,8 @@ protected:
 
     PathSegmentBase() = default;
     PathSegType path_seg_type_{PathSegType::LinearSeg};
-    std::vector<LieGroup> waypoints_; ///< path blending tolerance
-    double length_{0.0};              ///< path blending tolerance
+    std::vector<LieGroup> waypoints_; ///< Segment waypoints.
+    double length_{0.0};              ///< Length in the path parameter.
     double sp_{0.0};                  ///< start param of segment
     Tangent tangent_;                 ///< tangent of segment
 };
@@ -114,13 +100,8 @@ private:
 public:
   virtual ~PathBase() = default;
 
-  /// \brief check colinear or overlap
-  ///  waypoints need to be 1x7,
-  ///  Position and attitude are represented by 4x4 matrix or 1x7 (xyz and
-  ///  quaternion), Joints are represented by 1x6(currently commonly used as
-  ///  6-axis industrial robotic arms)
-  ///
-  /// \param waypoints waypoints of the path
+  /// Remove consecutive near-duplicate waypoints in place, preserving any
+  /// nonzero final displacement.
   void _CheckPathWaypoints(std::vector<LieGroup> &waypoints);
 
   /// \brief judge whether the path is valid
@@ -135,17 +116,10 @@ public:
   /// \brief get the blend tolerance of the path
   double GetBlendTolerance() const { return this->blend_tolerance_; }
 
-  /// \brief get the length of the path
-  ///
-  /// \param target Eigen::VectorXd
-  /// \param weights Eigen::VectorXd
-  /// \return double
+  /// Total length in the path parameter.
   double GetLength() const { return this->length_; }
 
-  /// \brief get all segment of the path
-  ///
-  /// \param s path parameter
-  /// \return std::shared_ptr<PathSegmentBase>
+  /// Return a copy of the segment list; segment objects remain shared.
   std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> GetPathSegments() const {
       return path_segments_;
   }
@@ -172,16 +146,10 @@ public:
     std::shared_ptr<PathSegmentBase<LieGroup>>
     GetPathSegmentByIndex(const int &index) const;
 
-    /// \brief get the segment of the path
-    ///
-    /// \param s path parameter
-    /// \return std::shared_ptr<PathSegmentBase>
-    // std::shared_ptr<PathSegmentBase> GetPathSegment(double s) const;
-
     /// \brief get the config of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup configuration.
     LieGroup GetConfig(double s) const;
 
     /// For SE3, tangent is the body twist vee(Q^-1 dQ/ds), ordered
@@ -190,19 +158,19 @@ public:
     /// \brief get the tangent of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup tangent.
     Tangent GetTangent(double s) const;
 
     /// \brief get the curvature of the s path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup tangent.
     Tangent GetCurvature(double s) const;
 
     /// \brief get the torsion of the path
     ///
     /// \param s path parameter
-    /// \return Eigen::VectorXd
+    /// \return LieGroup tangent.
     Tangent GetTorsion(double s) const;
 
 protected:
@@ -210,12 +178,10 @@ protected:
     PathType path_type_{PathType::NoBlend};
     bool is_cartesian_space_{false};
     std::vector<LieGroup> waypoints_;      ///< waypoints of the path
-    std::vector<LieGroup> control_points_; ///< control points of the path
     std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> path_segments_;
     double blend_tolerance_{0.0}; ///< path blending tolerance
     bool valid_{false};           ///< if path is valid
     double length_{0.0};          ///< path length
-    Eigen::VectorXd weights_;
 };
 
 } // namespace robotics

@@ -36,8 +36,9 @@ bool Check(JointSpaceIndex &index, const std::vector<Eigen::VectorXd> &states,
             (std::isfinite(distance) || std::isinf(radius)))
             near.push_back(i);
     }
-    if (index.Nearest(states.size(), state_at, query, metric) != best ||
-        index.Near(states.size(), state_at, query, radius, metric) != near) {
+    std::vector<std::size_t> actual{std::numeric_limits<std::size_t>::max()};
+    index.Near(states.size(), state_at, query, radius, metric, actual);
+    if (index.Nearest(states.size(), state_at, query, metric) != best || actual != near) {
         std::cerr << "index disagrees with linear scan at " << states.size()
                   << " states, radius " << radius << '\n';
         return false;
@@ -45,13 +46,35 @@ bool Check(JointSpaceIndex &index, const std::vector<Eigen::VectorXd> &states,
     // Repeated nearest queries reuse the index without Eigen allocations.
     Eigen::internal::set_is_malloc_allowed(false);
     const auto repeated = index.Nearest(states.size(), state_at, query, metric);
+    index.Near(states.size(), state_at, query, radius, metric, actual);
     Eigen::internal::set_is_malloc_allowed(true);
-    return repeated == best;
+    return repeated == best && actual == near;
 }
 
 } // namespace
 
 int main() {
+    Eigen::VectorXd origin = Eigen::Vector2d::Zero();
+    Eigen::VectorXd shifted = Eigen::Vector2d(2.0 * kPi, 0.0);
+    const std::vector<bool> periodic{true, false}, bounded{false, false};
+    const Eigen::VectorXd identity_weights = Eigen::Vector2d::Ones();
+    const JointSpaceMetric periodic_metric(identity_weights, periodic);
+    const JointSpaceMetric bounded_metric(identity_weights, bounded);
+    Eigen::internal::set_is_malloc_allowed(false);
+    bool same_state_valid =
+        periodic_metric.SameState(origin, shifted) && !bounded_metric.SameState(origin, shifted);
+    shifted[1] = std::numeric_limits<double>::denorm_min();
+    same_state_valid = same_state_valid && !periodic_metric.SameState(origin, shifted);
+    shifted[0] = 0.0;
+    same_state_valid = same_state_valid && !bounded_metric.SameState(origin, shifted);
+    shifted.setZero();
+    shifted[0] = -0.0;
+    same_state_valid = same_state_valid && bounded_metric.SameState(origin, shifted);
+    Eigen::internal::set_is_malloc_allowed(true);
+    if (!same_state_valid) {
+        std::cerr << "state equivalence changed phase, lost a tiny coordinate, or allocated\n";
+        return 1;
+    }
     std::mt19937_64 generator(20260922);
     std::uniform_real_distribution<double> uniform(-1.0, 1.0);
     for (Eigen::Index dof : {1, 2, 7, 14}) {
@@ -176,8 +199,8 @@ int main() {
                 const auto nearest = scaled_index.Nearest(
                     count, state_at, origin, scaled_metric);
                 Eigen::internal::set_is_malloc_allowed(true);
-                const auto near = scaled_index.Near(count, state_at, origin,
-                                                    radius, scaled_metric);
+                std::vector<std::size_t> near;
+                scaled_index.Near(count, state_at, origin, radius, scaled_metric, near);
                 if (nearest != count - 1 ||
                     near != std::vector<std::size_t>{count - 1}) {
                     std::cerr << "norm comparison collapsed at scale "

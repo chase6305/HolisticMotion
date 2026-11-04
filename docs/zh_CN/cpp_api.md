@@ -16,6 +16,10 @@
 
 ## 机器人模型
 
+```{doxygenclass} holistic_motion::robotics::RobotModel
+:members:
+```
+
 ```{doxygenclass} holistic_motion::robotics::Robot
 :members:
 ```

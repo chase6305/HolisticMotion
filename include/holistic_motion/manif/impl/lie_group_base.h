@@ -1,6 +1,8 @@
 #ifndef _HOLISTIC_MOTION_HOLISTIC_MOTION_LIE_GROUP_BASE_H_
 #define _HOLISTIC_MOTION_HOLISTIC_MOTION_LIE_GROUP_BASE_H_
 
+#include <limits>
+
 #include "holistic_motion/manif/external/tl/tl/optional.hpp"
 #include "holistic_motion/manif/constants.h"
 #include "holistic_motion/manif/impl/assignment_assert.h"
@@ -81,7 +83,8 @@ public:
     const Scalar* Data() const;
 
     //! @brief Cast the LieGroup object to a copy
-    //! of a different scalar type
+    //! of a different scalar type. Widening floating-point precision normalizes
+    //! rotation components at the destination precision.
     template <class _NewScalar>
     LieGroupTemplate<_NewScalar> cast() const;
 
@@ -419,7 +422,19 @@ template <typename _Derived>
 template <class _NewScalar>
 typename LieGroupBase<_Derived>::template LieGroupTemplate<_NewScalar>
 LieGroupBase<_Derived>::cast() const {
-    return LieGroupTemplate<_NewScalar>(Coeffs().template cast<_NewScalar>());
+    using Result = LieGroupTemplate<_NewScalar>;
+    if constexpr (std::is_floating_point<Scalar>::value &&
+                  std::is_floating_point<_NewScalar>::value &&
+                  std::numeric_limits<_NewScalar>::digits > std::numeric_limits<Scalar>::digits &&
+                  internal::has_normalize<Result>::value) {
+        // A unit rotation at the source precision need not be unit at the destination precision.
+        Result result;
+        result.Coeffs() = Coeffs().template cast<_NewScalar>();
+        result.Normalize();
+        return result;
+    } else {
+        return Result(Coeffs().template cast<_NewScalar>());
+    }
 }
 
 template <typename _Derived>

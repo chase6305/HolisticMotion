@@ -225,29 +225,11 @@ public:
      */
     Jacobian Ljac() const;
 
-    /// @note Calls Derived's 'overload'
-    template <typename U = _Derived>
-    typename std::enable_if<internal::has_rjacinv<U>::value,
-                            typename TangentBase<U>::Jacobian>::type
-    Rjacinv() const;
+    /// Use the concrete inverse Jacobian when available; otherwise invert Rjac.
+    template <typename U = _Derived> typename TangentBase<U>::Jacobian Rjacinv() const;
 
-    /// @note Calls Base default impl
-    template <typename U = _Derived>
-    typename std::enable_if<!internal::has_rjacinv<U>::value,
-                            typename TangentBase<U>::Jacobian>::type
-    Rjacinv() const;
-
-    /// @note Calls Derived's 'overload'
-    template <typename U = _Derived>
-    typename std::enable_if<internal::has_ljacinv<U>::value,
-                            typename TangentBase<U>::Jacobian>::type
-    Ljacinv() const;
-
-    /// @note Calls Base default impl
-    template <typename U = _Derived>
-    typename std::enable_if<!internal::has_ljacinv<U>::value,
-                            typename TangentBase<U>::Jacobian>::type
-    Ljacinv() const;
+    /// Use the concrete inverse Jacobian when available; otherwise invert Ljac.
+    template <typename U = _Derived> typename TangentBase<U>::Jacobian Ljacinv() const;
 
     /**
      * @brief
@@ -542,34 +524,20 @@ typename TangentBase<_Derived>::Jacobian TangentBase<_Derived>::Ljac() const {
 
 template <class _Derived>
 template <typename U>
-typename std::enable_if<internal::has_rjacinv<U>::value,
-                        typename TangentBase<U>::Jacobian>::type
-TangentBase<_Derived>::Rjacinv() const {
-    return Derived().Rjacinv();
+typename TangentBase<U>::Jacobian TangentBase<_Derived>::Rjacinv() const {
+    if constexpr (internal::has_rjacinv<U>::value)
+        return Derived().Rjacinv();
+    else
+        return Derived().Rjac().inverse();
 }
 
 template <class _Derived>
 template <typename U>
-typename std::enable_if<!internal::has_rjacinv<U>::value,
-                        typename TangentBase<U>::Jacobian>::type
-TangentBase<_Derived>::Rjacinv() const {
-    return Derived().Rjac().Inverse();
-}
-
-template <class _Derived>
-template <typename U>
-typename std::enable_if<internal::has_ljacinv<U>::value,
-                        typename TangentBase<U>::Jacobian>::type
-TangentBase<_Derived>::Ljacinv() const {
-    return Derived().Ljacinv();
-}
-
-template <class _Derived>
-template <typename U>
-typename std::enable_if<!internal::has_ljacinv<U>::value,
-                        typename TangentBase<U>::Jacobian>::type
-TangentBase<_Derived>::Ljacinv() const {
-    return Derived().Ljac().Inverse();
+typename TangentBase<U>::Jacobian TangentBase<_Derived>::Ljacinv() const {
+    if constexpr (internal::has_ljacinv<U>::value)
+        return Derived().Ljacinv();
+    else
+        return Derived().Ljac().inverse();
 }
 
 template <class _Derived>

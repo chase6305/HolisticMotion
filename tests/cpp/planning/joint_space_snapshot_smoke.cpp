@@ -27,6 +27,21 @@ int main() {
     if (copied.GetDOF() != 2)
         return 2;
 
+    const auto unchanged =
+        original.WithJointWeights(original.GetJointWeights()).WithContinuousJoints({0, 0});
+    const auto changed_from_unchanged =
+        unchanged.WithJointWeights(Eigen::Vector2d(3.0, 5.0)).WithContinuousJoints({});
+    if (!unchanged.GetJointWeights().isApprox(original.GetJointWeights(), 0.0) ||
+        unchanged.GetContinuousJoints() != original.GetContinuousJoints() ||
+        !changed_from_unchanged.GetJointWeights().isApprox(Eigen::Vector2d(3.0, 5.0), 0.0) ||
+        !changed_from_unchanged.GetContinuousJoints().empty())
+        return 7;
+    try {
+        unchanged.WithContinuousJoints({0, 2});
+        return 8;
+    } catch (const std::out_of_range &) {
+    }
+
     const auto changed =
         copied.WithJointWeights(Eigen::Vector2d(4.0, 0.25)).WithContinuousJoints({});
     if (!changed.GetContinuousJoints().empty() ||

@@ -8,6 +8,7 @@ namespace robotics {
 
 namespace detail {
 template <typename LieGroup> class TrajectoryStateSampler;
+template <typename LieGroup> class TrajectoryBuilder;
 }
 
 // class TrajectoryBase
@@ -16,6 +17,7 @@ class TrajectoryBase
     : public std::enable_shared_from_this<TrajectoryBase<LieGroup>> {
 private:
     friend class detail::TrajectoryStateSampler<LieGroup>;
+    friend class detail::TrajectoryBuilder<LieGroup>;
     using Tangent = typename LieGroup::Tangent;
 
 public:
@@ -43,11 +45,10 @@ public:
 
     virtual ~TrajectoryBase() = default;
 
-    /// \brief judge whether the path is valid
+    /// Whether this trajectory is valid.
     bool IsValid() const { return this->valid_; };
 
-    /// \brief Manually set whether this part of the trajectory is valid (use
-    /// with caution externally)
+    /// Override the validity flag without rebuilding or validating the trajectory.
     bool SetValid(const bool is_valid) {
         this->valid_ = is_valid;
         return true;
@@ -121,6 +122,7 @@ protected:
     /// \brief Retrieves the velocity, acceleration, and jerk limits from the
     /// given trajectory constraints.
     ///
+    /// \param constraints Per-coordinate velocity, acceleration, and jerk limits.
     /// \param velocity_limits A reference to a vector where the velocity limits
     /// will be stored.
     /// \param acceleration_limits A reference to a vector where the
@@ -148,7 +150,6 @@ protected:
     size_t dof_{0};
 
     std::shared_ptr<PathBase<LieGroup>> path_;
-    PathType path_type_;
     std::list<TrajectorySeg> trajectory_segments_;
     std::shared_ptr<PSpline> trajectory_pspline_;
     std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> phase_path_segments_;
@@ -156,7 +157,7 @@ protected:
     Eigen::VectorXd max_acceleration_;
     Eigen::VectorXd max_jerk_;
     double time_scale_{1.0};
-    bool valid_{false};  ///< if path is valid
+    bool valid_{false};  ///< Whether the trajectory is valid.
 };
 
 }  // namespace robotics

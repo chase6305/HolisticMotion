@@ -17,12 +17,7 @@ enum class SRSSolveMethod {
     NEAREST_REDUNDANCY
 };
 
-enum class SRSSolveStatus {
-    SUCCESS,
-    INVALID_INPUT,
-    INCOMPATIBLE_MODEL,
-    NO_SOLUTION
-};
+enum class SRSSolveStatus { SUCCESS, INVALID_INPUT, INCOMPATIBLE_MODEL, NO_SOLUTION };
 
 struct SRSConfiguration {
     int shoulder{1};
@@ -59,59 +54,53 @@ struct SRSSolveReport {
     std::vector<bool> joint_limit_hits;
 };
 
-// Solver utilities for redundant 7R manipulators with spherical
-// shoulder/wrist layouts. All inputs use radians and SI units.
+/// Redundant 7R kinematics with spherical shoulder and wrist layouts.
+/// Joint coordinates follow JointNode axis scaling; arm angles are in radians
+/// and translations are in metres.
 /// Geometry is prepared during construction and model updates. Read-only
 /// solving/analysis calls may share an instance with separate seeds/outputs;
 /// model, frame and limit updates require external synchronization.
 class SRSKinematics final : public NumericalKinematics {
-public:
-  KinematicsCapabilities GetCapabilities() const override;
+  public:
+    KinematicsCapabilities GetCapabilities() const override;
 
-  explicit SRSKinematics(const std::vector<JointNode> &joint_nodes)
-      : NumericalKinematics(joint_nodes) {
-      OnKinematicModelChanged();
-  }
+    explicit SRSKinematics(const std::vector<JointNode> &joint_nodes)
+        : NumericalKinematics(joint_nodes) {
+        OnKinematicModelChanged();
+    }
 
     bool IsCompatible() const noexcept;
 
-    SRSGeometryAnalysis AnalyzeGeometry(
-            double axis_tolerance = 1e-4) const;
+    SRSGeometryAnalysis AnalyzeGeometry(double axis_tolerance = 1e-4) const;
 
-    bool GetNullSpaceVelocity(const Eigen::VectorXd& joints,
-                              const Eigen::VectorXd& preferred_velocity,
-                              Eigen::VectorXd& velocity) const;
+    bool GetNullSpaceVelocity(const Eigen::VectorXd &joints,
+                              const Eigen::VectorXd &preferred_velocity,
+                              Eigen::VectorXd &velocity) const;
 
-    SRSConfiguration GetConfiguration(const Eigen::VectorXd& joints) const;
+    SRSConfiguration GetConfiguration(const Eigen::VectorXd &joints) const;
 
-    double GetArmAngle(const Eigen::VectorXd& joints) const;
+    double GetArmAngle(const Eigen::VectorXd &joints) const;
 
     /// A seed may refer to an element of the previous solutions vector.
-    bool Solve(const SE3d& target,
-               const Eigen::VectorXd& seed,
-               SRSSolveMethod method,
-               std::vector<Eigen::VectorXd>& solutions) const;
+    bool Solve(const SE3d &target, const Eigen::VectorXd &seed, SRSSolveMethod method,
+               std::vector<Eigen::VectorXd> &solutions) const;
 
-    SRSSolveReport SolveDetailed(const SE3d& target,
-                                 const Eigen::VectorXd& seed,
+    SRSSolveReport SolveDetailed(const SE3d &target, const Eigen::VectorXd &seed,
                                  SRSSolveMethod method) const;
 
-    bool SolveConfiguration(const SE3d& target,
-                            const SRSConfiguration& configuration,
-                            const Eigen::VectorXd& seed,
-                            Eigen::VectorXd& solution) const;
+    bool SolveConfiguration(const SE3d &target, const SRSConfiguration &configuration,
+                            const Eigen::VectorXd &seed,
+                            Eigen::VectorXd &solution) const;
 
-    bool GetAnalyticElbowSeed(const SE3d& target,
-                              const SRSConfiguration& configuration,
-                              const Eigen::VectorXd& seed,
-                              Eigen::VectorXd& analytic_seed) const;
+    bool GetAnalyticElbowSeed(const SE3d &target, const SRSConfiguration &configuration,
+                              const Eigen::VectorXd &seed,
+                              Eigen::VectorXd &analytic_seed) const;
 
-    bool GetAnalyticSolution(const SE3d& target,
-                             const SRSConfiguration& configuration,
-                             const Eigen::VectorXd& seed,
-                             Eigen::VectorXd& solution) const;
+    bool GetAnalyticSolution(const SE3d &target, const SRSConfiguration &configuration,
+                             const Eigen::VectorXd &seed,
+                             Eigen::VectorXd &solution) const;
 
-private:
+  private:
     bool UsesDefaultForwardKinematics() const noexcept override { return true; }
 
     void OnKinematicModelChanged() override;
@@ -123,4 +112,4 @@ private:
     std::shared_ptr<const srs_detail::CanonicalModel> canonical_model_;
 };
 
-}  // namespace holistic_motion::robotics
+} // namespace holistic_motion::robotics

@@ -15,6 +15,7 @@ from typing import Optional
 
 import numpy as np
 
+from ..._validation import real_array, require_real
 from .pinocchio_solver import _positive_float, _readonly_array
 from ._urdf import normalized_urdf_xml
 
@@ -147,7 +148,9 @@ class HandRetargetingResult:
         if not isinstance(self.success, (bool, np.bool_)):
             raise TypeError("success must be boolean")
         for name in ("residual", "objective", "solve_ms"):
-            value = float(getattr(self, name))
+            value = getattr(self, name)
+            require_real(value, name=name)
+            value = float(value)
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
             object.__setattr__(self, name, value)
@@ -237,6 +240,7 @@ class DexHandRetargetingSolver:
         self.objective_tolerance = _positive_float(
             objective_tolerance, "objective_tolerance"
         )
+        require_real(temporal_weight, name="temporal_weight")
         temporal_weight = float(temporal_weight)
         if not np.isfinite(temporal_weight) or temporal_weight < 0.0:
             raise ValueError("temporal_weight must be finite and non-negative")
@@ -367,6 +371,7 @@ class DexHandRetargetingSolver:
             )
         q = self._neutral.copy()
         for name, value in values.items():
+            require_real(value, name="joint position")
             q[self.joint_names.index(name)] = float(value)
         canonical = self._assemble(q[self._target], q)
         for name in self._mimic_names & values.keys():
@@ -437,6 +442,7 @@ class DexHandRetargetingSolver:
                 "objective_tolerance",
             )
         }
+        require_real(self.temporal_weight, name="temporal_weight")
         temporal_weight = float(self.temporal_weight)
         if not np.isfinite(temporal_weight) or temporal_weight < 0.0:
             raise ValueError("temporal_weight must be finite and non-negative")
@@ -460,7 +466,7 @@ class DexHandRetargetingSolver:
         self, keypoints, *, seed: Optional[Mapping[str, float]] = None
     ) -> HandRetargetingResult:
         started = perf_counter()
-        points = np.asarray(keypoints, dtype=float)
+        points = real_array(keypoints, name="keypoints")
         if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
             raise ValueError("keypoints must be a finite (N, 3) array")
         if int(self.keypoint_pairs.max()) >= len(points):
@@ -537,15 +543,17 @@ class DexHandRetargetingSolver:
                 reason = "maximum_time"
             elif status <= 0:
                 reason = "optimizer_failed"
-            elif self._residual(vectors, candidate) <= self.vector_tolerance:
-                reason = "converged"
+            else:
+                residual = self._residual(vectors, candidate)
+                if residual <= self.vector_tolerance:
+                    reason = "converged"
         success = reason == "converged"
         q = candidate if success else reference
         result = HandRetargetingResult(
             joint_names=self.joint_names,
             configuration=q,
             success=success,
-            residual=self._residual(vectors, q),
+            residual=residual if success else self._residual(vectors, q),
             objective=objective(q[self._target], np.empty(0)),
             solve_ms=(perf_counter() - started) * 1000.0,
             evaluations=evaluations,

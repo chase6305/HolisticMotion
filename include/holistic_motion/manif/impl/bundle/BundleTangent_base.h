@@ -147,14 +147,12 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::LieAlg
 BundleTangentBase<_Derived>::hat_impl(internal::intseq<_Idx...>) const {
     LieAlg ret = LieAlg::Zero();
-    // c++11 "fold expression"
-    auto l = {((ret.template block<Element<_Idx>::LieAlg::RowsAtCompileTime,
-                                   Element<_Idx>::LieAlg::RowsAtCompileTime>(
-                        std::get<_Idx>(internal::traits<_Derived>::AlgIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::AlgIdx)) =
-                        element<_Idx>().Hat()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(ret.template block<Element<_Idx>::LieAlg::RowsAtCompileTime,
+                                          Element<_Idx>::LieAlg::RowsAtCompileTime>(
+                           std::get<_Idx>(internal::traits<_Derived>::AlgIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::AlgIdx)) =
+                           element<_Idx>().Hat()),
+     ...);
     return ret;
 }
 
@@ -173,11 +171,10 @@ typename BundleTangentBase<_Derived>::LieGroup
 BundleTangentBase<_Derived>::exp_impl(OptJacobianRef J_m_t,
                                       internal::intseq<_Idx...>) const {
     if (J_m_t) {
-        return LieGroup(element<_Idx>().exp(
-                J_m_t->template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(
-                                internal::traits<_Derived>::DoFIdx)))...);
+        return LieGroup(
+            element<_Idx>().Exp(J_m_t->template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                std::get<_Idx>(internal::traits<_Derived>::DoFIdx)))...);
     }
     return LieGroup(element<_Idx>().Exp()...);
 }
@@ -223,13 +220,11 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::Jacobian
 BundleTangentBase<_Derived>::rjac_impl(internal::intseq<_Idx...>) const {
     Jacobian Jr = Jacobian::Zero();
-    // c++11 "fold expression"
-    auto l = {((Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().Rjac()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().Rjac()),
+     ...);
     return Jr;
 }
 
@@ -238,13 +233,11 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::Jacobian
 BundleTangentBase<_Derived>::ljac_impl(internal::intseq<_Idx...>) const {
     Jacobian Jr = Jacobian::Zero();
-    // c++11 "fold expression"
-    auto l = {((Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().Ljac()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().Ljac()),
+     ...);
     return Jr;
 }
 
@@ -253,13 +246,11 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::Jacobian
 BundleTangentBase<_Derived>::rjacinv_impl(internal::intseq<_Idx...>) const {
     Jacobian Jr = Jacobian::Zero();
-    // c++11 "fold expression"
-    auto l = {((Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().rjacinv()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().Rjacinv()),
+     ...);
     return Jr;
 }
 
@@ -268,13 +259,11 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::Jacobian
 BundleTangentBase<_Derived>::ljacinv_impl(internal::intseq<_Idx...>) const {
     Jacobian Jr = Jacobian::Zero();
-    // c++11 "fold expression"
-    auto l = {((Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().ljacinv()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().Ljacinv()),
+     ...);
     return Jr;
 }
 
@@ -283,13 +272,11 @@ template <int... _Idx>
 typename BundleTangentBase<_Derived>::Jacobian
 BundleTangentBase<_Derived>::smallAdj_impl(internal::intseq<_Idx...>) const {
     Jacobian Jr = Jacobian::Zero();
-    // c++11 "fold expression"
-    auto l = {((Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().smallAdj()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(Jr.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().SmallAdj()),
+     ...);
     return Jr;
 }
 
@@ -329,29 +316,18 @@ struct GeneratorEvaluator<BundleTangentBase<Derived>> {
                                                            intseq<_Idx...>) {
         using LieAlg = typename BundleTangentBase<Derived>::LieAlg;
         LieAlg Ei = LieAlg::Zero();
-        // c++11 "fold expression"
-        auto l = {
-                ((Ei.template block<Derived::template Element<
-                                            _Idx>::LieAlg::RowsAtCompileTime,
-                                    Derived::template Element<
-                                            _Idx>::LieAlg::RowsAtCompileTime>(
-                          std::get<_Idx>(internal::traits<Derived>::AlgIdx),
-                          std::get<_Idx>(internal::traits<Derived>::AlgIdx)) =
-                          (static_cast<int>(i) >=
-                                   std::get<_Idx>(
-                                           internal::traits<Derived>::DoFIdx) &&
-                           static_cast<int>(i) <
-                                   std::get<_Idx>(
-                                           internal::traits<Derived>::DoFIdx) +
-                                           Derived::template Element<_Idx>::DoF)
-                                  ? Derived::template Element<_Idx>::Generator(
-                                            static_cast<int>(i) -
-                                            std::get<_Idx>(internal::traits<
-                                                           Derived>::DoFIdx))
-                                  : Derived::template Element<
-                                            _Idx>::LieAlg::Zero()),
-                 0)...};
-        static_cast<void>(l);  // compiler warning
+        (static_cast<void>(
+             Ei.template block<Derived::template Element<_Idx>::LieAlg::RowsAtCompileTime,
+                               Derived::template Element<_Idx>::LieAlg::RowsAtCompileTime>(
+                 std::get<_Idx>(internal::traits<Derived>::AlgIdx),
+                 std::get<_Idx>(internal::traits<Derived>::AlgIdx)) =
+                 (static_cast<int>(i) >= std::get<_Idx>(internal::traits<Derived>::DoFIdx) &&
+                  static_cast<int>(i) < std::get<_Idx>(internal::traits<Derived>::DoFIdx) +
+                                            Derived::template Element<_Idx>::DoF)
+                     ? Derived::template Element<_Idx>::GeneratorHelper(
+                           static_cast<int>(i) - std::get<_Idx>(internal::traits<Derived>::DoFIdx))
+                     : Derived::template Element<_Idx>::LieAlg::Zero()),
+         ...);
         return Ei;
     }
 };
@@ -368,7 +344,7 @@ struct RandomEvaluatorImpl<BundleTangentBase<Derived>> {
     template <int... _Idx>
     static void run(BundleTangentBase<Derived> &m, intseq<_Idx...>) {
         m = typename BundleTangentBase<Derived>::Tangent(
-                Derived::template Element<_Idx>::Random()...);
+            Derived::template Element<_Idx>::RandomHelper()...);
     }
 };
 

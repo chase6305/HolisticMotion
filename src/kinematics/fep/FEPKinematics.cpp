@@ -7,7 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <numeric>
+#include <utility>
 
 namespace holistic_motion::robotics {
 
@@ -190,27 +190,25 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
             solutions.push_back(candidate);
         }
     };
+    Eigen::VectorXd candidate;
     if (method == FEPSolveMethod::SEEDED_NUMERICAL ||
         method == FEPSolveMethod::COMPATIBILITY) {
-        Eigen::VectorXd candidate;
         if (SolveSeed(target, seed, candidate))
             append(candidate);
     } else if (method == FEPSolveMethod::CONFIGURATION) {
-        Eigen::VectorXd candidate;
         if (SolveConfiguration(target, GetConfiguration(seed), seed, candidate))
             append(candidate);
     } else if (method == FEPSolveMethod::ALL_CONFIGURATIONS) {
         for (int shoulder : {-1, 1})
             for (int elbow : {-1, 1})
                 for (int wrist : {-1, 1}) {
-                    Eigen::VectorXd candidate;
                     const FEPConfiguration configuration{shoulder, elbow, wrist,
                                                          seed[6]};
                     if (SolveConfiguration(target, configuration, seed, candidate))
                         append(candidate);
                 }
-    } else {
-        Eigen::VectorXd best;
+    } else if (method == FEPSolveMethod::NEAREST_REDUNDANCY) {
+        Eigen::VectorXd best, trial;
         double best_cost = std::numeric_limits<double>::infinity();
         const double lower = joint_nodes_[6].lower_limit;
         const double upper = joint_nodes_[6].upper_limit;
@@ -224,13 +222,12 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
             const int sign_count = delta == 0.0 ? 1 : 2;
             for (int sign_index = 0; sign_index < sign_count; ++sign_index) {
                 const double sign = delta == 0.0 ? 0.0 : signs[sign_index];
-                Eigen::VectorXd trial = seed;
+                trial = seed;
                 trial[6] = clamp(seed[6] + sign * delta, lower, upper);
                 double &previous = sign <= 0.0 ? previous_low : previous_high;
                 if (trial[6] == previous)
                     continue;
                 previous = trial[6];
-                Eigen::VectorXd candidate;
                 if (!SolveSeed(target, trial, candidate))
                     continue;
                 const double cost = WrappedDistance(candidate, seed, periods);
@@ -245,35 +242,21 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         if (best.size() == 7)
             append(best);
     }
-    std::vector<double> scores;
-    bool cuda_scored = false;
-#ifdef HOLISTICMOTION_HAS_CUDA
-    // Transfers dominate small interactive calls; reserve CUDA for batches.
-    if (solutions.size() >= 32)
-        cuda_scored =
-            fep_internal::ScoreCandidatesCUDA(solutions, seed, scores, periods);
-#endif
-    if (!cuda_scored || scores.size() != solutions.size())
-        scores = fep_internal::ScoreCandidatesCPU(solutions, seed, periods);
-    if (scores.size() != solutions.size() ||
-        std::any_of(scores.begin(), scores.end(),
-                    [](double value) { return !std::isfinite(value); })) {
+    // The shoulder/elbow/wrist search produces at most eight candidates.
+    auto scores = fep_internal::ScoreCandidatesCPU(solutions, seed, periods);
+    if (scores.size() != solutions.size()) {
         solutions.clear();
         return false;
     }
-    // Keep score validation above; a validated singleton needs no reordering.
-    if (solutions.size() < 2)
-        return !solutions.empty();
-    std::vector<std::size_t> order(solutions.size());
-    std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(), [&](std::size_t lhs, std::size_t rhs) {
-        return scores[lhs] < scores[rhs];
-    });
-    std::vector<Eigen::VectorXd> sorted;
-    sorted.reserve(solutions.size());
-    for (const auto index : order)
-        sorted.push_back(std::move(solutions[index]));
-    solutions = std::move(sorted);
+    // At most eight candidates: keep scores and states together in a stable
+    // in-place pass without allocating an ordering or another result vector.
+    for (std::size_t index = 1; index < solutions.size(); ++index) {
+        for (std::size_t position = index; position > 0 && scores[position] < scores[position - 1];
+             --position) {
+            std::swap(scores[position], scores[position - 1]);
+            solutions[position].swap(solutions[position - 1]);
+        }
+    }
     return !solutions.empty();
 }
 

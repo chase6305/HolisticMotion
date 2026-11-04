@@ -1,4 +1,5 @@
 #include "holistic_motion/kinematics/NumericalKinematics.h"
+#include "holistic_motion/utility/Logging.h"
 
 #include "DampedIKWorkspace.h"
 #include "FrameValidation.h"
@@ -84,7 +85,7 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
                                       Eigen::VectorXd &joint_seed,
                                       std::vector<double> &dist,
                                       const Eigen::VectorXd *nearest_reference) const {
-    holistic_motion::utility::LogDebug("GetNearstIK:Begin to get position IK.");
+    holistic_motion::utility::LogDebug("GetIK: Begin to solve position IK.");
     ik_solutions.Clear();
     dist.clear();
 
@@ -96,49 +97,49 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
         return false;
     }
 
-    SE3d tcp_pose;
-    std::vector<SE3d> pose_list;
-    if (this->GetAllFK(joint_seed, pose_list) &&
-        pose_list.size() > static_cast<std::size_t>(this->dof_)) {
-        tcp_pose = pose_list.back();
+    SE3d current_pose;
+    std::vector<SE3d> joint_poses;
+    if (this->GetAllFK(joint_seed, joint_poses) &&
+        joint_poses.size() > static_cast<std::size_t>(this->dof_)) {
+        current_pose = joint_poses.back();
     } else {
         ik_solutions.success = false;
         return false;
     }
 
-    Eigen::VectorXd iter_joint = joint_seed;
-    const auto task_error = [&target_pose](const SE3d& current) {
+    Eigen::VectorXd current_joints = joint_seed;
+    const auto task_error = [&target_pose](const SE3d &current) {
         // The geometric Jacobian maps to TCP linear velocity and angular
         // velocity in the world frame. A relative SE3 translation also rotates
         // the current position and is not the corresponding position error.
         const Eigen::Matrix3d rotation =
-                target_pose.GetRotation() * current.GetRotation().transpose();
+            target_pose.GetRotation() * current.GetRotation().transpose();
         return SE3d(target_pose.GetTranslation() - current.GetTranslation(),
                     SO3d(rotation));
     };
-    SE3d delta_x = task_error(tcp_pose);
-    double angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
-    double translation_err = TranslationNorm(delta_x.GetTranslation());
-    bool converged = translation_err < this->trans_err_th_ &&
-                     angle_err < this->angle_err_th_;
+    SE3d pose_error = task_error(current_pose);
+    double rotation_error_angle = std::abs(GetRAngle(pose_error.GetRotation()));
+    double translation_error_norm = TranslationNorm(pose_error.GetTranslation());
+    bool converged = translation_error_norm < this->trans_err_th_ &&
+                     rotation_error_angle < this->angle_err_th_;
     // Exact seeds avoid allocating iteration storage altogether.
     if (!converged && this->dof_ > 0) {
         Eigen::MatrixXd jacobian(6, this->dof_);
         Eigen::VectorXd delta_theta(this->dof_);
         detail::DampedIKWorkspace workspace(this->dof_);
-        for (int i = 0; i < this->max_iter_num_; ++i) {
-            if (!this->_GetKinJacobian(jacobian, pose_list))
+        for (int iteration = 0; iteration < this->max_iter_num_; ++iteration) {
+            if (!this->_GetKinJacobian(jacobian, joint_poses))
                 break;
             Eigen::Matrix<double, 6, 1> error;
-            error.head<3>() = delta_x.GetTranslation();
+            error.head<3>() = pose_error.GetTranslation();
             const Eigen::AngleAxisd rotation_error(
-                Eigen::Quaterniond(delta_x.GetRotation()));
+                Eigen::Quaterniond(pose_error.GetRotation()));
             error.tail<3>() = rotation_error.angle() * rotation_error.axis();
-            if (rotation_error.angle() == 0.0 && angle_err > 0.0) {
+            if (rotation_error.angle() == 0.0 && rotation_error_angle > 0.0) {
                 // Eigen's quaternion-vector norm can square away a tiny
                 // nonzero angle. At this scale sin(angle) equals angle to
                 // floating precision, so use the rotation's skew directly.
-                const auto rotation = delta_x.GetRotation();
+                const auto rotation = pose_error.GetRotation();
                 error.tail<3>() =
                     0.5 * Eigen::Vector3d(rotation(2, 1) - rotation(1, 2),
                                           rotation(0, 2) - rotation(2, 0),
@@ -150,26 +151,26 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
             bool coordinates_changed = false;
             for (int joint = 0; joint < this->dof_; ++joint) {
                 const auto &node = this->joint_nodes_[joint];
-                const double previous_coordinate = iter_joint[joint];
-                iter_joint[joint] = clamp(
+                const double previous_coordinate = current_joints[joint];
+                current_joints[joint] = clamp(
                     previous_coordinate + this->step_size_ * delta_theta[joint],
                     node.lower_limit, node.upper_limit);
-                coordinates_changed |= iter_joint[joint] != previous_coordinate;
+                coordinates_changed |= current_joints[joint] != previous_coordinate;
             }
             // Stop only for identical coordinates, preserving tiny changes.
             if (!coordinates_changed)
                 break;
-            if (!this->GetAllFK(iter_joint, pose_list) ||
-                pose_list.size() <= static_cast<std::size_t>(this->dof_))
+            if (!this->GetAllFK(current_joints, joint_poses) ||
+                joint_poses.size() <= static_cast<std::size_t>(this->dof_))
                 break;
-            tcp_pose = pose_list.back();
+            current_pose = joint_poses.back();
 
-            delta_x = task_error(tcp_pose);
-            angle_err = std::abs(GetRAngle(delta_x.GetRotation()));
-            translation_err = TranslationNorm(delta_x.GetTranslation());
+            pose_error = task_error(current_pose);
+            rotation_error_angle = std::abs(GetRAngle(pose_error.GetRotation()));
+            translation_error_norm = TranslationNorm(pose_error.GetTranslation());
 
-            if (translation_err < this->trans_err_th_ &&
-                angle_err < this->angle_err_th_) {
+            if (translation_error_norm < this->trans_err_th_ &&
+                rotation_error_angle < this->angle_err_th_) {
                 converged = true;
                 break;
             }
@@ -179,7 +180,7 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
     if (!converged) {
         ik_solutions.success = false;
     } else {
-        ik_solutions.success = ik_solutions.PushBack(iter_joint);
+        ik_solutions.success = ik_solutions.PushBack(current_joints);
     }
 
     // The numerical iteration produces at most one branch. Nearest-only
@@ -191,14 +192,14 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
         ik_solutions.GetLimitsIK(this->joint_nodes_);
 
     const auto &reference = nearest_reference ? *nearest_reference : joint_seed;
-    for (int i = 0; i < ik_solutions.ik_number; ++i) {
-        double temp_dist = 0.0;
-        for (int j = 0; j < this->dof_; ++j) {
-            temp_dist +=
-                std::abs((ik_solutions.ik_joints[i][j] - reference[j]) *
-                         this->ik_nearst_weight_[j]);
+    for (int solution = 0; solution < ik_solutions.ik_number; ++solution) {
+        double weighted_distance = 0.0;
+        for (int joint = 0; joint < this->dof_; ++joint) {
+            weighted_distance +=
+                std::abs((ik_solutions.ik_joints[solution][joint] - reference[joint]) *
+                         this->ik_nearst_weight_[joint]);
         }
-        dist.push_back(temp_dist);
+        dist.push_back(weighted_distance);
     }
 
     if (ik_solutions.success && ik_solutions.ik_number > 0) {
@@ -241,26 +242,20 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
     }
 
     std::vector<double> dist;
-    if (SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, &joint_seed)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug(
-                "GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
+    if (SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, &joint_seed) &&
+        ik_solutions.success) {
+        min_dist = dist.front();
+        holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        return true;
     }
 
     ik_solutions.Clear();
     Eigen::VectorXd zero_joint_seed = Eigen::VectorXd::Zero(this->dof_);
-    if (SolveIKImpl(target_pose, ik_solutions, zero_joint_seed, dist, &joint_seed)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug(
-                "GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
+    if (SolveIKImpl(target_pose, ik_solutions, zero_joint_seed, dist, &joint_seed) &&
+        ik_solutions.success) {
+        min_dist = dist.front();
+        holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        return true;
     }
 
     holistic_motion::utility::LogDebug("GetNearstIK: Failed to get nearst IK.");

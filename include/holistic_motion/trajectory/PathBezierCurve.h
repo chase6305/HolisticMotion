@@ -18,16 +18,16 @@ public:
                   const double blend_tolerance = 0.5);
 
   /// \brief Constructing the path of the 2nd-bezier-curve
+  /// Rebuilds from stored waypoints, replacing previous segments.
   void PathBezierCurve2nd();
 
   /// \brief Constructing the path of the 5th-bezier-curve
+  /// Rebuilds from stored waypoints, replacing previous segments.
   void PathBezierCurve5th();
 
-  // TODO: add other methods
-  /// ...
-
 private:
-    PathBezierCurve() = default;
+  void Build(int degree);
+  PathBezierCurve() = default;
 };
 
 }  // namespace robotics

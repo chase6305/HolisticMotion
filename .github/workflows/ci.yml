@@ -133,14 +133,17 @@ jobs:
           HOLISTICMOTION_TEST_TOOLCHAIN: build-core/build/Release/generators/conan_toolchain.cmake
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: python -m pytest tests/python/test_cmake_components.py -q
-      - name: Check trajectory arrays and coordinates with NumPy 1.23
+      - name: Check NumPy 1.23 and Trimesh 4.0 compatibility
         if: matrix.python == '3.9'
         run: |
           python -m venv "$RUNNER_TEMP/numpy123"
-          "$RUNNER_TEMP/numpy123/bin/python" -m pip install 'numpy==1.23.5' 'pytest>=7'
+          "$RUNNER_TEMP/numpy123/bin/python" -m pip install \
+            'numpy==1.23.5' 'trimesh==4.0.0' 'scipy==1.10.1' 'pytest>=7'
           PYTHONPATH="$PWD/build-core/install" PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
             "$RUNNER_TEMP/numpy123/bin/python" -m pytest \
-            tests/python/test_trajectory_sampling.py tests/python/test_joint_position_map.py -q
+            tests/python/test_trajectory_sampling.py tests/python/test_joint_position_map.py \
+            tests/python/test_viser_scene_style.py tests/python/test_urdf_sphere_fit.py \
+            tests/python/test_urdf_primitive_reuse.py tests/python/test_urdf_sphere_selection.py -q
       - name: Configure C++ sanitizers and Eigen assertions
         if: matrix.python == '3.12'
         run: >-

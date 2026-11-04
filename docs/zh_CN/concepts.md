@@ -4,8 +4,17 @@
 
 ## 显式模型所有权
 
-HolisticMotion 不捆绑机器人资源。请向 `Robot`、`CollisionModel` 和 retargeting
+HolisticMotion 不捆绑机器人资源。请向 `RobotModel`、`Robot`、`CollisionModel` 和 retargeting
 求解器传入绝对路径或由应用解析后的 URDF 路径。
+
+`RobotModel` 负责解析后的关节、连杆、标量坐标映射与视觉元数据；加载它不会选择
+默认运动链或创建 IK 求解器。`GetChainJoints()`（Python 为 `chain_joints()`）返回
+原始树路径，包含固定、mimic 和非标量关节；标量坐标映射仍排除 mimic、浮动和
+平面关节。
+
+`Robot` 组合一个 `RobotModel` 值与现有默认求解器，原有构造、运动链工厂与链自由度
+查询保持原意。复制模型或 Robot 时共享 Joint/Link 对象，模型容器各自独立。
+此次 Robot 内部布局和原生库拆分发生变化，需要一起重新编译 C++ 消费者和 Python 扩展。
 
 默认运动链选择从根到叶节点、活动关节最多的完整受支持路径；数量相同时保留先访问
 的叶节点，末端固定变换仍计入工具位姿。包含 mimic 或不支持关节的路径不参与选择。
@@ -13,13 +22,57 @@ HolisticMotion 不捆绑机器人资源。请向 `Robot`、`CollisionModel` 和 
 短路径保留直接查询。C++ 对公开名称与父子关系的修改会在下次调用生效，重复名称
 保持首次匹配行为。父链遍历遇到环时会结束并返回 `nullptr`（Python 为 `None`）。
 
+## 流形插值
+
+C++ 流形插值参数位于 `[0, 1]`。三次插值使用带端点本体切向量的测地 Bézier
+曲线，在欧氏空间中与三次 Hermite 插值一致；旋转切向量控制点应保留预期的对数
+分支。`InterpolateLinearInSE3()` 分别插值平移与旋转。
+
+`Rn<Scalar, N>::GetTransform()` 返回 `(N+1) × (N+1)` 的齐次平移矩阵。
+`PathBezierCurve2nd()` 和 `PathBezierCurve5th()` 根据已保存的路点重建路径，替换原有分段。
+
+`cast<T>()` 提高浮点精度时，会按目标精度重新归一化旋转分量，也适用于 `Bundle`
+内部的旋转。此次更新后请重新编译 C++ 库与调用方。未使用的受保护缓存
+`KinematicsBase::joint_solutions_`、`PathBase::weights_` 和 `PathBase::control_points_`
+已移除；引用这些字段的自定义子类应自行保存所需状态。`Rn::Transformation` 的固定
+大小声明需要包含齐次坐标。
+从未读取的 `KinematicsBase::initalize_` 和重复保存的 `TrajectoryBase::path_type_`
+也已移除；自定义轨迹子类需要路径类型时应查询 `path_->GetType()`。
+运动学头文件直接包含 `SE3`，轨迹头文件包含 `Rn` 与 `SE3`；使用其他流形群或算法时，
+请显式包含对应的公开头文件。
+
+`Decasteljau()` 与兼容入口 `ComputeBezierCurve()` 共用一个采样实现。原有
+`degree` 参数表示完整分段的控制点数量，相邻段共享端点。支持两个控制点；不足
+完整段的末段使用剩余控制点并保留输入终点。闭合曲线将首控制点接到末段。每段
+采样不含起点，包含精确保留的终点。
+四个 C++ 均值辅助函数面向彼此接近的群元素，`eps` 限制更新范数的平方；
+`Average()` 现在使用调用方传入的容差。
+
 ## 核心组件与可选组件
 
-核心 `holistic_motion` 库包含机器人模型、运动学、流形、零空间路径生成和轨迹。
-碰撞查询位于可选的 `holistic_motion_collision` 配套库中，因此普通运动学用户
-不需要引入 Pinocchio 和 Coal。Python 也使用独立的核心与碰撞扩展：普通包导入
-只加载核心，首次使用碰撞类型或碰撞规划工厂时才加载碰撞。尚未加载 Conan 碰撞
-扩展时，核心算法可与 Python Pinocchio 在同一进程运行。
+`holistic_motion_model` 库负责模型加载和数据查询，只需要这一层的 C++ 程序可独立链接：
+
+```cmake
+find_package(HolisticMotion REQUIRED CONFIG COMPONENTS model)
+target_link_libraries(model_reader PRIVATE HolisticMotion::model)
+```
+
+该目标只公开依赖 Eigen；fmt 和 URDF 解析器是实现依赖。静态消费者仍需发现它们，
+共享模型消费者在配置时无需其 SDK。模型目标不链接运动学、CUDA、spdlog 或碰撞后端。
+`core` 组件（`HolisticMotion::holistic_motion`）链接模型组件，提供兼容的 Robot
+入口、运动学、零空间规划和轨迹。公开运动学头文件不再包含 Logging 或 fmt；
+使用日志 API 时，应显式包含 `holistic_motion/utility/Logging.h`。
+该 API 公开依赖 fmt，而 spdlog 是私有依赖：共享核心消费者无需发现 spdlog SDK，
+静态核心消费者仍需链接它的库。
+
+可选的 `collision` 组件（`HolisticMotion::collision`）始终采用共享配套库，
+只公开 Eigen，消费者无需 Pinocchio/Coal SDK 或核心/CUDA 目标。CMake 安装和
+Conan 复用同一份原生组件配置，旧的 `holistic-motion::holistic-motion` 聚合目标
+汇集已发现的组件。Conan 的完整依赖图仍由包选项控制，运行环境要求也继续适用。
+
+Python 也使用独立的核心与碰撞扩展：普通包导入只加载核心，首次使用碰撞类型
+或碰撞规划工厂时才加载碰撞。尚未加载 Conan 碰撞扩展时，核心算法可与
+Python Pinocchio 在同一进程运行。
 离线几何预处理在首次访问 `hm.geometry` 时加载；普通包导入不会初始化 NumPy，
 数值数组操作会在需要时加载它。
 
@@ -209,7 +262,8 @@ elif report.status == hm.IKSolveStatus.INVALID_INPUT:
 局部修正优先保持现有高精度；若无法收敛，再按已有的 10 微米和 10 微弧度
 位姿验收标准重试，避免丢弃已满足要求的候选。
 
-连续目标流应使用有状态 Python 跟踪器，而不是逐帧独立选择：
+连续目标流应使用有状态 Python 跟踪器。跟踪器在查询求解器前复制实数标量步长，
+回调修改调用方数组不会改变本次步长：
 
 ```python
 from holistic_motion.kinematics import SRSContinuousTracker
@@ -272,7 +326,11 @@ C++ IK 目标与 TCP、用户坐标系采用相同校验：系数有限，四元
 或齐次末行会被拒绝。实数列表和对象数组仍受支持；非法配置更新保留原有状态。
 SRS/FEP 配置标志和冗余值同样要求实数标量，非法赋值保留原配置。
 UR/OPW 参数赋值和构造限位采用相同的实数要求。基座与工具变换必须为刚体变换；
-非法赋值保留原参数值。
+非法赋值保留原参数值。C++ UR/OPW 构造入口同样校验有限几何参数、偏移、取值为
+正负一的轴方向与刚体变换，非法参数抛出 `std::invalid_argument`。FK 溢出时返回
+失败并保留调用方上次的位姿输出。
+UR 与 OPW 共用基类对排序后解析解的最近结果选择；数值、SRS 与 FEP 保留各自的
+专用最近解搜索。
 数值 `GetNearestIK()` 和 Python `inverse()` 在收敛分支的周期表示中，选择相对
 调用方有限种子加权关节位移最小的解。改用零种子重试时，仍按原始种子选择多圈
 表示并报告距离。
@@ -284,7 +342,10 @@ UR/OPW 参数赋值和构造限位采用相同的实数要求。基座与工具�
 无法表示时，仍会拒绝查询。
 标量 FK、CPU/CUDA 批量 FK 与周期坐标转换共用主机准备的轴尺度，避免对
 `q * axis` 求范数或在设备端重新计算尺度时，因舍入改变大转角相位。六自由度的
-原有肘部朝上过滤同样使用轴角运动；前缀几何或候选坐标非法时会清空输出，避免越界。
+原有肘部筛选共用同一标量关节运动实现，支持朝上和朝下选择。基座、腕部约束与其他
+自由度尚未实现，`LimitRobotConfig()` 对这些请求返回失败并清空输出；前缀几何或
+候选坐标非法时也清空输出。第三关节低于第二关节且第四关节高于第三关节时分类为
+肘下，肘上选择其补集。
 
 C++ 求解器在分配与模型维度相关的状态前，统一校验关节字段和坐标布局。数值模型
 最后一个节点必须是固定工具变换（兼容接受 `UNKNOWN`）；OPW 和 UR 至少需要六个

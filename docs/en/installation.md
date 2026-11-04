@@ -284,36 +284,50 @@ CMake installs generated build metadata as `_build_config.py`.
 
 ## C++ target boundaries
 
-Consumers link only the components they use. Core kinematics, trajectory, and
-planning APIs use `HolisticMotion::holistic_motion`; collision queries use the
-separate `HolisticMotion::collision` target, which depends on Pinocchio and Coal:
+The installed SDK exposes three components. Conan reuses this native CMake
+configuration, so component selection and target names are the same for both
+installation routes:
+
+| Component | Target | Responsibility |
+|---|---|---|
+| `model` | `HolisticMotion::model` | URDF tree, coordinates and visual metadata |
+| `core` | `HolisticMotion::holistic_motion` | Robot compatibility entry, kinematics, trajectories and planning |
+| `collision` | `HolisticMotion::collision` | Optional collision queries |
 
 ```cmake
-find_package(HolisticMotion REQUIRED CONFIG)
-target_link_libraries(my_motion_app PRIVATE HolisticMotion::holistic_motion)
-target_link_libraries(my_collision_app PRIVATE HolisticMotion::collision)
-```
+find_package(HolisticMotion REQUIRED CONFIG COMPONENTS model)
+target_link_libraries(model_reader PRIVATE HolisticMotion::model)
 
-These names are identical for a CMake install tree and Conan `CMakeDeps`.
-When CUDA is enabled, only the core target propagates `CUDA::cudart`; the
-collision component remains independent of CUDA and the core library.
-
-The installed CMake SDK supports explicit components. Omitting components keeps
-the historical behavior of loading all built components. Selecting `core` skips
-Pinocchio/Coal discovery; selecting `collision` skips the core fmt/spdlog dependencies:
-
-```cmake
-find_package(HolisticMotion REQUIRED CONFIG COMPONENTS core)
-target_link_libraries(my_motion_app PRIVATE HolisticMotion::holistic_motion)
-
-# Both components: COMPONENTS core collision
+# Motion APIs: COMPONENTS core
+# Motion and collision: COMPONENTS core collision
 # Collision only: COMPONENTS collision
 # Optional discovery: COMPONENTS core OPTIONAL_COMPONENTS collision
 ```
 
-Either component can be optional; inspect `HolisticMotion_core_FOUND` or
-`HolisticMotion_collision_FOUND` after discovery. Unavailable optional core
-dependencies, including CUDA, do not prevent collision-only use. Missing
-required components and unknown names produce clear diagnostics. Conan's full
-dependency graph remains controlled by package options; use
-`with_collision=False` for a minimal Conan installation.
+The model target publicly requires only Eigen. Formatting and URDF parsing are
+private dependencies; static model consumers still discover their SDKs, while
+shared model consumers do not. Core links the model component. Only a
+CUDA-enabled core propagates `CUDA::cudart`.
+
+Core publicly requires fmt for its logging API. spdlog is private: shared core
+consumers do not discover its SDK, while static core consumers still resolve
+its library.
+
+The collision companion is always shared, including when model and core are
+static. It exposes only Eigen and does not require consumers to discover the
+Pinocchio/Coal SDKs, core, or CUDA. The runtime environment requirements above
+still apply when linking and running consumers.
+
+Public kinematics headers no longer include Logging or fmt. Applications using
+the logging API must explicitly include `holistic_motion/utility/Logging.h`.
+
+Omitting components loads all built components. Each component supports
+optional discovery; inspect `HolisticMotion_model_FOUND`,
+`HolisticMotion_core_FOUND` or `HolisticMotion_collision_FOUND` for availability.
+Missing optional core dependencies do not prevent collision-only use. The old
+`holistic-motion::holistic-motion` aggregate target remains available and collects
+the discovered components. Missing or unknown required components fail discovery.
+
+Component selection controls SDK discovery and linking. Conan's full dependency
+graph remains controlled by package options; use `with_collision=False` to omit
+the collision backend from that graph.

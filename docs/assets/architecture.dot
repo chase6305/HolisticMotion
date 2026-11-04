@@ -6,13 +6,17 @@ digraph HolisticMotion {
           fontcolor="#425970"];
 
     facade [label="holistic_motion\nPython package", fillcolor="#d5e9fa", penwidth=1.4];
-    core_py [label="Core Python extension\nFK / IK / planning / trajectories"];
+    core_py [label="Core Python extension\nmodel / FK / IK / planning / trajectories"];
     collision_py [label="Collision Python extension\nqueries / planning factories", fillcolor="#e8f4ed"];
     toolkit [label="Python toolkits\nretargeting / array trajectories / adapters", fillcolor="#f2eff8"];
     core_cpp [label="C++ core\nHolisticMotion::holistic_motion"];
-    collision_cpp [label="C++ collision\nHolisticMotion::collision", fillcolor="#e8f4ed"];
-    common [label="Eigen / urdfdom", fillcolor="#f4f6f8"];
-    logging [label="fmt / spdlog", fillcolor="#f4f6f8"];
+    model_cpp [label="C++ model\nHolisticMotion::model\nRobotModel: tree / coordinates"];
+    collision_cpp [label="C++ collision (shared)\nHolisticMotion::collision", fillcolor="#e8f4ed"];
+    eigen [label="Eigen", fillcolor="#f4f6f8"];
+    parser [label="urdfdom", fillcolor="#f4f6f8"];
+    formatting [label="fmt", fillcolor="#f4f6f8"];
+    logging [label="spdlog", fillcolor="#f4f6f8"];
+    cuda [label="CUDA", fillcolor="#f4f6f8"];
     native_collision [label="Conan Pinocchio / Coal", fillcolor="#f4f6f8"];
     python_deps [label="Feature dependencies\nNumPy / Torch / Python Pinocchio / Viser", fillcolor="#f4f6f8"];
 
@@ -23,10 +27,16 @@ digraph HolisticMotion {
     collision_py -> core_cpp;
     collision_py -> collision_cpp;
     toolkit -> python_deps [label="by feature", style=dashed];
-    core_cpp -> common;
-    core_cpp -> logging;
-    collision_cpp -> common;
-    collision_cpp -> native_collision [label="implementation"];
+    core_cpp -> model_cpp [label="public"];
+    core_cpp -> formatting [label="public"];
+    core_cpp -> logging [label="private"];
+    core_cpp -> cuda [label="public, optional", style=dashed];
+    model_cpp -> eigen [label="public"];
+    model_cpp -> formatting [label="private"];
+    model_cpp -> parser [label="private"];
+    collision_cpp -> eigen [label="public"];
+    collision_cpp -> parser [label="private"];
+    collision_cpp -> native_collision [label="private"];
 
     {rank=same; core_py; collision_py; toolkit;}
     {rank=same; core_cpp; collision_cpp;}

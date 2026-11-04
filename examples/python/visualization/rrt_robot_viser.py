@@ -134,7 +134,7 @@ def main() -> None:
     args = parse_args()
     profile = json.loads(args.profile.read_text(encoding="utf-8"))
     urdf = args.urdf.expanduser().resolve()
-    robot = hm.Robot(str(urdf), True)
+    robot = hm.RobotModel(str(urdf), True)
     collision = hm.CollisionModel(str(urdf), [str(urdf.parent)])
     obstacles = (
         []

@@ -12,6 +12,7 @@ constexpr int maximum_speed_iterations =
     std::numeric_limits<double>::min_exponent +
     std::numeric_limits<double>::digits;
 
+// Return {constant-jerk phase duration, total ramp duration}.
 std::array<double, 2> JerkRampTimes(double velocity_change, double acceleration,
                                     double jerk) {
     const double triangular = detail::SquareRootRatio(velocity_change, jerk);
@@ -222,11 +223,9 @@ bool FitRoundedProfile(const std::array<double, 7> &durations, double q0,
 bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
                                    double &start_velocity, double &end_velocity,
                                    const double &requested_max_velocity,
-                                   double max_acceleration,
-                                   const double &max_jerk, const double &t0,
-                                   std::list<TrajectorySeg> &traj_seg,
-                                   const int &seg_no,
-                                   const bool &allow_concave) {
+                                   double max_acceleration, const double &max_jerk,
+                                   const double &t0, std::list<TrajectorySeg> &traj_seg,
+                                   const int &seg_no, const bool &allow_concave) {
     // Publish adjusted endpoint speeds only with a complete usable profile.
     double v0 = start_velocity;
     double v1 = end_velocity;
@@ -255,32 +254,20 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
     // ulps apart. Preserve the endpoint speed within a relative roundoff
     // budget instead of needlessly rebuilding the entire preceding profile.
     // The composed trajectory still receives the global joint-limit check.
-    constexpr double speed_roundoff =
-        128.0 * std::numeric_limits<double>::epsilon();
+    constexpr double speed_roundoff = 128.0 * std::numeric_limits<double>::epsilon();
     for (double endpoint : {v0, v1}) {
         if (endpoint > max_velocity &&
             endpoint - requested_max_velocity <= speed_roundoff * endpoint)
             max_velocity = endpoint;
     }
-    double acc_init = .0;
     double profile_jerk = max_jerk;
 
-    // duration
-    ///< jerk_accel_time constant duration of the jerk in the acceleration phase
-    ///< ta acceleration period
-    ///< tv constant speed period
-    ///< jerk_decel_time constant duration of the jerk in the deceleration phase
-    ///< td deceleration period
-    ///< delta to compute
-    double jerk_accel_time{0.0}, ta{0.0}, tv{0.0};
-    double jerk_decel_time{0.0}, td{0.0}, delta{0.0}, jerk_time{0.0};
+    double jerk_accel_time = 0.0, acceleration_duration = 0.0;
+    double cruise_duration = 0.0;
+    double jerk_decel_time = 0.0, deceleration_duration = 0.0;
     // A concave phase can retain an above-cap endpoint, but reducing an
     // infeasible start speed below still requires upstream backtracking.
     bool need_reduce_v0 = !allow_concave && v0 > max_velocity;
-    // const double v0_init = v0;
-
-    // const double max_acceleration_const = max_acceleration;
-    const double lower_scale = 0.9;
 
     if (!allow_concave) {
         v0 = v0 > max_velocity ? max_velocity : v0;
@@ -305,8 +292,7 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
         const double fixed = std::min(v0, v1);
         double feasible_speed = fixed;
         double infeasible_speed = std::max(v0, v1);
-        for (int iteration = 0; iteration < maximum_speed_iterations;
-             ++iteration) {
+        for (int iteration = 0; iteration < maximum_speed_iterations; ++iteration) {
             const double middle =
                 feasible_speed + 0.5 * (infeasible_speed - feasible_speed);
             if (middle == feasible_speed || middle == infeasible_speed)
@@ -332,31 +318,31 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
     const auto initial_ramp =
         JerkRampTimes(std::abs(max_velocity - v0), max_acceleration, max_jerk);
     jerk_accel_time = initial_ramp[0];
-    ta = initial_ramp[1];
+    acceleration_duration = initial_ramp[1];
     const auto final_ramp =
         JerkRampTimes(std::abs(max_velocity - v1), max_acceleration, max_jerk);
     jerk_decel_time = final_ramp[0];
-    td = final_ramp[1];
+    deceleration_duration = final_ramp[1];
 
-    // compute constant speed period
-    tv = (q1 - q0) / max_velocity - 0.5 * ta * (1 + v0 / max_velocity) -
-         0.5 * td * (1 + v1 / max_velocity);
+    cruise_duration = (q1 - q0) / max_velocity -
+                      0.5 * acceleration_duration * (1 + v0 / max_velocity) -
+                      0.5 * deceleration_duration * (1 + v1 / max_velocity);
 
     // The no-cruise formulas below describe a convex speed peak. They do
     // not represent a valley between two above-cap endpoints when there is
     // too little distance to reach the cap. Reject that unsupported boundary
     // condition instead of integrating toward the wrong terminal speed.
-    if (allow_concave && v0 > max_velocity && v1 > max_velocity && tv <= 0.0) {
+    if (allow_concave && v0 > max_velocity && v1 > max_velocity &&
+        cruise_duration <= 0.0) {
         holistic_motion::utility::LogWarning(
             "Double-S cannot reach the speed cap between above-cap endpoints");
         return false;
     }
 
-    /// < 2.the second case, if tv <= 0.0, there is no constant speed period
     constexpr int maximum_acceleration_reductions = 1000;
     int acceleration_reductions = 0;
     bool solved_convex_peak = false;
-    if (tv <= 0.0 && v0 == 0.0 && v1 == 0.0) {
+    if (cruise_duration <= 0.0 && v0 == 0.0 && v1 == 0.0) {
         // Rest-to-rest motion has a closed form. Taking roots before dividing
         // retains finite durations even when the squared/fourth-power
         // intermediates of the expanded formula are not representable.
@@ -364,16 +350,16 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
             detail::CubeRootRatio(q1 - q0, max_jerk) / std::cbrt(2.0);
         const double saturated = max_acceleration / max_jerk;
         jerk_accel_time = jerk_decel_time = std::min(triangular, saturated);
-        ta = td =
+        acceleration_duration = deceleration_duration =
             triangular <= saturated
                 ? 2.0 * triangular
-                : 0.5 * saturated + std::hypot(0.5 * saturated,
-                                               detail::SquareRootRatio(
-                                                   q1 - q0, max_acceleration));
-        tv = 0.0;
+                : 0.5 * saturated +
+                      std::hypot(0.5 * saturated,
+                                 detail::SquareRootRatio(q1 - q0, max_acceleration));
+        cruise_duration = 0.0;
         solved_convex_peak = true;
     }
-    if (tv <= 0.0 && !solved_convex_peak && v0 <= max_velocity &&
+    if (cruise_duration <= 0.0 && !solved_convex_peak && v0 <= max_velocity &&
         v1 <= max_velocity) {
         // Ramp distance increases monotonically with its peak speed. Solve
         // that bounded scalar problem directly, without fourth powers or
@@ -394,8 +380,7 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
         // increment to an endpoint rounds back to that endpoint.
         double low = 0.0, high = max_velocity - base_velocity;
         const double length = q1 - q0;
-        for (int iteration = 0; iteration < maximum_speed_iterations;
-             ++iteration) {
+        for (int iteration = 0; iteration < maximum_speed_iterations; ++iteration) {
             const double middle = low + 0.5 * (high - low);
             if (middle == low || middle == high)
                 break;
@@ -406,13 +391,14 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
         }
         const auto first = ramp(v0, low), last = ramp(v1, low);
         jerk_accel_time = first[0];
-        ta = first[1];
+        acceleration_duration = first[1];
         jerk_decel_time = last[0];
-        td = last[1];
+        deceleration_duration = last[1];
         const double remaining = length - distance(low);
-        tv = remaining > 64.0 * std::numeric_limits<double>::epsilon() * length
-                 ? remaining / (base_velocity + low)
-                 : 0.0;
+        cruise_duration =
+            remaining > 64.0 * std::numeric_limits<double>::epsilon() * length
+                ? remaining / (base_velocity + low)
+                : 0.0;
         if (base_velocity + low == base_velocity) {
             // The speed peak itself is indistinguishable from an endpoint.
             // Fit the endpoint transition across the available distance,
@@ -421,107 +407,107 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
             const double duration = length / (0.5 * v0 + 0.5 * v1);
             const double change = std::abs(v1 - v0);
             if (change == 0.0) {
-                ta = td = jerk_accel_time = jerk_decel_time = 0.0;
-                tv = duration;
+                acceleration_duration = deceleration_duration = jerk_accel_time =
+                    jerk_decel_time = 0.0;
+                cruise_duration = duration;
             } else {
                 const double average_acceleration = change / duration;
-                const bool triangular =
-                    average_acceleration <= 0.5 * max_acceleration;
+                const bool triangular = average_acceleration <= 0.5 * max_acceleration;
                 const double jerk_duration =
                     triangular
                         ? 0.5 * duration
-                        : std::min(
-                              0.5 * duration,
-                              std::max(max_acceleration / max_jerk,
-                                       duration - change / max_acceleration));
-                const double acceleration = std::min(
-                    max_acceleration, change / (duration - jerk_duration));
-                const double jerk =
-                    std::min(max_jerk, acceleration / jerk_duration);
+                        : std::min(0.5 * duration,
+                                   std::max(max_acceleration / max_jerk,
+                                            duration - change / max_acceleration));
+                const double acceleration =
+                    std::min(max_acceleration, change / (duration - jerk_duration));
+                const double jerk = std::min(max_jerk, acceleration / jerk_duration);
                 const double achieved_change =
                     (jerk * jerk_duration) * (duration - jerk_duration);
                 constexpr double roundoff =
                     64.0 * std::numeric_limits<double>::epsilon();
-                if (std::isfinite(duration) && duration > 0.0 &&
-                    jerk_duration > 0.0 && std::isfinite(jerk) && jerk > 0.0 &&
+                if (std::isfinite(duration) && duration > 0.0 && jerk_duration > 0.0 &&
+                    std::isfinite(jerk) && jerk > 0.0 &&
                     std::isfinite(achieved_change) &&
                     std::abs(achieved_change - change) <= roundoff * change) {
                     profile_jerk = jerk;
-                    ta = v1 > v0 ? duration : 0.0;
-                    td = v1 < v0 ? duration : 0.0;
+                    acceleration_duration = v1 > v0 ? duration : 0.0;
+                    deceleration_duration = v1 < v0 ? duration : 0.0;
                     jerk_accel_time = v1 > v0 ? jerk_duration : 0.0;
                     jerk_decel_time = v1 < v0 ? jerk_duration : 0.0;
-                    tv = 0.0;
+                    cruise_duration = 0.0;
                 }
             }
         }
         solved_convex_peak = true;
     }
-    while (tv <= 0.0 && !solved_convex_peak) {
-        jerk_accel_time = jerk_decel_time = jerk_time =
-            max_acceleration / max_jerk;
-        delta = std::sqrt(
-            std::pow(max_acceleration, 4) / std::pow(max_jerk, 2) +
-            2 * (v0 * v0 + v1 * v1) +
-            max_acceleration *
-                (4 * (q1 - q0) - 2 * max_acceleration / max_jerk * (v0 + v1)));
-        ta = (max_acceleration * max_acceleration / max_jerk - 2 * v0 + delta) /
-             (2 * max_acceleration);
-        td = (max_acceleration * max_acceleration / max_jerk - 2 * v1 + delta) /
-             (2 * max_acceleration);
+    while (cruise_duration <= 0.0 && !solved_convex_peak) {
+        jerk_accel_time = jerk_decel_time = max_acceleration / max_jerk;
+        const double discriminant_root =
+            std::sqrt(std::pow(max_acceleration, 4) / std::pow(max_jerk, 2) +
+                      2 * (v0 * v0 + v1 * v1) +
+                      max_acceleration * (4 * (q1 - q0) -
+                                          2 * max_acceleration / max_jerk * (v0 + v1)));
+        acceleration_duration = (max_acceleration * max_acceleration / max_jerk -
+                                 2 * v0 + discriminant_root) /
+                                (2 * max_acceleration);
+        deceleration_duration = (max_acceleration * max_acceleration / max_jerk -
+                                 2 * v1 + discriminant_root) /
+                                (2 * max_acceleration);
         // Rationalize the nearly equal subtraction for short motions at
         // nonzero speed. The expanded numerator keeps the small displacement.
-        const double acceleration_term =
-            max_acceleration * max_acceleration / max_jerk;
+        const double acceleration_term = max_acceleration * max_acceleration / max_jerk;
         if (2.0 * v0 > acceleration_term) {
-            ta = ((v1 - v0) * (v1 + v0 - acceleration_term) +
-                  2.0 * max_acceleration * (q1 - q0)) /
-                 (max_acceleration * (delta + 2.0 * v0 - acceleration_term));
+            acceleration_duration =
+                ((v1 - v0) * (v1 + v0 - acceleration_term) +
+                 2.0 * max_acceleration * (q1 - q0)) /
+                (max_acceleration * (discriminant_root + 2.0 * v0 - acceleration_term));
         }
         if (2.0 * v1 > acceleration_term) {
-            td = ((v0 - v1) * (v0 + v1 - acceleration_term) +
-                  2.0 * max_acceleration * (q1 - q0)) /
-                 (max_acceleration * (delta + 2.0 * v1 - acceleration_term));
+            deceleration_duration =
+                ((v0 - v1) * (v0 + v1 - acceleration_term) +
+                 2.0 * max_acceleration * (q1 - q0)) /
+                (max_acceleration * (discriminant_root + 2.0 * v1 - acceleration_term));
         }
-        tv = 0.0;
+        cruise_duration = 0.0;
 
         holistic_motion::utility::LogDebug(
-            "There is no constant speed period: jerk_accel_time:{}, ta:{}, "
-            "tv:{}, "
-            "td:{}, jerk_decel_time: {}, duration:{}",
-            jerk_accel_time, ta, tv, td, jerk_decel_time, ta + tv + td);
+            "There is no constant speed period: jerk_accel_time:{}, "
+            "acceleration_duration:{}, "
+            "cruise_duration:{}, "
+            "deceleration_duration:{}, jerk_decel_time: {}, duration:{}",
+            jerk_accel_time, acceleration_duration, cruise_duration,
+            deceleration_duration, jerk_decel_time,
+            acceleration_duration + cruise_duration + deceleration_duration);
 
-        // ta or td is negative during the recursion process
-        if (ta < 0.0) // if ta < 0.0, there is only a deceleration period
-        {
-            td = 2 * (q1 - q0) / (v1 + v0);
+        // A negative ramp duration leaves only the opposite ramp.
+        if (acceleration_duration < 0.0) {
+            deceleration_duration = 2 * (q1 - q0) / (v1 + v0);
             jerk_decel_time =
                 (max_jerk * (q1 - q0) -
-                 std::sqrt(
-                     std::abs(max_jerk * (max_jerk * std::pow(q1 - q0, 2) +
-                                          std::pow(v1 + v0, 2) * (v1 - v0))))) /
+                 std::sqrt(std::abs(max_jerk * (max_jerk * std::pow(q1 - q0, 2) +
+                                                std::pow(v1 + v0, 2) * (v1 - v0))))) /
                 (max_jerk * (v1 + v0));
-            ta = jerk_accel_time = 0.0;
+            acceleration_duration = jerk_accel_time = 0.0;
             break;
         }
 
-        if (td < 0.0) // if td < 0.0, there is only a acceleration period
-        {
-            ta = 2 * (q1 - q0) / (v1 + v0);
+        if (deceleration_duration < 0.0) {
+            acceleration_duration = 2 * (q1 - q0) / (v1 + v0);
             jerk_accel_time =
                 (max_jerk * (q1 - q0) -
-                 std::sqrt(
-                     std::abs(max_jerk * (max_jerk * std::pow(q1 - q0, 2) -
-                                          std::pow(v1 + v0, 2) * (v1 - v0))))) /
+                 std::sqrt(std::abs(max_jerk * (max_jerk * std::pow(q1 - q0, 2) -
+                                                std::pow(v1 + v0, 2) * (v1 - v0))))) /
                 (max_jerk * (v1 + v0));
-            td = jerk_decel_time = 0.0;
+            deceleration_duration = jerk_decel_time = 0.0;
             break;
         }
-        // TODO: need to adjust the maximum acceleration ratio to improve the
-        // calculation success rate
-        if ((ta < 2 * jerk_time) || (td < 2 * jerk_time)) {
-            max_acceleration *= lower_scale; // amax is not reached, set a
-                                             // lower amax limit;
+        // Retry an above-cap endpoint excursion at a lower acceleration when
+        // either ramp cannot accommodate its two saturated jerk phases.
+        if (acceleration_duration < 2 * jerk_accel_time ||
+            deceleration_duration < 2 * jerk_decel_time) {
+            constexpr double acceleration_reduction_factor = 0.9;
+            max_acceleration *= acceleration_reduction_factor;
             if (++acceleration_reductions > maximum_acceleration_reductions ||
                 !std::isfinite(max_acceleration) ||
                 max_acceleration <= std::numeric_limits<double>::min()) {
@@ -535,20 +521,25 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
     }
 
     holistic_motion::utility::LogDebug(
-        "DoubleS time, jerk_accel_time:{}, ta:{}, tv:{}, "
-        "jerk_decel_time:{}, td:{} "
-        "delta:{}, jerk_time:{}, duration:{}",
-        jerk_accel_time, ta, tv, jerk_decel_time, td, delta, jerk_time,
-        ta + tv + td);
+        "DoubleS time, jerk_accel_time:{}, acceleration_duration:{}, "
+        "cruise_duration:{}, "
+        "jerk_decel_time:{}, deceleration_duration:{} "
+        "duration:{}",
+        jerk_accel_time, acceleration_duration, cruise_duration, jerk_decel_time,
+        deceleration_duration,
+        acceleration_duration + cruise_duration + deceleration_duration);
 
     holistic_motion::utility::LogDebug("Begin to add trajectory seg...");
 
     std::array<double, 7> durations{
-        jerk_accel_time, ta - 2.0 * jerk_accel_time, jerk_accel_time, tv,
-        jerk_decel_time, td - 2.0 * jerk_decel_time, jerk_decel_time};
+        jerk_accel_time, acceleration_duration - 2.0 * jerk_accel_time,
+        jerk_accel_time, cruise_duration,
+        jerk_decel_time, deceleration_duration - 2.0 * jerk_decel_time,
+        jerk_decel_time};
     const double phase_tolerance =
         64.0 * std::numeric_limits<double>::epsilon() *
-        std::max({1.0, std::abs(ta), std::abs(td), std::abs(tv)});
+        std::max({1.0, std::abs(acceleration_duration), std::abs(deceleration_duration),
+                  std::abs(cruise_duration)});
     for (double &duration : durations) {
         if (!std::isfinite(duration) || duration < -phase_tolerance)
             return false;
@@ -560,21 +551,17 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
     // leave a positive residue as well as a negative one. Normalize both
     // signs before integration: a representable residue here can collapse
     // when backtracking rebases the profile at a larger timestamp.
-    constexpr double plateau_roundoff =
-        64.0 * std::numeric_limits<double>::epsilon();
-    if (durations[1] <= plateau_roundoff * std::abs(ta))
+    constexpr double plateau_roundoff = 64.0 * std::numeric_limits<double>::epsilon();
+    if (durations[1] <= plateau_roundoff * std::abs(acceleration_duration))
         durations[1] = 0.0;
-    if (durations[5] <= plateau_roundoff * std::abs(td))
+    if (durations[5] <= plateau_roundoff * std::abs(deceleration_duration))
         durations[5] = 0.0;
-    const double acceleration_jerk =
-        v0 > max_velocity ? -profile_jerk : profile_jerk;
-    const double deceleration_jerk =
-        v1 > max_velocity ? profile_jerk : -profile_jerk;
+    const double acceleration_jerk = v0 > max_velocity ? -profile_jerk : profile_jerk;
+    const double deceleration_jerk = v1 > max_velocity ? profile_jerk : -profile_jerk;
     const std::array<double, 7> next_jerks{
-        0.0, -acceleration_jerk, 0.0, deceleration_jerk,
-        0.0, -deceleration_jerk, 0.0};
+        0.0, -acceleration_jerk, 0.0, deceleration_jerk, 0.0, -deceleration_jerk, 0.0};
     std::list<TrajectorySeg> phases;
-    phases.emplace_back(seg_no, t0, q0, v0, acc_init, acceleration_jerk);
+    phases.emplace_back(seg_no, t0, q0, v0, 0.0, acceleration_jerk);
     bool rounded_jerk_phase = false;
     for (std::size_t phase = 0; phase < durations.size(); ++phase) {
         const auto &previous = phases.back();
@@ -592,8 +579,7 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
             // advance time, retain its jerk switch with an unchanged state.
             // Bound both the duration cancellation and the state error;
             // genuine plateaus and all moving jerk phases remain rejected.
-            constexpr double roundoff =
-                64.0 * std::numeric_limits<double>::epsilon();
+            constexpr double roundoff = 64.0 * std::numeric_limits<double>::epsilon();
             const auto same_to_roundoff = [](double first, double second) {
                 return std::abs(first - second) <=
                        roundoff * std::max(std::abs(first), std::abs(second));
@@ -602,15 +588,14 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
             // Include that propagated uncertainty after a backtracked speed
             // update, without letting large world coordinates set the budget.
             const double duration_roundoff =
-                roundoff * (phase == 1 ? ta : td) +
-                (roundoff *
-                 std::max({std::abs(v0), std::abs(v1), max_velocity})) /
+                roundoff *
+                    (phase == 1 ? acceleration_duration : deceleration_duration) +
+                (roundoff * std::max({std::abs(v0), std::abs(v1), max_velocity})) /
                     max_acceleration;
             const bool rounding_plateau =
                 (phase == 1 || phase == 5) && previous.jerk == 0.0 &&
                 std::isfinite(duration_roundoff) &&
-                durations[phase] <= duration_roundoff &&
-                next.acc == previous.acc &&
+                durations[phase] <= duration_roundoff && next.acc == previous.acc &&
                 std::abs(next.pos - previous.pos) <= roundoff * (q1 - q0) &&
                 same_to_roundoff(next.vel, previous.vel);
             if (!rounding_plateau)
@@ -633,8 +618,8 @@ bool detail::ComputeDoubleSProfile(const double &q0, const double &q1,
     if (q1 > q0 && phases.back().timestamp <= t0)
         return false;
     if (rounded_jerk_phase) {
-        FitRoundedProfile(durations, q0, q1, v0, v1, max_velocity,
-                          max_acceleration, max_jerk, t0, seg_no, phases);
+        FitRoundedProfile(durations, q0, q1, v0, v1, max_velocity, max_acceleration,
+                          max_jerk, t0, seg_no, phases);
     }
     traj_seg.swap(phases);
     start_velocity = v0;

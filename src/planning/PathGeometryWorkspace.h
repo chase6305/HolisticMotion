@@ -9,24 +9,21 @@ namespace holistic_motion::robotics::planning::detail {
 // next waypoint is selected, including when the sweep direction changes.
 class PathGeometryWorkspace {
   public:
-    PathGeometryWorkspace(const Eigen::VectorXd &weights,
-                          const std::vector<bool> &continuous,
+    PathGeometryWorkspace(const Eigen::VectorXd &weights, const std::vector<bool> &continuous,
                           double length_weight, double smoothness_weight)
         : weights_(weights), geometry_(weights), continuous_(continuous),
-          has_continuous_(std::any_of(continuous.begin(), continuous.end(),
-                                      [](bool value) { return value; })),
+          has_continuous_(
+              std::any_of(continuous.begin(), continuous.end(), [](bool value) { return value; })),
           length_weight_(length_weight), smoothness_weight_(smoothness_weight),
           length_product_(length_weight * weights.minCoeff()),
           length_underflow_threshold_(std::isnormal(length_product_)
-                                          ? std::numeric_limits<double>::min() /
-                                                length_product_
+                                          ? std::numeric_limits<double>::min() / length_product_
                                           : 0.0),
-          smoothness_product_exceptional_(
-              smoothness_weight > 0.0 &&
-              !std::isnormal(smoothness_weight * weights.minCoeff())),
-          left_(weights.size()), right_(weights.size()),
-          previous_(weights.size()), next_(weights.size()),
-          acceleration_(weights.size()) {}
+          smoothness_product_exceptional_(smoothness_weight > 0.0 &&
+                                          !std::isnormal(smoothness_weight * weights.minCoeff())),
+          left_(length_weight > 0.0 || smoothness_weight > 0.0 ? weights.size() : 0),
+          right_(left_.size()), previous_(smoothness_weight > 0.0 ? weights.size() : 0),
+          next_(previous_.size()), acceleration_(previous_.size()) {}
 
     void SetWaypoint(const std::vector<Eigen::VectorXd> &path, std::size_t index) {
         lengths_valid_ = false;
@@ -51,14 +48,14 @@ class PathGeometryWorkspace {
         }
         if (smoothness_weight_ > 0.0) {
             acceleration_ = right_ - left_;
-            smoothness = SquaredNorm(acceleration_);
+            smoothness = geometry_.SquaredNorm(acceleration_);
             if (has_previous_) {
                 acceleration_ = left_ - previous_;
-                smoothness += SquaredNorm(acceleration_);
+                smoothness += geometry_.SquaredNorm(acceleration_);
             }
             if (has_next_) {
                 acceleration_ = next_ - right_;
-                smoothness += SquaredNorm(acceleration_);
+                smoothness += geometry_.SquaredNorm(acceleration_);
             }
         }
         if (smoothness_weight_ > 0.0 && !std::isnormal(smoothness)) {
@@ -196,10 +193,6 @@ class PathGeometryWorkspace {
             for (Eigen::Index i = 0; i < difference.size(); ++i)
                 if (continuous_[static_cast<std::size_t>(i)])
                     difference[i] = WrappedDifference(difference[i]);
-    }
-
-    double SquaredNorm(const Eigen::VectorXd &value) const {
-        return geometry_.SquaredNorm(value);
     }
 
     const Eigen::VectorXd &weights_;

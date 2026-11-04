@@ -171,10 +171,9 @@ SE_2_3<_Scalar>::SE_2_3(const LieGroupBase<_DerivedOther>& o)
 }
 
 template <typename _Scalar>
-SE_2_3<_Scalar>::SE_2_3(const Translation& t,
-                        const Eigen::Quaternion<Scalar>& q,
-                        const LinearVelocity& v)
-    : SE_2_3((DataType() << t, q.Coeffs(), v).finished()) {
+SE_2_3<_Scalar>::SE_2_3(const Translation &t, const Eigen::Quaternion<Scalar> &q,
+                        const LinearVelocity &v)
+    : SE_2_3((DataType() << t, q.coeffs(), v).finished()) {
     //
 }
 

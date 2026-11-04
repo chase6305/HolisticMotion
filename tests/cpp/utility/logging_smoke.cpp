@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -27,6 +28,62 @@ void Require(bool value, const char *message) {
 std::string Read(const std::filesystem::path &path) {
     std::ifstream stream(path);
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+}
+
+void CheckKinematicsDiagnostics(Logger &logger) {
+    using namespace holistic_motion::robotics;
+    std::vector<LogRecord> records;
+    logger.SetRecordFunction(
+        [&](const LogRecord &record) { records.push_back(record); });
+    FrankaParameters franka;
+    AgileDiana7Parameters diana;
+    Require(records.size() == 2 && records[0].level == VerbosityLevel::Debug &&
+                records[1].level == VerbosityLevel::Debug &&
+                records[0].message.find("Load Franka params:") !=
+                    std::string::npos &&
+                records[1].message.find("Load AgileDiana7 params:") !=
+                    std::string::npos,
+            "preset parameter diagnostics");
+
+    // These unqualified calls exercise the public friend declarations through
+    // ADL.
+    Require(_report(OPWParameters()).find("\t OPWParameters: \n") == 0 &&
+                _report(URParameters()).find("\t URParameters: \n") == 0 &&
+                _report(franka).find("\t FrankaParameters: \n") == 0 &&
+                _report(diana).find("\t AgileDiana7Parameters: \n") == 0,
+            "parameter report entry points");
+    IkRtn result;
+    result.PushBack(Eigen::Vector2d(1.0, -2.0));
+    result.success = true;
+    Require(_report(result) ==
+                "\t IkRtn: \n\t - success: true \n\t - ik number: 1\n"
+                "\t - ik joints:\n\t   [\n\t\t[1,-2]\n\t   ]",
+            "IK result report");
+
+    records.clear();
+    JointFilterManager filter(2);
+    Require(filter.SetJointAngleThresholds({0.25, 0.5}),
+            "valid filter thresholds");
+    Require(!filter.SetJointAngleThresholds({0.5}) &&
+                !filter.SetJointAngleThresholds(
+                    {0.5, std::numeric_limits<double>::quiet_NaN()}) &&
+                !filter.SetJointAngleThreshold(4, 0.5) &&
+                !filter.SetJointAngleThreshold(
+                    0, std::numeric_limits<double>::infinity()) &&
+                filter.GetJointAngleThreshold(4) == 0.0 &&
+                filter.GetJointAngleThresholds() ==
+                    std::vector<double>({0.25, 0.5}),
+            "invalid filter thresholds changed state");
+    Require(records.size() == 3 &&
+                records[0].message ==
+                    "Thresholds size (1) does not match robot DOF (2)" &&
+                records[1].message == "Joint index 4 out of range (max 1)" &&
+                records[2].message == records[1].message,
+            "filter threshold diagnostics");
+    for (const auto &record : records)
+        Require(record.level == VerbosityLevel::Warning,
+                "filter diagnostic level");
+    logger.SetRecordFunction([](const LogRecord &) {});
 }
 
 int main() {
@@ -81,8 +138,14 @@ int main() {
                                  -3.0, 3.0);
         nodes.back().joint_type = JointType::FIXED;
         cleanup.push_back(std::make_shared<NumericalKinematics>(nodes));
-        cleanup.push_back(std::make_shared<OPWKinematics>(OPWParameters{}, nodes));
-        cleanup.push_back(std::make_shared<URKinematics>(URParameters{}, nodes));
+        OPWParameters opw;
+        opw.c2 = opw.c3 = 1.0;
+        opw.rotation_directions.fill(1);
+        URParameters ur;
+        ur.a2 = ur.a3 = 1.0;
+        ur.rotation_directions.fill(1);
+        cleanup.push_back(std::make_shared<OPWKinematics>(opw, nodes));
+        cleanup.push_back(std::make_shared<URKinematics>(ur, nodes));
         using Group = Rn<double, 2>;
         std::vector<Group> points(3);
         points[0].Coeffs() << 0.0, 0.0;
@@ -102,6 +165,7 @@ int main() {
             [](const LogRecord &) { throw std::runtime_error("cleanup sink failed"); });
         cleanup.clear();
         logger.SetRecordFunction([](const LogRecord &) {});
+        CheckKinematicsDiagnostics(logger);
         auto foreign = std::make_shared<spdlog::logger>(
             "HOLISTIC_MOTION", std::make_shared<spdlog::sinks::null_sink_mt>());
         spdlog::register_logger(foreign);

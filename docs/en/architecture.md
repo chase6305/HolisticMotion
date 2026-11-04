@@ -3,30 +3,34 @@
 <div class="language-switcher">English · <a href="../zh_CN/architecture.html">简体中文</a></div>
 
 HolisticMotion separates model preparation, read-only numerical queries and
-request-local search state. The C++ core remains usable without collision or
-Python. Python adds input conversion, runtime loading and optional numerical
+request-local search state. The C++ model and core remain usable without collision
+or Python. Python adds input conversion, runtime loading and optional numerical
 toolkits. Applications supply robot assets and decide how models, callbacks and
 workers are owned.
 
-![Dependency direction from Python interfaces to separate native components and feature dependencies](../assets/architecture.svg)
+![Dependencies from Python interfaces to model, core and collision components and feature dependencies](../assets/architecture.svg)
 
-Arrows point toward dependencies. Dashed arrows mark optional feature loading;
-the C++ libraries also provide direct consumer entry points.
+Arrows point toward dependencies. Edge labels distinguish public and private
+C++ dependencies; dashed arrows indicate optional features or on-demand loading.
+All three C++ components also provide direct consumer entry points.
 
 ## Dependency direction
 
 | Layer | Responsibility | Dependency boundary |
 |---|---|---|
-| C++ core | Scalar robot chains, manifolds, FK/IK, joint-space planning and trajectories | Eigen, urdfdom, fmt and spdlog; optional CUDA backend |
-| C++ collision | Full-model configuration mappings, mesh and sphere queries | Eigen in the public interface; Pinocchio, Coal and parsing dependencies in the implementation |
+| C++ model | Parsed robot tree, scalar coordinates and visual metadata | Public Eigen; private fmt and urdfdom |
+| C++ core | Robot default chain/solver, manifolds, FK/IK, joint-space planning and trajectories | Public model and fmt; private spdlog; optional public CUDA backend |
+| C++ collision | Full-model configuration mappings, mesh and sphere queries | Always shared; public Eigen; private Pinocchio, Coal and urdfdom |
 | Core Python extension | Native value conversion, solver and planning APIs | C++ core and pybind11 |
-| Collision Python extension | Collision types and collision-aware planning factories | Both native components; loaded on first collision use |
+| Collision Python extension | Collision types and collision-aware planning factories | C++ core and collision libraries; loaded on first collision use |
 | Python toolkits | Retargeting, array trajectory algorithms and optional visualization adapters | Feature-specific dependencies loaded when needed; a toolkit-only installation can omit native libraries |
 
+`RobotModel` loads model data without selecting a chain or constructing IK.
+`Robot` combines that model with the selected default chain and solver.
 The collision library does not link the core. Its planning factories live in
 the collision Python extension, where both sets of native types are available.
-This keeps ordinary core consumers independent of the collision dependency
-graph. CMake component consumers are tested with unrelated dependency discovery
+This keeps core-only consumers independent of collision SDK discovery.
+CMake component consumers are tested with unrelated dependency discovery
 explicitly disabled.
 
 Core and collision Python extensions verify a native build identity before
@@ -43,12 +47,19 @@ Pinocchio.
 
 | Component | Persistent state | Per-query state |
 |---|---|---|
+| `RobotModel` | Parsed tree, scalar coordinates and visual metadata | Tree/path queries without solver construction |
+| `Robot` | Composed model, selected default chain and solver | Compatibility queries and explicit chain solver creation |
 | SRS kinematics | Prepared canonical geometry, model, limits and TCP configuration | Candidate sets, refinement data and caller-owned results |
 | Numerical and FEP kinematics | Model and solver configuration | Iteration buffers, batches and independent results |
 | `JointSpace` | Shared immutable limits, weights, names and topology | Builders publish a new snapshot; reads and copies do not mutate existing data |
 | Sampling planner and path optimizer | Joint-space snapshot and callback wrappers | Owned endpoints/path, options, callback copies and search workspace |
 | CUDA batch backend | Backend availability and compiled kernels | RAII device buffers and request-local transfers |
-| Collision and retargeting models | Prepared topology plus mutable FK/distance/optimization workspace | Queries update that workspace; use one model per worker |
+| Collision models | Prepared geometry and mutable FK/distance workspace | Queries update that workspace; use one model per worker |
+| Retargeting sessions | Model, mode plans, warm start and per-mode workspace storage | Concrete algorithms build and use their numerical workspaces; one session per worker |
+
+DLS and Pink solvers share model, mode and warm-start session operations rather
+than inheriting one another's algorithms. Each creates its own numerical
+workspaces; Curobo reuses Pink's optimizer and adds multi-seed scheduling.
 
 SRS preparation runs when the model changes, rather than repeating canonical
 geometry discovery inside each solve. Scalar built-in FK traverses directly to

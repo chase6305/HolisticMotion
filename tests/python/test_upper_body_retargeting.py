@@ -103,6 +103,40 @@ def joint_values(solver, q, name):
 @pytest.mark.parametrize(
     "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
 )
+def test_task_solvers_work_independently_of_dls(tmp_path, monkeypatch, solver_type):
+    def unavailable(*args, **kwargs):
+        raise AssertionError("DLS algorithm is unavailable")
+
+    monkeypatch.setattr(PinocchioRetargetingSolver, "__init__", unavailable)
+    monkeypatch.setattr(PinocchioRetargetingSolver, "solve", unavailable)
+    monkeypatch.setattr(PinocchioRetargetingSolver, "_solve_workspace", unavailable)
+    solver = make_solver(tmp_path, solver_type, continuous=True)
+    solver.prepare("dual_arm")
+    initial = configuration(solver, waist=0.2)
+    desired = configuration(solver, waist=0.2, left=0.15, right=-0.1)
+    targets = poses(solver, desired)
+    solver.reset(initial)
+
+    result = solver.solve(targets)
+
+    assert result.success
+    np.testing.assert_array_equal(
+        joint_values(solver, result.configuration, "waist"),
+        joint_values(solver, initial, "waist"),
+    )
+    np.testing.assert_array_equal(solver._last_q, result.configuration)
+    np.testing.assert_array_equal(initial, configuration(solver, waist=0.2))
+    legacy_q, success, *_ = solver.solve_ik(
+        left_wrist=targets["left_hand"], right_wrist=targets["right_hand"]
+    )
+    assert success
+    legacy_q[:] = 0.0
+    np.testing.assert_array_equal(solver._last_q, result.configuration)
+
+
+@pytest.mark.parametrize(
+    "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
+)
 @pytest.mark.parametrize("continuous", [False, True])
 @pytest.mark.parametrize("method", ["step", "solve"])
 def test_zero_velocity_torso_stays_fixed_during_arm_retargeting(
@@ -811,14 +845,14 @@ def test_interrupted_prepare_restores_mode(
     tmp_path, monkeypatch, solver_type, error_type
 ):
     solver = make_solver(tmp_path, solver_type)
-    original = solver._solve_workspace
+    original = solver._prepare_workspace
 
     def interrupt_workspace(plan):
         original(plan)
         raise error_type("workspace interrupted")
 
     with monkeypatch.context() as patch:
-        patch.setattr(solver, "_solve_workspace", interrupt_workspace)
+        patch.setattr(solver, "_prepare_workspace", interrupt_workspace)
         with pytest.raises(error_type, match="workspace interrupted"):
             solver.prepare("torso")
     assert solver.mode is RetargetingMode.DUAL_ARM

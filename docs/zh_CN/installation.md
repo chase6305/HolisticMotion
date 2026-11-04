@@ -251,33 +251,44 @@ wheel 组合中：Linux 安装探测能找到 Pinocchio 3.8 wheel，但无法解
 
 ## C++ 目标边界
 
-使用方只链接实际需要的组件。运动学、轨迹和规划 API 使用
-`HolisticMotion::holistic_motion`；碰撞查询使用独立的
-`HolisticMotion::collision`，后者依赖 Pinocchio 和 Coal：
+安装后的 SDK 提供三个组件。Conan 复用这份原生 CMake 配置，两种安装方式使用
+相同的组件选择和目标名：
+
+| 组件 | 目标 | 职责 |
+|---|---|---|
+| `model` | `HolisticMotion::model` | URDF 树、坐标与视觉元数据 |
+| `core` | `HolisticMotion::holistic_motion` | Robot 兼容入口、运动学、轨迹和规划 |
+| `collision` | `HolisticMotion::collision` | 可选的碰撞查询 |
 
 ```cmake
-find_package(HolisticMotion REQUIRED CONFIG)
-target_link_libraries(my_motion_app PRIVATE HolisticMotion::holistic_motion)
-target_link_libraries(my_collision_app PRIVATE HolisticMotion::collision)
-```
+find_package(HolisticMotion REQUIRED CONFIG COMPONENTS model)
+target_link_libraries(model_reader PRIVATE HolisticMotion::model)
 
-CMake 安装目录和 Conan `CMakeDeps` 使用完全相同的目标名。开启 CUDA 时，只有
-核心目标会传递 `CUDA::cudart`；碰撞组件仍然独立于 CUDA 和核心库。
-
-已安装的 CMake SDK 支持显式选择组件；不指定组件时保持加载全部已构建组件的行为。
-选择 `core` 不查找 Pinocchio/Coal，选择 `collision` 不加载核心库的 fmt/spdlog 依赖：
-
-```cmake
-find_package(HolisticMotion REQUIRED CONFIG COMPONENTS core)
-target_link_libraries(my_motion_app PRIVATE HolisticMotion::holistic_motion)
-
-# 需要两个组件时：COMPONENTS core collision
-# 仅使用碰撞时：COMPONENTS collision
+# 运动 API：COMPONENTS core
+# 运动与碰撞：COMPONENTS core collision
+# 仅使用碰撞：COMPONENTS collision
 # 可选探测：COMPONENTS core OPTIONAL_COMPONENTS collision
 ```
 
-两个组件均支持可选探测，通过 `HolisticMotion_core_FOUND` 或
-`HolisticMotion_collision_FOUND` 检查是否可用。缺少可选核心依赖（包括 CUDA）
-不影响仅使用碰撞组件；请求未构建的必需
-组件或未知组件时会给出明确诊断。Conan 的完整依赖图仍由包选项决定，精简 Conan
-安装应使用 `with_collision=False`。
+模型目标只公开依赖 Eigen；fmt 和 URDF 解析器是私有依赖。静态模型消费者仍需
+发现它们的 SDK，共享模型消费者则不需要。核心链接模型组件；只有启用 CUDA 的
+核心目标会传递 `CUDA::cudart`。
+
+核心为日志 API 公开依赖 fmt；spdlog 是私有依赖。共享核心消费者无需发现
+spdlog SDK，静态核心消费者仍需解析它的库。
+
+碰撞配套库始终为共享库，即使模型和核心采用静态构建。它只公开 Eigen，消费者
+无需发现 Pinocchio/Coal SDK、核心或 CUDA。链接和运行消费者时，上文的运行环境
+要求仍然适用。
+
+公开运动学头文件不再包含 Logging 或 fmt。使用日志 API 时，需要显式包含
+`holistic_motion/utility/Logging.h`。
+
+不指定组件时加载全部已构建组件。三个组件均支持可选探测，通过
+`HolisticMotion_model_FOUND`、`HolisticMotion_core_FOUND` 或
+`HolisticMotion_collision_FOUND` 检查是否可用。缺少可选核心依赖不影响仅使用碰撞组件。
+旧的 `holistic-motion::holistic-motion` 聚合目标继续保留，汇集已发现的组件。
+缺失或未知的必需组件会导致发现失败。
+
+组件选择控制 SDK 发现和链接；Conan 的完整依赖图仍由包选项决定。
+使用 `with_collision=False` 可从该依赖图中移除碰撞后端。

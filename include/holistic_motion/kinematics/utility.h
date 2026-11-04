@@ -1,12 +1,13 @@
 #pragma once
+#include <array>
+#include <cmath>
 #include <cstddef>
-#include <numeric>
-#include <set>
+#include <string>
+#include <vector>
 
 #include "holistic_motion/kinematics/JointFilterManager.h"
 #include "holistic_motion/kinematics/RobotConfigManager.h"
 #include "holistic_motion/kinematics/Types.h"
-#include "holistic_motion/utility/Logging.h"
 
 namespace holistic_motion {
 namespace robotics {
@@ -42,31 +43,14 @@ struct OPWParameters {
 
     std::array<double, 6> offsets{};  ///< joint offsets in rad
     std::array<signed char, 6>
-            rotation_directions{};  ///< rotation direction (about z-axis), 1
-                                    ///< for clockwise, and -1 for
-                                    ///< counterclockwise
+            rotation_directions{};  ///< Joint-coordinate signs: +1 preserves,
+                                    ///< -1 reverses the analytic angle direction.
 
     /// \brief report self
     ///
-    /// \param OPWParameters
+    /// \param params Parameters to report
     /// \return std::string
-    friend std::string _report(const OPWParameters& params) {
-        std::string res;
-        res += "\t OPWParameters: \n";
-        res += fmt::format(
-                "\t - [ a1 = {}, a2 = {}, b = {}, c1 = {}, c2 = "
-                "{}, c3 = {}, c4 = {} ]\n"
-                "\t - T_b_ob : SE3d({})\n"
-                "\t - T_oe_e : SE3d({})\n"
-                "\t - offsets: ({})\n"
-                "\t - rotation_directions: ({})\n",
-                params.a1, params.a2, params.b, params.c1, params.c2, params.c3,
-                params.c4, fmt::join(params.T_b_ob.Coeffs(), " , "),
-                fmt::join(params.T_oe_e.Coeffs(), " , "),
-                fmt::join(params.offsets, " , "),
-                fmt::join(params.rotation_directions, " , "));
-        return res;
-    };
+    friend std::string _report(const OPWParameters &params);
 };
 
 struct URParameters {
@@ -82,31 +66,14 @@ struct URParameters {
 
     std::array<double, 6> offsets{};  ///< joint offsets in rad
     std::array<signed char, 6>
-            rotation_directions{};  ///< rotation direction (about z-axis), 1
-                                    ///< for clockwise, and -1 for
-                                    ///< counterclockwise
+            rotation_directions{};  ///< Joint-coordinate signs: +1 preserves,
+                                    ///< -1 reverses the analytic angle direction.
 
     /// \brief report self
     ///
-    /// \param URParameters
+    /// \param params Parameters to report
     /// \return std::string
-    friend std::string _report(const URParameters& params) {
-        std::string res;
-        res += "\t URParameters: \n";
-        res += fmt::format(
-                "\t - [ d1 = {}, a2 = {}, a3 = {}, d4 = {}, a5 = "
-                "{}, d6 = {} ]\n"
-                "\t - T_b_ob : SE3d({})\n"
-                "\t - T_oe_e : SE3d({})\n"
-                "\t - offsets: ({})\n"
-                "\t - rotation_directions: ({})\n",
-                params.d1, params.a2, params.a3, params.d4, params.d5,
-                params.d6, fmt::join(params.T_b_ob.Coeffs(), " , "),
-                fmt::join(params.T_oe_e.Coeffs(), " , "),
-                fmt::join(params.offsets, " , "),
-                fmt::join(params.rotation_directions, " , "));
-        return res;
-    };
+    friend std::string _report(const URParameters &params);
 };
 
 /// \brief FEP available through papers: "Analytical Inverse Kinematic
@@ -123,118 +90,26 @@ struct FEPParameters {
 };
 
 struct FrankaParameters : FEPParameters {
-    FrankaParameters() {
-        d1 = 0.3330;
-        d3 = 0.3160;
-        d5 = 0.3840;
-        // const double d7e = 0.2104;  // use Hand Data (0.107 + 0.1034)
-        d7e = 0.107;
-        a4 = 0.0825;  // a4 = abs(-a5)
-        a5 = 0.0825;
-        a7 = 0.0880;
-
-        LL24 = 0.10666225;     // a4^2 + d3^2
-        LL46 = 0.15426225;     // a4^2 + d5^2
-        L24 = 0.326591870689;  // sqrt(LL24)
-        L46 = 0.392762332715;  // sqrt(LL46)
-
-        thetaH46 = 1.35916951803;   // atan(d5/a4);
-        theta342 = 1.31542071191;   // atan(d3/a4);
-        theta46H = 0.211626808766;  // acot(d5/a4); np.pi/2 - atan(d5/a4)
-
-        q_min = {{-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175,
-                  -2.8973}};
-        q_max = {{2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973}};
-
-        q7_start = q_min[6];
-        q7_end = q_max[6];
-
-        holistic_motion::utility::LogDebug(
-                "\nLoad Franka params:\n\t- [ d1 = {}, d3 = {}, d5 = {}, d7e = "
-                "{}, a4 = {}, a7 = {}]"
-                "\t - [ LL24 = {}, LL46 = {}, L24 = {}, L46 = {}]\n"
-                "\t - [ thetaH46 = {}, theta342 = {}, theta46H = {}]\n",
-                d1, d3, d5, d7e, a4, a7, LL24, LL46, L24, L46, thetaH46,
-                theta342, theta46H);
-    }
+    FrankaParameters();
 
     /// \brief report self
     ///
-    /// \param FrankaParameters
+    /// \param params Parameters to report
     /// \return std::string
-    friend std::string _report(const FrankaParameters& params) {
-        std::string res;
-        res += "\t FrankaParameters: \n";
-        res += fmt::format(
-                "\t - [ d1 = {}, d3 = {}, d5 = {}, d7e = {}, a4 = {}, a7 = "
-                "{}]\n"
-                "\t - [ LL24 = {}, LL46 = {}, L24 = {}, L46 = {}]\n"
-                "\t - [ thetaH46 = {}, theta342 = {}, theta46H = {}]\n",
-                params.d1, params.d3, params.d5, params.d7e, params.a4,
-                params.a7, params.LL24, params.LL46, params.L24, params.L46,
-                params.thetaH46, params.theta342, params.theta46H);
-        return res;
-    };
+    friend std::string _report(const FrankaParameters &params);
 };
 
 // TODO: read from robot urdf params, extend to other type robot
 struct AgileDiana7Parameters : FEPParameters {
-    AgileDiana7Parameters() {
-        d1 = 0.2856;
-        d3 = 0.4586;
-        d5 = 0.4554;
-        d7e = 0.1169;
-        a4 = 0.0650;  // a4 = abs(-a5 - a6)
-        a5 = 0.0528;
-        a6 = 0.0122;
-        a7 = 0.0870;
-
-        LL24 = 0.21453896;         // a4^2 + d3^2
-        LL46 = 0.21161416;         // a4^2 + d5^2
-        L24 = 0.4631835057512303;  // sqrt(LL24)
-        L46 = 0.4600153910468649;  // sqrt(LL46)
-
-        thetaH46 = 1.4290222431689619;  // atan(d5/a4);
-        theta342 = 1.429998441264436;   // atan(d3/a4);
-        theta46H = 0.1417740836259348;  // atan(a4/d5)
-
-        q_min = {{-3.12413, -1.57079, -3.12413, 0, -3.12413, -3.12413,
-                  -3.12413}};
-        q_max = {{3.12413, 1.57079, 3.12413, 3.05432, 3.12413, 3.12413,
-                  3.12413}};
-
-        q7_start = q_min[6];
-        q7_end = q_max[6];
-
-        holistic_motion::utility::LogDebug(
-                "\nLoad AgileDiana7 params:\n\t- [ d1 = {}, d3 = {}, d5 = {}, "
-                "d7e = "
-                "{}, a4 = {}, a7 = {}]\n"
-                "\t - [ LL24 = {}, LL46 = {}, L24 = {}, L46 = {}]\n"
-                "\t - [ thetaH46 = {}, theta342 = {}, theta46H = {}]\n",
-                d1, d3, d5, d7e, a4, a7, LL24, LL46, L24, L46, thetaH46,
-                theta342, theta46H);
-    }
+    AgileDiana7Parameters();
 
     double a6;
 
     /// \brief report self
     ///
-    /// \param AgileDiana7Parameters
+    /// \param params Parameters to report
     /// \return std::string
-    friend std::string _report(const AgileDiana7Parameters& params) {
-        std::string res;
-        res += "\t AgileDiana7Parameters: \n";
-        res += fmt::format(
-                "\t - [ d1 = {}, d3 = {}, d5 = {}, d7e = {}, a4 = {}, a7 = "
-                "{}]\n"
-                "\t - [ LL24 = {}, LL46 = {}, L24 = {}, L46 = {}]\n"
-                "\t - [ thetaH46 = {}, theta342 = {}, theta46H = {}]\n",
-                params.d1, params.d3, params.d5, params.d7e, params.a4,
-                params.a7, params.LL24, params.LL46, params.L24, params.L46,
-                params.thetaH46, params.theta342, params.theta46H);
-        return res;
-    };
+    friend std::string _report(const AgileDiana7Parameters &params);
 };
 
 struct IkRtn {
@@ -331,8 +206,10 @@ struct IkRtn {
     /// \param joint_nodes Vector of joint nodes
     /// \param robot_config Robot configuration manager with constraints
     /// \return true if valid solutions remain after filtering
-    /// Six-DoF filtering uses scalar-axis FK for its first four nodes. Invalid
-    /// prefix geometry or candidate coordinates clear the solution outputs.
+    /// Six-DoF elbow filtering uses scalar-axis FK for its first four nodes.
+    /// Base/wrist constraints and other dimensions are unsupported and clear
+    /// the solutions rather than silently ignoring the requested constraint.
+    /// Invalid geometry or candidates clear the outputs; clears joint_states.
     bool LimitRobotConfig(const std::vector<JointNode>& joint_nodes,
                           const RobotConfigManager& robot_config);
 
@@ -356,27 +233,7 @@ struct IkRtn {
     ///
     /// \param report IkRtn object to report
     /// \return Formatted string containing object state information
-    friend std::string _report(const IkRtn& report) {
-        std::string res;
-        res += "\t IkRtn: \n";
-        res += fmt::format(
-                "\t - success: {0} \n"
-                "\t - ik number: {1}\n"
-                "\t - ik joints:\n"
-                "\t   [\n",
-                report.success, report.ik_number);
-        for (int i = 0; i < report.ik_number; ++i) {
-            if (i == (report.ik_number - 1))
-                res += fmt::format("\t\t[{0}]\n",
-                                   fmt::join(report.ik_joints[i], ","));
-            else {
-                res += fmt::format("\t\t[{0}],\n",
-                                   fmt::join(report.ik_joints[i], ","));
-            }
-        }
-        res += fmt::format("\t   ]");
-        return res;
-    };
+    friend std::string _report(const IkRtn &report);
 };
 
 }  // namespace robotics

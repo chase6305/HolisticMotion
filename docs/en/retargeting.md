@@ -19,6 +19,15 @@ in separate processes; `scripts/run-python-toolkit.sh` selects toolkit mode for
 the Python worker. See [Installation](installation.md) for runtime
 combinations and diagnostics.
 
+`PinocchioRetargetingSolver` and `PinkRetargetingSolver` implement DLS and
+bounded task-space optimization respectively. They share model, mode indexing,
+configuration validation and warm-start operations. Pink no longer inherits the
+concrete DLS algorithm or owns its workspaces; constructor options and
+`prepare/reset/solve_ik` calls retain their behavior. `CuroboRetargetingSolver`
+continues to reuse Pink's single-seed optimizer and adds multi-seed scheduling.
+Callers using `isinstance(solver, PinocchioRetargetingSolver)` to identify every
+solver must check their supported concrete algorithm types or required operations.
+
 ```python
 from holistic_motion.kit.retargeting import (
     CenterOfMassTask,
@@ -297,6 +306,8 @@ snapshots of caller-provided arrays and sequences. Copy
 UI or controller code from modifying solver history through a returned result.
 Target matrices must be proper SE(3) transforms with a homogeneous last row
 and a right-handed orthonormal rotation.
+Pink scalar timing, weight and tolerance options also require real values,
+including NumPy scalars and values with a zero imaginary component.
 Target poses must contain real values; complex input raises `TypeError` before
 conversion.
 The same rule applies to gains, costs, weights, configurations, support vertices,

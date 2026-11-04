@@ -299,3 +299,16 @@ def test_fep_continuous_tracker_preserves_branch_and_precision(tmp_path):
         assert result.angle_error < 1e-5
         assert np.max(np.abs(result.joints - previous)) < 0.05
         previous = result.joints
+
+
+@pytest.mark.parametrize("method_value", [-1, 99])
+def test_fep_rejects_unknown_solve_method(tmp_path, method_value):
+    import holistic_motion as hm
+
+    path = tmp_path / "unknown_method.urdf"
+    path.write_text(_seven_axis_urdf(), encoding="utf-8")
+    solver = hm.Robot(str(path)).create_fep_kinematics("link0", "link7")
+    seed = np.array([0.2, -0.35, 0.25, -0.6, 0.3, 0.4, -0.2])
+    target = solver.forward(seed)
+    with pytest.raises(ValueError):
+        solver.solve(target, seed, hm.FEPSolveMethod(method_value))

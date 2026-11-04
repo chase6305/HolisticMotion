@@ -31,7 +31,7 @@ struct traits<Rn<_Scalar, _N>> {
     using DataType = Eigen::Matrix<Scalar, RepSize, 1>;
 
     using Jacobian = Eigen::Matrix<Scalar, DoF, DoF>;
-    using Transformation = Eigen::Matrix<Scalar, DoF, DoF>;
+    using Transformation = Eigen::Matrix<Scalar, DoF + 1, DoF + 1>;
     using Vector = Eigen::Matrix<Scalar, DoF, 1>;
 };
 

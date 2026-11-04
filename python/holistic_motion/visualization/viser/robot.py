@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from math import cos, sin
+
 import numpy as np
 
 from holistic_motion import JointType
-from .scene import _load_trimesh
 
 
 def _joint_motion(joint, value: float) -> np.ndarray:
@@ -14,8 +15,13 @@ def _joint_motion(joint, value: float) -> np.ndarray:
     if joint.joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
         length = np.linalg.norm(axis)
         if length > 0.0:
-            trimesh = _load_trimesh()
-            result = trimesh.transformations.rotation_matrix(value, axis / length)
+            axis = axis / length
+            x, y, z = axis
+            cosine, sine = cos(value), sin(value)
+            skew = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+            result[:3, :3] = (
+                cosine * np.eye(3) + (1.0 - cosine) * np.outer(axis, axis) + sine * skew
+            )
     elif joint.joint_type == JointType.PRISMATIC:
         result[:3, 3] = axis * value
     return result

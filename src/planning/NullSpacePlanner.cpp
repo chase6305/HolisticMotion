@@ -34,27 +34,29 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
     // Only the direction matters: normalize once before projection so very
     // small preferences do not disappear at the null-space rank threshold.
     const Eigen::VectorXd normalized_direction = preferred_direction / direction_scale;
-    Eigen::VectorXd current = start;
+    Eigen::VectorXd initial = start;
     // Both inputs may refer to rows in the previous output path.
     path.clear();
 
     const auto &nodes = kinematics_->GetJointNodesView();
-    for (Eigen::Index i = 0; i < current.size(); ++i) {
+    for (Eigen::Index i = 0; i < initial.size(); ++i) {
         const auto &node = nodes[static_cast<std::size_t>(i)];
-        if (current[i] < std::max(node.lower_limit, node.lower_limit_set) ||
-            current[i] > std::min(node.upper_limit, node.upper_limit_set))
+        if (initial[i] < std::max(node.lower_limit, node.lower_limit_set) ||
+            initial[i] > std::min(node.upper_limit, node.upper_limit_set))
             return false;
     }
 
     SE3d target;
-    if (!kinematics_->GetFK(current, target))
+    if (!kinematics_->GetFK(initial, target))
         return false;
     std::vector<Eigen::VectorXd> planned_path;
     planned_path.reserve(static_cast<std::size_t>(steps) + 1);
-    planned_path.push_back(current);
+    planned_path.push_back(std::move(initial));
 
+    Eigen::VectorXd velocity, seed;
+    IkRtn solutions;
     for (int i = 0; i < steps; ++i) {
-        Eigen::VectorXd velocity;
+        const auto &current = planned_path.back();
         if (!kinematics_->GetNullSpaceVelocity(current, normalized_direction,
                                                velocity) ||
             velocity.stableNorm() < 1e-10) {
@@ -64,10 +66,9 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
         // finite directions and silently turn the planned step into zero.
         velocity /= velocity.cwiseAbs().maxCoeff();
         velocity.normalize();
-        Eigen::VectorXd seed = current + step_size * velocity;
+        seed = current + step_size * velocity;
         if ((seed.array() == current.array()).all())
             return false;
-        IkRtn solutions;
         double distance = 0.0;
         if (!kinematics_->GetNearestIK(target, solutions, seed, distance) ||
             solutions.ik_joints.empty()) {
@@ -76,8 +77,7 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
         const auto &next = solutions.ik_joints.front();
         if ((next.array() == current.array()).all())
             return false;
-        current = next;
-        planned_path.push_back(current);
+        planned_path.push_back(next);
     }
     path = std::move(planned_path);
     return true;

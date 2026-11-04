@@ -263,18 +263,23 @@ int main() {
     SRSKinematics incompatible(std::vector<JointNode>(1));
     if (incompatible.IsCompatible()) return Fail(__LINE__);
 
+    OPWParameters opw_parameters;
+    opw_parameters.c2 = opw_parameters.c3 = 1.0;
+    opw_parameters.rotation_directions.fill(1);
+    URParameters ur_parameters;
+    ur_parameters.a2 = ur_parameters.a3 = 1.0;
+    ur_parameters.rotation_directions.fill(1);
     for (int count : {0, 1, 5}) {
         const std::vector<JointNode> short_nodes(count, nodes.front());
-        if (!Rejects(
-                [&] { OPWKinematics opw(OPWParameters{}, short_nodes); }) ||
-            !Rejects([&] { URKinematics ur(URParameters{}, short_nodes); }))
+        if (!Rejects([&] { OPWKinematics opw(opw_parameters, short_nodes); }) ||
+            !Rejects([&] { URKinematics ur(ur_parameters, short_nodes); }))
             return Fail(__LINE__);
     }
     std::vector<JointNode> analytic_nodes(6, nodes.front());
     for (auto& node : analytic_nodes) node.joint_type = JointType::REVOLUTE;
     analytic_nodes.push_back(nodes.back());
-    OPWKinematics opw(OPWParameters{}, analytic_nodes);
-    URKinematics ur(URParameters{}, analytic_nodes);
+    OPWKinematics opw(opw_parameters, analytic_nodes);
+    URKinematics ur(ur_parameters, analytic_nodes);
     std::vector<SE3d> poses;
     if (!opw.GetAllFK(Eigen::VectorXd::Zero(6), poses) || poses.size() != 8 ||
         !ur.GetAllFK(Eigen::VectorXd::Zero(6), poses) || poses.size() != 8)
@@ -345,6 +350,41 @@ int main() {
                 std::vector<JointNode>(oblique_nodes.begin(),
                                        oblique_nodes.begin() + count), elbow_up) ||
             !oblique_solutions.ik_joints.empty())
+            return Fail(__LINE__);
+    }
+    // Removing multiple candidates must preserve order without invalidating
+    // traversal. Down selects the complement of the geometric up predicate.
+    std::vector<JointNode> sliding_nodes(
+        6, JointNode(SE3d(), Eigen::Vector3d::UnitZ(), JointType::PRISMATIC, -3, 3));
+    Eigen::VectorXd down = Eigen::VectorXd::Zero(6);
+    down[2] = -1;
+    down[3] = 2;
+    const Eigen::VectorXd up = -down;
+    for (bool select_up : {true, false}) {
+        RobotConfigManager config;
+        config.SetElbowUp(select_up);
+        IkRtn candidates;
+        candidates.ik_joints = {down, down, up, down, up};
+        candidates.joint_states = Eigen::MatrixXd::Ones(5, 6);
+        if (!candidates.LimitRobotConfig(sliding_nodes, config) ||
+            candidates.ik_number != (select_up ? 2 : 3) || candidates.joint_states.size() != 0)
+            return Fail(__LINE__);
+        for (const auto &candidate : candidates.ik_joints)
+            if (candidate != (select_up ? up : down))
+                return Fail(__LINE__);
+    }
+    for (int kind = 0; kind < 3; ++kind) {
+        RobotConfigManager unsupported;
+        if (kind == 0)
+            unsupported.SetBaseFront(true);
+        if (kind == 1)
+            unsupported.SetWristFlip(false);
+        if (kind == 2)
+            unsupported.SetElbowUp(true);
+        IkRtn candidates;
+        candidates.PushBack(kind == 2 ? Eigen::VectorXd::Zero(7).eval() : up);
+        if (candidates.LimitRobotConfig(sliding_nodes, unsupported) ||
+            !candidates.ik_joints.empty() || candidates.success)
             return Fail(__LINE__);
     }
     return 0;

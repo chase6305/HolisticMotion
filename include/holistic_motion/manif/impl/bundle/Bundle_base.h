@@ -112,6 +112,9 @@ public:
      */
     Transformation GetTransform() const;
 
+    /// Normalize the rotation components of each element.
+    void Normalize() { normalize_impl(internal::make_intseq_t<BundleSize>{}); }
+
     /**
      * @brief Access Bundle element as Map
      * @tparam _Idx element index
@@ -127,6 +130,14 @@ public:
     MapConstElement<_Idx> element() const;
 
 protected:
+  template <int... Indices> void normalize_impl(internal::intseq<Indices...>) {
+      auto normalize = [](auto component) {
+          if constexpr (internal::has_normalize<decltype(component)>::value)
+              component.Normalize();
+      };
+      (normalize(element<Indices>()), ...);
+  }
+
     template <int... _Idx>
     LieGroup inverse_impl(OptJacobianRef, internal::intseq<_Idx...>) const;
 
@@ -164,14 +175,12 @@ template <int... _Idx>
 typename BundleBase<_Derived>::Transformation
 BundleBase<_Derived>::transform_impl(internal::intseq<_Idx...>) const {
     Transformation ret = Transformation::Zero();
-    // cxx11 "fold expression"
-    auto l = {((ret.template element<Element<_Idx>::Dim + 1,
-                                     Element<_Idx>::Dim + 1>(
-                        std::get<_Idx>(internal::traits<_Derived>::TraIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::TraIdx)) =
-                        element<_Idx>().GetTransform),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(ret.template block<Element<_Idx>::Transformation::RowsAtCompileTime,
+                                          Element<_Idx>::Transformation::RowsAtCompileTime>(
+                           std::get<_Idx>(internal::traits<_Derived>::TraIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::TraIdx)) =
+                           element<_Idx>().GetTransform()),
+     ...);
     return ret;
 }
 
@@ -299,41 +308,23 @@ typename BundleBase<_Derived>::Vector BundleBase<_Derived>::act_impl(
         tl::optional<Eigen::Ref<Eigen::Matrix<Scalar, Dim, Dim>>> J_vout_v,
         internal::intseq<_Idx...>) const {
     Vector ret;
-    // cxx11 "fold expression"
-    auto l = {(
-            (ret.template segment<Element<_Idx>::Dim>(
-                     std::get<_Idx>(internal::traits<_Derived>::DimIdx)) =
-                     element<_Idx>().Act(
-                             v.template segment<
-                                     Element<_Idx>::Dim>(std::get<_Idx>(
-                                     internal::traits<_Derived>::DimIdx)),
-                             J_vout_m ? J_vout_m->template block<
-                                                Element<_Idx>::Dim,
-                                                Element<_Idx>::DoF>(
-                                                std::get<_Idx>(internal::traits<
-                                                               _Derived>::
-                                                                       DimIdx),
-                                                std::get<_Idx>(internal::traits<
-                                                               _Derived>::
-                                                                       DoFIdx))
-                                      : tl::optional<Eigen::Ref<Eigen::Matrix<
-                                                Scalar, Element<_Idx>::Dim,
-                                                Element<_Idx>::DoF>>>{},
-                             J_vout_v
-                                     ? J_vout_v->template block<
-                                               Element<_Idx>::Dim,
-                                               Element<_Idx>::Dim>(
-                                               std::get<
-                                                       _Idx>(internal::traits<
-                                                             _Derived>::DimIdx),
-                                               std::get<
-                                                       _Idx>(internal::traits<
-                                                             _Derived>::DimIdx))
-                                     : tl::optional<Eigen::Ref<Eigen::Matrix<
-                                               Scalar, Element<_Idx>::Dim,
-                                               Element<_Idx>::Dim>>>{})),
-            0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(
+         ret.template segment<Element<_Idx>::Dim>(
+             std::get<_Idx>(internal::traits<_Derived>::DimIdx)) =
+             element<_Idx>().Act(
+                 v.template segment<Element<_Idx>::Dim>(
+                     std::get<_Idx>(internal::traits<_Derived>::DimIdx)),
+                 J_vout_m ? J_vout_m->template block<Element<_Idx>::Dim, Element<_Idx>::DoF>(
+                                std::get<_Idx>(internal::traits<_Derived>::DimIdx),
+                                std::get<_Idx>(internal::traits<_Derived>::DoFIdx))
+                          : tl::optional<Eigen::Ref<
+                                Eigen::Matrix<Scalar, Element<_Idx>::Dim, Element<_Idx>::DoF>>>{},
+                 J_vout_v ? J_vout_v->template block<Element<_Idx>::Dim, Element<_Idx>::Dim>(
+                                std::get<_Idx>(internal::traits<_Derived>::DimIdx),
+                                std::get<_Idx>(internal::traits<_Derived>::DimIdx))
+                          : tl::optional<Eigen::Ref<
+                                Eigen::Matrix<Scalar, Element<_Idx>::Dim, Element<_Idx>::Dim>>>{})),
+     ...);
     return ret;
 }
 
@@ -347,13 +338,11 @@ template <int... _Idx>
 typename BundleBase<_Derived>::Jacobian BundleBase<_Derived>::adj_impl(
         internal::intseq<_Idx...>) const {
     Jacobian adj = Jacobian::Zero();
-    // cxx11 "fold expression"
-    auto l = {((adj.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
-                        std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
-                        element<_Idx>().Adj()),
-               0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(adj.template block<Element<_Idx>::DoF, Element<_Idx>::DoF>(
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx),
+                           std::get<_Idx>(internal::traits<_Derived>::DoFIdx)) =
+                           element<_Idx>().Adj()),
+     ...);
     return adj;
 }
 
@@ -387,7 +376,7 @@ struct RandomEvaluatorImpl<BundleBase<Derived>> {
     template <int... _Idx>
     static void run(BundleBase<Derived> &m, internal::intseq<_Idx...>) {
         m = typename BundleBase<Derived>::LieGroup(
-                BundleBase<Derived>::template Element<_Idx>::Random()...);
+            BundleBase<Derived>::template Element<_Idx>::RandomHelper()...);
     }
 };
 
