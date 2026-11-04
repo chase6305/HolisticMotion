@@ -10,18 +10,19 @@ namespace {
 // after the ordinary collapsed-ramp repairs fail. Their shared velocity is
 // free; both requested endpoint velocities and positions remain fixed.
 bool FitRoundedClockProfile(double q0, double q1, double v0, double v1,
-                            double velocity_cap, double acceleration_cap,
-                            double start, double ta, double tc, double td,
-                            int segment, std::list<TrajectorySeg> &output) {
+                            double velocity_cap, double acceleration_cap, double start,
+                            double initial_ramp_duration, double cruise_duration,
+                            double final_ramp_duration, int segment,
+                            std::list<TrajectorySeg> &output) {
     const double length = q1 - q0;
-    const double ramp_end = start + ta;
-    const double cruise_end = ramp_end + tc;
-    const double planned_end = cruise_end + td;
-    const bool first_collapsed = ta > 0.0 && ramp_end == start;
-    const bool last_collapsed = td > 0.0 && planned_end == cruise_end;
-    if ((!first_collapsed && !last_collapsed) || tc <= 0.0 ||
-        !std::isfinite(length) || length <= 0.0 ||
-        !std::isfinite(planned_end) || planned_end <= start)
+    const double ramp_end = start + initial_ramp_duration;
+    const double cruise_end = ramp_end + cruise_duration;
+    const double planned_end = cruise_end + final_ramp_duration;
+    const bool first_collapsed = initial_ramp_duration > 0.0 && ramp_end == start;
+    const bool last_collapsed = final_ramp_duration > 0.0 && planned_end == cruise_end;
+    if ((!first_collapsed && !last_collapsed) || cruise_duration <= 0.0 ||
+        !std::isfinite(length) || length <= 0.0 || !std::isfinite(planned_end) ||
+        planned_end <= start)
         return false;
 
     double planned_middle = first_collapsed ? cruise_end : ramp_end;
@@ -153,9 +154,10 @@ bool FitRoundedClockProfile(double q0, double q1, double v0, double v1,
 }
 // Reconstruct an accepted profile whose ramps used ideal durations instead
 // of the differences between their rounded absolute timestamps.
-bool FitRoundedRamps(double q0, double q1, double v0, double v1,
-                     double velocity_cap, double acceleration_cap, double start,
-                     double ta, double tc, double td, int segment,
+bool FitRoundedRamps(double q0, double q1, double v0, double v1, double velocity_cap,
+                     double acceleration_cap, double start,
+                     double initial_ramp_duration, double cruise_duration,
+                     double final_ramp_duration, int segment,
                      std::list<TrajectorySeg> &output) {
     using Wide = long double;
     constexpr double eps = std::numeric_limits<double>::epsilon();
@@ -163,11 +165,15 @@ bool FitRoundedRamps(double q0, double q1, double v0, double v1,
     const Wide position_budget =
         64 * eps * length + eps * std::max(std::abs(q0), std::abs(q1));
     const double speed_cap = std::max({velocity_cap, v0, v1});
-    const std::array<double, 3> durations{ta, tc, td};
-    const double planned_end = ((start + ta) + tc) + td;
+    const std::array<double, 3> durations{initial_ramp_duration, cruise_duration,
+                                          final_ramp_duration};
+    const double planned_end =
+        ((start + initial_ramp_duration) + cruise_duration) + final_ramp_duration;
     const Wide time_budget =
         64 * eps * std::max(std::abs(start), std::abs(planned_end));
-    const int extension_phase = tc > 0 ? 1 : td > 0 ? 2 : 0;
+    const int extension_phase = cruise_duration > 0       ? 1
+                                : final_ramp_duration > 0 ? 2
+                                                          : 0;
     for (int extra = 0; extra < 8; ++extra) {
         std::array<double, 4> times{start};
         std::array<Wide, 3> dt{};
@@ -175,8 +181,8 @@ bool FitRoundedRamps(double q0, double q1, double v0, double v1,
         for (int i = 0; i < 3; ++i) {
             times[i + 1] = times[i] + durations[i];
             if (times[i + 1] - times[i] < durations[i])
-                times[i + 1] = std::nextafter(
-                    times[i + 1], std::numeric_limits<double>::infinity());
+                times[i + 1] = std::nextafter(times[i + 1],
+                                              std::numeric_limits<double>::infinity());
             if (i == extension_phase && durations[i] > 0)
                 for (int k = 0; k < extra; ++k)
                     times[i + 1] = std::nextafter(
@@ -373,28 +379,24 @@ bool detail::ComputeTrapeziumProfile(const double &q0, const double &q1,
             64.0 * std::numeric_limits<double>::epsilon() *
             std::max({1.0, std::abs(v_lim), std::abs(v0), std::abs(v1)});
         if (v_lim + velocity_tolerance < minimum_endpoint_velocity) {
-            holistic_motion::utility::LogWarning(
-                "The target speed[{}, {}] "
-                "exceeds the limit speed[{}]"
-                " that the trajectory can achieve!",
-                v0, v1, v_lim);
+            holistic_motion::utility::LogWarning("The target speed[{}, {}] "
+                                                 "exceeds the limit speed[{}]"
+                                                 " that the trajectory can achieve!",
+                                                 v0, v1, v_lim);
             return false;
         }
         v_lim = std::max(v_lim, minimum_endpoint_velocity);
-        double ta =
-            std::abs(v_lim - v0) / max_acceleration; ///< acceleration period
-        double td =
-            std::abs(v1 - v_lim) / max_acceleration; ///< deceleration period
-        double tc = 0.0;                             ///< constant speed period
+        double initial_ramp_duration = std::abs(v_lim - v0) / max_acceleration;
+        double final_ramp_duration = std::abs(v1 - v_lim) / max_acceleration;
+        double cruise_duration = 0.0;
         const bool reaches_speed_cap = v_max_upbound >= max_velocity;
 
         if (!reaches_speed_cap) {
             // Rationalize (v_peak-v_endpoint)/a. Positive elapsed time must
             // survive even when v_peak rounds to a nonzero endpoint speed.
-            const double signed_transition_distance =
-                std::copysign(delta_h, v1 - v0);
-            ta = (h + signed_transition_distance) / (v_lim + v0);
-            td = (h - signed_transition_distance) / (v_lim + v1);
+            const double signed_transition_distance = std::copysign(delta_h, v1 - v0);
+            initial_ramp_duration = (h + signed_transition_distance) / (v_lim + v0);
+            final_ramp_duration = (h - signed_transition_distance) / (v_lim + v1);
         }
 
         // Determine whether the maximum speed of the trajectory exceeds the
@@ -403,8 +405,8 @@ bool detail::ComputeTrapeziumProfile(const double &q0, const double &q1,
             // Average speed gives the distance for either ramp direction.
             // An endpoint can exceed the internal speed cap; that ramp must
             // decelerate toward the cap instead of accelerating away from it.
-            const double first_distance = 0.5 * (v0 + v_lim) * ta;
-            const double last_distance = 0.5 * (v_lim + v1) * td;
+            const double first_distance = 0.5 * (v0 + v_lim) * initial_ramp_duration;
+            const double last_distance = 0.5 * (v_lim + v1) * final_ramp_duration;
             const double cruise_distance = h - first_distance - last_distance;
             const double distance_tolerance =
                 64.0 * std::numeric_limits<double>::epsilon() *
@@ -413,16 +415,19 @@ bool detail::ComputeTrapeziumProfile(const double &q0, const double &q1,
                 cruise_distance < -distance_tolerance) {
                 return false;
             }
-            tc = std::max(0.0, cruise_distance) / v_lim;
+            cruise_duration = std::max(0.0, cruise_distance) / v_lim;
         }
-        if (!std::isfinite(ta) || !std::isfinite(tc) || !std::isfinite(td) ||
-            !std::isfinite(t0 + ta + tc + td) || t0 + ta + tc + td <= t0)
+        if (!std::isfinite(initial_ramp_duration) || !std::isfinite(cruise_duration) ||
+            !std::isfinite(final_ramp_duration) ||
+            !std::isfinite(t0 + initial_ramp_duration + cruise_duration +
+                           final_ramp_duration) ||
+            t0 + initial_ramp_duration + cruise_duration + final_ramp_duration <= t0)
             return false;
         holistic_motion::utility::LogDebug(
-            "Compute trapezium time, ta:{}, tc:{}, td:{}", ta, tc, td);
+            "Compute trapezium time, ta:{}, tc:{}, td:{}", initial_ramp_duration,
+            cruise_duration, final_ramp_duration);
 
-        TrajectorySeg current_segment =
-            TrajectorySeg(seg_no, t0, q0, v0, 0.0, 0.0);
+        TrajectorySeg current_segment = TrajectorySeg(seg_no, t0, q0, v0, 0.0, 0.0);
 
         std::list<TrajectorySeg> phases;
         bool collapsed_phase = false;
@@ -571,38 +576,40 @@ bool detail::ComputeTrapeziumProfile(const double &q0, const double &q1,
             if (retry_with_lower_peak())
                 return true;
             return FitRoundedClockProfile(q0, q1, v0, v1, max_velocity,
-                                          max_acceleration, t0, ta, tc, td,
-                                          seg_no, traj_segs);
+                                          max_acceleration, t0, initial_ramp_duration,
+                                          cruise_duration, final_ramp_duration, seg_no,
+                                          traj_segs);
         };
         bool has_cruise_phase = false;
-        if (!append_phase(ta, first_acceleration)) {
-            if (!collapsed_phase || tc <= 0.0)
+        if (!append_phase(initial_ramp_duration, first_acceleration)) {
+            if (!collapsed_phase || cruise_duration <= 0.0)
                 return false;
-            const double last_distance = (0.5 * v_lim + 0.5 * v1) * td;
+            const double last_distance = (0.5 * v_lim + 0.5 * v1) * final_ramp_duration;
             if (!append_cruise_transition(q1 - last_distance, v_lim,
-                                          t0 + ta + tc))
+                                          t0 + initial_ramp_duration + cruise_duration))
                 return recover_collapsed_ramp();
             has_cruise_phase = true;
         } else {
             const auto prefix_size = phases.size();
-            if (!append_phase(tc, 0.0))
+            if (!append_phase(cruise_duration, 0.0))
                 return false;
             has_cruise_phase = phases.size() > prefix_size;
         }
-        if (!append_phase(td, last_acceleration)) {
+        if (!append_phase(final_ramp_duration, last_acceleration)) {
             if (!collapsed_phase || !has_cruise_phase)
                 return false;
-            const double planned_end_time = current_segment.timestamp + td;
+            const double planned_end_time =
+                current_segment.timestamp + final_ramp_duration;
             current_segment = phases.back();
             phases.pop_back();
             if (!append_cruise_transition(q1, v1, planned_end_time))
                 return recover_collapsed_ramp();
         }
-        phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0,
-                            0.0);
+        phases.emplace_back(seg_no, current_segment.timestamp, q1, v1, 0.0, 0.0);
         if (rounded_ramp) {
             FitRoundedRamps(q0, q1, v0, v1, max_velocity, max_acceleration, t0,
-                            ta, tc, td, seg_no, phases);
+                            initial_ramp_duration, cruise_duration, final_ramp_duration,
+                            seg_no, phases);
         }
         traj_segs.swap(phases);
         return true;

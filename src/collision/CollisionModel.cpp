@@ -112,6 +112,8 @@ public:
       if (!IsAdjacent(pair.first, pair.second))
         keep.push_back(pair);
     }
+    if (keep.size() == before)
+      return 0;
     geometry_model.removeAllCollisionPairs();
     for (const auto &pair : keep)
       geometry_model.addCollisionPair(pair);
@@ -309,13 +311,14 @@ CollisionModel::RemoveCollisionPairsByLinks(const std::string &first_link,
     if (!matches)
       keep.push_back(pair);
   }
+  const auto removed = before - keep.size();
+  if (!removed)
+    return 0;
   impl_->geometry_model.removeAllCollisionPairs();
   for (const auto &pair : keep) {
     impl_->geometry_model.addCollisionPair(pair);
   }
-  const auto removed = before - keep.size();
-  if (removed)
-    impl_->RebuildGeometryData();
+  impl_->RebuildGeometryData();
   return removed;
 }
 
@@ -435,8 +438,8 @@ bool CollisionModel::IsWithinDistance(const Eigen::VectorXd &q,
     request.enable_contact = false;
     request.num_max_contacts = 1;
   }
-  return pinocchio::computeCollisions(
-      impl_->geometry_model, *impl_->geometry_data, stop_at_first);
+  return pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data,
+                                      stop_at_first);
 }
 
 std::vector<CollisionResult>
@@ -444,23 +447,24 @@ CollisionModel::ComputeCollisions(const Eigen::VectorXd &q) {
     detail::ValidateConfiguration(impl_->model, q);
     impl_->UpdatePlacements(q);
     pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data, false);
-    pinocchio::computeDistances(impl_->geometry_model, *impl_->geometry_data);
     std::vector<CollisionResult> results;
     results.reserve(impl_->geometry_model.collisionPairs.size());
-    for (std::size_t index = 0; index < impl_->geometry_model.collisionPairs.size(); ++index) {
+    for (std::size_t index = 0; index < impl_->geometry_model.collisionPairs.size();
+         ++index) {
         if (impl_->geometry_data->collisionResults[index].isCollision()) {
-            results.push_back(
-                impl_->MakeResult(index, impl_->geometry_data->distanceResults[index]));
+            const auto &distance = pinocchio::computeDistance(
+                impl_->geometry_model, *impl_->geometry_data, index);
+            results.push_back(impl_->MakeResult(index, distance));
         }
-  }
-  return results;
+    }
+    return results;
 }
 
 CollisionResult CollisionModel::MinimumDistance(const Eigen::VectorXd &q) {
     detail::ValidateConfiguration(impl_->model, q);
     if (impl_->geometry_model.collisionPairs.empty()) {
         throw std::runtime_error("collision model has no active collision pairs");
-  }
+    }
   impl_->UpdatePlacements(q);
   const auto index = impl_->MinimumDistanceIndex();
   return impl_->MakeResult(index, impl_->geometry_data->distanceResults[index]);

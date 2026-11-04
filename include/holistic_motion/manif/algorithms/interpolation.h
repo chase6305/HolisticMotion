@@ -7,11 +7,13 @@ namespace holistic_motion::robotics {
 
 /// Binomial coefficient for n >= k >= 0.
 template <typename T> constexpr T BinomialCoefficient(const T n, const T k) {
-    return (n >= k) ? (k >= 0) ? (k * 2 > n) ? BinomialCoefficient(n, n - k)
-                                 : k         ? BinomialCoefficient(n, k - 1) * (n - k + 1) / k
-                                             : 1
-                               : (throw std::logic_error("k >= 0 !"))
-                    : (throw std::logic_error("n >= k !"));
+    if (!(n >= k))
+        throw std::logic_error("n >= k !");
+    if (!(k >= 0))
+        throw std::logic_error("k >= 0 !");
+    if (k * 2 > n)
+        return BinomialCoefficient(n, n - k);
+    return k ? BinomialCoefficient(n, k - 1) * (n - k + 1) / k : 1;
 }
 
 /// Integer power; nonpositive exponents return the supplied carry.

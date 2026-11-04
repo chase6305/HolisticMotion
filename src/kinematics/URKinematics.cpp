@@ -136,9 +136,13 @@ bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::Ve
     double T20 = T_b_e(2, 0), T21 = T_b_e(2, 1), T22 = T_b_e(2, 2),
            T23 = T_b_e(2, 3);
 
-    double q6_des = std::fmod(joint_seed[5], 2.0 * M_PI);
+    // A singular wrist retains the seed in the analytic coordinates used by FK.
+    const double analytic_wrist_seed =
+        joint_seed[5] * this->params_.rotation_directions[5] -
+        this->params_.offsets[5];
+    double q6_des = std::fmod(analytic_wrist_seed, 2.0 * M_PI);
     // Retain the positive full-turn representative at the periodic boundary.
-    if (q6_des < 0.0 || (q6_des == 0.0 && joint_seed[5] > 0.0))
+    if (q6_des < 0.0 || (q6_des == 0.0 && analytic_wrist_seed > 0.0))
         q6_des += 2.0 * M_PI;
 
     // angle1

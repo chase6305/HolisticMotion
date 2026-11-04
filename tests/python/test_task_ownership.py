@@ -95,9 +95,12 @@ def test_support_geometry_is_independent_of_caller_vertices(clockwise, readonly)
     np.testing.assert_allclose(task.normals @ np.zeros(2) - task.offsets, 1.0)
 
 
-def test_clockwise_geometry_snapshot_precedes_scalar_conversion():
-    vertices = np.array([[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]])
-    expected = vertices[::-1].copy()
+@pytest.mark.parametrize("clockwise", [False, True])
+def test_geometry_snapshot_precedes_scalar_conversion(clockwise):
+    vertices = np.array([[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]])
+    if clockwise:
+        vertices = vertices[::-1].copy()
+    expected = vertices[::-1].copy() if clockwise else vertices.copy()
 
     class MutatingCost(float):
         def __float__(self):

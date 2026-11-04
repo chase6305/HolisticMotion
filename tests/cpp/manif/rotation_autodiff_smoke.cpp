@@ -65,7 +65,20 @@ int main() {
                                  inverse_expected(i, j)) > 1e-7)
                         return 2;
         }
+        const R3Tangent<AD> translation(variables);
+        const auto weights = translation.InnerWeights();
+        for (int row = 0; row < 3; ++row)
+            for (int column = 0; column < 3; ++column)
+                if (weights(row, column).value() != double(row == column) ||
+                    weights(row, column).derivatives().squaredNorm() != 0.0)
+                    return 3;
+        const AD inner = translation.Inner(translation);
+        const AD norm = translation.WeightedNorm();
+        if (std::abs(inner.value() - value.squaredNorm()) > 1e-12 ||
+            (inner.derivatives() - 2 * value).norm() > 1e-12 ||
+            std::abs(norm.value() - value.norm()) > 1e-12 ||
+            (norm.derivatives() - value.normalized()).norm() > 1e-12)
+            return 4;
     }
-    std::cout << "Eigen autodiff SO3 exponential/Jacobian derivatives agree "
-                 "with finite differences\n";
+    std::cout << "Eigen autodiff rotation and translation derivative checks passed\n";
 }

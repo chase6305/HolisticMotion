@@ -1240,8 +1240,8 @@ class PinkRetargetingSolver(_RetargetingSession):
             position_upper = np.full(active.size, np.inf)
             position_lower[scalar] = self._lower_position_limits[indices] - q[indices]
             position_upper[scalar] = self._upper_position_limits[indices] - q[indices]
-        dynamic_lower = lower.copy()
-        dynamic_upper = upper.copy()
+        dynamic_lower = lower
+        dynamic_upper = upper
         lower = np.maximum(lower, position_lower)
         upper = np.minimum(upper, position_upper)
         # Position safety has priority when acceleration-limited braking

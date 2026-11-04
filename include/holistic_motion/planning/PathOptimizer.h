@@ -67,8 +67,8 @@ struct PathOptimizationResult {
 
 /// Feasibility-preserving joint-space path smoother.
 ///
-/// Endpoints remain fixed. Every accepted waypoint update decreases the
-/// weighted length/smoothness objective and validates both adjacent edges.
+/// Endpoints remain fixed. Every accepted waypoint update meets the configured
+/// improvement threshold for the full objective and validates both adjacent edges.
 /// Input validation checks each original waypoint exactly, as well as the
 /// configured interior edge samples, to preserve validity at roundoff
 /// boundaries. Each call snapshots options, joint space and callback wrappers;

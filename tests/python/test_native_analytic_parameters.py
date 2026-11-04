@@ -108,3 +108,65 @@ def test_native_constructor_rejects_nonfinite_parameters(family, invalid):
     value.offsets = [invalid, 0, 0, 0, 0, 0]
     with pytest.raises(ValueError, match="offsets"):
         solver(value, np.full(6, -6.0), np.full(6, 6.0))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["ur_wrist", "ur_wrist_pi", "opw_shoulder", "opw_wrist", "opw_wrist_pi"],
+)
+@pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("offset", [-0.7, 0.0, 0.3])
+@pytest.mark.parametrize("free_angle", [-2.0 * np.pi, -0.35, 0.0, 2.0 * np.pi])
+def test_analytic_singular_branch_preserves_seed_coordinates(
+    kind, direction, offset, free_angle
+):
+    import holistic_motion as hm
+
+    if kind.startswith("ur"):
+        params = hm.URParameters()
+        params.d1, params.a2, params.a3, params.d4, params.d5, params.d6 = (
+            0.089159,
+            -0.425,
+            -0.39225,
+            0.10915,
+            0.09465,
+            0.0823,
+        )
+        solver_type = hm.URKinematics
+        analytic_joints = np.array([0.2, -0.55, 0.75, 0.9, 0.0, free_angle])
+        free_joint = 5
+    else:
+        params = hm.OPWParameters()
+        # Binary-exact lengths keep the straight arm's wrist centre on the
+        # shoulder axis, so the intended singular branch is reproducible.
+        params.c1, params.c2, params.c3, params.c4 = 0.5, 0.5, 0.25, 0.125
+        solver_type = hm.OPWKinematics
+        analytic_joints = np.array([0.25, 0.0, 0.0, 0.4, 0.65, -0.2])
+        free_joint = 0 if kind == "opw_shoulder" else 3
+        analytic_joints[free_joint] = free_angle
+        if free_joint == 3:
+            analytic_joints[4] = 0.0
+    if kind.endswith("_pi"):
+        analytic_joints[4] = np.pi
+    offsets = np.zeros(6)
+    directions = np.ones(6, dtype=int)
+    offsets[free_joint] = offset
+    directions[free_joint] = direction
+    params.offsets = offsets.tolist()
+    params.rotation_directions = directions.tolist()
+    solver = solver_type(params, np.full(6, -20.0), np.full(6, 20.0))
+    seed = (analytic_joints + offsets) * directions
+    target = solver.forward(seed)
+
+    report = solver.solve_ik(target, seed, hm.IKSelection.ALL)
+    assert report.success
+    assert min(report.distances) < 1e-7
+    assert any(
+        np.allclose(solution, seed, atol=1e-7, rtol=0) for solution in report.solutions
+    )
+    for solution in report.solutions:
+        np.testing.assert_allclose(solver.forward(solution), target, atol=1e-7, rtol=0)
+    nearest = solver.solve_ik(target, seed, hm.IKSelection.NEAREST)
+    assert nearest.success
+    assert nearest.distances[0] < 1e-7
+    np.testing.assert_allclose(nearest.solutions[0], seed, atol=1e-7, rtol=0)

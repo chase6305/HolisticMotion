@@ -176,8 +176,11 @@ bool OPWKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::V
     ///< compute angle1
     if (std::abs(c[1]) < Epsilon && std::abs(c[0]) < Epsilon) {
         // shoulder singularity
-        angle1[0] = joint_seed[0];
-        angle1[2] = joint_seed[0] - M_PI;
+        const double analytic_shoulder_seed =
+            joint_seed[0] * this->params_.rotation_directions[0] -
+            this->params_.offsets[0];
+        angle1[0] = analytic_shoulder_seed;
+        angle1[2] = analytic_shoulder_seed - M_PI;
         holistic_motion::utility::LogWarning(
                 "GetIK: There is a singularity of the shoulder.");
     } else {
@@ -244,19 +247,22 @@ bool OPWKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::V
 
     double angle_plus, angle_minus;
     bool is_singularity[4] = {false};
+    const double analytic_wrist_seed =
+        joint_seed[3] * this->params_.rotation_directions[3] -
+        this->params_.offsets[3];
 
     ///< compute angle4 and angle6
     for (unsigned i = 0; i < 4; i++) {
         if (std::abs(angle5[i]) < Epsilon) {
             angle_minus = std::atan2(R_o(1, 0) * cos1[i] - R_o(0, 0) * sin1[i],
                                      R_o(1, 1) * cos1[i] - R_o(0, 1) * sin1[i]);
-            angle4[i] = joint_seed[3];
+            angle4[i] = analytic_wrist_seed;
             angle6[i] = angle_minus - angle4[i];
             is_singularity[i] = true;
         } else if (std::abs(std::abs(angle5[i]) - M_PI) < Epsilon) {
             angle_plus = std::atan2(R_o(1, 0) * cos1[i] - R_o(0, 0) * sin1[i],
                                     R_o(1, 1) * cos1[i] - R_o(0, 1) * sin1[i]);
-            angle4[i] = joint_seed[3];
+            angle4[i] = analytic_wrist_seed;
             angle6[i] = angle_plus + angle4[i];
             is_singularity[i] = true;
         }

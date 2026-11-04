@@ -5,9 +5,7 @@
 namespace holistic_motion {
 namespace robotics {
 
-/// \brief Constructing the path segment of the linear
-///
-/// \TODO:
+/// Linear interpolation between two Lie-group configurations.
 template <typename LieGroup>
 class PathSegLinear : public PathSegmentBase<LieGroup> {
 private:

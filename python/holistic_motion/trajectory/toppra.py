@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 from numbers import Integral
 
 import numpy as np
@@ -1463,7 +1464,7 @@ class ToppraTrajectory:
         controllable[-1] = (end_x, end_x)
         for index in range(len(constraints) - 1, -1, -1):
             lo, hi = constraints[index].project(*controllable[index + 1])
-            if not np.isfinite([lo, hi]).all() or lo > hi + 1e-12 * max(
+            if not (isfinite(lo) and isfinite(hi)) or lo > hi + 1e-12 * max(
                 abs(lo), abs(hi)
             ):
                 raise ValueError(f"path is infeasible near gridpoint {index}")

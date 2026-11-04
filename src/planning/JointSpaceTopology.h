@@ -253,13 +253,20 @@ class JointSpaceMetric {
     const std::vector<std::uint8_t> continuous_;
 };
 
-inline Eigen::VectorXd Difference(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
-                                  const std::vector<bool> &continuous) {
-    Eigen::VectorXd difference = to - from;
+inline void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                           const std::vector<bool> &continuous,
+                           Eigen::VectorXd &difference) {
+    difference = to - from;
     for (Eigen::Index index = 0; index < difference.size(); ++index) {
         if (continuous[static_cast<std::size_t>(index)])
             difference[index] = WrappedDifference(difference[index]);
     }
+}
+
+inline Eigen::VectorXd Difference(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                                  const std::vector<bool> &continuous) {
+    Eigen::VectorXd difference;
+    DifferenceInto(from, to, continuous, difference);
     return difference;
 }
 

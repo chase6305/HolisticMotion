@@ -55,7 +55,7 @@ public:
   /// \param target_pose: target TCP pose
   /// \param ik_solutions: the inverse kinematics
   /// \param joint_seed: most recently solved joint
-  /// \param dist: the distance of each joint from joint_seed
+  /// \param dist Per-solution weighted coordinate movement from joint_seed
   /// \return bool
   virtual bool GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
                      Eigen::VectorXd &joint_seed, std::vector<double> &dist) const = 0;
@@ -65,7 +65,7 @@ public:
   /// \param target_pose: target TCP pose
   /// \param ik_solutions: the nearst inverse kinematics
   /// \param joint_seed: most recently solved joint
-  /// \param dist: the distance from joint_seed
+  /// \param min_dist Selected solution's weighted coordinate movement
   /// \return bool
   /// The default selects the first sorted GetIK result. Solvers with a
   /// specialized nearest search override this operation.
@@ -312,7 +312,7 @@ protected:
     SE3d tcp_;    ///< Transformation from tool end to flange end
     SE3d userframe_;                      ///< Transformation from base to user frame
     Eigen::VectorXd ik_nearst_weight_;    ///< Delta weight for each joint
-    Eigen::VectorXd home_joints_;         ///< home joints in urdf
+    Eigen::VectorXd home_joints_;         ///< Configured fallback IK seed
     std::vector<JointNode> joint_nodes_;  ///< joint upper and lower limits
 
     const double Epsilon = std::numeric_limits<double>::epsilon();

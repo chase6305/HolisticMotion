@@ -37,7 +37,8 @@ public:
   ///
   /// \param target_pose
   /// \param ik_solutions
-  /// \param joints_seed
+  /// \param joint_seed
+  /// \param dist Per-solution weighted coordinate movement from joint_seed
   /// \return bool success or not
   virtual bool GetIK(const SE3d &target_pose, IkRtn &ik_solutions,
                      Eigen::VectorXd &joint_seed,
@@ -49,7 +50,8 @@ public:
   ///
   /// \param target_pose
   /// \param ik_solutions
-  /// \param joints_seed
+  /// \param joint_seed
+  /// \param min_dist Selected solution's weighted coordinate movement
   /// \return bool success or not
   virtual bool GetNearstIK(const SE3d &target_pose, IkRtn &ik_solutions,
                            Eigen::VectorXd &joint_seed,

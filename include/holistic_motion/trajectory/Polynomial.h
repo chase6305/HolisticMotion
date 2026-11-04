@@ -63,16 +63,13 @@ class Polynomial : public std::enable_shared_from_this<Polynomial> {
                  jerk * s + quadratic_derivative, jerk};
      }
 
-    Eigen::Vector4d data_;  ///< data in turn: pos, vel, acc, jerk
+    Eigen::Vector4d data_;  ///< Coefficients of 1, s, s^2, s^3.
 
     unsigned coefficient_count_;
 };
 
+/// Piecewise cubic polynomials evaluated in each segment's local time.
 class PSpline {
-    ///<
-    ///< Eilers, Paul & Marx, Brian & Durbán, María. (2015). Twenty years of
-    ///< P-splines. SORT (Statistics and Operations Research Transactions). 39.
-    ///< 149-186.
    public:
     PSpline() : knots_(std::vector<double>(1, 0)) {}
 

@@ -130,5 +130,40 @@ int main() {
         !independent_path.path.front().isApprox(start, 0.0) ||
         !independent_path.path.back().isApprox(goal, 0.0))
         return 9;
+
+    // A nested request from an interior sample must not overwrite the outer
+    // request's interpolation difference or the sample passed to its callback.
+    bool nested = false, nested_success = false, sample_preserved = true;
+    std::vector<double> outer_samples;
+    std::unique_ptr<SamplingPlanner> reentrant;
+    reentrant = std::make_unique<SamplingPlanner>(
+        lower, upper, [&](const Eigen::VectorXd &state) {
+            if (nested)
+                return true;
+            const double position = state[0];
+            if (!nested_success && std::abs(position + 0.7) < 1e-12) {
+                nested = true;
+                PlanningOptions inner_options;
+                inner_options.edge_resolution = 0.2;
+                const auto inner_result = reentrant->Plan(
+                    Eigen::VectorXd::Constant(1, -0.3),
+                    Eigen::VectorXd::Constant(1, 0.4), inner_options);
+                nested_success = inner_result.Success();
+                nested = false;
+                sample_preserved = state[0] == position;
+            }
+            outer_samples.push_back(state[0]);
+            return true;
+        });
+    PlanningOptions outer_options;
+    outer_options.edge_resolution = 0.1;
+    const auto reentrant_result = reentrant->Plan(start, goal, outer_options);
+    if (!reentrant_result.Success() || !nested_success || !sample_preserved ||
+        outer_samples.size() != 18 ||
+        reentrant_result.statistics.collision_checks != outer_samples.size())
+        return 10;
+    for (std::size_t index = 3; index < outer_samples.size(); ++index)
+        if (std::abs(outer_samples[index] - (-0.8 + 0.1 * (index - 2))) > 1e-12)
+            return 11;
     return 0;
 }

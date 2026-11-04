@@ -25,10 +25,10 @@ struct JointCoordinate {
 };
 
 /// Immutable, backend-independent mapping of ordered scalar joint positions.
-/// Build once per selected chain. All operations are const and own their
-/// output; an instance can be shared between workers without sharing model
-/// workspaces. Multi-DOF blocks (e.g. a free flyer) may remain in the reference
-/// configuration but cannot be selected as scalar joint positions.
+/// Build once per selected chain. Conversions own their output; GetJoints()
+/// borrows metadata. An instance can be shared between workers without sharing
+/// model workspaces. Multi-DOF blocks (e.g. a free flyer) may remain in the
+/// reference configuration but cannot be selected as scalar joint positions.
 class JointPositionMap {
   public:
     JointPositionMap(int nq, int nv, std::vector<JointCoordinate> joints)

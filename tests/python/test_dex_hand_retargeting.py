@@ -8,7 +8,10 @@ import weakref
 
 import numpy as np
 import pytest
-from holistic_motion.kit.retargeting import DexHandRetargetingSolver
+from holistic_motion.kit.retargeting import (
+    DexHandRetargetingSolver,
+    HandRetargetingResult,
+)
 from optional_dependencies import (
     optional_module_or_skip,
     python_pinocchio_or_skip,
@@ -56,6 +59,25 @@ def make_solver(tmp_path, *, mimic=False, multiplier=-1.0, offset=0.4, **options
         keypoint_pairs=[[0, 1], [0, 2]] if mimic else [[0, 1]],
         **defaults,
     )
+
+
+@pytest.mark.parametrize("field", ["residual", "objective", "solve_ms"])
+@pytest.mark.parametrize("value", [np.complex64(0.25), np.complex128(0.25 + 1j)])
+def test_hand_result_rejects_complex_diagnostics(field, value):
+    values = dict(
+        joint_names=("z_drive",),
+        configuration=[0.0],
+        success=True,
+        residual=0.0,
+        objective=0.0,
+        solve_ms=0.0,
+        evaluations=0,
+        optimizer_status=0,
+        termination_reason="converged",
+    )
+    values[field] = value
+    with pytest.raises(TypeError, match=f"{field}.*real"):
+        HandRetargetingResult(**values)
 
 
 @pytest.mark.parametrize("axis", ["1.5 0 0", "1e200 0 0", "1e-200 0 0", "0 0 0"])
@@ -220,18 +242,26 @@ def test_updated_hand_settings_match_fresh_solver(tmp_path, mimic, setting, valu
     np.testing.assert_allclose(gradient, [numerical], atol=1e-8, rtol=1e-6)
 
 
+@pytest.mark.parametrize("value", [np.complex64(0.25), np.complex128(0.25 + 1j)])
+def test_hand_constructor_rejects_complex_temporal_weight(tmp_path, value):
+    with pytest.raises(TypeError, match="temporal_weight.*real"):
+        make_solver(tmp_path, temporal_weight=value)
+
+
 @pytest.mark.parametrize(
-    "setting,value",
+    "setting,value,exception",
     [
-        ("scaling", float("nan")),
-        ("temporal_weight", -1.0),
-        ("huber_delta", 0.0),
-        ("vector_tolerance", float("inf")),
-        ("objective_tolerance", float("nan")),
+        ("scaling", float("nan"), ValueError),
+        ("temporal_weight", -1.0, ValueError),
+        ("temporal_weight", np.complex64(0.25), TypeError),
+        ("temporal_weight", np.complex128(0.25 + 1j), TypeError),
+        ("huber_delta", 0.0, ValueError),
+        ("vector_tolerance", float("inf"), ValueError),
+        ("objective_tolerance", float("nan"), ValueError),
     ],
 )
 def test_invalid_updated_settings_preserve_native_settings_and_history(
-    tmp_path, setting, value
+    tmp_path, setting, value, exception
 ):
     solver = make_solver(tmp_path)
     before = solver._last_q.copy()
@@ -244,7 +274,7 @@ def test_invalid_updated_settings_preserve_native_settings_and_history(
     )
     solver.scaling = 2.0  # A valid pending update must not be partially applied.
     setattr(solver, setting, value)
-    with pytest.raises(ValueError, match=setting):
+    with pytest.raises(exception, match=setting):
         solver.solve([[0, 0, 0], [0.125, 0, 0]])
     np.testing.assert_array_equal(solver._last_q, before)
     assert (
@@ -468,6 +498,40 @@ def test_invalid_seed_is_rejected_without_changing_history(tmp_path, seed):
     np.testing.assert_array_equal(solver._last_q, before)
 
 
+@pytest.mark.parametrize("method", ["reset", "solve"])
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128])
+@pytest.mark.parametrize("imaginary", [0.0, 100.0])
+def test_complex_seed_positions_are_rejected_without_state_changes(
+    tmp_path, method, dtype, imaginary
+):
+    solver = make_solver(tmp_path)
+    solver.reset({"wrist": 0.2, "z_drive": 0.2})
+    seed = {"wrist": 0.7, "z_drive": dtype(0.25 + imaginary * 1j)}
+    original = dict(seed)
+    previous = solver._last_q.copy()
+    native = solver._optimizer
+    settings = (
+        native.scaling,
+        native.norm_delta,
+        native.huber_loss.beta,
+        native.opt.get_ftol_abs(),
+    )
+    solver.scaling = 2.0  # Input rejection must leave this update pending.
+    with pytest.raises(TypeError, match="joint position.*real"):
+        if method == "reset":
+            solver.reset(seed)
+        else:
+            solver.solve([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]], seed=seed)
+    np.testing.assert_array_equal(solver._last_q, previous)
+    assert seed == original
+    assert (
+        native.scaling,
+        native.norm_delta,
+        native.huber_loss.beta,
+        native.opt.get_ftol_abs(),
+    ) == settings
+
+
 @pytest.mark.parametrize(
     "points", [[[0, 0]], [[0, 0, 0]], [[0, 0, 0], [float("nan"), 0, 0]]]
 )
@@ -475,6 +539,37 @@ def test_invalid_keypoints_are_rejected(tmp_path, points):
     solver = make_solver(tmp_path)
     with pytest.raises(ValueError):
         solver.solve(points)
+
+
+@pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
+@pytest.mark.parametrize("imaginary", [0.0, 100.0])
+def test_complex_keypoints_are_rejected_before_state_changes(
+    tmp_path, dtype, imaginary
+):
+    solver = make_solver(tmp_path)
+    solver.reset({"wrist": 0.2, "z_drive": 0.2})
+    points = np.array([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]], dtype=dtype)
+    points[1, 0] = np.complex128(0.25 + imaginary * 1j)
+    original = points.copy()
+    previous = solver._last_q.copy()
+    native = solver._optimizer
+    settings = (
+        native.scaling,
+        native.norm_delta,
+        native.huber_loss.beta,
+        native.opt.get_ftol_abs(),
+    )
+    solver.scaling = 2.0  # Keep this valid update pending when input is rejected.
+    with pytest.raises(TypeError, match="keypoints.*real"):
+        solver.solve(points)
+    np.testing.assert_array_equal(solver._last_q, previous)
+    np.testing.assert_array_equal(points, original)
+    assert (
+        native.scaling,
+        native.norm_delta,
+        native.huber_loss.beta,
+        native.opt.get_ftol_abs(),
+    ) == settings
 
 
 def test_budget_exhaustion_is_not_reported_as_success(tmp_path):

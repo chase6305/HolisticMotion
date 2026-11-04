@@ -70,9 +70,8 @@ struct PlanningResult {
 // The validator receives complete configurations and is deliberately
 // independent of any particular collision library.
 // Each search snapshots endpoints, options, joint space and callback wrappers.
-// Reentrant
-// edits affect subsequent requests; captured callback state retains its usual
-// ownership. Shared-instance calls require thread-safe callbacks and no
+// Reentrant edits affect subsequent requests; captured callback state retains
+// its usual ownership. Shared-instance calls require thread-safe callbacks and no
 // concurrent setters; a shared collision-model callback is not thread-safe.
 class SamplingPlanner {
     friend struct detail::PlanningCallbackAccess;

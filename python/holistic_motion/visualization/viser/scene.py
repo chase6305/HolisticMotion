@@ -284,10 +284,10 @@ def visual_mesh(hm, visual, asset_directory: Path) -> trimesh.Trimesh:
         path = (asset_directory / visual.mesh_path).resolve()
         loaded = trimesh.load(path, force="scene")
         if isinstance(loaded, trimesh.Scene):
-            meshes = list(loaded.geometry.values())
-            if not meshes:
+            if not loaded.geometry:
                 raise ValueError(f"mesh scene is empty: {path}")
-            mesh = trimesh.util.concatenate(meshes)
+            # Apply node transforms, including repeated instances of one mesh.
+            mesh = trimesh.util.concatenate(loaded.dump())
         else:
             mesh = loaded
     elif visual.type == hm.GeometryType.BOX:

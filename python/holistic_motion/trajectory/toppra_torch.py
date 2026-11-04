@@ -930,8 +930,10 @@ class TorchToppraTrajectory:
         # Constraint construction needs only derivatives. Avoid keeping an
         # unused position graph alive through the complete timing solve.
         correction = delta * (b + delta * (c + delta * d)) if position else None
-        first = b + delta * (2.0 * c + 3.0 * delta * d)
-        second = 2.0 * c + 6.0 * delta * d
+        second_at_start = 2.0 * c
+        first = b + delta * (second_at_start + 3.0 * delta * d)
+        second = second_at_start + 6.0 * delta * d
+        del second_at_start
         if self._coefficient_scale is not None:
             # Large physical terms may overflow before polynomial terms
             # cancel. Evaluate the normalized spline before restoring units.
@@ -1424,15 +1426,14 @@ class TorchToppraTrajectory:
         elapsed = (clipped - self._times.gather(1, index)) * self._speed_scale
         accel = self._normalized_u.gather(1, index)
         initial = self._normalized_speeds.gather(1, index)
-        s = (
-            self._grid.gather(1, index)
-            + initial * elapsed
-            + (0.5 * accel * elapsed) * elapsed
-        )
+        interval_start = self._grid.gather(1, index)
+        s = interval_start + initial * elapsed + (0.5 * accel * elapsed) * elapsed
         s = torch.maximum(
-            self._grid.gather(1, index),
+            interval_start,
             torch.minimum(s, self._grid.gather(1, index + 1)),
         )
+        # Release interpolation scratch before gathering the spline buffers.
+        del interval_start
         speed = (initial + accel * elapsed).clamp_min(0)
         q, first, second = self._evaluate(s)
         scale = self._speed_scale[..., None]

@@ -168,10 +168,11 @@ class SupportPolygonTask:
         if np.any(np.abs(turns) <= 1e-12) or np.any(turns * turns[0] < 0.0):
             raise ValueError("support polygon must be strictly convex")
         if turns[0] < 0.0:
-            vertices = vertices[::-1].copy()
+            vertices = vertices[::-1]
             # Reversing vertices reverses and negates the incident edges.
             directions = -np.roll(directions[::-1], -1, axis=0)
             relative = relative[::-1]
+        vertices = vertices.copy()
         cost = _finite_scalar(self.cost, "support polygon cost")
         margin = _finite_scalar(self.margin, "support polygon margin")
         gain = _finite_scalar(self.gain, "gain")
@@ -192,7 +193,6 @@ class SupportPolygonTask:
         )
         if np.any(all_edge_distances < -1e-12):
             raise ValueError("support polygon must be strictly convex and ordered")
-        vertices = vertices.copy()
         with np.errstate(over="ignore", invalid="ignore"):
             offsets = np.sum(normals * vertices, axis=1)
         if not np.isfinite(offsets).all():

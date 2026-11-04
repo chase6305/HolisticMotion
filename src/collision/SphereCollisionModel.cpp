@@ -127,12 +127,6 @@ class SphereCollisionModel::Impl {
         UpdateWorldSpheres();
     }
 
-    void UpdateWithJacobians(const Eigen::VectorXd &q) {
-        detail::ValidateConfiguration(model, q);
-        pinocchio::computeJointJacobians(model, *data, q);
-        UpdateWorldSpheres();
-    }
-
     void UpdateWorldSpheres() {
         // Joint FK is complete, but only frames owning collision spheres need
         // world placements. A frame shared by many spheres is updated once.
@@ -454,7 +448,7 @@ SphereDistanceGradientResult SphereCollisionModel::MinimumDistanceWithGradient(
     if (impl_->pairs.empty())
         throw std::runtime_error(
             "sphere collision model has no active collision pairs");
-    impl_->UpdateWithJacobians(configuration);
+    impl_->Update(configuration);
     const std::size_t best_index = impl_->MinimumDistanceIndex();
     SphereDistanceResult best = impl_->Distance(best_index);
     const auto [first, second] = impl_->pairs[best_index];
@@ -465,6 +459,8 @@ SphereDistanceGradientResult SphereCollisionModel::MinimumDistanceWithGradient(
         impl_->model.frames[impl_->frame_ids[first]].parentJoint ==
         impl_->model.frames[impl_->frame_ids[second]].parentJoint;
     if (!rigid_pair && best.first_center != best.second_center) {
+        // This overload reuses the FK performed before selecting the closest pair.
+        pinocchio::computeJointJacobians(impl_->model, *impl_->data);
         impl_->AddProjectedPointJacobian(second, best.normal, result.gradient);
         impl_->AddProjectedPointJacobian(first, -best.normal, result.gradient);
     }

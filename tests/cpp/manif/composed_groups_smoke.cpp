@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <unsupported/Eigen/MatrixFunctions>
 
@@ -98,6 +99,34 @@ template <class Group> void CheckGroup() {
     }
 }
 
+template <typename Scalar, int Dimension> void CheckTranslationMetric() {
+    using Tangent = RnTangent<Scalar, Dimension>;
+    using Matrix = typename Tangent::InnerWeightsMatrix;
+    Tangent first, second;
+    for (int axis = 0; axis < Dimension; ++axis) {
+        first.Coeffs()[axis] = Scalar(.25 * (axis + 1));
+        second.Coeffs()[axis] = Scalar(-.125 * axis);
+    }
+    const Scalar expected_inner = first.Coeffs().dot(second.Coeffs());
+    const Scalar expected_squared = first.Coeffs().squaredNorm();
+    const Scalar expected_norm = first.Coeffs().norm();
+    const Scalar tolerance = 32 * std::numeric_limits<Scalar>::epsilon();
+    const auto check = [&](const auto &tangent) {
+        if ((tangent.InnerWeights().array() != Matrix::Identity().array()).any() ||
+            std::abs(tangent.Inner(second) - expected_inner) >
+                tolerance * (1 + std::abs(expected_inner)) ||
+            std::abs(tangent.SquaredWeightedNorm() - expected_squared) >
+                tolerance * (1 + expected_squared) ||
+            std::abs(tangent.WeightedNorm() - expected_norm) >
+                tolerance * (1 + expected_norm))
+            throw std::runtime_error(
+                "translation metric differs from Euclidean coordinates");
+    };
+    check(first);
+    check(Eigen::Map<Tangent>(first.Coeffs().data()));
+    check(Eigen::Map<const Tangent>(first.Coeffs().data()));
+}
+
 template <int Dimension> void CheckTranslation() {
     using Group = Rn<double, Dimension>;
     static_assert(Group::Transformation::RowsAtCompileTime == Dimension + 1);
@@ -112,6 +141,8 @@ template <int Dimension> void CheckTranslation() {
         !first.Compose(second).GetTransform().isApprox(first.GetTransform() * second.GetTransform(),
                                                        1e-14))
         throw std::runtime_error("translation matrix lost its homogeneous coordinate");
+    CheckTranslationMetric<double, Dimension>();
+    CheckTranslationMetric<float, Dimension>();
 }
 
 int main() {

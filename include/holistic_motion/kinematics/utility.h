@@ -43,13 +43,12 @@ struct OPWParameters {
 
     std::array<double, 6> offsets{};  ///< joint offsets in rad
     std::array<signed char, 6>
-            rotation_directions{};  ///< rotation direction (about z-axis), 1
-                                    ///< for clockwise, and -1 for
-                                    ///< counterclockwise
+            rotation_directions{};  ///< Joint-coordinate signs: +1 preserves,
+                                    ///< -1 reverses the analytic angle direction.
 
     /// \brief report self
     ///
-    /// \param OPWParameters
+    /// \param params Parameters to report
     /// \return std::string
     friend std::string _report(const OPWParameters &params);
 };
@@ -67,13 +66,12 @@ struct URParameters {
 
     std::array<double, 6> offsets{};  ///< joint offsets in rad
     std::array<signed char, 6>
-            rotation_directions{};  ///< rotation direction (about z-axis), 1
-                                    ///< for clockwise, and -1 for
-                                    ///< counterclockwise
+            rotation_directions{};  ///< Joint-coordinate signs: +1 preserves,
+                                    ///< -1 reverses the analytic angle direction.
 
     /// \brief report self
     ///
-    /// \param URParameters
+    /// \param params Parameters to report
     /// \return std::string
     friend std::string _report(const URParameters &params);
 };
@@ -96,7 +94,7 @@ struct FrankaParameters : FEPParameters {
 
     /// \brief report self
     ///
-    /// \param FrankaParameters
+    /// \param params Parameters to report
     /// \return std::string
     friend std::string _report(const FrankaParameters &params);
 };
@@ -109,7 +107,7 @@ struct AgileDiana7Parameters : FEPParameters {
 
     /// \brief report self
     ///
-    /// \param AgileDiana7Parameters
+    /// \param params Parameters to report
     /// \return std::string
     friend std::string _report(const AgileDiana7Parameters &params);
 };

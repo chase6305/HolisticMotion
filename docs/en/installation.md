@@ -326,7 +326,7 @@ optional discovery; inspect `HolisticMotion_model_FOUND`,
 `HolisticMotion_core_FOUND` or `HolisticMotion_collision_FOUND` for availability.
 Missing optional core dependencies do not prevent collision-only use. The old
 `holistic-motion::holistic-motion` aggregate target remains available and collects
-the discovered components. Missing required or unknown components fail discovery.
+the discovered components. Missing or unknown required components fail discovery.
 
 Component selection controls SDK discovery and linking. Conan's full dependency
 graph remains controlled by package options; use `with_collision=False` to omit

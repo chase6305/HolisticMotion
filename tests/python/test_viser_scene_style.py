@@ -1,5 +1,7 @@
 """Renderer-independent checks for the shared Viser scene environment."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from holistic_motion.visualization.viser import (
@@ -229,3 +231,40 @@ def test_complex_bounds_are_rejected_before_scene_updates(bounds, options):
 def test_configure_scene_from_bounds_rejects_invalid_input(bounds, options, error):
     with pytest.raises(error):
         configure_scene_from_bounds(ModernScene(), bounds, **options)
+
+
+def test_visual_mesh_preserves_scene_instances_and_node_transforms(tmp_path):
+    trimesh = pytest.importorskip("trimesh")
+    from holistic_motion.visualization.viser.scene import visual_mesh
+
+    box = trimesh.creation.box()
+    scene = trimesh.Scene()
+    first_offset = np.array([5.0, 0.0, 0.0])
+    second_offset = np.array([-2.0, 1.0, 0.0])
+    scene.add_geometry(
+        box,
+        geom_name="box",
+        node_name="first",
+        transform=trimesh.transformations.translation_matrix(first_offset),
+    )
+    scene.graph.update(
+        frame_to="second",
+        frame_from=scene.graph.base_frame,
+        matrix=trimesh.transformations.translation_matrix(second_offset),
+        geometry="box",
+    )
+    scene.export(tmp_path / "instances.glb")
+    mesh_type = object()
+    hm = SimpleNamespace(GeometryType=SimpleNamespace(MESH=mesh_type))
+    visual = SimpleNamespace(type=mesh_type, mesh_path="instances.glb", has_color=False)
+
+    mesh = visual_mesh(hm, visual, tmp_path)
+
+    expected = np.vstack((box.vertices + first_offset, box.vertices + second_offset))
+    assert len(mesh.vertices) == len(expected)
+    np.testing.assert_allclose(
+        mesh.bounds, np.array([[-2.5, -0.5, -0.5], [5.5, 1.5, 0.5]])
+    )
+    np.testing.assert_allclose(
+        mesh.vertices[np.lexsort(mesh.vertices.T)], expected[np.lexsort(expected.T)]
+    )

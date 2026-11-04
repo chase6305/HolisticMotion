@@ -122,17 +122,17 @@ class PlanningContext {
         // sampling.
         if (!validator_)
             return true;
-        const Eigen::VectorXd delta = Difference(from, to);
-        const std::size_t segments = SegmentCount(delta);
+        detail::DifferenceInto(from, to, continuous_, motion_difference_);
+        const std::size_t segments = SegmentCount(motion_difference_);
         // Check the far endpoint first, then interior states. This quickly
         // rejects extensions whose newly sampled endpoint is invalid.
         if (!IsStateValid(to) || TimedOut())
             return false;
-        Eigen::VectorXd sample;
+        auto &sample = motion_sample_;
         for (std::size_t i = 1; i < segments; ++i) {
             if (TimedOut())
                 return false;
-            sample = from + (static_cast<double>(i) / segments) * delta;
+            sample = from + (static_cast<double>(i) / segments) * motion_difference_;
             sample = Normalize(std::move(sample));
             if (!IsStateValid(sample) || TimedOut()) {
                 return false;
@@ -234,6 +234,8 @@ class PlanningContext {
     PlanningStatistics &statistics_;
     std::chrono::steady_clock::time_point deadline_;
     std::mt19937_64 generator_;
+    // Requests own their edge samples, including during reentrant callbacks.
+    Eigen::VectorXd motion_difference_, motion_sample_;
 };
 
 double PathLength(const std::vector<Eigen::VectorXd> &path,

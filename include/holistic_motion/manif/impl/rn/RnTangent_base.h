@@ -173,6 +173,16 @@ struct GeneratorEvaluator<RnTangentBase<Derived>> {
     }
 };
 
+// Translation generators are orthonormal in the Frobenius inner product.
+template <typename Derived>
+struct InnerWeightsEvaluator<RnTangentBase<Derived>> {
+    static typename RnTangentBase<Derived>::InnerWeightsMatrix run() {
+        using InnerWeightsMatrix = typename RnTangentBase<Derived>::InnerWeightsMatrix;
+        static const InnerWeightsMatrix weights = InnerWeightsMatrix::Identity();
+        return weights;
+    }
+};
+
 //! @brief Random specialization for RnTangentBase objects.
 template <typename Derived>
 struct RandomEvaluatorImpl<RnTangentBase<Derived>> {

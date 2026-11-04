@@ -206,7 +206,7 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                     if (SolveConfiguration(target, configuration, seed, candidate))
                         append(candidate);
                 }
-    } else {
+    } else if (method == FEPSolveMethod::NEAREST_REDUNDANCY) {
         Eigen::VectorXd best, trial;
         double best_cost = std::numeric_limits<double>::infinity();
         const double lower = joint_nodes_[6].lower_limit;

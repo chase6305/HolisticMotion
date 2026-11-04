@@ -15,6 +15,7 @@ from typing import Optional, Union
 
 import numpy as np
 
+from ..._validation import require_real
 from .pink_solver import PinkRetargetingSolver
 from .pinocchio_solver import RetargetingResult, RetargetingTarget
 
@@ -41,6 +42,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
             raise TypeError("num_seeds must be an integer")
         if num_seeds < 1:
             raise ValueError("num_seeds must be positive")
+        require_real(seed_spread, name="seed_spread")
         if not np.isfinite(seed_spread) or seed_spread < 0.0:
             raise ValueError("seed_spread must be finite and non-negative")
         if isinstance(sampler_seed, bool) or not isinstance(sampler_seed, Integral):

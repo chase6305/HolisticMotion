@@ -90,7 +90,7 @@ def _as_mesh(loaded, trimesh):
     if isinstance(loaded, trimesh.Scene):
         if not loaded.geometry:
             raise ValueError("collision mesh scene is empty")
-        loaded = loaded.to_geometry()
+        loaded = trimesh.util.concatenate(loaded.dump())
     if not isinstance(loaded, trimesh.Trimesh):
         raise TypeError(f"unsupported collision geometry: {type(loaded).__name__}")
     return loaded
@@ -200,12 +200,14 @@ def _load_urdf_collision_meshes(
                 mesh = mesh.copy()
             else:
                 geometry_cache.pop(key, None)
-            if shape.tag == "mesh":
+            if shape.tag == "mesh" and shape.get("scale") is not None:
                 scale = _vector(shape.get("scale"), 3, [1, 1, 1])
                 if np.any(scale <= 0.0):
                     raise ValueError(f"link {link_name} mesh scale must be positive")
                 mesh.apply_scale(scale)
-            mesh.apply_transform(_origin_transform(collision.find("origin")))
+            origin = collision.find("origin")
+            if origin is not None:
+                mesh.apply_transform(_origin_transform(origin))
             geometries.append(mesh)
         if geometries:
             result[link_name] = (

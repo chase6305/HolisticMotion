@@ -730,6 +730,8 @@ def test_curobo_style_solver_tracks_kinematic_zmp(tmp_path):
         ({"num_seeds": 0}, ValueError),
         ({"num_seeds": True}, TypeError),
         ({"seed_spread": -1.0}, ValueError),
+        ({"seed_spread": np.complex64(0.25)}, TypeError),
+        ({"seed_spread": np.complex128(0.25 + 1j)}, TypeError),
         ({"sampler_seed": False}, TypeError),
         ({"sampler_seed": -1}, ValueError),
         ({"stop_on_success": "yes"}, TypeError),

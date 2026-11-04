@@ -288,7 +288,7 @@ spdlog SDK，静态核心消费者仍需解析它的库。
 `HolisticMotion_model_FOUND`、`HolisticMotion_core_FOUND` 或
 `HolisticMotion_collision_FOUND` 检查是否可用。缺少可选核心依赖不影响仅使用碰撞组件。
 旧的 `holistic-motion::holistic-motion` 聚合目标继续保留，汇集已发现的组件。
-缺失必需组件或未知组件会导致发现失败。
+缺失或未知的必需组件会导致发现失败。
 
 组件选择控制 SDK 发现和链接；Conan 的完整依赖图仍由包选项决定。
 使用 `with_collision=False` 可从该依赖图中移除碰撞后端。
