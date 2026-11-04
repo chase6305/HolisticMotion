@@ -238,6 +238,8 @@ double WrappedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd 
     return result;
 }
 
+constexpr double kAcceptedPoseTolerance = 1e-5;
+
 bool HasStrictPose(const SRSKinematics &solver, const SE3d &target,
                    const Eigen::VectorXd &candidate) {
     SE3d actual;
@@ -247,8 +249,9 @@ bool HasStrictPose(const SRSKinematics &solver, const SE3d &target,
     }
     const Eigen::Matrix4d delta =
         actual.GetTransform().inverse() * target.GetTransform();
-    return delta.block<3, 1>(0, 3).norm() < 1e-5 &&
-           Eigen::AngleAxisd(delta.block<3, 3>(0, 0)).angle() < 1e-5;
+    return delta.block<3, 1>(0, 3).norm() < kAcceptedPoseTolerance &&
+           Eigen::AngleAxisd(delta.block<3, 3>(0, 0)).angle() <
+               kAcceptedPoseTolerance;
 }
 
 bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
@@ -261,17 +264,21 @@ bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
     NumericalKinematics refinement(solver.GetJointNode());
     refinement.SetTCP(solver.GetTCP());
     refinement.SetMaxIterNum(100);
-    refinement.SetTransErrTh(1e-8);
-    refinement.SetAngleErrTh(1e-8);
     refinement.SetDamp(0.005);
-    IkRtn refined;
-    std::vector<double> distances;
-    if (!refinement.GetIK(target, refined, candidate, distances) ||
-        refined.ik_joints.empty()) {
-        return false;
+    // Preserve the preferred precision. If that goal cannot converge near a
+    // singularity, retry at the accepted pose tolerance before discarding it.
+    for (double tolerance : {1e-8, kAcceptedPoseTolerance}) {
+        refinement.SetTransErrTh(tolerance);
+        refinement.SetAngleErrTh(tolerance);
+        IkRtn refined;
+        std::vector<double> distances;
+        if (refinement.GetIK(target, refined, candidate, distances) &&
+            !refined.ik_joints.empty()) {
+            candidate = refined.ik_joints.front();
+            return HasStrictPose(solver, target, candidate);
+        }
     }
-    candidate = refined.ik_joints.front();
-    return HasStrictPose(solver, target, candidate);
+    return false;
 }
 
 } // namespace
