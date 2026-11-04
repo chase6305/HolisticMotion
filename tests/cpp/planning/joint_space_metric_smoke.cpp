@@ -16,6 +16,25 @@ using holistic_motion::robotics::planning::detail::JointSpaceMetric;
 using holistic_motion::robotics::planning::detail::kPi;
 
 int main() {
+    for (double origin : {-kPi, 0.0, -2.0 * kPi}) {
+        const Eigen::VectorXd lower = Eigen::VectorXd::Constant(1, origin);
+        const Eigen::VectorXd upper =
+            Eigen::VectorXd::Constant(1, origin + 2.0 * kPi);
+        for (double angle :
+             {0.0, -0.0, 0.1, -0.1, 1e-16, -1e-16, 1e-100, -1e-100,
+              std::numeric_limits<double>::denorm_min()}) {
+            if (angle < lower[0] || angle >= upper[0])
+                continue;
+            const double normalized = holistic_motion::robotics::planning::
+                detail::NormalizeCoordinate(angle, 0, lower, upper, {true});
+            if (normalized != angle ||
+                std::signbit(normalized) != std::signbit(angle)) {
+                std::cerr
+                    << "normalization changed an in-range continuous angle\n";
+                return 7;
+            }
+        }
+    }
     // Each weighted component is exactly half of the smallest subnormal;
     // four together have a representable norm. Do not round each one first.
     for (const auto &parameters :

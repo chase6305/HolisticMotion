@@ -34,6 +34,8 @@ coordinates within a revolution. `set_continuous_joints` rejects bounds whose
 spacing at either endpoint is at least `2*pi`; failed changes preserve prior topology.
 With coarser spacing, interpolated validation samples can collapse even when
 the original endpoints are distinct.
+Angles already inside the canonical interval are retained unchanged, preserving
+small representable interpolation and optimization steps.
 
 Joint weights control search distances, not a goal tolerance. A direct solution
 preserves distinct endpoints even with very small weights. RRT-Connect joins
