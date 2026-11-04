@@ -40,9 +40,45 @@ bool SameGeometry(const SRSGeometryAnalysis &lhs, const SRSGeometryAnalysis &rhs
            lhs.elbow_angle_direction == rhs.elbow_angle_direction;
 }
 
+bool CheckNearSingularRefinement() {
+    auto nodes = MakeModel();
+    for (int joint = 0; joint < 7; ++joint)
+        nodes[joint].origin_pose = SE3d(Eigen::Vector3d(0, 0, 0.2), SO3d());
+    SRSKinematics solver(nodes);
+    for (double initial_angle : {0.0005, 0.001, 0.002}) {
+        for (int moving_joint : {3, 4}) {
+            const auto seed =
+                Eigen::VectorXd::Constant(7, initial_angle).eval();
+            auto expected = seed;
+            expected[moving_joint] += 0.001;
+            SE3d target;
+            if (!solver.GetFK(expected, target))
+                return false;
+            std::vector<Eigen::VectorXd> solutions;
+            if (!solver.Solve(target, seed, SRSSolveMethod::SEEDED_NUMERICAL,
+                              solutions) ||
+                solutions.empty()) {
+                std::cerr << "SRS discarded a valid near-singular refinement\n";
+                return false;
+            }
+            SE3d actual;
+            if (!solver.GetFK(solutions.front(), actual) ||
+                (actual.GetTranslation() - target.GetTranslation()).norm() >=
+                    1e-5 ||
+                Eigen::AngleAxisd(actual.GetRotation().transpose() *
+                                  target.GetRotation())
+                        .angle() >= 1e-5)
+                return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
+    if (!CheckNearSingularRefinement())
+        return 1;
     auto nodes = MakeModel();
     SRSKinematics solver(nodes);
     const auto original = solver.AnalyzeGeometry();

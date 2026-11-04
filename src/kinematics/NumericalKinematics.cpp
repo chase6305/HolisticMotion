@@ -148,12 +148,18 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
             if (!workspace.Solve(jacobian, error, this->damp_coeff_, this->eps_,
                                  delta_theta))
                 break;
-            current_joints += this->step_size_ * delta_theta;
+            bool coordinates_changed = false;
             for (int joint = 0; joint < this->dof_; ++joint) {
                 const auto &node = this->joint_nodes_[joint];
-                current_joints[joint] =
-                    clamp(current_joints[joint], node.lower_limit, node.upper_limit);
+                const double previous_coordinate = current_joints[joint];
+                current_joints[joint] = clamp(
+                    previous_coordinate + this->step_size_ * delta_theta[joint],
+                    node.lower_limit, node.upper_limit);
+                coordinates_changed |= current_joints[joint] != previous_coordinate;
             }
+            // Stop only for identical coordinates, preserving tiny changes.
+            if (!coordinates_changed)
+                break;
             if (!this->GetAllFK(current_joints, joint_poses) ||
                 joint_poses.size() <= static_cast<std::size_t>(this->dof_))
                 break;

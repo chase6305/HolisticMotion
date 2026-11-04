@@ -9,6 +9,7 @@
 
 using holistic_motion::robotics::planning::NullSpacePlanner;
 using holistic_motion::robotics::planning::PathOptimizer;
+using holistic_motion::robotics::planning::PathOptimizationOptions;
 using holistic_motion::robotics::planning::PlanningOptions;
 using holistic_motion::robotics::planning::SamplingAlgorithm;
 using holistic_motion::robotics::planning::SamplingPlanner;
@@ -79,6 +80,35 @@ int main() {
         boundary.status != holistic_motion::robotics::planning::PathOptimizationStatus::INVALID_PATH) {
       std::cerr << "invalid exact endpoint escaped path validation\n";
       return 7;
+    }
+  }
+
+  {
+    PathOptimizer stationary_optimizer(Eigen::VectorXd::Constant(1, -1.0),
+                                      Eigen::VectorXd::Constant(1, 1.0));
+    std::size_t gradient_calls = 0;
+    stationary_optimizer.SetStateCost(
+        [](const Eigen::VectorXd &) { return 1.0; });
+    stationary_optimizer.SetStateCostGradient(
+        [&gradient_calls](const Eigen::VectorXd &q) {
+          ++gradient_calls;
+          return q;
+        });
+    PathOptimizationOptions stationary_options;
+    stationary_options.length_weight = 0.0;
+    stationary_options.smoothness_weight = 0.0;
+    stationary_options.state_cost_weight = 1.0;
+    stationary_options.state_cost_step_size = 0.0;
+    const auto stationary = stationary_optimizer.Optimize(
+        {Eigen::VectorXd::Constant(1, -0.5), Eigen::VectorXd::Constant(1, 0.2),
+         Eigen::VectorXd::Constant(1, 0.5)},
+        stationary_options);
+    if (!stationary.Success() || gradient_calls != 0 ||
+        stationary.statistics.state_cost_evaluations != 1 ||
+        stationary.statistics.state_cost_gradient_evaluations != 0 ||
+        stationary.path[1][0] != 0.2) {
+      std::cerr << "zero-gain state cost still requested its gradient\n";
+      return 10;
     }
   }
 

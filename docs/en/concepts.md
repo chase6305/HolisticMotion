@@ -269,6 +269,10 @@ SRS and FEP candidate comparisons use each joint's coordinate period
 ranking keeps joint-coordinate distances. FEP passes the same periods to CPU
 and CUDA scoring and bounds redundancy sampling by physical half turns.
 
+UR IK keeps a compatible wrist seed and selects a nearby reachable roll at
+straight or folded wrists. Returned coordinates are checked after joint-limit
+wrapping with an SE(3) tangent tolerance of `1e-10` (metres and radians).
+
 Inspect `solver.capabilities` in Python or `GetCapabilities()` through the C++
 `KinematicsBase` interface before selecting optional operations. The snapshot
 reports the solver family, default IK algorithm, DOF, Jacobian, redundancy,
@@ -287,6 +291,11 @@ closed-form IK; `supports_closed_form_ik` reports that distinction using the
 default geometry tolerance. Passing a custom tolerance to `analyze_geometry()`
 does not change this capability or the configured solver. FEP currently uses
 numerical correction and does not advertise closed-form IK.
+
+OPW IK preserves a compatible seed at straight or folded wrists, including
+joint offsets and reversed axes. Candidates still pass joint limits and filters;
+their FK residual is checked with an SE(3) tangent tolerance of `1e-10`
+(translation in metres, rotation in radians).
 
 `solve_ik(target, seed, selection=IKSelection.NEAREST)` provides a common
 owned report for all built-in solvers. Its `status` distinguishes `SUCCESS`,
@@ -322,6 +331,8 @@ Ideal SRS models retain the direct closed-form result;
 small URDF link offsets use that result as a branch-preserving seed for a
 strict local correction. Equivalent revolute angles are selected directly
 from the declared joint-limit interval rather than from a fixed wrap count.
+Local correction keeps its preferred high-precision pass, then retries at the
+existing 10 µm and 10 µrad pose bounds if that pass cannot converge.
 
 For streaming targets, use the stateful Python tracker instead of selecting
 each frame independently:
@@ -337,6 +348,9 @@ q_command = result.joints
 The tracker expands periodic angles near the predicted state, applies branch
 hysteresis, filters candidates by pose and dynamic limits, and reports
 singularity, branch-change, velocity, acceleration, and residual diagnostics.
+`dt` must be a finite positive scalar. A failed or cancelled `solve()` leaves
+the previous accepted state and branch hysteresis unchanged, so the caller can
+retry the target. Result arrays are owned, read-only snapshots.
 The native `SRSKinematics` keeps no streaming-target history and can still be
 used directly. Geometry measurements are computed at construction and after
 successful model updates; `analyze_geometry(tolerance)` only classifies that
@@ -360,6 +374,8 @@ are independently checked to 10 µm and 10 µrad after optional high-precision
 refinement. Explicit `CUDA` requests fail instead of silently falling back.
 The high-precision pass inherits the current TCP, so its target and final check
 use the same tool frame as the initial solve.
+Refinement stops at the same 10 µm and 10 µrad acceptance limits, avoiding
+unnecessary iterations and false failures near singularities.
 CPU batch FK prepares joint axes and the fixed terminal/TCP transform once per
 call, then accumulates each pose without allocating per-row joint or pose lists.
 Model and TCP changes take effect on the next call. Scalar FK uses axis-angle
