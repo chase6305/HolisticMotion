@@ -10,7 +10,7 @@ from typing import Union
 
 import numpy as np
 
-from .._validation import real_array, require_real, validated_transform
+from .._validation import finite_scalar, real_array, require_real, validated_transform
 
 Limit = Union[float, Sequence[float], np.ndarray]
 
@@ -151,12 +151,7 @@ class SRSContinuousResult:
             if not isinstance(value, (bool, np.bool_)):
                 raise TypeError(f"{name} must be boolean")
             object.__setattr__(self, name, bool(value))
-        for name in (
-            "redundancy",
-            "minimum_singular_value",
-            "position_error",
-            "angle_error",
-        ):
+        for name in metric_names:
             object.__setattr__(self, name, float(getattr(self, name)))
         if not isinstance(self.candidate_count, Integral) or isinstance(
             self.candidate_count, bool
@@ -214,8 +209,6 @@ class SRSContinuousTracker:
             or np.any(self._lower > self._upper)
         ):
             raise ValueError("solver returned invalid seven-axis joint limits")
-        self._bounded_lower = np.isfinite(self._lower)
-        self._bounded_upper = np.isfinite(self._upper)
         self._max_velocity = self._limit_vector(
             self.options.max_velocity, "max_velocity"
         )
@@ -276,7 +269,8 @@ class SRSContinuousTracker:
 
     def solve(self, target: np.ndarray, dt: float) -> SRSContinuousResult:
         pose = validated_transform(target, name="target")
-        if not np.isfinite(dt) or dt <= 0.0:
+        dt = finite_scalar(dt, "dt")
+        if dt <= 0.0:
             raise ValueError("dt must be finite and positive")
 
         with np.errstate(over="ignore", invalid="ignore"):

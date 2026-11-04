@@ -1,4 +1,6 @@
 #include "holistic_motion/kinematics/OPWKinematics.h"
+#include "holistic_motion/utility/Logging.h"
+#include <fmt/ranges.h>
 
 #include "FrameValidation.h"
 
@@ -16,14 +18,27 @@ double SafeAcos(double value) {
     return std::acos(std::clamp(value, -1.0, 1.0));
 }
 
-bool IsFiniteVector(const Eigen::VectorXd& values) {
-    return values.allFinite();
-}
-
 }  // namespace
 
 namespace holistic_motion {
 namespace robotics {
+
+OPWKinematics::OPWKinematics(OPWParameters opwp, const std::vector<JointNode> &joint_node)
+    : params_(opwp) {
+    const double arm_length = std::hypot(params_.a2, params_.c3);
+    if (!std::isfinite(params_.a1) || !std::isfinite(params_.a2) || !std::isfinite(params_.b) ||
+        !std::isfinite(params_.c1) || !std::isfinite(params_.c2) || !std::isfinite(params_.c3) ||
+        !std::isfinite(params_.c4) || std::abs(params_.c2) <= 1e-12 || !std::isfinite(arm_length) ||
+        arm_length <= 1e-12 || !detail::IsValidFrame(params_.T_b_ob) ||
+        !detail::IsValidFrame(params_.T_oe_e) ||
+        !std::all_of(params_.offsets.begin(), params_.offsets.end(),
+                     [](double value) { return std::isfinite(value); }) ||
+        !std::all_of(params_.rotation_directions.begin(), params_.rotation_directions.end(),
+                     [](signed char value) { return value == 1 || value == -1; }))
+        throw std::invalid_argument(
+            "invalid OPW geometry, offsets, axis directions, or transforms");
+    InitializeJointModel(joint_node, 6);
+}
 
 KinematicsCapabilities OPWKinematics::GetCapabilities() const {
     auto result = KinematicsBase::GetCapabilities();
@@ -38,12 +53,12 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
                           SE3d &pose) const {
     holistic_motion::utility::LogDebug("GetFK:Begin to get FK");
 
-    if (target_joint.size() != 6 || !IsFiniteVector(target_joint)) {
+    if (target_joint.size() != 6 || !target_joint.allFinite()) {
         return false;
     }
 
     double q[6];
-    Eigen::VectorXd s(6), c(6);
+    std::array<double, 6> s, c;
     for (size_t i = 0; i < 6; ++i) {
         q[i] = target_joint[i] * this->params_.rotation_directions[i] -
                this->params_.offsets[i];
@@ -52,14 +67,15 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
     }
 
     double pis_3 = std::atan2(this->params_.a2, this->params_.c3);
-    double k = std::sqrt(this->params_.a2 * this->params_.a2 +
-                         this->params_.c3 * this->params_.c3);
+    double k = std::sqrt(this->params_.a2 * this->params_.a2 + this->params_.c3 * this->params_.c3);
+    // Rescale only when squaring the arm geometry overflows.
+    if (!std::isfinite(k))
+        k = std::hypot(this->params_.a2, this->params_.c3);
 
     double c_x1 = this->params_.c2 * std::sin(q[1]) +
                   k * std::sin(q[1] + q[2] + pis_3) + this->params_.a1;
     double c_y1 = this->params_.b;
-    double c_z1 = this->params_.c2 * std::cos(q[1]) +
-                  k * std::cos(q[1] + q[2] + pis_3);
+    double c_z1 = this->params_.c2 * std::cos(q[1]) + k * std::cos(q[1] + q[2] + pis_3);
 
     double c_x0 = c_x1 * std::cos(q[0]) - c_y1 * std::sin(q[0]);
     double c_y0 = c_x1 * std::sin(q[0]) + c_y1 * std::cos(q[0]);
@@ -92,15 +108,17 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
                 0, 0, 0, 1;
     /* clang-format on */
 
-    pose = this->params_.T_b_ob * SE3d(T_ob_oe) * this->params_.T_oe_e;
-    pose = pose * this->tcp_;
+    if (!T_ob_oe.allFinite())
+        return false;
+    const SE3d result = this->params_.T_b_ob * SE3d(T_ob_oe) * this->params_.T_oe_e * this->tcp_;
+    if (!result.Coeffs().allFinite())
+        return false;
+    pose = result;
     holistic_motion::utility::LogDebug("GetFK:Success to get FK");
     return true;
 }
 
-bool OPWKinematics::GetIK(const SE3d &target_pose,
-                          IkRtn &ik_solutions,
-                          Eigen::VectorXd &joint_seed,
+bool OPWKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::VectorXd &joint_seed,
                           std::vector<double> &dist) const {
     if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
         Eigen::VectorXd stable_seed = joint_seed;
@@ -117,33 +135,28 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
     if (joint_seed.size() != this->dof_) {
         joint_seed = this->home_joints_;
     }
-    if (!IsFiniteVector(joint_seed)) {
+    if (!joint_seed.allFinite()) {
         joint_seed = this->home_joints_;
     }
 
     SE3d T_ob_oe = target_pose * this->tcp_.Inverse();
-    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe *
-              this->params_.T_oe_e.Inverse();
+    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe * this->params_.T_oe_e.Inverse();
 
     // get wrist c
     Eigen::Matrix3d R_o = T_ob_oe.GetRotation();
     Eigen::Vector3d xyz_o = T_ob_oe.GetTranslation();
-    Eigen::Vector3d c =
-            xyz_o - this->params_.c4 * R_o * Eigen::Vector3d(0, 0, 1);
+    Eigen::Vector3d c = xyz_o - this->params_.c4 * R_o * Eigen::Vector3d(0, 0, 1);
 
     // c part: compute angle1, angle2, angle3
-    const double radial_squared = c[0] * c[0] + c[1] * c[1] -
-                                  this->params_.b * this->params_.b;
+    const double radial_squared = c[0] * c[0] + c[1] * c[1] - this->params_.b * this->params_.b;
     if (radial_squared < -kDomainTolerance) {
         return false;
     }
-    double n_x1 = std::sqrt(std::max(0.0, radial_squared)) -
-                  this->params_.a1;
+    double n_x1 = std::sqrt(std::max(0.0, radial_squared)) - this->params_.a1;
     double s1_2 = n_x1 * n_x1 + std::pow(c[2] - this->params_.c1, 2);
     double s2_2 = std::pow(n_x1 + 2 * this->params_.a1, 2) +
                   std::pow(c[2] - this->params_.c1, 2);
-    double k_2 = this->params_.a2 * this->params_.a2 +
-                 this->params_.c3 * this->params_.c3;
+    double k_2 = this->params_.a2 * this->params_.a2 + this->params_.c3 * this->params_.c3;
 
     double s1 = std::sqrt(s1_2);
     double s2 = std::sqrt(s2_2);
@@ -180,12 +193,10 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
                 std::atan2(n_x1, c[2] - this->params_.c1);
     angle2[1] = SafeAcos((s1_2 + c2_2 - k_2) / (2 * s1 * this->params_.c2)) +
                 std::atan2(n_x1, c[2] - this->params_.c1);
-    angle2[2] =
-            -SafeAcos((s2_2 + c2_2 - k_2) / (2 * s2 * this->params_.c2)) -
-            std::atan2(n_x1 + 2 * this->params_.a1, c[2] - this->params_.c1);
-    angle2[3] =
-            SafeAcos((s2_2 + c2_2 - k_2) / (2 * s2 * this->params_.c2)) -
-            std::atan2(n_x1 + 2 * this->params_.a1, c[2] - this->params_.c1);
+    angle2[2] = -SafeAcos((s2_2 + c2_2 - k_2) / (2 * s2 * this->params_.c2)) -
+                std::atan2(n_x1 + 2 * this->params_.a1, c[2] - this->params_.c1);
+    angle2[3] = SafeAcos((s2_2 + c2_2 - k_2) / (2 * s2 * this->params_.c2)) -
+                std::atan2(n_x1 + 2 * this->params_.a1, c[2] - this->params_.c1);
 
     ///< compute angle3
     double c2k = 2 * this->params_.c2 * std::sqrt(k_2);
@@ -273,17 +284,16 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
     }
 
     SE3d temp_pose;
+    Eigen::VectorXd joints(6);
     for (unsigned i = 0; i < 8; i++) {
-        holistic_motion::utility::LogDebug(
-                "GetIK: result "
-                "joint:\n[{:10.8f},{:10.8f},{:10.8f},{:10.8f},{:10."
-                "8f},{:10.8f}]",
-                angle1[i % 4], angle2[i % 4], angle3[i % 4], angle4[i],
-                angle5[i], angle6[i]);
+        holistic_motion::utility::LogDebug("GetIK: result "
+                                           "joint:\n[{:10.8f},{:10.8f},{:10.8f},{:10.8f},{:10."
+                                           "8f},{:10.8f}]",
+                                           angle1[i % 4], angle2[i % 4], angle3[i % 4], angle4[i],
+                                           angle5[i], angle6[i]);
         if (std::isfinite(angle1[i % 4]) && std::isfinite(angle2[i % 4]) &&
             std::isfinite(angle3[i % 4]) && std::isfinite(angle4[i]) &&
             std::isfinite(angle5[i]) && std::isfinite(angle6[i])) {
-            Eigen::VectorXd joints(6);
             joints << (angle1[i % 4] + this->params_.offsets[0]) *
                               this->params_.rotation_directions[0],
                     (angle2[i % 4] + this->params_.offsets[1]) *
@@ -326,9 +336,8 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {
-            temp_dist +=
-                    std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
-                             this->ik_nearst_weight_[j]);
+            temp_dist += std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
+                                  this->ik_nearst_weight_[j]);
         }
         dist.push_back(temp_dist);
     }
@@ -344,43 +353,6 @@ bool OPWKinematics::GetIK(const SE3d &target_pose,
     }
 
     holistic_motion::utility::LogDebug("GetIK: Failed to get position IK.");
-    return false;
-}
-
-bool OPWKinematics::GetNearstIK(const SE3d &target_pose,
-                                IkRtn &ik_solutions,
-                                Eigen::VectorXd &joint_seed,
-                                double &min_dist) const {
-    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
-        Eigen::VectorXd stable_seed = joint_seed;
-        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
-    }
-
-    holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK");
-
-    if (joint_seed.size() != this->dof_) {
-        joint_seed = this->home_joints_;
-    }
-
-    std::vector<double> dist;
-    if (!GetIK(target_pose, ik_solutions, joint_seed, dist)) {
-        return false;
-    }
-    // ik_solutions
-    if (ik_solutions.success) {
-        if (!dist.empty()) {
-            min_dist = dist.front();
-        }
-        if (ik_solutions.ik_number != 1) {
-            ik_solutions.ik_number = 1;
-            ik_solutions.ik_joints.erase(ik_solutions.ik_joints.begin() + 1,
-                                         ik_solutions.ik_joints.end());
-        }
-        holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
-        return true;
-    }
-
-    holistic_motion::utility::LogWarning("GetNearstIK: Failed to get nearst IK.");
     return false;
 }
 

@@ -1,4 +1,5 @@
 #include "holistic_motion/kinematics/NumericalKinematics.h"
+#include "holistic_motion/utility/Logging.h"
 
 #include "DampedIKWorkspace.h"
 #include "FrameValidation.h"
@@ -235,26 +236,20 @@ bool NumericalKinematics::GetNearstIK(const SE3d &target_pose,
     }
 
     std::vector<double> dist;
-    if (SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, &joint_seed)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug(
-                "GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
+    if (SolveIKImpl(target_pose, ik_solutions, joint_seed, dist, &joint_seed) &&
+        ik_solutions.success) {
+        min_dist = dist.front();
+        holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        return true;
     }
 
     ik_solutions.Clear();
     Eigen::VectorXd zero_joint_seed = Eigen::VectorXd::Zero(this->dof_);
-    if (SolveIKImpl(target_pose, ik_solutions, zero_joint_seed, dist, &joint_seed)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            min_dist = dist.front();
-            holistic_motion::utility::LogDebug(
-                "GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
+    if (SolveIKImpl(target_pose, ik_solutions, zero_joint_seed, dist, &joint_seed) &&
+        ik_solutions.success) {
+        min_dist = dist.front();
+        holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
+        return true;
     }
 
     holistic_motion::utility::LogDebug("GetNearstIK: Failed to get nearst IK.");

@@ -14,12 +14,13 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 
-from ..._validation import real_array, require_real
+from ..._validation import finite_scalar, real_array, require_real
 from .modes import RetargetingMode
 from .pinocchio_solver import (
-    PinocchioRetargetingSolver,
     RetargetingResult,
     RetargetingTarget,
+    _positive_float,
+    _RetargetingSession,
 )
 from .tasks import (
     CenterOfMassTask,
@@ -31,7 +32,7 @@ from .tasks import (
 )
 
 
-class PinkRetargetingSolver(PinocchioRetargetingSolver):
+class PinkRetargetingSolver(_RetargetingSession):
     """Weighted task-space differential IK with posture and velocity limits."""
 
     def __init__(
@@ -88,27 +89,23 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             0.0,
             "joint motion costs",
         )
-        if not np.isfinite(integration_dt) or integration_dt <= 0.0:
-            raise ValueError("integration_dt must be finite and positive")
-        self.integration_dt = float(integration_dt)
-        self.position_tolerance = float(
-            self.tolerance if position_tolerance is None else position_tolerance
+        self.integration_dt = _positive_float(integration_dt, "integration_dt")
+        self.position_tolerance = _positive_float(
+            self.tolerance if position_tolerance is None else position_tolerance,
+            "task tolerances",
         )
-        self.orientation_tolerance = float(
-            self.tolerance if orientation_tolerance is None else orientation_tolerance
+        self.orientation_tolerance = _positive_float(
+            self.tolerance if orientation_tolerance is None else orientation_tolerance,
+            "task tolerances",
         )
-        if not (
-            np.isfinite(self.position_tolerance)
-            and self.position_tolerance > 0.0
-            and np.isfinite(self.orientation_tolerance)
-            and self.orientation_tolerance > 0.0
-        ):
-            raise ValueError("task tolerances must be finite and positive")
         if not isinstance(stagnation_iterations, Integral) or isinstance(
             stagnation_iterations, bool
         ):
             raise TypeError("stagnation_iterations must be an integer")
-        if not np.isfinite(stagnation_tolerance) or stagnation_tolerance < 0.0:
+        stagnation_tolerance = finite_scalar(
+            stagnation_tolerance, "stagnation tolerance"
+        )
+        if stagnation_tolerance < 0.0:
             raise ValueError("stagnation tolerance must be finite and non-negative")
         if stagnation_iterations < 1:
             raise ValueError("stagnation_iterations must be positive")
@@ -116,7 +113,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             raise TypeError("max_backtracks must be an integer")
         if max_backtracks < 0:
             raise ValueError("max_backtracks must be non-negative")
-        self.stagnation_tolerance = float(stagnation_tolerance)
+        self.stagnation_tolerance = stagnation_tolerance
         self.stagnation_iterations = int(stagnation_iterations)
         self.max_backtracks = int(max_backtracks)
         callbacks = {
@@ -135,13 +132,14 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             raise ValueError(
                 "provide collision_gradient or collision_cost_gradient, not both"
             )
-        collision_options = (
-            collision_cost_weight,
-            collision_tolerance,
-            collision_finite_difference_step,
+        collision_cost_weight, collision_tolerance, collision_finite_difference_step = (
+            finite_scalar(value, "collision options")
+            for value in (
+                collision_cost_weight,
+                collision_tolerance,
+                collision_finite_difference_step,
+            )
         )
-        if not all(np.isfinite(value) for value in collision_options):
-            raise ValueError("collision options must be finite")
         if collision_cost_weight < 0.0 or collision_tolerance < 0.0:
             raise ValueError("collision weight and tolerance must be non-negative")
         if collision_finite_difference_step <= 0.0:
@@ -149,29 +147,25 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         self.collision_cost = collision_cost
         self.collision_gradient = collision_gradient
         self.collision_cost_gradient = collision_cost_gradient
-        self.collision_cost_weight = float(collision_cost_weight)
-        self.collision_tolerance = float(collision_tolerance)
-        self.collision_finite_difference_step = float(collision_finite_difference_step)
+        self.collision_cost_weight = collision_cost_weight
+        self.collision_tolerance = collision_tolerance
+        self.collision_finite_difference_step = collision_finite_difference_step
         if center_of_mass_task is not None and not isinstance(
             center_of_mass_task, CenterOfMassTask
         ):
             raise TypeError("center_of_mass_task must be CenterOfMassTask or None")
         self.center_of_mass_task = center_of_mass_task
-        self.center_of_mass_tolerance = float(
+        self.center_of_mass_tolerance = _positive_float(
             self.tolerance
             if center_of_mass_tolerance is None
-            else center_of_mass_tolerance
+            else center_of_mass_tolerance,
+            "center-of-mass tolerance",
         )
-        if (
-            not np.isfinite(self.center_of_mass_tolerance)
-            or self.center_of_mass_tolerance <= 0.0
-        ):
-            raise ValueError("center-of-mass tolerance must be finite and positive")
         self._center_of_mass_target = None
-        if (
-            not np.isfinite(support_polygon_tolerance)
-            or support_polygon_tolerance < 0.0
-        ):
+        support_polygon_tolerance = finite_scalar(
+            support_polygon_tolerance, "support polygon tolerance"
+        )
+        if support_polygon_tolerance < 0.0:
             raise ValueError(
                 "support polygon tolerance must be finite and non-negative"
             )
@@ -180,15 +174,14 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         ):
             raise TypeError("support_polygon_task must be SupportPolygonTask or None")
         self.support_polygon_task = support_polygon_task
-        self.support_polygon_tolerance = float(support_polygon_tolerance)
+        self.support_polygon_tolerance = support_polygon_tolerance
         if zmp_task is not None and not isinstance(zmp_task, ZmpTask):
             raise TypeError("zmp_task must be ZmpTask or None")
         self.zmp_task = zmp_task
-        self.zmp_tolerance = float(
-            self.tolerance if zmp_tolerance is None else zmp_tolerance
+        self.zmp_tolerance = _positive_float(
+            self.tolerance if zmp_tolerance is None else zmp_tolerance,
+            "ZMP tolerance",
         )
-        if not np.isfinite(self.zmp_tolerance) or self.zmp_tolerance <= 0.0:
-            raise ValueError("ZMP tolerance must be finite and positive")
         self._zmp_target = None
         self._center_of_mass_acceleration = np.zeros(3)
         if (
@@ -203,8 +196,6 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
             acceleration_limits
         )
         self._last_velocity = np.zeros(self.model.nv)
-        self._active_cache = {}
-        self._system_workspace = {}
         model_velocity_limits = np.asarray(self.model.velocityLimit, dtype=float)
         self._model_velocity_limits = model_velocity_limits
         self._velocity_limit_cache = {}
@@ -254,18 +245,15 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         """Prepare mode indices, limits, and numerical workspaces."""
 
         self._posture_weights()
-        previous_mode = self.mode
-        try:
-            super().prepare(mode)
-            active, _ = self._mode_limits()
-            if self.mode not in self._system_workspace:
-                self._system_workspace[self.mode] = (
-                    np.empty((active.size, active.size), dtype=float),
-                    np.empty(active.size, dtype=float),
-                )
-        except BaseException:
-            self.set_mode(previous_mode)
-            raise
+        super().prepare(mode)
+
+    def _prepare_workspace(self, plan) -> None:
+        active, _ = self._mode_limits()
+        if self.mode not in self._workspaces:
+            self._workspaces[self.mode] = (
+                np.empty((active.size, active.size), dtype=float),
+                np.empty(active.size, dtype=float),
+            )
 
     def set_center_of_mass_target(self, target: Sequence[float]) -> None:
         value = real_array(target, name="center-of-mass target").reshape(-1)
@@ -601,8 +589,9 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         )
 
     def _mode_limits(self) -> tuple[np.ndarray, np.ndarray]:
-        if self.mode not in self._active_cache:
-            active = self._mode_plan().active_velocity_indices
+        active = self._mode_plan().active_velocity_indices
+        values = self._velocity_limit_cache.get(self.mode)
+        if values is None:
             values = self._model_velocity_limits[active]
             if np.any(np.isnan(values)) or np.any(values < 0.0):
                 raise ValueError(
@@ -610,10 +599,8 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 )
             values.setflags(write=False)
             # Zero is a fixed joint, while positive infinity is unbounded.
-            # Publish both caches only after validation has succeeded.
             self._velocity_limit_cache[self.mode] = values
-            self._active_cache[self.mode] = active
-        return self._active_cache[self.mode], self._velocity_limit_cache[self.mode]
+        return active, values
 
     def _converged(self, state: dict) -> bool:
         return bool(
@@ -689,13 +676,13 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
         hessian = None
         gradient = None
         if build_system:
-            workspace = self._system_workspace.get(self.mode)
+            workspace = self._workspaces.get(self.mode)
             if workspace is None or workspace[0].shape != (active.size, active.size):
                 workspace = (
                     np.empty((active.size, active.size), dtype=float),
                     np.empty(active.size, dtype=float),
                 )
-                self._system_workspace[self.mode] = workspace
+                self._workspaces[self.mode] = workspace
             hessian, gradient = workspace
             hessian.fill(0.0)
             gradient.fill(0.0)
@@ -1024,7 +1011,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 raise ValueError(
                     f"collision_gradient must return {self.model.nv} finite values"
                 )
-            result = value[active].copy()
+            result = value[active]
             if gradient_cache is not None:
                 gradient_cache[key] = result
             return result
@@ -1141,7 +1128,7 @@ class PinkRetargetingSolver(PinocchioRetargetingSolver):
                 "collision_cost_gradient must return a gradient with "
                 f"{self.model.nv} finite values"
             )
-        active_gradient = gradient[active].copy()
+        active_gradient = gradient[active]
         if cost_cache is not None:
             cost_cache[key] = cost
         if gradient_cache is not None:

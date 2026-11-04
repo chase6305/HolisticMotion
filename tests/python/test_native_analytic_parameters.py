@@ -99,3 +99,12 @@ def test_real_parameter_arrays_and_transforms_remain_supported(family):
     transform[:] = 0
     assert value.offsets[0] == 0
     assert value.base_transform[3, 3] == 1
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_native_constructor_rejects_nonfinite_parameters(family, invalid):
+    value, solver = parameters(family)
+    value.offsets = [invalid, 0, 0, 0, 0, 0]
+    with pytest.raises(ValueError, match="offsets"):
+        solver(value, np.full(6, -6.0), np.full(6, 6.0))

@@ -1,11 +1,9 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
-#include <numeric>
-#include <set>
-
-#include "holistic_motion/kinematics/Types.h"
-#include "holistic_motion/utility/Logging.h"
+#include <cstddef>
+#include <utility>
+#include <vector>
 
 namespace holistic_motion {
 namespace robotics {
@@ -21,10 +19,8 @@ public:
     /// \brief Constructor that creates filter based on degrees of freedom
     ///
     /// \param dof Robot degrees of freedom
-    explicit JointFilterManager(size_t dof = 6) : filters_(dof) {
-        InitializeThresholds(dof);
-        Reset();
-    }
+    explicit JointFilterManager(size_t dof = 6)
+        : filters_(dof, FilterMode::NONE), angle_thresholds_(dof, 0.0) {}
 
     /// \brief Resize the filter array
     ///
@@ -78,53 +74,21 @@ public:
     ///
     /// \param thresholds Vector containing threshold values for all joints
     /// \return false if the size doesn't match or a threshold is not finite
-    bool SetJointAngleThresholds(const std::vector<double>& thresholds) {
-        if (thresholds.size() != angle_thresholds_.size()) {
-            holistic_motion::utility::LogWarning(
-                    "Thresholds size ({}) does not match robot DOF ({})",
-                    thresholds.size(), angle_thresholds_.size());
-            return false;
-        }
-        if (!std::all_of(thresholds.begin(), thresholds.end(),
-                         [](double value) { return std::isfinite(value); })) {
-            return false;
-        }
-        std::copy(thresholds.begin(), thresholds.end(),
-                  angle_thresholds_.begin());
-        return true;
-    }
+    bool SetJointAngleThresholds(const std::vector<double> &thresholds);
 
     /// \brief Set angle threshold for a specific joint
     ///
     /// \param joint_index Index of the joint
     /// \param threshold Threshold value for the joint
     /// \return false if the index is out of range or the threshold is not finite
-    bool SetJointAngleThreshold(size_t joint_index, double threshold) {
-        if (!std::isfinite(threshold)) return false;
-        if (joint_index >= angle_thresholds_.size()) {
-            holistic_motion::utility::LogWarning("Joint index {} out of range (max {})",
-                                      joint_index,
-                                      angle_thresholds_.size() - 1);
-            return false;
-        }
-        angle_thresholds_[joint_index] = threshold;
-        return true;
-    }
+    bool SetJointAngleThreshold(size_t joint_index, double threshold);
 
     /// \brief Get angle threshold for a specific joint
     ///
     /// \param joint_index Index of the joint
     /// \return Threshold value for the specified joint, returns 0.0 if index is
     /// out of range
-    double GetJointAngleThreshold(size_t joint_index) const {
-        if (joint_index >= angle_thresholds_.size()) {
-            holistic_motion::utility::LogWarning("Joint index {} out of range (max {})",
-                                      joint_index,
-                                      angle_thresholds_.size() - 1);
-            return 0.0;
-        }
-        return angle_thresholds_[joint_index];
-    }
+    double GetJointAngleThreshold(size_t joint_index) const;
 
     /// \brief Get current angle thresholds for all joints
     ///
@@ -170,12 +134,6 @@ public:
             return filters_[joint_index];
         }
         return FilterMode::NONE;
-    }
-
-private:
-    /// \brief Initialize angle thresholds in constructor
-    void InitializeThresholds(size_t dof) {
-        angle_thresholds_.resize(dof, 0.0);
     }
 
 private:

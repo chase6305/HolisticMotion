@@ -221,16 +221,34 @@ class HolisticMotionConan(ConanFile):
 
     def requirements(self):
         self.requires("eigen/3.4.0", transitive_headers=True)
-        self.requires("fmt/10.2.1", transitive_headers=True)
-        self.requires("spdlog/1.14.1", transitive_headers=True)
-        self.requires("urdfdom/4.0.0", transitive_headers=True)
+        self.requires("fmt/10.2.1", transitive_headers=True, transitive_libs=True)
+        self.requires(
+            "spdlog/1.14.1",
+            transitive_headers=False,
+            transitive_libs=not bool(self.options.shared),
+        )
+        self.requires(
+            "urdfdom/4.0.0",
+            transitive_headers=False,
+            transitive_libs=not bool(self.options.shared),
+        )
         if self.options.with_python:
             self.requires("pybind11/2.13.6")
         if self.options.with_collision:
-            # Keep both collision dependencies explicit so Conan owns their
-            # versions and makes them available to CMakeDeps and consumers.
-            self.requires("pinocchio/3.8.0", transitive_headers=True)
-            self.requires("coal/3.0.2", transitive_headers=True)
+            # The collision companion is always shared. Its backends remain
+            # build/runtime dependencies without propagating their SDKs.
+            self.requires(
+                "pinocchio/3.8.0",
+                transitive_headers=False,
+                transitive_libs=False,
+                run=True,
+            )
+            self.requires(
+                "coal/3.0.2",
+                transitive_headers=False,
+                transitive_libs=False,
+                run=True,
+            )
             # Coal 3.0.2 requires Boost 1.88 while Pinocchio accepts
             # Boost >=1.84,<1.90. Resolve both edges to Coal's ABI version.
             self.requires("boost/1.88.0", override=True)
@@ -298,31 +316,31 @@ class HolisticMotionConan(ConanFile):
             # pybind11 is only needed to compile the extension; consumers load
             # the packaged module and do not need pybind11 on their link graph.
             self.cpp_info.ignored_requires.append("pybind11")
+        model = self.cpp_info.components["model"]
+        model.libs = ["holistic_motion_model"]
+        model.requires = ["eigen::eigen"]
+        if not self.options.shared:
+            model.requires += ["fmt::fmt", "urdfdom::urdfdom"]
+        else:
+            self.cpp_info.ignored_requires.append("urdfdom")
+        model.set_property("cmake_target_name", "HolisticMotion::model")
         core = self.cpp_info.components["core"]
         core.libs = ["holistic_motion"]
-        core.requires = [
-            "eigen::eigen",
-            "fmt::fmt",
-            "spdlog::spdlog",
-            "urdfdom::urdfdom",
-        ]
+        core.requires = ["model", "fmt::fmt"]
+        if not self.options.shared:
+            core.requires.append("spdlog::spdlog")
+        else:
+            self.cpp_info.ignored_requires.append("spdlog")
         self.cpp_info.set_property("cmake_file_name", "HolisticMotion")
+        # Reuse the installed package config for component discovery and CUDA.
+        self.cpp_info.set_property("cmake_find_mode", "none")
         core.set_property("cmake_target_name", "HolisticMotion::holistic_motion")
         if self.options.with_collision:
             collision = self.cpp_info.components["collision"]
             collision.libs = ["holistic_motion_collision"]
-            collision.requires = [
-                "eigen::eigen",
-                "pinocchio::pinocchio_parsers",
-                "pinocchio::pinocchio_collision",
-                "coal::coal",
-                "urdfdom::urdfdom",
-            ]
+            collision.requires = ["eigen::eigen"]
+            self.cpp_info.ignored_requires += ["pinocchio", "coal"]
             collision.set_property("cmake_target_name", "HolisticMotion::collision")
-        if self.options.with_cuda:
-            # CMakeDeps reads build modules from package-level properties,
-            # not component properties. The module gates CUDA on core selection.
-            self.cpp_info.set_property(
-                "cmake_build_modules",
-                ["lib/cmake/HolisticMotion/HolisticMotionConanDeps.cmake"],
-            )
+        # Conan aggregates component builddirs, not the package-level value.
+        for component in self.cpp_info.components.values():
+            component.builddirs = ["lib/cmake/HolisticMotion"]

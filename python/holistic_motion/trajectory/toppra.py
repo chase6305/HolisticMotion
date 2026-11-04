@@ -706,11 +706,12 @@ class ToppraTrajectory:
             )
         self._grid = grid
         with np.errstate(over="ignore", invalid="ignore"):
-            self._path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
-        if not all(
-            np.isfinite(value).all() for value in (self._path, self._q_s, self._q_ss)
-        ):
+            path, self._q_s, self._q_ss = self._path_model.evaluate_all(grid)
+        if not all(np.isfinite(value).all() for value in (path, self._q_s, self._q_ss)):
             raise ValueError("physical spline positions and derivatives must be finite")
+        # Sampling evaluates the spline directly. Release these grid positions
+        # before allocating the timing constraints, retaining only derivatives.
+        del path
         self._speed_scale = 1.0
         self._range_safe_velocity_caps = None
         self._solver_velocity = self.max_velocity

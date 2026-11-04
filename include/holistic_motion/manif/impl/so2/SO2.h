@@ -99,9 +99,9 @@ public:
 
     // SO2 specific API
 
-    using Base::angle;
+    using Base::Angle;
 
-protected:
+  protected:
     DataType data_;
 };
 

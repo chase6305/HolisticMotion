@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../../../src/trajectory/PathSegmentEvaluation.h"
+#include "../../../src/trajectory/TrajectoryStateSampler.h"
 #include "holistic_motion/trajectory/TrajectoryDoubleS.h"
 
 using namespace holistic_motion::robotics;
@@ -37,6 +38,46 @@ struct ScalarCurve : Curve {
     }
     mutable std::array<unsigned, 4> calls{};
 };
+
+template <typename Curve> void CheckPoseDerivativeSampler(const Curve &native) {
+    if (!native.IsValid())
+        throw std::runtime_error("invalid pose derivative sampling fixture");
+    ScalarCurve<SE3d, Curve> custom(native);
+    detail::SegmentEvaluationSampler<SE3d> native_sampler(native);
+    detail::SegmentEvaluationSampler<SE3d> custom_sampler(custom);
+    for (double fraction : {-0.5, 0.0, 0.2, 0.8, 1.0, 1.5}) {
+        const double parameter =
+            native.GetStartParameter() + fraction * native.GetLength();
+        const auto expected_tangent = native.GetTangent(parameter);
+        const auto expected_curvature = native.GetCurvature(parameter);
+        const auto expected_torsion = native.GetTorsion(parameter);
+        for (auto *sampler : {&native_sampler, &custom_sampler}) {
+            SE3Tangentd tangent, curvature, torsion;
+            sampler->Compute(parameter, tangent, curvature, torsion);
+            if (!tangent.Coeffs().isApprox(expected_tangent.Coeffs(), 1e-12) ||
+                !curvature.Coeffs().isApprox(expected_curvature.Coeffs(),
+                                             1e-12) ||
+                !torsion.Coeffs().isApprox(expected_torsion.Coeffs(), 1e-12))
+                throw std::runtime_error(
+                    "pose derivative sampler changed geometry");
+        }
+        if (custom.calls != std::array<unsigned, 4>{0, 1, 1, 1})
+            throw std::runtime_error(
+                "pose derivative sampler bypassed virtual queries");
+        custom.calls.fill(0);
+    }
+}
+
+void CheckPoseDerivativeSampling() {
+    const std::array<SE3d, 3> points{
+        SE3d(Eigen::Vector3d(0.2, -0.1, 0.3), SO3d(0.1, 0.2, -0.1)),
+        SE3d(Eigen::Vector3d(0.8, 0.3, 0.4), SO3d(0.2, -0.1, 0.3)),
+        SE3d(Eigen::Vector3d(1.0, 0.9, 0.2), SO3d(-0.1, 0.3, 0.2))};
+    CheckPoseDerivativeSampler(
+        PathSegLinear<SE3d>(std::array<SE3d, 2>{points[0], points[1]}, -0.25));
+    CheckPoseDerivativeSampler(PathSegBezierCurve2nd<SE3d>(points, -0.25));
+    CheckPoseDerivativeSampler(PathSegBezierCurve5th<SE3d>(points, -0.25));
+}
 
 template <typename Group, typename Curve = PathSegBezierCurve5th<Group>>
 struct ScalarPath : PathBase<Group> {
@@ -199,6 +240,130 @@ struct ReportProbe : TrajectoryBase<Group> {
         valid_ = true;
     }
 };
+
+using OwnershipGroup = Rn<double, 2>;
+using OwnershipSegment = PathSegmentBase<OwnershipGroup>;
+
+struct GeometryOwnershipPath : PathBase<OwnershipGroup> {
+    explicit GeometryOwnershipPath(
+        const std::shared_ptr<OwnershipSegment> &segment) {
+        Select(segment);
+    }
+    void Select(const std::shared_ptr<OwnershipSegment> &segment) {
+        path_segments_.assign(1, segment);
+        length_ = 2.0;
+        valid_ = true;
+    }
+    void Release() {
+        path_segments_.clear();
+        valid_ = false;
+    }
+};
+
+struct GeometryOwnershipProbe : TrajectoryBase<OwnershipGroup> {
+    GeometryOwnershipProbe(
+        const std::shared_ptr<OwnershipSegment> &first,
+        const std::shared_ptr<OwnershipSegment> &second = {}) {
+        path_ = std::make_shared<GeometryOwnershipPath>(first);
+        trajectory_pspline_ = std::make_shared<PSpline>();
+        trajectory_pspline_->PushBack(
+            std::make_shared<Polynomial>(Eigen::Vector4d(0, 1, 0, 0)), 1.0);
+        if (second) {
+            trajectory_pspline_->PushBack(
+                std::make_shared<Polynomial>(Eigen::Vector4d(1, 1, 0, 0)), 1.0);
+            phase_path_segments_ = {first, second};
+        }
+        dof_ = 2;
+        max_velocity_ = max_acceleration_ = max_jerk_ = Eigen::Vector2d::Ones();
+        valid_ = true;
+    }
+    void Select(const std::shared_ptr<OwnershipSegment> &segment) {
+        static_cast<GeometryOwnershipPath &>(*path_).Select(segment);
+        phase_path_segments_[0].reset();
+    }
+    void ReleasePhases() {
+        std::vector<std::shared_ptr<OwnershipSegment>>().swap(
+            phase_path_segments_);
+    }
+    void ReleaseAll() {
+        ReleasePhases();
+        static_cast<GeometryOwnershipPath &>(*path_).Release();
+        valid_ = false;
+    }
+    void OwnFirst(const std::shared_ptr<OwnershipSegment> &segment) {
+        phase_path_segments_ = {segment};
+    }
+};
+
+struct ReleasingGeometryLine : PathSegLinear<OwnershipGroup> {
+    using PathSegLinear<OwnershipGroup>::PathSegLinear;
+    std::function<void()> on_destroy, on_query;
+    ~ReleasingGeometryLine() override {
+        if (on_destroy)
+            on_destroy();
+    }
+    OwnershipGroup GetConfig(double s) const override {
+        if (on_query)
+            on_query();
+        return PathSegLinear<OwnershipGroup>::GetConfig(s);
+    }
+};
+
+void CheckSamplerCacheReplacement() {
+    std::array<OwnershipGroup, 2> first_points, second_points;
+    first_points[0].Coeffs() << 0, 0;
+    first_points[1].Coeffs() << 1, 0;
+    second_points[0].Coeffs() << 1, 0;
+    second_points[1].Coeffs() << 1, 1;
+    auto first = std::make_shared<ReleasingGeometryLine>(first_points, 0.0);
+    auto second =
+        std::make_shared<PathSegLinear<OwnershipGroup>>(second_points, 1.0);
+    std::weak_ptr<OwnershipSegment> weak = first;
+    GeometryOwnershipProbe probe(first, second);
+    int destroyed = 0;
+    // An old geometry deleter can invalidate the borrowed phase entry.
+    first->on_destroy = [&] {
+        ++destroyed;
+        probe.ReleasePhases();
+    };
+    detail::TrajectoryStateSampler<OwnershipGroup> sampler(probe);
+    sampler.GetState(0.25);
+    probe.Select(second);
+    first.reset();
+    if (weak.expired() || destroyed)
+        throw std::runtime_error("sampler did not retain its current geometry");
+    const auto state = sampler.GetState(1.25);
+    if (!weak.expired() || destroyed != 1 ||
+        state.position.Coeffs() != Eigen::Vector2d(1, 0.25) ||
+        state.velocity.Coeffs() != Eigen::Vector2d(0, 1))
+        throw std::runtime_error("cache replacement lost geometry or state");
+}
+
+void CheckSamplerQueryRelease(bool owned) {
+    std::array<OwnershipGroup, 2> points;
+    points[0].Coeffs() << 0, 0;
+    points[1].Coeffs() << 1, 0;
+    auto line = std::make_shared<ReleasingGeometryLine>(points);
+    std::weak_ptr<OwnershipSegment> weak = line;
+    GeometryOwnershipProbe probe(line);
+    if (owned)
+        probe.OwnFirst(line);
+    line->on_query = [&] { probe.ReleaseAll(); };
+    int destroyed = 0;
+    line->on_destroy = [&] { ++destroyed; };
+    line.reset();
+    {
+        detail::TrajectoryStateSampler<OwnershipGroup> sampler(probe);
+        const auto state = sampler.GetState(0.25);
+        if (weak.expired() || destroyed ||
+            state.position.Coeffs() != Eigen::Vector2d(0.25, 0) ||
+            state.velocity.Coeffs() != Eigen::Vector2d(1, 0))
+            throw std::runtime_error(
+                "query callback released borrowed geometry");
+    }
+    if (!weak.expired() || destroyed != 1)
+        throw std::runtime_error("query geometry ownership leaked");
+}
 
 void CheckLinearReportQueries() {
     struct ChangingLine : PathSegLinear<Group> {
@@ -627,6 +792,7 @@ int main() {
     holistic_motion::utility::SetVerbosityLevel(
         holistic_motion::utility::VerbosityLevel::Error);
     try {
+        CheckPoseDerivativeSampling();
         CheckMultiSegmentReports<Rn<double, 2>>();
         CheckMultiSegmentReports<Rn<double, 7>>();
         CheckMultiSegmentReports<Rn<double, 32>>();
@@ -645,6 +811,9 @@ int main() {
         CheckReportCoefficientPeaks<3>();
         CheckReportCoefficientPeaks<14>();
         CheckReportCoefficientPeaks<32>();
+        CheckSamplerCacheReplacement();
+        CheckSamplerQueryRelease(false);
+        CheckSamplerQueryRelease(true);
         CheckLinearReportQueries();
         CheckCustomQueriesAndFailures();
         CheckCustomQueriesAndFailures<PathSegBezierCurve2nd<Group>>();

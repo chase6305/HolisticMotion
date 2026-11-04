@@ -93,7 +93,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         started = perf_counter()
         desired_poses, frame_weights = self._prepare_targets(targets)
         primary = self._configuration(seed) if seed is not None else self._last_q.copy()
-        seeds = [primary.copy()] if enforce_acceleration else self._iter_seeds(primary)
+        seeds = [primary] if enforce_acceleration else self._iter_seeds(primary)
         best = None
         best_rank = None
         best_index = 0
@@ -129,7 +129,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
                     best = result
                     best_rank = rank
                     best_index = index
-                    best_velocity = self._last_velocity.copy()
+                    best_velocity = self._last_velocity
                 if self.stop_on_success and result.success:
                     break
             final = replace(

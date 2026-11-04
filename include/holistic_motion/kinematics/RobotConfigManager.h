@@ -1,10 +1,4 @@
 #pragma once
-#include <numeric>
-#include <set>
-
-#include "holistic_motion/kinematics/Types.h"
-#include "holistic_motion/utility/Logging.h"
-
 namespace holistic_motion {
 namespace robotics {
 
@@ -13,8 +7,7 @@ namespace robotics {
 /// \param T scalar
 /// \param x input number
 /// \return int 1, -1 or 0
-template <typename T>
-static inline int Sign(const T& x) {
+template <typename T> static inline int Sign(const T &x) {
     return (x > T(0)) ? 1 : ((x < T(0)) ? -1 : 0);
 }
 
@@ -66,42 +59,24 @@ public:
     ///
     /// \param enable Set to true to face front, false to face back.
     void SetBaseFront(bool enable) {
-        if (enable) {
-            config_ = (config_ | RobotConfig::BASE_FRONT) &
-                      ~RobotConfig::BASE_BACK;
-        } else {
-            config_ = (config_ & ~RobotConfig::BASE_FRONT) |
-                      RobotConfig::BASE_BACK;
-        }
-        UpdateEnableConfig();
+        config_ = (config_ & ~(RobotConfig::BASE_FRONT | RobotConfig::BASE_BACK)) |
+                  (enable ? RobotConfig::BASE_FRONT : RobotConfig::BASE_BACK);
     }
 
     /// \brief Set the elbow orientation to up or down.
     ///
     /// \param enable Set to true to face up, false to face down.
     void SetElbowUp(bool enable) {
-        if (enable) {
-            config_ = (config_ | RobotConfig::ELBOW_UP) &
-                      ~RobotConfig::ELBOW_DOWN;
-        } else {
-            config_ = (config_ & ~RobotConfig::ELBOW_UP) |
-                      RobotConfig::ELBOW_DOWN;
-        }
-        UpdateEnableConfig();
+        config_ = (config_ & ~(RobotConfig::ELBOW_UP | RobotConfig::ELBOW_DOWN)) |
+                  (enable ? RobotConfig::ELBOW_UP : RobotConfig::ELBOW_DOWN);
     }
 
     /// \brief Set the wrist orientation to flip or not flip.
     ///
     /// \param enable Set to true to flip, false to not flip.
     void SetWristFlip(bool enable) {
-        if (enable) {
-            config_ = (config_ | RobotConfig::WRIST_FLIP) &
-                      ~RobotConfig::WRIST_NOT_FLIP;
-        } else {
-            config_ = (config_ & ~RobotConfig::WRIST_FLIP) |
-                      RobotConfig::WRIST_NOT_FLIP;
-        }
-        UpdateEnableConfig();
+        config_ = (config_ & ~(RobotConfig::WRIST_FLIP | RobotConfig::WRIST_NOT_FLIP)) |
+                  (enable ? RobotConfig::WRIST_FLIP : RobotConfig::WRIST_NOT_FLIP);
     }
 
     /// \brief Get the base orientation.
@@ -145,12 +120,9 @@ public:
     bool IsDisable() const { return config_ == RobotConfig::NONE; }
 
     /// \brief Disables all configurations.
-    void Disable() {
-        config_ = RobotConfig::NONE;
-        UpdateEnableConfig();
-    }
+    void Disable() { config_ = RobotConfig::NONE; }
 
-private:
+  private:
     /// \brief Check if a specific flag is set in the configuration.
     ///
     /// \param config The current configuration to check.
@@ -159,25 +131,6 @@ private:
     /// otherwise.
     inline bool IsFlagSet(RobotConfig config, RobotConfig flag) const {
         return static_cast<int>(config & flag) != 0;
-    }
-
-    /// \brief Update the enable configuration based on the current settings.
-    ///
-    /// This function checks if any of the specific configuration flags
-    /// (BASE_FRONT, BASE_BACK, ELBOW_UP, ELBOW_DOWN, WRIST_FLIP,
-    /// WRIST_NOT_FLIP) are set in the current configuration. If any of these
-    /// flags are set, the ENABLE_CONFIG flag is added to the configuration.
-    /// Otherwise, the ENABLE_CONFIG flag is removed from the configuration.
-    void UpdateEnableConfig() {
-        if (static_cast<int>(config_) &
-            static_cast<int>(RobotConfig::BASE_FRONT | RobotConfig::BASE_BACK |
-                             RobotConfig::ELBOW_UP | RobotConfig::ELBOW_DOWN |
-                             RobotConfig::WRIST_FLIP |
-                             RobotConfig::WRIST_NOT_FLIP)) {
-            config_ = config_;
-        } else {
-            config_ = config_;
-        }
     }
 
     RobotConfig config_ = RobotConfig::NONE;

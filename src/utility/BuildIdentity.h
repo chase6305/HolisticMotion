@@ -7,6 +7,7 @@ namespace holistic_motion::utility::detail {
 // Resolve through the linked core library, rather than assuming its objects
 // came from the same build as a Python extension's headers.
 const char *CoreBuildIdentity() noexcept;
+const char *ModelBuildIdentity() noexcept;
 
 } // namespace holistic_motion::utility::detail
 

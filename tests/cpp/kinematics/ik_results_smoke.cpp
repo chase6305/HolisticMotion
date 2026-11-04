@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <utility>
 #include <vector>
 
 using holistic_motion::robotics::IkRtn;
@@ -63,6 +64,46 @@ bool Check(const Samples &input, double tolerance) {
 } // namespace
 
 int main() {
+    for (const auto &single : Samples{{}, {0.0}, {-0.0, 1e300, 1e-300}})
+        for (double tolerance : {0.0, 1e-4})
+            if (!Check({single}, tolerance))
+                return Fail(__LINE__);
+    IkRtn single;
+    single.PushBack(Eigen::VectorXd::Constant(1, -0.0));
+    single.ik_number = 73;
+    single.joint_states = Eigen::MatrixXd::Ones(2, 3);
+    std::vector<double> single_distance{-0.0};
+    if (!single.SortMinMovement(single.ik_joints.front(), single_distance) || !single.success ||
+        single.ik_number != 1 || single.joint_states.size() != 0 ||
+        !std::signbit(single.ik_joints.front()[0]) || !std::signbit(single_distance.front()))
+        return Fail(__LINE__);
+    std::mt19937 sorting_random(5831);
+    for (int size : {1, 2, 3, 7, 8, 31, 32, 127, 512, 4096}) {
+        for (int trial = 0; trial < 8; ++trial) {
+            IkRtn result;
+            std::vector<double> distances;
+            std::vector<std::pair<double, int>> expected;
+            for (int index = 0; index < size; ++index) {
+                Eigen::Vector2d joints(index, 1000 + index);
+                result.PushBack(joints);
+                const double distance = static_cast<int>(sorting_random() % 19) - 9;
+                distances.push_back(distance == 0.0 && index % 2 ? -0.0 : distance);
+                expected.emplace_back(distances.back(), index);
+            }
+            std::stable_sort(
+                expected.begin(), expected.end(),
+                [](const auto &first, const auto &second) { return first.first < second.first; });
+            if (!result.SortMinMovement(result.ik_joints.back(), distances))
+                return Fail(__LINE__);
+            for (int index = 0; index < size; ++index) {
+                if (result.ik_joints[index][0] != expected[index].second ||
+                    result.ik_joints[index][1] != 1000 + expected[index].second ||
+                    distances[index] != expected[index].first ||
+                    std::signbit(distances[index]) != std::signbit(expected[index].first))
+                    return Fail(__LINE__);
+            }
+        }
+    }
     std::array<int, 3> order{0, 1, 2};
     do {
         Samples input;
@@ -75,7 +116,7 @@ int main() {
     std::mt19937 random(3701);
     for (int dimensions : {0, 1, 2, 7, 16}) {
         for (int trial = 0; trial < 100; ++trial) {
-            Samples input(40, std::vector<double>(dimensions));
+            Samples input(2 + trial % 48, std::vector<double>(dimensions));
             for (auto &q : input)
                 for (double &value : q)
                     value = (static_cast<int>(random() % 13) - 6) * 0.125;

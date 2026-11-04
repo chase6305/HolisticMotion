@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <queue>
@@ -68,18 +69,11 @@ class PlanningContext {
     }
 
     bool SameState(const Eigen::VectorXd &first, const Eigen::VectorXd &second) const {
-        for (Eigen::Index i = 0; i < first.size(); ++i) {
-            const double delta = second[i] - first[i];
-            if ((continuous_[static_cast<std::size_t>(i)]
-                     ? detail::WrappedDifference(delta)
-                     : delta) != 0.0)
-                return false;
-        }
-        return true;
+        return metric_.SameState(first, second);
     }
 
-    Eigen::VectorXd Interpolate(const Eigen::VectorXd &from,
-                                const Eigen::VectorXd &to, double ratio) const {
+    Eigen::VectorXd Interpolate(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
+                                double ratio) const {
         return Normalize(from + ratio * Difference(from, to));
     }
 
@@ -134,12 +128,13 @@ class PlanningContext {
         // rejects extensions whose newly sampled endpoint is invalid.
         if (!IsStateValid(to) || TimedOut())
             return false;
+        Eigen::VectorXd sample;
         for (std::size_t i = 1; i < segments; ++i) {
             if (TimedOut())
                 return false;
-            if (!IsStateValid(Normalize(
-                    from + (static_cast<double>(i) / segments) * delta)) ||
-                TimedOut()) {
+            sample = from + (static_cast<double>(i) / segments) * delta;
+            sample = Normalize(std::move(sample));
+            if (!IsStateValid(sample) || TimedOut()) {
                 return false;
             }
         }
@@ -170,16 +165,18 @@ class PlanningContext {
         return best;
     }
 
-    std::vector<std::size_t>
-    Near(const Tree &tree, const Eigen::VectorXd &state, double radius) const {
-        if (use_index_)
-            return tree.index.Near(
+    void Near(const Tree &tree, const Eigen::VectorXd &state, double radius,
+              std::vector<std::size_t> &result) const {
+        if (use_index_) {
+            tree.index.Near(
                 tree.nodes.size(),
                 [&](std::size_t index) -> const Eigen::VectorXd & {
                     return tree.nodes[index].state;
                 },
-                state, radius, metric_);
-        std::vector<std::size_t> result;
+                state, radius, metric_, result);
+            return;
+        }
+        result.clear();
         const double squared_radius = radius * radius;
         for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
             const double distance =
@@ -188,7 +185,6 @@ class PlanningContext {
                                      radius, squared_radius))
                 result.push_back(i);
         }
-        return result;
     }
 
     ExtendStatus Extend(Tree &tree, const Eigen::VectorXd &target,
@@ -205,13 +201,8 @@ class PlanningContext {
             return ExtendStatus::TRAPPED;
         }
         new_index = tree.nodes.size();
-        tree.nodes.push_back(
-            {candidate,
-             nearest,
-             tree.nodes[nearest].cost +
-                 Distance(tree.nodes[nearest].state, candidate),
-             {}});
-        tree.nodes[nearest].children.push_back(new_index);
+        // RRT-Connect traces parent links without maintaining rewiring data.
+        tree.nodes.push_back({std::move(candidate), nearest, 0.0, {}});
         // A small weighted distance is not evidence of a validated connection:
         // small weights can hide a large, obstructed gap in joint coordinates.
         return target_reached ? ExtendStatus::REACHED : ExtendStatus::ADVANCED;
@@ -258,11 +249,13 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
               std::size_t attempts) {
     if (path.size() < 3)
         return;
+    std::vector<double> cumulative;
     for (std::size_t attempt = 0; attempt < attempts && path.size() >= 3;
          ++attempt) {
         if (context.TimedOut())
             return;
-        std::vector<double> cumulative(path.size(), 0.0);
+        cumulative.resize(path.size());
+        cumulative[0] = 0.0;
         for (std::size_t i = 1; i < path.size(); ++i) {
             cumulative[i] =
                 cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
@@ -293,9 +286,8 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
 
         std::size_t first_segment = 0;
         std::size_t second_segment = 0;
-        const Eigen::VectorXd first = sample_at(first_distance, first_segment);
-        const Eigen::VectorXd second =
-            sample_at(second_distance, second_segment);
+        Eigen::VectorXd first = sample_at(first_distance, first_segment);
+        Eigen::VectorXd second = sample_at(second_distance, second_segment);
         const double direct_length = context.Distance(first, second);
         const double arc_length = second_distance - first_distance;
         const double roundoff =
@@ -313,10 +305,10 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         shortened.reserve(path.size() + 2);
         // Remove only exactly repeated coordinates. A small metric distance
         // can hide a meaningful corner or even the requested final endpoint.
-        const auto append = [&](const Eigen::VectorXd &state) {
+        const auto append = [&](Eigen::VectorXd &state) {
             if (shortened.empty() ||
                 (shortened.back().array() != state.array()).any()) {
-                shortened.push_back(state);
+                shortened.push_back(std::move(state));
             }
         };
         for (std::size_t i = 0; i <= first_segment; ++i)
@@ -388,7 +380,8 @@ ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
         context.SameState(first_path.back(), second_path.front())) {
         second_path.erase(second_path.begin());
     }
-    first_path.insert(first_path.end(), second_path.begin(), second_path.end());
+    first_path.insert(first_path.end(), std::make_move_iterator(second_path.begin()),
+                      std::make_move_iterator(second_path.end()));
     return first_path;
 }
 
@@ -444,8 +437,9 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
     std::size_t best_goal = std::numeric_limits<std::size_t>::max();
     double best_cost = std::numeric_limits<double>::infinity();
     std::uniform_real_distribution<double> unit(0.0, 1.0);
+    std::vector<std::size_t> pending, near;
     auto update_descendant_costs = [&](std::size_t root, double delta) {
-        std::vector<std::size_t> pending = tree.nodes[root].children;
+        pending.assign(tree.nodes[root].children.begin(), tree.nodes[root].children.end());
         while (!pending.empty()) {
             const std::size_t index = pending.back();
             pending.pop_back();
@@ -512,8 +506,7 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
                 std::pow(std::log(static_cast<double>(radius_sample_count + 1)) /
                              static_cast<double>(radius_sample_count + 1),
                          1.0 / dimension));
-        auto near = context.Near(tree, candidate,
-                                 std::max(radius, options.extension_range));
+        context.Near(tree, candidate, std::max(radius, options.extension_range), near);
         std::size_t parent = nearest;
         double cost = tree.nodes[nearest].cost +
                       context.Distance(tree.nodes[nearest].state, candidate);
@@ -532,15 +525,17 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
             if (parent != nearest)
                 reparent(nearest, parent, cost);
         } else {
-            tree.nodes.push_back({candidate, parent, cost, {}});
+            tree.nodes.push_back({std::move(candidate), parent, cost, {}});
             tree.nodes[parent].children.push_back(inserted);
         }
+        // Preserve a repeated periodic sample's chosen representative.
+        const auto &state = existing ? candidate : tree.nodes[inserted].state;
         ++radius_sample_count;
         for (std::size_t index : near) {
             const double rewired =
-                cost + context.Distance(candidate, tree.nodes[index].state);
+                cost + context.Distance(state, tree.nodes[index].state);
             if (rewired < tree.nodes[index].cost &&
-                context.IsMotionValid(candidate, tree.nodes[index].state)) {
+                context.IsMotionValid(state, tree.nodes[index].state)) {
                 reparent(index, inserted, rewired);
             }
         }
@@ -549,12 +544,12 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         // larger bound can replace an already improved path with a worse one.
         if (best_goal != std::numeric_limits<std::size_t>::max())
             best_cost = tree.nodes[best_goal].cost;
-        const double remaining = context.Distance(candidate, goal);
+        const double remaining = context.Distance(state, goal);
         if (remaining <= options.extension_range &&
             cost + remaining < best_cost &&
-            context.IsMotionValid(candidate, goal)) {
+            context.IsMotionValid(state, goal)) {
             best_cost = cost + remaining;
-            if (context.SameState(candidate, goal)) {
+            if (context.SameState(state, goal)) {
                 best_goal = inserted;
             } else {
                 best_goal = tree.nodes.size();
@@ -644,8 +639,8 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &requested_start,
     // Native callbacks can edit or resize the caller's endpoint vectors just
     // as Python callbacks can replace options. Own the validated coordinates
     // before any callback runs, including the initial endpoint checks.
-    const Eigen::VectorXd start = requested_start;
-    const Eigen::VectorXd goal = requested_goal;
+    Eigen::VectorXd start = requested_start;
+    Eigen::VectorXd goal = requested_goal;
     if (!in_bounds(start))
         return finish(PlanningStatus::INVALID_START, "start is outside joint limits");
     if (!in_bounds(goal))
@@ -666,7 +661,7 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &requested_start,
         return finish(PlanningStatus::INVALID_GOAL, "goal state is invalid");
     }
     if (context.SameState(start, goal)) {
-        result.path = {start};
+        result.path.push_back(std::move(start));
         result.statistics.tree_nodes = 1;
         return finish(PlanningStatus::EXACT_SOLUTION,
                       "start already satisfies the goal");
@@ -676,9 +671,11 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &requested_start,
     // case, which also makes unobstructed plans deterministic for every
     // algorithm.
     if (context.IsMotionValid(start, goal)) {
-        result.path = {start, goal};
-        result.statistics.tree_nodes = 2;
         result.statistics.initial_path_length = context.Distance(start, goal);
+        result.path.reserve(2);
+        result.path.push_back(std::move(start));
+        result.path.push_back(std::move(goal));
+        result.statistics.tree_nodes = 2;
         if (options.interpolate_path) {
             InterpolatePath(result.path, context, options.interpolation_points);
         }

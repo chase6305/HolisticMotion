@@ -255,6 +255,90 @@ def test_ik_logging_callback_exception_recovers_the_gil(tmp_path):
     assert solver.solve_ik(target, seed).success
 
 
+@pytest.mark.parametrize("kind", ["sampling", "optimization"])
+def test_motion_validator_samples_keep_owned_coordinates(kind):
+    import holistic_motion as hm
+
+    captured = []
+
+    def valid(q):
+        captured.append(q)
+        return True
+
+    if kind == "sampling":
+        model = hm.SamplingPlanner([0.0], [1.0], valid)
+        options = hm.PlanningOptions()
+        expected = [0.0, 1.0, 1.0, 0.25, 0.5, 0.75]
+    else:
+        model = hm.PathOptimizer([0.0], [1.0], valid)
+        options = hm.PathOptimizationOptions()
+        expected = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    def query(a, b):
+        if kind == "sampling":
+            return model.plan([a], [b], options)
+        return model.optimize([[a], [b]], options)
+
+    options.edge_resolution = 0.25
+    assert query(0.0, 1.0).success
+    first = list(captured)
+    assert query(0.1, 0.9).success
+    np.testing.assert_array_equal([q[0] for q in first], expected)
+    assert all(
+        not np.shares_memory(a, b)
+        for index, a in enumerate(first)
+        for b in first[index + 1 :]
+    )
+
+
+@pytest.mark.parametrize("algorithm", ["RRT_CONNECT", "RRT_STAR", "INFORMED_RRT_STAR"])
+def test_shared_sampling_searches_keep_request_storage_independent(algorithm):
+    import holistic_motion as hm
+
+    planner = hm.SamplingPlanner(
+        [-np.pi, -1.0],
+        [np.pi, 1.0],
+        lambda q: not (abs(q[0]) < 0.2 and abs(q[1]) < 0.75),
+    )
+    planner.set_joint_weights([0.75, 1.25])
+    planner.set_continuous_joints([0])
+
+    def query(seed, release_gil=False):
+        options = hm.PlanningOptions()
+        options.algorithm = getattr(hm.SamplingAlgorithm, algorithm)
+        options.random_seed = seed
+        options.max_iterations = 768
+        options.timeout_seconds = 10.0
+        options.extension_range = 0.25
+        options.edge_resolution = 0.1
+        options.goal_bias = 0.15
+        options.simplify_path = False
+        return planner.plan([-0.8, 0.0], [0.8, 0.0], options, release_gil=release_gil)
+
+    seeds = list(range(8))
+    expected = [query(seed) for seed in seeds]
+    assert any(result.success for result in expected)
+    with ThreadPoolExecutor(4) as workers:
+        actual = list(workers.map(lambda seed: query(seed, True), seeds * 2))
+    fields = (
+        "iterations",
+        "sampled_states",
+        "valid_states",
+        "collision_checks",
+        "tree_nodes",
+        "initial_path_length",
+        "final_path_length",
+    )
+    for index, result in enumerate(actual):
+        reference = expected[index % len(seeds)]
+        assert result.status == reference.status
+        np.testing.assert_array_equal(result.path, reference.path)
+        for field in fields:
+            assert getattr(result.statistics, field) == getattr(
+                reference.statistics, field
+            )
+
+
 @pytest.mark.parametrize("with_callbacks", [False, True])
 def test_shared_optimizer_released_queries_own_outputs(with_callbacks):
     import holistic_motion as hm

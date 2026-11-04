@@ -1,12 +1,21 @@
-# Exercise CMakeDeps' package-level build modules on every Conan consumer run.
-# Discovering collision must not require CUDA, even in a CUDA-enabled package.
+# Conan and standalone SDK consumers use the same installed package config.
+# Collision requires no backend SDKs, even in a CUDA-enabled package.
 if(HOLISTICMOTION_CONSUMER_TEST_COLLISION)
-    set(CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit TRUE)
+    foreach(_consumer_private_dependency IN ITEMS pinocchio coal urdfdom fmt spdlog CUDAToolkit)
+        set(CMAKE_DISABLE_FIND_PACKAGE_${_consumer_private_dependency} TRUE)
+    endforeach()
     find_package(HolisticMotion REQUIRED CONFIG COMPONENTS collision)
-    if(TARGET CUDA::cudart)
-        message(FATAL_ERROR "Collision-only discovery loaded the CUDA runtime")
+    if(TARGET CUDA::cudart OR TARGET pinocchio::pinocchio OR TARGET coal::coal OR
+       TARGET urdfdom::urdfdom OR TARGET fmt::fmt OR TARGET spdlog::spdlog)
+        message(FATAL_ERROR "Collision-only discovery loaded a private backend SDK")
     endif()
-    unset(CMAKE_DISABLE_FIND_PACKAGE_CUDAToolkit)
+    if(NOT TARGET holistic-motion::holistic-motion)
+        message(FATAL_ERROR "Collision lookup lost the legacy aggregate target")
+    endif()
+    foreach(_consumer_private_dependency IN ITEMS pinocchio coal urdfdom fmt spdlog CUDAToolkit)
+        unset(CMAKE_DISABLE_FIND_PACKAGE_${_consumer_private_dependency})
+    endforeach()
+    unset(_consumer_private_dependency)
 endif()
 
 # A preceding collision-only lookup must not suppress the later core lookup.

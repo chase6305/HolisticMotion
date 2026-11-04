@@ -10,6 +10,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include <pinocchio/algorithm/joint-configuration.hpp>
@@ -57,21 +58,6 @@ public:
       RebuildGeometryData();
   }
 
-  void Validate(const Eigen::VectorXd &q) const {
-    if (q.size() != model.nq) {
-      throw std::invalid_argument("configuration size must equal model.nq (" +
-                                  std::to_string(model.nq) + ")");
-    }
-    if (!q.allFinite()) {
-      throw std::invalid_argument("configuration must contain finite values");
-    }
-    if (model.nq != model.nv && !pinocchio::isNormalized(model, q, 1e-8)) {
-        throw std::invalid_argument(
-            "configuration must satisfy the model manifold (normalized "
-            "continuous pairs/quaternions)");
-    }
-  }
-
   void RebuildGeometryData() {
     geometry_data = std::make_unique<pinocchio::GeometryData>(geometry_model);
     for (auto &request : geometry_data->distanceRequests) {
@@ -111,7 +97,7 @@ public:
            (second < model.parents.size() && model.parents[second] == first);
   }
 
-  std::string LinkName(std::size_t geometry) const {
+  const std::string &LinkName(std::size_t geometry) const {
     const auto frame = geometry_model.geometryObjects.at(geometry).parentFrame;
     if (frame >= model.frames.size())
       return geometry_model.geometryObjects.at(geometry).name;
@@ -176,7 +162,7 @@ CollisionModel &CollisionModel::operator=(CollisionModel &&) noexcept = default;
 int CollisionModel::GetConfigurationSize() const { return impl_->model.nq; }
 int CollisionModel::GetVelocitySize() const { return impl_->model.nv; }
 void CollisionModel::ValidateConfiguration(const Eigen::VectorXd &q) const {
-    impl_->Validate(q);
+    detail::ValidateConfiguration(impl_->model, q);
 }
 std::size_t CollisionModel::GetGeometryCount() const {
   return impl_->geometry_model.geometryObjects.size();
@@ -193,12 +179,18 @@ std::vector<std::string> CollisionModel::GetGeometryNames() const {
 }
 
 std::vector<std::string> CollisionModel::GetCollisionLinkNames() const {
-  std::set<std::string> unique;
-  for (std::size_t index = 0;
-       index < impl_->geometry_model.geometryObjects.size(); ++index) {
-    unique.insert(impl_->LinkName(index));
-  }
-  return {unique.begin(), unique.end()};
+    std::vector<std::string_view> names;
+    names.reserve(
+        std::min(impl_->geometry_model.geometryObjects.size(), impl_->model.frames.size()));
+    // A link's URDF geometries are usually consecutive; skip repeated runs.
+    for (std::size_t index = 0; index < impl_->geometry_model.geometryObjects.size(); ++index) {
+        const auto &name = impl_->LinkName(index);
+        if (names.empty() || names.back() != name)
+            names.push_back(name);
+    }
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return {names.begin(), names.end()};
 }
 
 std::vector<CollisionPairInfo> CollisionModel::GetCollisionPairs() const {
@@ -228,25 +220,13 @@ JointPositionMap CollisionModel::CreateJointPositionMap(
 
 Eigen::VectorXd CollisionModel::ConfigurationFromJointPositions(
     const std::map<std::string, double> &positions) const {
-    std::vector<std::string> names;
-    Eigen::VectorXd values(static_cast<Eigen::Index>(positions.size()));
-    names.reserve(positions.size());
-    Eigen::Index i = 0;
-    for (const auto &entry : positions) {
-        names.push_back(entry.first);
-        values[i++] = entry.second;
-    }
-    return CreateJointPositionMap(names).ConfigurationWithJointPositions(
-        pinocchio::neutral(impl_->model), values);
+    return detail::ConfigurationFromJointPositions(impl_->model, positions);
 }
 
 Eigen::VectorXd CollisionModel::ConfigurationWithJointPositions(
     const Eigen::VectorXd &reference, const std::vector<std::string> &names,
     const Eigen::VectorXd &positions) const {
-    auto result = CreateJointPositionMap(names).ConfigurationWithJointPositions(
-        reference, positions);
-    ValidateConfiguration(result);
-    return result;
+    return detail::ConfigurationWithJointPositions(impl_->model, reference, names, positions);
 }
 
 Eigen::VectorXd CollisionModel::GetJointLowerLimits(
@@ -322,8 +302,8 @@ CollisionModel::RemoveCollisionPairsByLinks(const std::string &first_link,
   std::vector<pinocchio::CollisionPair> keep;
   keep.reserve(before);
   for (const auto &pair : impl_->geometry_model.collisionPairs) {
-    const auto first = impl_->LinkName(pair.first);
-    const auto second = impl_->LinkName(pair.second);
+    const auto &first = impl_->LinkName(pair.first);
+    const auto &second = impl_->LinkName(pair.second);
     const bool matches = (first == first_link && second == second_link) ||
                          (first == second_link && second == first_link);
     if (!matches)
@@ -367,8 +347,8 @@ std::size_t CollisionModel::SetCollisionGroups(
     throw std::invalid_argument(
         "collision groups and group pairs must not be empty");
   }
-  std::map<std::string, std::string> link_to_group;
-  std::set<std::string> model_links;
+  std::map<std::string_view, std::string_view> link_to_group;
+  std::set<std::string_view> model_links;
   for (std::size_t index = 0;
        index < impl_->geometry_model.geometryObjects.size(); ++index) {
     model_links.insert(impl_->LinkName(index));
@@ -388,11 +368,13 @@ std::size_t CollisionModel::SetCollisionGroups(
       }
     }
   }
-  std::set<std::pair<std::string, std::string>> enabled;
-  for (auto pair : group_pairs) {
-    if (!groups.count(pair.first) || !groups.count(pair.second)) {
+  std::set<std::pair<std::string_view, std::string_view>> enabled;
+  for (const auto &source : group_pairs) {
+    if (!groups.count(source.first) || !groups.count(source.second)) {
       throw std::invalid_argument("collision pair references an unknown group");
     }
+    auto pair = std::make_pair(std::string_view(source.first),
+                               std::string_view(source.second));
     if (pair.second < pair.first)
       std::swap(pair.first, pair.second);
     enabled.insert(std::move(pair));
@@ -424,19 +406,18 @@ std::size_t CollisionModel::SetCollisionGroups(
 }
 
 bool CollisionModel::InCollision(const Eigen::VectorXd &q, bool stop_at_first) {
-  impl_->Validate(q);
-  impl_->UpdatePlacements(q);
-  return pinocchio::computeCollisions(impl_->geometry_model,
-                                      *impl_->geometry_data, stop_at_first);
+    detail::ValidateConfiguration(impl_->model, q);
+    impl_->UpdatePlacements(q);
+    return pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data,
+                                        stop_at_first);
 }
 
 bool CollisionModel::IsWithinDistance(const Eigen::VectorXd &q,
                                       double security_margin,
                                       bool stop_at_first) {
-  impl_->Validate(q);
-  if (!std::isfinite(security_margin) || security_margin < 0.0) {
-    throw std::invalid_argument(
-        "security margin must be finite and non-negative");
+    detail::ValidateConfiguration(impl_->model, q);
+    if (!std::isfinite(security_margin) || security_margin < 0.0) {
+        throw std::invalid_argument("security margin must be finite and non-negative");
   }
   impl_->UpdatePlacements(q);
   struct ResetMargins {
@@ -460,26 +441,25 @@ bool CollisionModel::IsWithinDistance(const Eigen::VectorXd &q,
 
 std::vector<CollisionResult>
 CollisionModel::ComputeCollisions(const Eigen::VectorXd &q) {
-  impl_->Validate(q);
-  impl_->UpdatePlacements(q);
-  pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data, false);
-  pinocchio::computeDistances(impl_->geometry_model, *impl_->geometry_data);
-  std::vector<CollisionResult> results;
-  results.reserve(impl_->geometry_model.collisionPairs.size());
-  for (std::size_t index = 0;
-       index < impl_->geometry_model.collisionPairs.size(); ++index) {
-    if (impl_->geometry_data->collisionResults[index].isCollision()) {
-      results.push_back(impl_->MakeResult(
-          index, impl_->geometry_data->distanceResults[index]));
-    }
+    detail::ValidateConfiguration(impl_->model, q);
+    impl_->UpdatePlacements(q);
+    pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data, false);
+    pinocchio::computeDistances(impl_->geometry_model, *impl_->geometry_data);
+    std::vector<CollisionResult> results;
+    results.reserve(impl_->geometry_model.collisionPairs.size());
+    for (std::size_t index = 0; index < impl_->geometry_model.collisionPairs.size(); ++index) {
+        if (impl_->geometry_data->collisionResults[index].isCollision()) {
+            results.push_back(
+                impl_->MakeResult(index, impl_->geometry_data->distanceResults[index]));
+        }
   }
   return results;
 }
 
 CollisionResult CollisionModel::MinimumDistance(const Eigen::VectorXd &q) {
-  impl_->Validate(q);
-  if (impl_->geometry_model.collisionPairs.empty()) {
-    throw std::runtime_error("collision model has no active collision pairs");
+    detail::ValidateConfiguration(impl_->model, q);
+    if (impl_->geometry_model.collisionPairs.empty()) {
+        throw std::runtime_error("collision model has no active collision pairs");
   }
   impl_->UpdatePlacements(q);
   const auto index = impl_->MinimumDistanceIndex();
@@ -487,25 +467,24 @@ CollisionResult CollisionModel::MinimumDistance(const Eigen::VectorXd &q) {
 }
 
 CollisionReport CollisionModel::Evaluate(const Eigen::VectorXd &q) {
-  impl_->Validate(q);
-  const auto started = std::chrono::steady_clock::now();
-  CollisionReport report;
-  if (!impl_->geometry_model.collisionPairs.empty()) {
-    impl_->UpdatePlacements(q);
-    report.collisions.reserve(impl_->geometry_model.collisionPairs.size());
-    report.in_collision = pinocchio::computeCollisions(
-        impl_->geometry_model, *impl_->geometry_data, false);
-    const auto minimum_index = impl_->MinimumDistanceIndex();
-    report.has_minimum_distance = true;
-    report.minimum_distance = impl_->MakeResult(
-        minimum_index, impl_->geometry_data->distanceResults[minimum_index]);
-    for (std::size_t index = 0;
-         index < impl_->geometry_model.collisionPairs.size(); ++index) {
-      if (impl_->geometry_data->collisionResults[index].isCollision()) {
-        report.collisions.push_back(impl_->MakeResult(
-            index, impl_->geometry_data->distanceResults[index]));
-      }
-    }
+    detail::ValidateConfiguration(impl_->model, q);
+    const auto started = std::chrono::steady_clock::now();
+    CollisionReport report;
+    if (!impl_->geometry_model.collisionPairs.empty()) {
+        impl_->UpdatePlacements(q);
+        report.collisions.reserve(impl_->geometry_model.collisionPairs.size());
+        report.in_collision =
+            pinocchio::computeCollisions(impl_->geometry_model, *impl_->geometry_data, false);
+        const auto minimum_index = impl_->MinimumDistanceIndex();
+        report.has_minimum_distance = true;
+        report.minimum_distance =
+            impl_->MakeResult(minimum_index, impl_->geometry_data->distanceResults[minimum_index]);
+        for (std::size_t index = 0; index < impl_->geometry_model.collisionPairs.size(); ++index) {
+            if (impl_->geometry_data->collisionResults[index].isCollision()) {
+                report.collisions.push_back(
+                    impl_->MakeResult(index, impl_->geometry_data->distanceResults[index]));
+            }
+        }
   }
   report.query_time_ms = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - started)

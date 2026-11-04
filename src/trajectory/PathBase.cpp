@@ -4,29 +4,30 @@
 #include <cmath>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 namespace holistic_motion {
 namespace robotics {
 
 template <typename LieGroup>
-void PathBase<LieGroup>::_CheckPathWaypoints(std::vector<LieGroup>& waypoints) {
-    if (waypoints.size() < 2) return;
+void PathBase<LieGroup>::_CheckPathWaypoints(std::vector<LieGroup> &waypoints) {
+    if (waypoints.size() < 2)
+        return;
 
-    std::vector<LieGroup> filtered;
-    filtered.reserve(waypoints.size());
-    filtered.push_back(waypoints.front());
-    for (auto waypoint = std::next(waypoints.begin());
-         waypoint != waypoints.end(); ++waypoint) {
-        const auto difference = *waypoint - filtered.back();
+    auto last_kept = waypoints.begin();
+    for (auto waypoint = std::next(last_kept); waypoint != waypoints.end(); ++waypoint) {
+        const auto difference = *waypoint - *last_kept;
         const bool last = std::next(waypoint) == waypoints.end();
         // The tolerance removes redundant interior points, not the requested
         // endpoint. A final short leg still carries real displacement.
         if (difference.Coeffs().norm() > Epsilon ||
             (last && (difference.Coeffs().array() != 0.0).any())) {
-            filtered.push_back(*waypoint);
+            ++last_kept;
+            if (last_kept != waypoint)
+                *last_kept = std::move(*waypoint);
         }
     }
-    waypoints.swap(filtered);
+    waypoints.erase(std::next(last_kept), waypoints.end());
 }
 
 template <typename LieGroup>
@@ -102,5 +103,5 @@ typename LieGroup::Tangent PathBase<LieGroup>::GetTorsion(double s) const {
 // Members must be defined before explicit class instantiation (Clang).
 HOLISTIC_MOTION_TRAJECTORY_GROUP_INSTANTIATIONS(PathBase)
 
-}  // namespace robotics
-}  // namespace holistic_motion
+} // namespace robotics
+} // namespace holistic_motion

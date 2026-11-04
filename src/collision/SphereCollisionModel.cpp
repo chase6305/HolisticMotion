@@ -7,6 +7,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
@@ -88,7 +89,7 @@ class SphereCollisionModel::Impl {
             throw std::invalid_argument(
                 "collision sphere list must not be empty");
 
-        std::set<std::string> names;
+        std::set<std::string_view> names;
         frame_ids.reserve(spheres.size());
         for (const auto &sphere : spheres) {
             if (sphere.name.empty() || sphere.link_name.empty())
@@ -120,28 +121,14 @@ class SphereCollisionModel::Impl {
         ResetPairs(exclude_same_link);
     }
 
-    void ValidateConfiguration(const Eigen::VectorXd &q) const {
-        if (q.size() != model.nq)
-            throw std::invalid_argument(
-                "configuration size must equal model.nq (" +
-                std::to_string(model.nq) + ")");
-        if (!q.allFinite())
-            throw std::invalid_argument(
-                "configuration must contain finite values");
-        if (model.nq != model.nv && !pinocchio::isNormalized(model, q, 1e-8))
-            throw std::invalid_argument(
-                "configuration must satisfy the model manifold (normalized "
-                "continuous pairs/quaternions)");
-    }
-
     void Update(const Eigen::VectorXd &q) {
-        ValidateConfiguration(q);
+        detail::ValidateConfiguration(model, q);
         pinocchio::forwardKinematics(model, *data, q);
         UpdateWorldSpheres();
     }
 
     void UpdateWithJacobians(const Eigen::VectorXd &q) {
-        ValidateConfiguration(q);
+        detail::ValidateConfiguration(model, q);
         pinocchio::computeJointJacobians(model, *data, q);
         UpdateWorldSpheres();
     }
@@ -314,7 +301,7 @@ int SphereCollisionModel::GetConfigurationSize() const {
 int SphereCollisionModel::GetVelocitySize() const { return impl_->model.nv; }
 void SphereCollisionModel::ValidateConfiguration(
     const Eigen::VectorXd &q) const {
-    impl_->ValidateConfiguration(q);
+    detail::ValidateConfiguration(impl_->model, q);
 }
 std::vector<JointCoordinate> SphereCollisionModel::GetJointCoordinates() const {
     return detail::JointCoordinates(impl_->model);
@@ -327,25 +314,13 @@ JointPositionMap SphereCollisionModel::CreateJointPositionMap(
 
 Eigen::VectorXd SphereCollisionModel::ConfigurationFromJointPositions(
     const std::map<std::string, double> &positions) const {
-    std::vector<std::string> names;
-    Eigen::VectorXd values(static_cast<Eigen::Index>(positions.size()));
-    names.reserve(positions.size());
-    Eigen::Index i = 0;
-    for (const auto &entry : positions) {
-        names.push_back(entry.first);
-        values[i++] = entry.second;
-    }
-    return CreateJointPositionMap(names).ConfigurationWithJointPositions(
-        pinocchio::neutral(impl_->model), values);
+    return detail::ConfigurationFromJointPositions(impl_->model, positions);
 }
 
 Eigen::VectorXd SphereCollisionModel::ConfigurationWithJointPositions(
     const Eigen::VectorXd &reference, const std::vector<std::string> &names,
     const Eigen::VectorXd &positions) const {
-    auto result = CreateJointPositionMap(names).ConfigurationWithJointPositions(
-        reference, positions);
-    ValidateConfiguration(result);
-    return result;
+    return detail::ConfigurationWithJointPositions(impl_->model, reference, names, positions);
 }
 
 Eigen::VectorXd SphereCollisionModel::GetJointLowerLimits(
@@ -390,7 +365,7 @@ Eigen::VectorXd SphereCollisionModel::NeutralConfiguration() const {
 std::size_t SphereCollisionModel::SetCollisionGroups(
     const std::map<std::string, std::vector<std::string>> &groups,
     const std::vector<std::pair<std::string, std::string>> &group_pairs) {
-    std::map<std::string, std::vector<std::size_t>> resolved;
+    std::map<std::string_view, std::vector<std::size_t>> resolved;
     for (const auto &[group_name, links] : groups) {
         if (group_name.empty() || links.empty())
             throw std::invalid_argument(

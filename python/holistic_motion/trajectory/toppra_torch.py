@@ -749,10 +749,12 @@ class TorchToppraTrajectory:
         normalized_speeds = _sqrt_speed(x)
         self._speed_scale = speed_scale[:, None]
         self._normalized_speeds = normalized_speeds
-        self._speeds = normalized_speeds * self._speed_scale
+        physical_speeds = normalized_speeds * self._speed_scale
         ds = torch.diff(self._grid, dim=1)
         self._normalized_u = torch.diff(x, dim=1) / (2.0 * ds)
-        self._u = (self._normalized_u * self._speed_scale) * self._speed_scale
+        physical_accelerations = (
+            self._normalized_u * self._speed_scale
+        ) * self._speed_scale
         denominator = normalized_speeds[:, :-1] + normalized_speeds[:, 1:]
         _check(
             denominator > 0.0,
@@ -763,9 +765,9 @@ class TorchToppraTrajectory:
         )
         _check(
             torch.isfinite(self._times[:, 1:])
-            & torch.isfinite(self._speeds[:, :-1])
-            & torch.isfinite(self._speeds[:, 1:])
-            & torch.isfinite(self._u)
+            & torch.isfinite(physical_speeds[:, :-1])
+            & torch.isfinite(physical_speeds[:, 1:])
+            & torch.isfinite(physical_accelerations)
             & (torch.diff(self._times, dim=1) > 0),
             "path timing is not representable",
         )
@@ -776,8 +778,8 @@ class TorchToppraTrajectory:
                 self._output(value).clone()
                 for value in (
                     self._grid,
-                    self._speeds,
-                    self._u,
+                    physical_speeds,
+                    physical_accelerations,
                     self._times,
                     self._times[:, -1],
                 )
@@ -1416,7 +1418,7 @@ class TorchToppraTrajectory:
                 self._times.contiguous(), clipped.contiguous(), right=True
             )
             - 1
-        ).clamp(0, self._u.shape[1] - 1)
+        ).clamp(0, self._normalized_u.shape[1] - 1)
         # Keep the path clock in normalized units too: squaring a physical
         # time can overflow even though the sampled motion is representable.
         elapsed = (clipped - self._times.gather(1, index)) * self._speed_scale

@@ -1,4 +1,6 @@
 #include "holistic_motion/kinematics/URKinematics.h"
+#include "holistic_motion/utility/Logging.h"
+#include <fmt/ranges.h>
 
 #include "FrameValidation.h"
 
@@ -23,6 +25,20 @@ double SafeAsin(double value) {
 namespace holistic_motion {
 namespace robotics {
 
+URKinematics::URKinematics(URParameters urp, const std::vector<JointNode> &joint_node)
+    : params_(urp) {
+    if (!std::isfinite(params_.d1) || !std::isfinite(params_.a2) || !std::isfinite(params_.a3) ||
+        !std::isfinite(params_.d4) || !std::isfinite(params_.d5) || !std::isfinite(params_.d6) ||
+        std::abs(params_.a2) <= 1e-12 || std::abs(params_.a3) <= 1e-12 ||
+        !detail::IsValidFrame(params_.T_b_ob) || !detail::IsValidFrame(params_.T_oe_e) ||
+        !std::all_of(params_.offsets.begin(), params_.offsets.end(),
+                     [](double value) { return std::isfinite(value); }) ||
+        !std::all_of(params_.rotation_directions.begin(), params_.rotation_directions.end(),
+                     [](signed char value) { return value == 1 || value == -1; }))
+        throw std::invalid_argument("invalid UR geometry, offsets, axis directions, or transforms");
+    InitializeJointModel(joint_node, 6);
+}
+
 KinematicsCapabilities URKinematics::GetCapabilities() const {
     auto result = KinematicsBase::GetCapabilities();
     result.family = KinematicsFamily::UR;
@@ -41,7 +57,7 @@ bool URKinematics::GetFK(const Eigen::VectorXd &target_joint,
     }
 
     double q[6];
-    Eigen::VectorXd s(6), c(6);
+    std::array<double, 6> s, c;
     for (size_t i = 0; i < 6; ++i) {
         q[i] = target_joint[i] * this->params_.rotation_directions[i] -
                this->params_.offsets[i];
@@ -77,15 +93,17 @@ bool URKinematics::GetFK(const Eigen::VectorXd &target_joint,
         0, 0, 0, 1;
     /* clang-format on */
 
-    pose = this->params_.T_b_ob * SE3d(T_ob_oe) * this->params_.T_oe_e;
-    pose = pose * this->tcp_;
+    if (!T_ob_oe.allFinite())
+        return false;
+    const SE3d result = this->params_.T_b_ob * SE3d(T_ob_oe) * this->params_.T_oe_e * this->tcp_;
+    if (!result.Coeffs().allFinite())
+        return false;
+    pose = result;
     holistic_motion::utility::LogDebug("GetFK:Success to get FK");
     return true;
 }
 
-bool URKinematics::GetIK(const SE3d &target_pose,
-                         IkRtn &ik_solutions,
-                         Eigen::VectorXd &joint_seed,
+bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::VectorXd &joint_seed,
                          std::vector<double> &dist) const {
     if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
         Eigen::VectorXd stable_seed = joint_seed;
@@ -107,8 +125,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     }
 
     SE3d T_ob_oe = target_pose * this->tcp_.Inverse();
-    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe *
-              this->params_.T_oe_e.Inverse();
+    T_ob_oe = this->params_.T_b_ob.Inverse() * T_ob_oe * this->params_.T_oe_e.Inverse();
 
     Eigen::Matrix4d T_b_e = T_ob_oe.GetTransform();
 
@@ -119,14 +136,10 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     double T20 = T_b_e(2, 0), T21 = T_b_e(2, 1), T22 = T_b_e(2, 2),
            T23 = T_b_e(2, 3);
 
-    double q6_des = joint_seed[5];
-
-    while (q6_des > 2.0 * M_PI) {
-        q6_des -= 2.0 * M_PI;
-    }
-    while (q6_des < 0) {
+    double q6_des = std::fmod(joint_seed[5], 2.0 * M_PI);
+    // Retain the positive full-turn representative at the periodic boundary.
+    if (q6_des < 0.0 || (q6_des == 0.0 && joint_seed[5] > 0.0))
         q6_des += 2.0 * M_PI;
-    }
 
     // angle1
     double angle1[2];
@@ -211,6 +224,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     }
 
     SE3d temp_pose;
+    Eigen::VectorXd joints(6);
     {
         for (size_t i = 0; i < 2; ++i) {
             for (size_t j = 0; j < 2; ++j) {
@@ -223,11 +237,8 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                 if (std::abs(s5) < Epsilon) {
                     angle6 = q6_des;
                 } else {
-                    angle6 = std::atan2(
-                            static_cast<double>(Sign(s5)) *
-                                    (T12 * c1 - T02 * s1),
-                            static_cast<double>(Sign(s5) *
-                                                (T01 * s1 - T11 * c1)));
+                    angle6 = std::atan2(static_cast<double>(Sign(s5)) * (T12 * c1 - T02 * s1),
+                                        static_cast<double>(Sign(s5) * (T01 * s1 - T11 * c1)));
                     if (std::abs(angle6) < Epsilon) {
                         angle6 = 0.0;
                     }
@@ -239,13 +250,11 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                 double angle2[2], angle3[2], angle4[2];
                 double c6 = std::cos(angle6), s6 = std::sin(angle6);
 
-                double x04x = -T02 * c1 * c6 - T12 * s1 * c6 - T01 * c1 * s6 -
-                              T11 * s1 * s6;
+                double x04x = -T02 * c1 * c6 - T12 * s1 * c6 - T01 * c1 * s6 - T11 * s1 * s6;
                 double x04y = -T22 * c6 - T21 * s6;
 
-                double p13x = this->params_.d6 * T00 * c1 - T13 * s1 -
-                              T03 * c1 + this->params_.d6 * T10 * s1 -
-                              this->params_.d5 * x04x;
+                double p13x = this->params_.d6 * T00 * c1 - T13 * s1 - T03 * c1 +
+                              this->params_.d6 * T10 * s1 - this->params_.d5 * x04x;
                 double p13y = T23 - this->params_.d1 - this->params_.d6 * T20 +
                               this->params_.d5 * x04y;
                 double m = p13x * p13x + p13y * p13y;
@@ -256,8 +265,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                 if (std::abs(p13x) < Epsilon) {
                     double div;
                     if (std::abs(std::abs(c3) - std::abs(p13y)) < Epsilon)
-                        div = static_cast<double>(Sign(c3)) *
-                              static_cast<double>(Sign(p13y));
+                        div = static_cast<double>(Sign(c3)) * static_cast<double>(Sign(p13y));
                     else
                         div = c3 / p13y;
                     if (std::abs(div) > 1) {
@@ -277,8 +285,7 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                 } else if (std::abs(p13y) < Epsilon) {
                     double div;
                     if (std::abs(std::abs(c3) - std::abs(p13x)) < Epsilon)
-                        div = static_cast<double>(Sign(c3)) *
-                              static_cast<double>(Sign(p13x));
+                        div = static_cast<double>(Sign(c3)) * static_cast<double>(Sign(p13x));
                     else
                         div = c3 / p13x;
                     if (std::abs(div) > 1) {
@@ -288,10 +295,8 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                     angle2[0] = SafeAcos(div);
                     angle2[1] = 2.0 * M_PI - angle2[0];
                 } else if (std::abs(m - c3 * c3) < Epsilon) {
-                    angle2[0] = std::acos(static_cast<double>(Sign(c3))) +
-                                std::atan2(p13y, p13x);
-                    angle2[1] = 2.0 * M_PI -
-                                std::acos(static_cast<double>(Sign(c3))) +
+                    angle2[0] = std::acos(static_cast<double>(Sign(c3))) + std::atan2(p13y, p13x);
+                    angle2[1] = 2.0 * M_PI - std::acos(static_cast<double>(Sign(c3))) +
                                 std::atan2(p13y, p13x);
                 } else if (m < c3 * c3) {
                     // todo: no solution
@@ -301,8 +306,10 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                     double arccos = SafeAcos(c3 / std::sqrt(m));
                     double pos = arccos + arctan;
                     double neg = -arccos + arctan;
-                    if (std::abs(pos) < Epsilon) pos = 0;
-                    if (std::abs(neg) < Epsilon) neg = 0;
+                    if (std::abs(pos) < Epsilon)
+                        pos = 0;
+                    if (std::abs(neg) < Epsilon)
+                        neg = 0;
                     if (pos >= 0) {
                         angle2[0] = pos;
                     } else {
@@ -318,31 +325,29 @@ bool URKinematics::GetIK(const SE3d &target_pose,
                 for (size_t k = 0; k < 2; ++k) {
                     double s2 = std::sin(angle2[k]);
                     double c2 = std::cos(angle2[k]);
-                    double q23 = std::atan2(
-                            (p13y - this->params_.a2 * s2) *
-                                    static_cast<double>(Sign(this->params_.a3)),
-                            (p13x - this->params_.a2 * c2) *
-                                    static_cast<double>(
-                                            Sign(this->params_.a3)));
+                    double q23 = std::atan2((p13y - this->params_.a2 * s2) *
+                                                static_cast<double>(Sign(this->params_.a3)),
+                                            (p13x - this->params_.a2 * c2) *
+                                                static_cast<double>(Sign(this->params_.a3)));
                     angle3[k] = q23 - angle2[k];
                     angle4[k] = std::atan2(x04x, x04y) - q23;
-                    if (angle3[k] < 0) angle3[k] += 2.0 * M_PI;
-                    if (angle4[k] < 0) angle4[k] += 2.0 * M_PI;
+                    if (angle3[k] < 0)
+                        angle3[k] += 2.0 * M_PI;
+                    if (angle4[k] < 0)
+                        angle4[k] += 2.0 * M_PI;
 
                     if (std::abs(angle4[k]) < Epsilon ||
                         std::abs(angle4[k] - 2.0 * M_PI) < Epsilon) {
                         angle4[k] = 0.0;
                     }
                     holistic_motion::utility::LogDebug(
-                            "GetIK: result "
-                            "joint:\n[{:10.8f},{:10.8f},{:10.8f},{:10.8f},{:10."
-                            "8f},{:10.8f}]",
-                            angle1[i], angle2[k], angle3[k], angle4[k],
-                            angle5[i][j], angle6);
+                        "GetIK: result "
+                        "joint:\n[{:10.8f},{:10.8f},{:10.8f},{:10.8f},{:10."
+                        "8f},{:10.8f}]",
+                        angle1[i], angle2[k], angle3[k], angle4[k], angle5[i][j], angle6);
                     if (std::isfinite(angle1[i]) && std::isfinite(angle2[k]) &&
                         std::isfinite(angle3[k]) && std::isfinite(angle4[k]) &&
                         std::isfinite(angle5[i][j]) && std::isfinite(angle6)) {
-                        Eigen::VectorXd joints(6);
                         joints << (angle1[i] + this->params_.offsets[0]) *
                                           this->params_.rotation_directions[0],
                                 (angle2[k] + this->params_.offsets[1]) *
@@ -389,9 +394,8 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {
-            temp_dist +=
-                    std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
-                             this->ik_nearst_weight_[j]);
+            temp_dist += std::abs((ik_solutions.ik_joints[i][j] - joint_seed[j]) *
+                                  this->ik_nearst_weight_[j]);
         }
         dist.push_back(temp_dist);
     }
@@ -409,42 +413,6 @@ bool URKinematics::GetIK(const SE3d &target_pose,
     holistic_motion::utility::LogDebug(
             "GetIK: Failed to get position IK, success:[{}], ik_number:[{}]",
             ik_solutions.success, ik_solutions.ik_number);
-    return false;
-}
-
-bool URKinematics::GetNearstIK(const SE3d &target_pose,
-                               IkRtn &ik_solutions,
-                               Eigen::VectorXd &joint_seed,
-                               double &min_dist) const {
-    if (detail::SeedAliasesSolutions(ik_solutions, joint_seed)) {
-        Eigen::VectorXd stable_seed = joint_seed;
-        return GetNearstIK(target_pose, ik_solutions, stable_seed, min_dist);
-    }
-
-    holistic_motion::utility::LogDebug("GetNearstIK:Begin to get nearst IK");
-
-    if (joint_seed.size() != this->dof_) {
-        joint_seed = this->home_joints_;
-    }
-
-    std::vector<double> dist;
-    if (GetIK(target_pose, ik_solutions, joint_seed, dist)) {
-        // ik_solutions
-        if (ik_solutions.success) {
-            if (!dist.empty()) {
-                min_dist = dist.front();
-            }
-            if (ik_solutions.ik_number != 1) {
-                ik_solutions.ik_number = 1;
-                ik_solutions.ik_joints.erase(ik_solutions.ik_joints.begin() + 1,
-                                             ik_solutions.ik_joints.end());
-            }
-            holistic_motion::utility::LogDebug("GetNearstIK: Success to get nearst IK.");
-            return true;
-        }
-    }
-
-    holistic_motion::utility::LogWarning("GetNearstIK: Failed to get nearst IK.");
     return false;
 }
 

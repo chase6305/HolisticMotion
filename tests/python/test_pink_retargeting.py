@@ -124,6 +124,35 @@ def test_solver_rejects_non_finite_numeric_options(tmp_path):
         PinkRetargetingSolver(*common, center_of_mass_task=object())
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "integration_dt",
+        "position_tolerance",
+        "orientation_tolerance",
+        "stagnation_tolerance",
+        "collision_cost_weight",
+        "collision_tolerance",
+        "collision_finite_difference_step",
+        "center_of_mass_tolerance",
+        "support_polygon_tolerance",
+        "zmp_tolerance",
+    ],
+)
+@pytest.mark.parametrize("value", [np.complex64(0.1), np.complex128(0.1 + 1j)])
+def test_solver_rejects_complex_scalar_options(tmp_path, name, value):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "empty.urdf"
+    urdf.write_text('<robot name="empty"><link name="base"/></robot>')
+    with pytest.raises(TypeError, match="real"):
+        PinkRetargetingSolver(
+            urdf,
+            {"left_hand": "base", "right_hand": "base", "head": "base"},
+            {"left_arm": [], "right_arm": []},
+            **{name: value},
+        )
+
+
 def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
     python_pinocchio_or_skip()
     urdf = tmp_path / "fixed.urdf"
@@ -136,15 +165,14 @@ def test_zero_cost_frame_axes_do_not_block_convergence(tmp_path):
         posture_task=PostureTask(cost=0.0),
     )
     solver.prepare("left_arm")
-    assert solver.mode in solver._system_workspace
-    assert solver.mode in solver._solve_workspaces
-    solve_workspace = solver._solve_workspaces[solver.mode]
+    assert solver.mode in solver._workspaces
+    system_workspace = solver._workspaces[solver.mode]
     target = np.eye(4)
     target[0, 3] = 1.0
 
     result = solver.solve({"left_hand": target})
 
-    assert solver._solve_workspaces[solver.mode] is solve_workspace
+    assert solver._workspaces[solver.mode] is system_workspace
     assert result.success
     assert result.iterations == 1
     assert result.position_residual == pytest.approx(1.0)

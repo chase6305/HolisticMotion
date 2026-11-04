@@ -9,7 +9,8 @@
 #include <Eigen/Dense>
 #include <fmt/ranges.h>
 
-#include "holistic_motion/manif/LieGroup.h"
+#include "holistic_motion/manif/Rn.h"
+#include "holistic_motion/manif/SE3.h"
 #include "holistic_motion/utility/Logging.h"
 #include "holistic_motion/utility/ScaledNorm.h"
 #include "holistic_motion/utility/Types.h"
@@ -102,9 +103,9 @@ inline Eigen::VectorXd GetWeights(int dof, bool cartesian) {
 }
 
 namespace detail {
-template <typename Derived>
+template <typename Derived, typename Weights>
 double WeightedCoefficientNorm(const Eigen::MatrixBase<Derived> &target,
-                               const Eigen::VectorXd &weights) {
+                               const Eigen::MatrixBase<Weights> &weights) {
     const double squared = (target.array().square() * weights.array()).sum();
     // A normal weighted sum can still hide an underflowed unweighted square.
     const double minimum_squared =

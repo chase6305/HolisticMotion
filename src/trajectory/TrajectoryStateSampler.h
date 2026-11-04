@@ -37,17 +37,21 @@ public:
         if (!std::isfinite(jet[0]))
             throw std::runtime_error(
                 "trajectory evaluated a non-finite path parameter");
-        const auto geometry =
+        // Phase entries already own their geometry. Retain lookup results
+        // locally while replacing the previous cached segment.
+        std::shared_ptr<PathSegmentBase<LieGroup>> queried_geometry;
+        const auto &geometry =
             !trajectory_.phase_path_segments_.empty() &&
                     trajectory_.phase_path_segments_[phase]
                 ? trajectory_.phase_path_segments_[phase]
-                : trajectory_.path_->GetPathSegmentAtS(jet[0]);
+                : (queried_geometry =
+                       trajectory_.path_->GetPathSegmentAtS(jet[0]));
         if (!geometry)
             throw std::logic_error("cannot query an invalid path");
         if (geometry != sampled_segment_) {
             sampler_.reset();
             sampled_segment_ = geometry;
-            sampler_.emplace(*geometry);
+            sampler_.emplace(*sampled_segment_);
         }
         typename TrajectoryBase<LieGroup>::State state;
         typename LieGroup::Tangent tangent;

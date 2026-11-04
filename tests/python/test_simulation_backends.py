@@ -211,6 +211,19 @@ def test_invalid_dt_does_not_mutate_physics(dt):
         assert session.step(1, 0.1).state.step_id == 1
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("imaginary", [0.0, 1.0])
+def test_numpy_complex_dt_does_not_mutate_physics(dtype, imaginary):
+    np = pytest.importorskip("numpy")
+    events = []
+    with SimulationSession(Physics(events)) as session:
+        session.reset()
+        with pytest.raises(TypeError, match="real duration"):
+            session.step(1, getattr(np, dtype)(0.1 + imaginary * 1j))
+        assert events == ["reset"]
+        assert session.step(1, 0.1).state.step_id == 1
+
+
 def test_failed_factory_closes_previously_created_adapters():
     events = []
     backends = registry(events)

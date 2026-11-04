@@ -7,36 +7,6 @@
 namespace holistic_motion {
 namespace robotics {
 
-template <typename LieGroup>
-void PathSegmentBase<LieGroup>::ComputeDerivatives(double s, Tangent &tangent,
-                                                 Tangent &curvature,
-                                                 Tangent &torsion) const {
-    // Speed-cap sampling needs all derivatives but not position. Share the
-    // quintic control differences without bypassing a subclass's overrides.
-    if (typeid(*this) == typeid(PathSegBezierCurve5th<LieGroup>)) {
-        ValidateQuery(s);
-        const auto &curve = static_cast<const PathSegBezierCurve5th<LieGroup> &>(*this);
-        s = clamp(s - sp_, 0.0, length_);
-        s = length_ > Epsilon ? s / length_ : 0.0;
-        const detail::QuinticEvaluation<LieGroup> evaluation(curve.control_points_, s,
-                                                           length_);
-        evaluation.ComputeDerivatives(tangent, curvature, torsion);
-        return;
-    }
-    if constexpr (std::is_same_v<LieGroup, SE3d>) {
-        if (typeid(*this) == typeid(PathSegBezierCurve2nd<LieGroup>)) {
-            ValidateQuery(s);
-            s = clamp(s - sp_, 0.0, length_) / length_;
-            detail::SE3BezierEvaluation<2>(waypoints_, s, length_)
-                .ComputeDerivatives(tangent, curvature, torsion);
-            return;
-        }
-    }
-    tangent = GetTangent(s);
-    curvature = GetCurvature(s);
-    torsion = GetTorsion(s);
-}
-
 // Restrict the shared evaluation to the exact built-in types. A subclass may
 // override any scalar query; it must continue to participate in GetState.
 template <typename LieGroup>
@@ -80,9 +50,8 @@ void PathSegmentBase<LieGroup>::ComputeJet(double s, LieGroup &position,
 }
 
 template <typename LieGroup>
-PathSegLinear<LieGroup>::PathSegLinear(const std::array<LieGroup, 2> &waypoints,
-                                       const double &sp,
-                                       const bool &is_cartesian_space) {
+PathSegLinear<LieGroup>::PathSegLinear(const std::array<LieGroup, 2> &waypoints, const double &sp,
+                                       const bool &) {
     this->sp_ = sp;
     this->path_seg_type_ = PathSegType::LinearSeg;
     this->waypoints_.insert(this->waypoints_.end(), waypoints.cbegin(),
@@ -90,8 +59,8 @@ PathSegLinear<LieGroup>::PathSegLinear(const std::array<LieGroup, 2> &waypoints,
     this->tangent_ = this->waypoints_[1] - this->waypoints_[0];
     // Path distances act on tangents (SE3 has 6 tangent coordinates but stores
     // 7 pose coefficients). Pose storage size is not the metric dimension.
-    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
-    this->length_ = WeightedNorm(this->tangent_, weights);
+    const auto weights = Eigen::Matrix<double, LieGroup::DoF, 1>::Ones();
+    this->length_ = detail::WeightedCoefficientNorm(this->tangent_.Coeffs(), weights);
 
     holistic_motion::utility::LogDebug("[PathSegLinear], sp:{}, length:{}", this->sp_,
                                        this->length_);
@@ -114,19 +83,19 @@ typename LieGroup::Tangent PathSegLinear<LieGroup>::GetTangent(double s) const {
 }
 
 template <typename LieGroup>
-PathSegBezierCurve2nd<LieGroup>::PathSegBezierCurve2nd(
-    const std::array<LieGroup, 3> &waypoints, const double &sp,
-    const bool &is_cartesian_space) {
+PathSegBezierCurve2nd<LieGroup>::PathSegBezierCurve2nd(const std::array<LieGroup, 3> &waypoints,
+                                                       const double &sp, const bool &) {
     this->path_seg_type_ = PathSegType::Bezier2ndSeg;
     this->sp_ = sp;
     this->waypoints_.insert(this->waypoints_.end(), waypoints.cbegin(),
                             waypoints.cend());
     this->control_points_ = this->waypoints_;
-    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
+    const auto weights = Eigen::Matrix<double, LieGroup::DoF, 1>::Ones();
     // Calculate the relative distance before and after three points
-    this->length_ =
-        WeightedNorm(this->control_points_[1] - this->control_points_[0], weights) +
-        WeightedNorm(this->control_points_[2] - this->control_points_[1], weights);
+    this->length_ = detail::WeightedCoefficientNorm(
+                        (this->control_points_[1] - this->control_points_[0]).Coeffs(), weights) +
+                    detail::WeightedCoefficientNorm(
+                        (this->control_points_[2] - this->control_points_[1]).Coeffs(), weights);
     if (this->length_ == 0.0)
         this->length_ = std::numeric_limits<double>::quiet_NaN();
     holistic_motion::utility::LogDebug(
@@ -197,10 +166,11 @@ typename LieGroup::Tangent PathSegBezierCurve2nd<LieGroup>::GetTorsion(double s)
 }
 
 template <typename LieGroup>
-PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
-    const std::array<LieGroup, 3> &waypoints, const double &sp,
-    const double &tstart_norm, const double &cstart_norm, const double &tend_norm,
-    const double &cend_norm, const bool &is_cartesian_space) {
+PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(const std::array<LieGroup, 3> &waypoints,
+                                                       const double &sp, const double &tstart_norm,
+                                                       const double &cstart_norm,
+                                                       const double &tend_norm,
+                                                       const double &cend_norm, const bool &) {
     this->path_seg_type_ = PathSegType::Bezier5thSeg;
     this->sp_ = sp;
     this->waypoints_.insert(this->waypoints_.end(), waypoints.cbegin(),
@@ -213,11 +183,10 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
         return;
     }
 
-    // compute weights...
-    auto weights = GetWeights(LieGroup::DoF, is_cartesian_space);
+    const auto weights = Eigen::Matrix<double, LieGroup::DoF, 1>::Ones();
 
     // compute trangent between waypoints0, waypoints1 and waypoints3
-    auto tstart = waypoints[1] - waypoints[0];
+    auto tstart = this->tangent_;
     auto tend = waypoints[2] - waypoints[1];
 
     holistic_motion::utility::LogDebug(
@@ -227,8 +196,8 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
         fmt::join(waypoints[2].Coeffs(), ","));
 
     // compute weights of the tstart or the tend
-    const double tstart_length = WeightedNorm(tstart, weights);
-    const double tend_length = WeightedNorm(tend, weights);
+    const double tstart_length = detail::WeightedCoefficientNorm(tstart.Coeffs(), weights);
+    const double tend_length = detail::WeightedCoefficientNorm(tend.Coeffs(), weights);
     if (!std::isfinite(tstart_length) || !std::isfinite(tend_length) ||
         tstart_length <= Epsilon || tend_length <= Epsilon) {
         this->length_ = std::numeric_limits<double>::quiet_NaN();
@@ -252,26 +221,27 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
 
     const auto &pstart = this->waypoints_[0];
     const auto &pend = this->waypoints_[2];
+    const Tangent chord = pend - pstart;
+    const double chord_length = detail::WeightedCoefficientNorm(chord.Coeffs(), weights);
 
     // add notes
-    double a = 256.0 - 49.0 * std::pow(WeightedNorm(tend + tstart, weights), 2);
+    double a =
+        256.0 -
+        49.0 * std::pow(detail::WeightedCoefficientNorm((tend + tstart).Coeffs(), weights), 2);
     // Use the same tangent metric as a and c, including rotation. A fixed
     // three-coordinate block also reads beyond R1/R2 tangent storage.
-    double b = 420.0 * ((pend - pstart).Coeffs().array() * weights.array() *
-                              (tstart + tend).Coeffs().array())
-                                 .sum();
-    double c = -900.0 * WeightedNorm(pend - pstart, weights) *
-               WeightedNorm(pend - pstart, weights);
+    double b =
+        420.0 * (chord.Coeffs().array() * weights.array() * (tstart + tend).Coeffs().array()).sum();
+    double c = -900.0 * chord_length * chord_length;
     double delta = b * b - 4 * a * c;
     double root_scale = 1.0;
-    if (std::isfinite(a) &&
-        (!std::isfinite(b) || !std::isfinite(c) || !std::isfinite(delta))) {
+    if (std::isfinite(a) && (!std::isfinite(b) || !std::isfinite(c) || !std::isfinite(delta))) {
         // Solve for root / chord length when squaring finite coordinates
         // overflows. The dimensionless equation has the same positive root.
-        root_scale = WeightedNorm(pend - pstart, weights);
+        root_scale = chord_length;
         if (std::isfinite(root_scale) && root_scale > 0.0) {
-            const Tangent chord = (pend - pstart) / root_scale;
-            b = 420.0 * (chord.Coeffs().array() * weights.array() *
+            const Tangent normalized_chord = chord / root_scale;
+            b = 420.0 * (normalized_chord.Coeffs().array() * weights.array() *
                          (tstart + tend).Coeffs().array())
                             .sum();
             c = -900.0;
@@ -327,12 +297,7 @@ PathSegBezierCurve5th<LieGroup>::PathSegBezierCurve5th(
         return;
     }
 
-    this->control_points_.emplace_back(p0);
-    this->control_points_.emplace_back(p1);
-    this->control_points_.emplace_back(p2);
-    this->control_points_.emplace_back(p3);
-    this->control_points_.emplace_back(p4);
-    this->control_points_.emplace_back(p5);
+    this->control_points_ = {p0, p1, p2, p3, p4, p5};
     this->length_ = root;
 
     holistic_motion::utility::LogDebug(

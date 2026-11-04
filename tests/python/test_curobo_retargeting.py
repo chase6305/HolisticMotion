@@ -143,6 +143,45 @@ def test_curobo_style_step_uses_only_physical_primary_seed(tmp_path):
     assert abs(solver._last_velocity[joint.idx_v]) <= 0.05 + 1e-12
 
 
+@pytest.mark.parametrize("enforce_acceleration", [False, True])
+def test_curobo_owns_primary_seed_and_preserves_winning_history(
+    tmp_path, monkeypatch, enforce_acceleration
+):
+    from holistic_motion.kit.retargeting.pink_solver import PinkRetargetingSolver
+
+    solver = _solver(tmp_path, num_seeds=3)
+    seed = np.array([-0.8])
+    velocities = []
+
+    def solve_seed(instance, desired_poses, frame_weights, *, seed, **kwargs):
+        index = len(velocities)
+        seed[0] += 0.01
+        instance._last_velocity[:] = 0.1 * (index + 1)
+        velocities.append(instance._last_velocity.copy())
+        return RetargetingResult(
+            configuration=seed,
+            success=False,
+            iterations=1,
+            residual=1.0,
+            solve_ms=0.0,
+            mode=instance.mode,
+            objective=(2.0, 0.1, 1.0)[index],
+        )
+
+    monkeypatch.setattr(PinkRetargetingSolver, "_solve_seed", solve_seed)
+    result = solver.solve(
+        _target(solver, 0.0),
+        seed=seed,
+        enforce_acceleration=enforce_acceleration,
+    )
+    winner = 0 if enforce_acceleration else 1
+    assert solver.last_num_seeds_evaluated == (1 if enforce_acceleration else 3)
+    assert solver.last_seed_index == winner
+    np.testing.assert_array_equal(seed, [-0.8])
+    np.testing.assert_array_equal(solver._last_velocity, velocities[winner])
+    np.testing.assert_array_equal(solver._last_q, result.configuration)
+
+
 def test_curobo_style_solver_uses_collision_cost_gradient(tmp_path):
     calls = {"cost": 0, "gradient": 0}
 

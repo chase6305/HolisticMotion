@@ -258,7 +258,7 @@ bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
 
     // Small link offsets in real URDFs can leave a residual in the canonical
     // SRS model. Keep its result as the local seed instead of restarting IK.
-    NumericalKinematics refinement(solver.GetJointNode());
+    NumericalKinematics refinement(solver.GetJointNodesView());
     refinement.SetTCP(solver.GetTCP());
     refinement.SetMaxIterNum(100);
     refinement.SetTransErrTh(1e-8);
@@ -591,18 +591,18 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         std::vector<double> distances;
         if (!NumericalKinematics::GetIK(target, result, candidate_seed, distances))
             return;
-        for (auto candidate : result.ik_joints) {
+        for (auto &candidate : result.ik_joints) {
             if (RefineToStrictPose(*this, target, candidate)) {
                 add(candidate);
             }
         }
     };
     const SRSConfiguration seed_configuration = GetConfiguration(seed);
+    Eigen::VectorXd solution;
 
     if (method == SRSSolveMethod::SEEDED_NUMERICAL) {
         solve_seed(seed);
     } else if (method == SRSSolveMethod::CONFIGURATION) {
-        Eigen::VectorXd solution;
         if (SolveConfiguration(target, seed_configuration, seed, solution)) {
             add(solution);
         }
@@ -610,7 +610,6 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         // Preserve the exact seed branch first, then enumerate S/E/W signs.
         CanonicalSRSModel model;
         if (GetCanonicalModel(model)) {
-            Eigen::VectorXd solution;
             if (SolveConfiguration(target, seed_configuration, seed, solution))
                 add(solution);
         } else {
@@ -619,7 +618,6 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         for (int shoulder : {-1, 1}) {
             for (int elbow : {-1, 1}) {
                 for (int wrist : {-1, 1}) {
-                    Eigen::VectorXd solution;
                     const SRSConfiguration configuration{shoulder, elbow, wrist,
                                                          seed_configuration.redundancy};
                     if (SolveConfiguration(target, configuration, seed, solution)) {
@@ -631,7 +629,6 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     } else {
         // Search the geometric arm angle, not joint 3.  This preserves the
         // seed configuration while expanding through nearby redundancy values.
-        Eigen::VectorXd solution;
         if (SolveConfiguration(target, seed_configuration, seed, solution)) {
             add(solution);
         }

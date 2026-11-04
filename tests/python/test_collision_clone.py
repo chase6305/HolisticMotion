@@ -29,6 +29,31 @@ def _sphere_model(path):
     return _model(path, '<geometry><sphere radius="0.2"/></geometry>')
 
 
+def test_collision_link_names_are_unique_owned_snapshots(tmp_path):
+    geometry = '<collision><geometry><sphere radius="0.1"/></geometry></collision>'
+    path = tmp_path / "repeated_geometry.urdf"
+    path.write_text(
+        '<robot name="repeated"><link name="base">'
+        + geometry * 16
+        + '</link><link name="tool">'
+        + geometry
+        + '</link><joint name="fixed" type="fixed"><parent link="base"/>'
+        '<child link="tool"/></joint></robot>'
+    )
+    model = hm.CollisionModel(str(path), exclude_adjacent=False)
+    for name in ("base", "world\x00shadow", "z_world"):
+        model.add_box_obstacle(name, [0.1] * 3, np.eye(4))
+    names = model.collision_link_names
+    expected = ["base", "tool", "world\x00shadow", "z_world"]
+    assert names == expected
+    assert model.remove_obstacle("base")
+    assert model.remove_obstacle("z_world")
+    assert model.collision_link_names == expected[:-1]
+    del model
+    gc.collect()
+    assert names == expected
+
+
 def test_clone_preserves_obstacles_pairs_and_independent_edits(tmp_path):
     model = _sphere_model(tmp_path / "source.urdf")
     pose = np.eye(4)

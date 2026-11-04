@@ -136,14 +136,6 @@ public:
      */
     void Normalize();
 
-    // protected:
-
-    /// @todo given a Eigen::Map<const SO2>
-    /// Coeffs()->x() return a reference to
-    /// temporary ...
-
-    //  Scalar& real();
-    //  Scalar& imag();
 };
 
 template <typename _Derived>
@@ -156,11 +148,7 @@ typename SO2Base<_Derived>::Transformation SO2Base<_Derived>::GetTransform()
 
 template <typename _Derived>
 typename SO2Base<_Derived>::Rotation SO2Base<_Derived>::GetRotation() const {
-    using std::cos;
-    using std::sin;
-    const Scalar theta = Angle();
-    return (GetRotation() << cos(theta), -sin(theta), sin(theta), cos(theta))
-            .finished();
+    return (Rotation() << Real(), -Imag(), Imag(), Real()).finished();
 }
 
 template <typename _Derived>
@@ -261,20 +249,6 @@ typename SO2Base<_Derived>::Scalar SO2Base<_Derived>::Angle() const {
     using std::atan2;
     return atan2(Imag(), Real());
 }
-
-// template <typename _Derived>
-// typename SO2Base<_Derived>::Scalar&
-// SO2Base<_Derived>::real()
-//{
-//  return Coeffs.x();
-//}
-
-// template <typename _Derived>
-// typename SO2Base<_Derived>::Scalar&
-// SO2Base<_Derived>::imag()
-//{
-//  return Coeffs.y();
-//}
 
 template <typename _Derived>
 void SO2Base<_Derived>::Normalize() {

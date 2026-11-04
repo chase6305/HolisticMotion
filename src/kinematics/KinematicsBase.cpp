@@ -1,7 +1,9 @@
 #include "holistic_motion/kinematics/KinematicsBase.h"
+#include "holistic_motion/utility/Logging.h"
 
-#include "FrameValidation.h"
 #include "ForwardKinematics.h"
+#include "FrameValidation.h"
+#include "SeedAlias.h"
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +62,27 @@ KinematicsCapabilities KinematicsBase::GetCapabilities() const {
     return result;
 }
 
+bool KinematicsBase::GetNearstIK(const SE3d &target_pose, IkRtn &solutions, Eigen::VectorXd &seed,
+                                 double &min_dist) const {
+    if (detail::SeedAliasesSolutions(solutions, seed)) {
+        Eigen::VectorXd stable_seed = seed;
+        return KinematicsBase::GetNearstIK(target_pose, solutions, stable_seed, min_dist);
+    }
+    std::vector<double> distances;
+    if (!GetIK(target_pose, solutions, seed, distances))
+        return false;
+    if (!solutions.success || solutions.ik_joints.empty() ||
+        distances.size() != solutions.ik_joints.size()) {
+        solutions.Clear();
+        return false;
+    }
+    min_dist = distances.front();
+    solutions.ik_joints.resize(1);
+    solutions.ik_number = 1;
+    solutions.joint_states.resize(0, 0);
+    return true;
+}
+
 IKSolveReport KinematicsBase::SolveIK(const SE3d &target, const Eigen::VectorXd &seed,
                                       IKSelection selection) const {
     IKSolveReport report;
@@ -111,7 +134,6 @@ void KinematicsBase::InitializeJointModel(
     home_joints_ = Eigen::VectorXd::Zero(dof_);
     ik_nearst_weight_ = Eigen::VectorXd::Ones(dof_);
     joint_filter_config_.Resize(dof_);
-    initalize_ = true;
 }
 
 bool KinematicsBase::GetAllFK(const Eigen::VectorXd &joints,
@@ -212,11 +234,8 @@ bool KinematicsBase::SetJointLimits(const Eigen::VectorXd& upper_limits,
 
 bool KinematicsBase::GetJointLimits(Eigen::VectorXd& upper_limits,
                                     Eigen::VectorXd& lower_limits) const {
-    if (upper_limits.size() != this->dof_ ||
-        lower_limits.size() != this->dof_) {
-        upper_limits.resize(this->dof_);
-        lower_limits.resize(this->dof_);
-    }
+    upper_limits.resize(this->dof_);
+    lower_limits.resize(this->dof_);
 
     for (int i = 0; i < this->dof_; ++i) {
         upper_limits[i] = this->joint_nodes_[i].upper_limit;
@@ -250,11 +269,8 @@ bool KinematicsBase::SetUserJointLimits(const Eigen::VectorXd& upper_limits,
 
 bool KinematicsBase::GetUserJointLimits(Eigen::VectorXd& upper_limits,
                                         Eigen::VectorXd& lower_limits) const {
-    if (upper_limits.size() != this->dof_ ||
-        lower_limits.size() != this->dof_) {
-        upper_limits.resize(this->dof_);
-        lower_limits.resize(this->dof_);
-    }
+    upper_limits.resize(this->dof_);
+    lower_limits.resize(this->dof_);
 
     for (int i = 0; i < this->dof_; ++i) {
         upper_limits[i] = this->joint_nodes_[i].upper_limit_set;

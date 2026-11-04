@@ -231,17 +231,6 @@ void BindKinematics(py::module_ &module) {
                 self.T_oe_e = SE3d(value);
             });
 
-    auto valid_directions = [](const auto &params) {
-        return std::all_of(params.rotation_directions.begin(),
-                           params.rotation_directions.end(),
-                           [](signed char direction) {
-                               return direction == 1 || direction == -1;
-                           });
-    };
-    auto valid_offsets = [](const auto &params) {
-        return std::all_of(params.offsets.begin(), params.offsets.end(),
-                           [](double value) { return std::isfinite(value); });
-    };
     auto make_joint_nodes = [](const Eigen::VectorXd &lower,
                                const Eigen::VectorXd &upper) {
         if (lower.size() != 6 || upper.size() != 6 || !lower.allFinite() ||
@@ -256,65 +245,31 @@ void BindKinematics(py::module_ &module) {
         }
         return nodes;
     };
-    py::class_<OPWKinematics, KinematicsBase, std::shared_ptr<OPWKinematics>>(
-        module, "OPWKinematics")
-        .def(py::init([make_joint_nodes, valid_directions,
-                       valid_offsets](const OPWParameters &params,
-                                      const py::object &lower_input,
-                                      const py::object &upper_input) {
+    py::class_<OPWKinematics, KinematicsBase, std::shared_ptr<OPWKinematics>>(module,
+                                                                              "OPWKinematics")
+        .def(py::init([make_joint_nodes](const OPWParameters &params, const py::object &lower_input,
+                                         const py::object &upper_input) {
                  const Eigen::VectorXd lower =
                      CheckedRealEigen<Eigen::VectorXd>(lower_input,
                                                        "lower_limits");
                  const Eigen::VectorXd upper =
                      CheckedRealEigen<Eigen::VectorXd>(upper_input,
                                                        "upper_limits");
-                 const bool geometry_valid =
-                     std::isfinite(params.a1) && std::isfinite(params.a2) &&
-                     std::isfinite(params.b) && std::isfinite(params.c1) &&
-                     std::isfinite(params.c2) && std::isfinite(params.c3) &&
-                     std::isfinite(params.c4) && std::abs(params.c2) > 1e-12 &&
-                     std::hypot(params.a2, params.c3) > 1e-12;
-                 if (!geometry_valid || !valid_directions(params) ||
-                     !valid_offsets(params)) {
-                     throw py::value_error(
-                         "invalid OPW geometry, offsets, or axis directions");
-                 }
-                 auto solver = std::make_shared<OPWKinematics>(
-                     params, make_joint_nodes(lower, upper));
-                 solver->DisableRobotConfig();
-                 return solver;
+                 return std::make_shared<OPWKinematics>(params, make_joint_nodes(lower, upper));
              }),
-             py::arg("parameters"), py::arg("lower_limits"),
-             py::arg("upper_limits"));
-    py::class_<URKinematics, KinematicsBase, std::shared_ptr<URKinematics>>(
-        module, "URKinematics")
-        .def(py::init([make_joint_nodes, valid_directions,
-                       valid_offsets](const URParameters &params,
-                                      const py::object &lower_input,
-                                      const py::object &upper_input) {
+             py::arg("parameters"), py::arg("lower_limits"), py::arg("upper_limits"));
+    py::class_<URKinematics, KinematicsBase, std::shared_ptr<URKinematics>>(module, "URKinematics")
+        .def(py::init([make_joint_nodes](const URParameters &params, const py::object &lower_input,
+                                         const py::object &upper_input) {
                  const Eigen::VectorXd lower =
                      CheckedRealEigen<Eigen::VectorXd>(lower_input,
                                                        "lower_limits");
                  const Eigen::VectorXd upper =
                      CheckedRealEigen<Eigen::VectorXd>(upper_input,
                                                        "upper_limits");
-                 const bool geometry_valid =
-                     std::isfinite(params.d1) && std::isfinite(params.a2) &&
-                     std::isfinite(params.a3) && std::isfinite(params.d4) &&
-                     std::isfinite(params.d5) && std::isfinite(params.d6) &&
-                     std::abs(params.a2) > 1e-12 && std::abs(params.a3) > 1e-12;
-                 if (!geometry_valid || !valid_directions(params) ||
-                     !valid_offsets(params)) {
-                     throw py::value_error(
-                         "invalid UR geometry, offsets, or axis directions");
-                 }
-                 auto solver = std::make_shared<URKinematics>(
-                     params, make_joint_nodes(lower, upper));
-                 solver->DisableRobotConfig();
-                 return solver;
+                 return std::make_shared<URKinematics>(params, make_joint_nodes(lower, upper));
              }),
-             py::arg("parameters"), py::arg("lower_limits"),
-             py::arg("upper_limits"));
+             py::arg("parameters"), py::arg("lower_limits"), py::arg("upper_limits"));
 
     py::class_<NumericalKinematics, KinematicsBase,
                std::shared_ptr<NumericalKinematics>>(module,

@@ -1,5 +1,6 @@
 """Renderer-independent checks for the shared Viser scene environment."""
 
+import numpy as np
 import pytest
 from holistic_motion.visualization.viser import (
     configure_scene,
@@ -173,6 +174,38 @@ def test_configure_scene_from_large_offset_bounds_uses_stable_center():
 def test_configure_scene_rejects_invalid_geometry(options, error):
     with pytest.raises(error):
         configure_scene(ModernScene(), **options)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"ground_width": np.complex128(3.0)},
+        {"ground_height": np.array(3.0 + 0.0j)},
+        {"ground_z": np.complex128(0.0)},
+        {"grid_cell_size": np.complex128(0.25)},
+        {"ground_center_xy": np.array([0.0, 0.0], dtype=complex)},
+    ],
+)
+def test_complex_scene_geometry_is_rejected_before_scene_updates(options):
+    scene = ModernScene()
+    with pytest.raises(TypeError, match="real"):
+        configure_scene(scene, **options)
+    assert not scene.calls
+
+
+@pytest.mark.parametrize(
+    "bounds,options",
+    [
+        (np.array([[0, 0, 0], [1, 1, 1]], dtype=complex), {}),
+        ([[0, 0, 0], [1, 1, 1]], {"minimum_ground_size": np.complex128(1.0)}),
+        ([[0, 0, 0], [1, 1, 1]], {"margin": np.complex128(0.15)}),
+    ],
+)
+def test_complex_bounds_are_rejected_before_scene_updates(bounds, options):
+    scene = ModernScene()
+    with pytest.raises(TypeError, match="real"):
+        configure_scene_from_bounds(scene, bounds, **options)
+    assert not scene.calls
 
 
 @pytest.mark.parametrize(

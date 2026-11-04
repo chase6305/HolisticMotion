@@ -39,6 +39,63 @@ def make_solver(tmp_path, solver_type, cost, step, limit=1.0):
     return solver
 
 
+@pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "reversed"])
+@pytest.mark.parametrize("readonly", [False, True])
+def test_analytic_gradient_cache_owns_selected_callback_values(
+    tmp_path, combined, layout, readonly
+):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "gradient_ownership.urdf"
+    parts = ['<robot name="gradient_ownership"><link name="l0"/>']
+    for index in range(3):
+        parts.append(
+            f'<link name="l{index + 1}"/><joint name="j{index}" type="prismatic">'
+            f'<parent link="l{index}"/><child link="l{index + 1}"/>'
+            '<axis xyz="1 0 0"/><limit lower="-1" upper="1" '
+            'velocity="1" effort="1"/></joint>'
+        )
+    urdf.write_text("".join(parts) + "</robot>")
+    solver = PinkRetargetingSolver(
+        urdf,
+        {"left_hand": "l3"},
+        {"left_arm": ["j0", "j2"]},
+        collision_cost=lambda q: 0.5,
+    )
+    solver.prepare("left_arm")
+    storage = np.arange(6, dtype=float)
+    if layout == "strided":
+        gradient = storage[::2]
+    elif layout == "reversed":
+        gradient = storage[:3][::-1]
+    else:
+        gradient = storage[:3]
+    if readonly:
+        gradient.setflags(write=False)
+
+    def callback(configuration):
+        configuration[:] = 42.0
+        return (0.5, gradient) if combined else gradient
+
+    solver.collision_gradient = None if combined else callback
+    solver.collision_cost_gradient = callback if combined else None
+    q = solver._neutral_q.copy()
+    active, _ = solver._mode_limits()
+    expected = np.array([gradient[0], gradient[2]])
+    counts, costs, gradients = [0, 0], {}, {}
+    result = solver._collision_gradient_value(q, 0.5, active, counts, costs, gradients)
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(q, np.zeros(3))
+    assert not np.shares_memory(result, storage)
+
+    storage[:] = -7.0
+    cached = solver._collision_gradient_value(q, 0.5, active, counts, costs, gradients)
+    np.testing.assert_array_equal(cached, expected)
+    assert counts == ([1, 1] if combined else [0, 1])
+    result[:] = 0.0
+    np.testing.assert_array_equal(storage, np.full(6, -7.0))
+
+
 @pytest.mark.parametrize(
     "solver_type", [PinkRetargetingSolver, CuroboRetargetingSolver]
 )

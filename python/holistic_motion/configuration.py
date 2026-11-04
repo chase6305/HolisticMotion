@@ -57,24 +57,20 @@ class JointPositionMap:
         selected = []
         names, q_indices, v_indices = set(), set(), set()
         for source in joints:
-            joint = JointCoordinate(
-                source.name, source.idx_q, source.nq, source.idx_v, source.nv
-            )
-            if not isinstance(joint.name, str) or not joint.name or joint.name in names:
+            name = source.name
+            idx_q, joint_nq = source.idx_q, source.nq
+            idx_v, joint_nv = source.idx_v, source.nv
+            if not isinstance(name, str) or not name or name in names:
                 raise ValueError("joint names must be nonempty and unique")
             if any(
                 isinstance(value, bool) or not isinstance(value, Integral)
-                for value in (joint.idx_q, joint.nq, joint.idx_v, joint.nv)
+                for value in (idx_q, joint_nq, idx_v, joint_nv)
             ):
                 raise TypeError("joint coordinate indices and sizes must be integers")
             # Normalize NumPy integer scalars before subtracting block sizes:
             # unsigned subtraction could otherwise wrap and accept a bad block.
             joint = JointCoordinate(
-                joint.name,
-                int(joint.idx_q),
-                int(joint.nq),
-                int(joint.idx_v),
-                int(joint.nv),
+                name, int(idx_q), int(joint_nq), int(idx_v), int(joint_nv)
             )
             if joint.nv != 1 or joint.nq not in (1, 2):
                 raise ValueError(
@@ -84,15 +80,15 @@ class JointPositionMap:
                 raise ValueError(
                     f"joint coordinate block is outside model nq/nv: {joint.name}"
                 )
-            block = set(range(joint.idx_q, joint.idx_q + joint.nq))
-            if q_indices.intersection(block) or joint.idx_v in v_indices:
+            block = range(joint.idx_q, joint.idx_q + joint.nq)
+            if not q_indices.isdisjoint(block) or joint.idx_v in v_indices:
                 raise ValueError("joint coordinate blocks must not overlap")
             names.add(joint.name)
             q_indices.update(block)
             v_indices.add(joint.idx_v)
             selected.append(joint)
-        object.__setattr__(self, "nq", int(nq))
-        object.__setattr__(self, "nv", int(nv))
+        object.__setattr__(self, "nq", nq)
+        object.__setattr__(self, "nv", nv)
         object.__setattr__(self, "joints", tuple(selected))
         # Prepare topology once. Private read-only indices are excluded from
         # value equality/hash; the immutable joint descriptors define identity.

@@ -1,11 +1,12 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Dense>
 
-#include "holistic_motion/kinematics/Types.h"
+#include "holistic_motion/manif/SE3.h"
 
 namespace holistic_motion::robotics {
 

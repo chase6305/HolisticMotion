@@ -17,6 +17,10 @@ Breathe.
 
 ## Robot model
 
+```{doxygenclass} holistic_motion::robotics::RobotModel
+:members:
+```
+
 ```{doxygenclass} holistic_motion::robotics::Robot
 :members:
 ```

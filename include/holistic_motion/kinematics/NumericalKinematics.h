@@ -98,11 +98,6 @@ private:
   bool _GetKinJacobian(Eigen::MatrixXd &jacobian,
                        const std::vector<SE3d> &pose_list) const;
 
-  /// \brief Retrieves the bounds for controllable joints of the robotic
-  /// manipulator.
-  ///
-  /// \return bool success or not
-  bool _GetControllableJointBounds() const;
 
 private:
     double eps_ = 1e-4;  ///< About the iteration accuracy of the displacement

@@ -8,6 +8,7 @@ namespace robotics {
 
 namespace detail {
 template <typename LieGroup> class TrajectoryStateSampler;
+template <typename LieGroup> class TrajectoryBuilder;
 }
 
 // class TrajectoryBase
@@ -16,6 +17,7 @@ class TrajectoryBase
     : public std::enable_shared_from_this<TrajectoryBase<LieGroup>> {
 private:
     friend class detail::TrajectoryStateSampler<LieGroup>;
+    friend class detail::TrajectoryBuilder<LieGroup>;
     using Tangent = typename LieGroup::Tangent;
 
 public:
@@ -148,7 +150,6 @@ protected:
     size_t dof_{0};
 
     std::shared_ptr<PathBase<LieGroup>> path_;
-    PathType path_type_;
     std::list<TrajectorySeg> trajectory_segments_;
     std::shared_ptr<PSpline> trajectory_pspline_;
     std::vector<std::shared_ptr<PathSegmentBase<LieGroup>>> phase_path_segments_;

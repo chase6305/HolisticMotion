@@ -5,7 +5,19 @@
 ## Explicit model ownership
 
 HolisticMotion does not bundle robot assets. Pass an absolute or application-
-resolved URDF path to `Robot`, `CollisionModel`, and retargeting solvers.
+resolved URDF path to `RobotModel`, `Robot`, `CollisionModel`, and retargeting solvers.
+
+`RobotModel` owns parsed joints, links, scalar coordinate mappings and visual
+metadata. Loading it does not select a chain or construct an IK solver.
+`GetChainJoints()` / Python `chain_joints()` returns the raw tree path, including
+fixed, mimic and nonscalar joints. Scalar coordinates continue to exclude mimic,
+floating and planar joints.
+
+`Robot` combines a `RobotModel` value with the existing default solver. Its
+constructors, chain factories and chain-DoF queries retain their previous meaning.
+Model and Robot copies share Joint/Link objects; their model containers remain
+independent. The Robot object layout and native library split changed: rebuild
+C++ consumers and Python extensions together.
 
 The default robot chain is the supported root-to-leaf path with the most actuated
 joints. Ties retain the first visited leaf, and trailing fixed transforms remain
@@ -16,16 +28,74 @@ to public model names and parent relations are observed on the next call; duplic
 names retain first-match resolution. A cyclic parent traversal terminates with
 `nullptr` (`None` in Python) rather than hanging.
 
+## Manifold interpolation
+
+The C++ manifold helpers accept parameters in `[0, 1]`. Cubic interpolation is
+a geodesic Bezier curve with the supplied endpoint body tangents; in Euclidean
+space it matches cubic Hermite interpolation. Rotational tangent controls must
+remain on the intended logarithm branch. `InterpolateLinearInSE3()` interpolates
+translation and orientation separately.
+
+`Rn<Scalar, N>::GetTransform()` returns an `(N+1) × (N+1)` homogeneous
+translation matrix. `PathBezierCurve2nd()` and `PathBezierCurve5th()` rebuild
+stored waypoints, replacing the previous path segments.
+
+Widening floating-point precision with `cast<T>()` renormalizes rotation
+components at the destination precision, including rotations inside a `Bundle`.
+Rebuild C++ libraries and consumers after this update. The unused protected
+`KinematicsBase::joint_solutions_`, `PathBase::weights_`, and
+`PathBase::control_points_` caches were removed; custom subclasses that used
+them must keep their own state. Update fixed-size `Rn::Transformation`
+declarations to include the homogeneous coordinate.
+The unread `KinematicsBase::initalize_` flag and redundant
+`TrajectoryBase::path_type_` field were also removed. Custom trajectory subclasses
+should query `path_->GetType()` when they need the path type.
+Kinematics headers include `SE3`, and trajectory headers include `Rn` and `SE3`;
+include the corresponding public header explicitly when using other manifold
+groups or algorithms.
+
+`Decasteljau()` and its `ComputeBezierCurve()` compatibility entry point share
+one sampler. Their legacy `degree` argument counts control points per complete
+segment, with adjacent segments sharing an endpoint. Two controls are valid;
+a partial last segment retains the remaining controls and the input endpoint.
+Closed curves append the first control to the final segment. Samples exclude
+each segment's initial point and include its exact final point.
+The four C++ mean helpers operate on nearby group elements. Their `eps` argument
+bounds a squared update norm, and `Average()` now uses the supplied tolerance.
+
 ## Core and optional components
 
-The core `holistic_motion` library contains robot models, kinematics,
-manifolds, null-space path generation, and trajectories. Collision queries live
-in the optional `holistic_motion_collision` companion library so ordinary
-kinematics users do not acquire Pinocchio and Coal unnecessarily. Python mirrors
-this boundary with separate core and collision extensions: ordinary package
-imports load the core, and collision types or planning factories load collision
-on first use. Core algorithms can share a process with Python Pinocchio while
-the Conan collision extension remains unloaded.
+The `holistic_motion_model` library contains model loading and data queries.
+C++ applications that only need this layer can request it independently:
+
+```cmake
+find_package(HolisticMotion REQUIRED CONFIG COMPONENTS model)
+target_link_libraries(model_reader PRIVATE HolisticMotion::model)
+```
+
+This target publicly requires only Eigen. Formatting and URDF parsing are
+implementation dependencies: static consumers must still discover their SDKs,
+while shared model consumers do not. The model target does not link kinematics,
+CUDA, spdlog or collision backends. The `core` component
+(`HolisticMotion::holistic_motion`) links model and provides the Robot
+compatibility entry, kinematics, null-space planning and trajectories. Public
+kinematics headers do not include Logging or fmt; include
+`holistic_motion/utility/Logging.h` explicitly to use the logging API.
+That API publicly requires fmt, while spdlog is private: shared core consumers
+do not discover the spdlog SDK; static core consumers still link its library.
+
+The optional `collision` component (`HolisticMotion::collision`) is always a
+shared companion library and exposes only Eigen. Consumers do not need the
+Pinocchio/Coal SDKs or the core/CUDA targets. Both a CMake installation and Conan
+use the same native component configuration; the historical
+`holistic-motion::holistic-motion` aggregate target collects discovered
+components. Conan package options still control the full dependency graph, and
+its runtime environment requirements continue to apply.
+
+Python mirrors the core/collision boundary with separate extensions: ordinary
+package imports load the core, and collision types or planning factories load
+collision on first use. Core algorithms can share a process with Python
+Pinocchio while the Conan collision extension remains unloaded.
 Offline geometry preprocessing also loads on first access to `hm.geometry`;
 ordinary imports do not initialize NumPy. Numerical array operations load it
 when needed.
@@ -209,6 +279,8 @@ C++ solvers inherit conservative defaults and can override the query.
 base class; the historical name remains available.
 
 SRS and FEP inherit numerical `inverse()` / `GetNearestIK()` entry points.
+Their continuous trackers copy the real scalar step duration before querying
+the solver, so callbacks cannot alter the current step's timing.
 Their specialized `solve()` methods are explicit alternatives. A seven-R
 chain may have SRS type without passing the geometry prerequisites for
 closed-form IK; `supports_closed_form_ik` reports that distinction using the
@@ -334,7 +406,12 @@ SRS/FEP configuration flags and redundancy values also require real scalars;
 rejected assignments preserve the configuration.
 UR/OPW parameter assignments and constructor limits follow the same real-input
 rule. Base and tool transforms must be rigid; rejected assignments retain the
-previous parameter value.
+previous parameter value. The C++ UR/OPW constructors enforce the same finite
+geometry, offsets, +/-1 axis directions and rigid transforms, throwing
+`std::invalid_argument` on invalid parameters. FK overflow fails without
+overwriting the caller's last pose.
+UR and OPW share the base nearest-result selection from their sorted analytic
+solutions; numerical, SRS and FEP retain their specialized nearest searches.
 Numerical `GetNearestIK()` and Python `inverse()` choose the periodic
 representation of the converged branch minimizing weighted joint movement
 from the caller's finite seed. A zero-seed convergence retry
@@ -351,8 +428,12 @@ cannot be represented.
 Scalar FK, CPU/CUDA batch FK and periodic-coordinate conversion use the same
 host-prepared axis scale. This avoids changing a large angle's phase by rounding
 the norm of `q * axis` or recomputing the scale on the device. Six-DoF legacy
-elbow-up filtering also uses scalar axis-angle motion; malformed prefix geometry
-or candidate coordinates clear its solution output instead of being indexed.
+elbow filtering shares the same scalar joint motion and supports both up and
+down selection. Base/wrist constraints and other dimensions are unsupported:
+`LimitRobotConfig()` fails with empty outputs for these requests. Invalid prefix
+geometry or candidate coordinates also clear the output. The elbow convention
+classifies a candidate as down when the third joint lies below the second and
+the fourth rises above the third; up selects the complement.
 
 C++ solver construction validates joint fields and coordinate layout before
 allocating model-sized state. Numerical models reserve their last node for a

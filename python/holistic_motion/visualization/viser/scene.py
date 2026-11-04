@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..._validation import finite_scalar, real_array
+
 if TYPE_CHECKING:
     import trimesh
 
@@ -29,11 +31,8 @@ def _load_trimesh():
 
 
 def _positive_scene_extent(value, name: str) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as error:
-        raise TypeError(f"{name} must be numeric") from error
-    if not np.isfinite(result) or result <= 0.0:
+    result = finite_scalar(value, name)
+    if result <= 0.0:
         raise ValueError(f"{name} must be finite and positive")
     return result
 
@@ -95,13 +94,8 @@ def configure_scene(
         if ground_height is None
         else _positive_scene_extent(ground_height, "ground_height")
     )
-    try:
-        z = float(ground_z)
-    except (TypeError, ValueError) as error:
-        raise TypeError("ground_z must be numeric") from error
-    if not np.isfinite(z):
-        raise ValueError("ground_z must be finite")
-    center = np.asarray(ground_center_xy, dtype=float).reshape(-1)
+    z = finite_scalar(ground_z, "ground_z")
+    center = real_array(ground_center_xy, name="ground_center_xy").reshape(-1)
     if center.shape != (2,) or not np.isfinite(center).all():
         raise ValueError("ground_center_xy must contain two finite values")
     cell_size = (
@@ -204,7 +198,7 @@ def configure_scene_from_bounds(
 ):
     """Configure a scene with a floor centered just below finite 3-D bounds."""
 
-    values = np.asarray(bounds, dtype=float)
+    values = real_array(bounds, name="bounds")
     if values.shape != (2, 3) or not np.isfinite(values).all():
         raise ValueError("bounds must be a finite array with shape (2, 3)")
     with np.errstate(over="ignore", invalid="ignore"):
@@ -214,11 +208,8 @@ def configure_scene_from_bounds(
     if np.any(spans < 0.0):
         raise ValueError("bounds maximum must not be below its minimum")
     minimum = _positive_scene_extent(minimum_ground_size, "minimum_ground_size")
-    try:
-        padding_ratio = float(margin)
-    except (TypeError, ValueError) as error:
-        raise TypeError("margin must be numeric") from error
-    if not np.isfinite(padding_ratio) or padding_ratio < 0.0:
+    padding_ratio = finite_scalar(margin, "margin")
+    if padding_ratio < 0.0:
         raise ValueError("margin must be finite and non-negative")
     scale = max(minimum, float(np.max(spans)))
     with np.errstate(over="ignore", invalid="ignore"):

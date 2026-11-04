@@ -61,24 +61,6 @@ struct traits<Bundle<_Scalar, _T...>> {
     using Vector = Eigen::Matrix<_Scalar, Dim, 1>;
 };
 
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<Bundle<_Scalar, _T...>>::DimIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<Bundle<_Scalar, _T...>>::DoFIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<Bundle<_Scalar, _T...>>::RepSizeIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr std::array<int, sizeof...(_T)>
-        traits<Bundle<_Scalar, _T...>>::TraIdx;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<Bundle<_Scalar, _T...>>::Dim;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<Bundle<_Scalar, _T...>>::DoF;
-template <typename _Scalar, template <typename> class... _T>
-const constexpr int traits<Bundle<_Scalar, _T...>>::RepSize;
 
 }  // namespace internal
 
@@ -180,12 +162,9 @@ template <typename _Scalar, template <typename> class... _T>
 template <int... _Idx>
 Bundle<_Scalar, _T...>::Bundle(internal::intseq<_Idx...>,
                                const _T<_Scalar>&... elements) {
-    // c++11 "fold expression"
-    auto l = {
-            ((data_.template segment<Element<_Idx>::RepSize>(std::get<_Idx>(
-                      internal::traits<Type>::RepSizeIdx)) = elements.Coeffs()),
-             0)...};
-    static_cast<void>(l);  // compiler warning
+    (static_cast<void>(data_.template segment<Element<_Idx>::RepSize>(
+                           std::get<_Idx>(internal::traits<Type>::RepSizeIdx)) = elements.Coeffs()),
+     ...);
 }
 
 template <typename _Scalar, template <typename> class... _T>

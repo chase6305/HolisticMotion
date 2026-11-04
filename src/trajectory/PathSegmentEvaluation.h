@@ -218,8 +218,6 @@ public:
                        &evaluation_)) {
             SetQuadraticParameter(s, *quadratic);
             quadratic->ComputeDerivatives(tangent, curvature, torsion);
-        } else if constexpr (std::is_same_v<LieGroup, SE3d>) {
-            segment_.ComputeDerivatives(s, tangent, curvature, torsion);
         } else {
             tangent = segment_.GetTangent(s);
             curvature = segment_.GetCurvature(s);

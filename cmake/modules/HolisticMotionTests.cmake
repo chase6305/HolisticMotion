@@ -12,7 +12,7 @@ function(holistic_motion_register_tests)
     holistic_motion_add_smoke_test(
         logging_smoke_test
         tests/cpp/utility/logging_smoke.cpp
-        holistic_motion Threads::Threads)
+        holistic_motion spdlog::spdlog Threads::Threads)
     set_tests_properties(logging_smoke PROPERTIES TIMEOUT 10)
     add_test(NAME compiler_check_smoke COMMAND ${CMAKE_COMMAND}
         -P ${PROJECT_SOURCE_DIR}/tests/cmake/compiler_check_smoke.cmake)
@@ -26,6 +26,11 @@ function(holistic_motion_register_tests)
         holistic_motion)
     set_tests_properties(robot_model_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
+        robot_model_data_smoke_test
+        tests/cpp/robot/robot_model_data_smoke.cpp
+        holistic_motion_model)
+    set_tests_properties(robot_model_data_smoke PROPERTIES TIMEOUT 10)
+    holistic_motion_add_smoke_test(
         joint_position_map_smoke_test
         tests/cpp/robot/joint_position_map_smoke.cpp
         holistic_motion)
@@ -35,14 +40,15 @@ function(holistic_motion_register_tests)
         Eigen3::Eigen Threads::Threads)
     target_include_directories(joint_position_context_smoke_test PRIVATE
         ${PROJECT_SOURCE_DIR}/src/planning ${PROJECT_SOURCE_DIR}/include)
-    holistic_motion_add_smoke_test(
-        rotation_jacobian_smoke_test
-        tests/cpp/manif/rotation_jacobian_smoke.cpp
-        holistic_motion)
-    holistic_motion_add_smoke_test(
-        rotation_autodiff_smoke_test
-        tests/cpp/manif/rotation_autodiff_smoke.cpp
-        holistic_motion)
+    foreach(algorithm rotation_jacobian interpolation average ceres_functors rotation_autodiff
+                      composed_groups)
+        holistic_motion_add_smoke_test(
+            ${algorithm}_smoke_test
+            tests/cpp/manif/${algorithm}_smoke.cpp
+            Eigen3::Eigen)
+        target_include_directories(${algorithm}_smoke_test PRIVATE
+            ${PROJECT_SOURCE_DIR}/include)
+    endforeach()
     holistic_motion_add_smoke_test(
         trajectory_smoke_test
         tests/cpp/trajectory/trajectory_smoke.cpp
@@ -84,6 +90,7 @@ function(holistic_motion_register_tests)
         analytic_kinematics_smoke_test
         tests/cpp/kinematics/analytic_kinematics_smoke.cpp
         holistic_motion)
+    set_tests_properties(analytic_kinematics_smoke PROPERTIES TIMEOUT 10)
     holistic_motion_add_smoke_test(
         numerical_kinematics_smoke_test
         tests/cpp/kinematics/numerical_kinematics_smoke.cpp

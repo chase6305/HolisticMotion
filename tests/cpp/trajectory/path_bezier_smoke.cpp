@@ -1,14 +1,80 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "holistic_motion/trajectory/PathBezierCurve.h"
 
 using namespace holistic_motion::robotics;
 using Group = Rn<double, 2>;
+
+template <typename LieGroup> struct WaypointFilterProbe : PathBase<LieGroup> {};
+
+template <typename LieGroup>
+bool SameWaypointBits(const std::vector<LieGroup> &first, const std::vector<LieGroup> &second) {
+    if (first.size() != second.size())
+        return false;
+    for (std::size_t index = 0; index < first.size(); ++index)
+        if (std::memcmp(first[index].Coeffs().data(), second[index].Coeffs().data(),
+                        sizeof(double) * first[index].Coeffs().size()) != 0)
+            return false;
+    return true;
+}
+
+template <typename LieGroup> void CheckWaypointFiltering() {
+    WaypointFilterProbe<LieGroup> probe;
+    const auto check = [&probe](const std::vector<double> &positions,
+                                const std::vector<std::size_t> &retained) {
+        std::vector<LieGroup> input;
+        for (double position : positions) {
+            LieGroup point;
+            if constexpr (std::is_same_v<LieGroup, SE3d>) {
+                point = SE3d(Eigen::Vector3d(position, 0.0, 0.0), SO3d());
+            } else {
+                point.Coeffs().setZero();
+                point.Coeffs()[0] = position;
+            }
+            input.push_back(point);
+        }
+        std::vector<LieGroup> expected;
+        for (std::size_t index : retained)
+            expected.push_back(input.at(index));
+        const auto original = input;
+        auto actual = input;
+        probe._CheckPathWaypoints(actual);
+        if (!SameWaypointBits(actual, expected))
+            throw std::runtime_error("waypoint filtering changed retained points");
+        if (input.size() >= 2) {
+            for (int degree : {2, 5}) {
+                const PathBezierCurve<LieGroup> path(input, degree, false, 0.0);
+                if (!SameWaypointBits(path.GetWaypoints(), expected) ||
+                    !SameWaypointBits(input, original))
+                    throw std::runtime_error(
+                        "path construction changed its input or waypoint selection");
+            }
+        }
+    };
+    check({}, {});
+    check({0.0}, {0});
+    check({0.0, 0.0}, {0});
+    check({0.0, 0.0, 0.0, 0.0}, {0});
+    check({0.0, 1.0, 1.0, 1.0, 2.0, 2.0}, {0, 1, 4});
+    check({0.0, 0.4 * Epsilon, 0.8 * Epsilon, 1.2 * Epsilon, 1.3 * Epsilon}, {0, 3, 4});
+    check({0.0, 0.5 * Epsilon}, {0, 1});
+    check({0.0, 0.5 * Epsilon, 0.5 * Epsilon}, {0, 2});
+    check({0.0, Epsilon, 1.0}, {0, 2});
+    check({0.0, std::nextafter(Epsilon, 0.0),
+           std::nextafter(Epsilon, std::numeric_limits<double>::infinity()), 1.0},
+          {0, 2, 3});
+    check({-0.0, 0.0, 1e-320}, {0, 2});
+    check({0.0, 0.25 * Epsilon, 1.0, 1.0 + 0.25 * Epsilon}, {0, 2, 3});
+    check({0.0, 1.0, 1.0, 0.0, 0.0}, {0, 1, 3});
+}
 
 std::vector<Group> Corners(double scale = 1.0) {
     std::vector<Group> points(4);
@@ -241,9 +307,12 @@ void CheckExtremeWeightedNormsAndQuadraticCurvature() {
         Group group;
         group.Coeffs() = values;
         const Eigen::MatrixBase<Eigen::VectorXd> &base = values;
+        const Eigen::Vector2d fixed_weights = weights;
         for (double norm :
              {WeightedNorm(values, weights), WeightedNorm(base, weights),
-              WeightedNorm(group, weights)}) {
+              WeightedNorm(group, weights), detail::WeightedCoefficientNorm(values, fixed_weights),
+              detail::WeightedCoefficientNorm(base, fixed_weights * 1.0),
+              detail::WeightedCoefficientNorm(group.Coeffs(), fixed_weights)}) {
             if (!std::isfinite(norm) ||
                 std::abs(norm / parameters[4] - 1.0) > 1e-13)
                 throw std::runtime_error("weighted norm lost a finite length");
@@ -500,9 +569,109 @@ void CheckLargePathConstruction() {
                 "large coordinate offset lost the final endpoint");
     }
 }
+void CheckPathRebuild() {
+    PathBezierCurve<Group> path(Corners(), 2, false, 0.01);
+    for (int degree : {2, 2, 5, 5, 2}) {
+        if (degree == 2)
+            path.PathBezierCurve2nd();
+        else
+            path.PathBezierCurve5th();
+        const PathBezierCurve<Group> expected(Corners(), degree, false, 0.01);
+        if (!path.IsValid() || path.GetType() != expected.GetType() ||
+            path.GetNumOfPathSegments() != expected.GetNumOfPathSegments() ||
+            path.GetLength() != expected.GetLength())
+            throw std::runtime_error("path rebuild retained old segments or metadata");
+        for (int sample = 0; sample <= 32; ++sample) {
+            const double parameter = path.GetLength() * sample / 32.0;
+            if (!path.GetConfig(parameter).IsApprox(expected.GetConfig(parameter), 0.0))
+                throw std::runtime_error("path rebuild changed its geometry");
+        }
+    }
+    for (const auto &points :
+         {std::vector<Group>{}, std::vector<Group>(1), std::vector<Group>(3)}) {
+        PathBezierCurve<Group> invalid(points, 2, false, 0.01);
+        invalid.PathBezierCurve2nd();
+        invalid.PathBezierCurve5th();
+        if (invalid.IsValid() || invalid.GetNumOfPathSegments() != 0)
+            throw std::runtime_error("invalid path rebuild created geometry");
+    }
+}
+
+void CheckUnequalLegReversal() {
+    std::vector<Group> points(6);
+    points[0].Coeffs() << 0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    points[2].Coeffs() << 1.0, 3.0;
+    points[3].Coeffs() << 5.0, 3.0;
+    points[4].Coeffs() << 5.0, 9.0;
+    points[5].Coeffs() << 7.0, 9.0;
+    auto reversed = points;
+    std::reverse(reversed.begin(), reversed.end());
+    for (int degree : {2, 5}) {
+        for (double blend : {0.0, 0.01, 0.4}) {
+            const PathBezierCurve<Group> forward(points, degree, false, blend);
+            const PathBezierCurve<Group> backward(reversed, degree, false, blend);
+            if (!forward.IsValid() || !backward.IsValid() ||
+                std::abs(forward.GetLength() - backward.GetLength()) > 1e-10)
+                throw std::runtime_error("unequal path legs changed length when reversed");
+            for (int sample = 0; sample <= 128; ++sample) {
+                const double fraction = sample / 128.0;
+                if ((forward.GetConfig(fraction * forward.GetLength()) -
+                     backward.GetConfig((1.0 - fraction) * backward.GetLength()))
+                        .Coeffs()
+                        .norm() > 1e-10)
+                    throw std::runtime_error("unequal path legs changed shape when reversed");
+            }
+        }
+    }
+}
+
+void CheckInactiveBlendGeometry() {
+    std::vector<Group> points(4);
+    points[0].Coeffs() << -0.0, 0.0;
+    points[1].Coeffs() << 1.0, 0.0;
+    points[2].Coeffs() << 1.0, 3.0;
+    points[3].Coeffs() << 5.0, 3.0;
+    const auto same_coefficients = [](const auto &first, const auto &second) {
+        return std::memcmp(first.Coeffs().data(), second.Coeffs().data(),
+                           sizeof(double) * first.Coeffs().size()) == 0;
+    };
+    for (int degree : {2, 5}) {
+        const PathBezierCurve<Group> reference(points, degree, false, 0.0);
+        for (double blend : {0.0, std::nextafter(Epsilon, 0.0), Epsilon}) {
+            const PathBezierCurve<Group> path(points, degree, false, blend);
+            if (!path.IsValid() || path.GetLength() != reference.GetLength() ||
+                path.GetNumOfPathSegments() != reference.GetNumOfPathSegments())
+                throw std::runtime_error("inactive blending changed path geometry");
+            for (int sample = 0; sample <= 128; ++sample) {
+                const double parameter = path.GetLength() * sample / 128.0;
+                if (!same_coefficients(path.GetConfig(parameter), reference.GetConfig(parameter)) ||
+                    !same_coefficients(path.GetTangent(parameter),
+                                       reference.GetTangent(parameter)) ||
+                    !same_coefficients(path.GetCurvature(parameter),
+                                       reference.GetCurvature(parameter)) ||
+                    !same_coefficients(path.GetTorsion(parameter), reference.GetTorsion(parameter)))
+                    throw std::runtime_error("inactive blending changed sampled coefficient bits");
+            }
+        }
+        const PathBezierCurve<Group> active(
+            points, degree, false,
+            std::nextafter(Epsilon, std::numeric_limits<double>::infinity()));
+        if (!active.IsValid() || active.GetNumOfPathSegments() <= reference.GetNumOfPathSegments())
+            throw std::runtime_error("blending lost its strict activation threshold");
+    }
+}
+
 int main() {
     try {
+        CheckWaypointFiltering<R2d>();
+        CheckWaypointFiltering<R7d>();
+        CheckWaypointFiltering<R32d>();
+        CheckWaypointFiltering<SE3d>();
         CheckLargePathConstruction();
+        CheckPathRebuild();
+        CheckUnequalLegReversal();
+        CheckInactiveBlendGeometry();
         CheckShortFinalLeg();
         CheckQuadraticCorners();
         CheckReversal(2);

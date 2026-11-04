@@ -159,15 +159,6 @@ typename SO2TangentBase<_Derived>::Jacobian SO2TangentBase<_Derived>::SmallAdj()
     return smallAdj;
 }
 
-// SO2Tangent specific API
-
-// template <typename _Derived>
-// const typename SO2TangentBase<_Derived>::Scalar&
-// SO2TangentBase<_Derived>::angle() const
-//{
-//  return Coeffs().x();
-//}
-
 template <typename _Derived>
 typename SO2TangentBase<_Derived>::Scalar SO2TangentBase<_Derived>::Angle()
         const {

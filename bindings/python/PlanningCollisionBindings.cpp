@@ -32,13 +32,12 @@ class SphereDistanceCache {
         robotics::collision::SphereCollisionModel &collision_model)
         : collision_model_(collision_model) {}
 
-    const robotics::collision::SphereDistanceResult &
-    CostDistance(const Eigen::VectorXd &state) {
+    double CostDistance(const Eigen::VectorXd &state) {
         // A failed new query must not pair the new state with the preceding
         // distance and leave it eligible for the next validation call.
         reusable_ = false;
         state_ = state;
-        distance_ = collision_model_.MinimumDistance(state);
+        distance_ = collision_model_.MinimumDistance(state).distance;
         pair_revision_ = collision_model_.GetCollisionPairRevision();
         reusable_ = true;
         return distance_;
@@ -47,7 +46,7 @@ class SphereDistanceCache {
     double ValidationDistance(const Eigen::VectorXd &state) {
         if (reusable_ && Matches(state)) {
             reusable_ = false;
-            return distance_.distance;
+            return distance_;
         }
         reusable_ = false;
         return collision_model_.MinimumDistance(state).distance;
@@ -62,7 +61,7 @@ class SphereDistanceCache {
 
     robotics::collision::SphereCollisionModel &collision_model_;
     Eigen::VectorXd state_;
-    robotics::collision::SphereDistanceResult distance_;
+    double distance_{0.0};
     std::size_t pair_revision_{0};
     bool reusable_{false};
 };
@@ -108,8 +107,8 @@ void ValidateMargins(double margin, double clearance = 0.0) {
     if (!std::isfinite(margin) || margin < 0.0 || !std::isfinite(clearance) ||
         clearance < 0.0 || (clearance > 0.0 && clearance < margin))
         throw std::invalid_argument(
-            "security_margin must be non-negative; positive clearance must be "
-            "at least security_margin");
+            "security_margin and clearance must be finite and non-negative; "
+            "positive clearance must be at least security_margin");
 }
 
 void ValidateClearancePairs(double clearance, std::size_t pair_count,
@@ -166,8 +165,7 @@ MakeSphereJointOptimizer(robotics::collision::SphereCollisionModel &model,
                 if (model.GetCollisionPairCount() == 0)
                     return 0.0;
                 const auto full = selection->Configuration(positions);
-                const double deficit =
-                    std::max(0.0, clearance - cache->CostDistance(full).distance);
+                const double deficit = std::max(0.0, clearance - cache->CostDistance(full));
                 return deficit * deficit;
             });
         result.SetStateCostGradient([&model, selection,
@@ -212,11 +210,7 @@ void BindPlanningCollision(pybind11::module_ &module) {
                 CheckedRealEigen<double>(margin_input, "security_margin");
             const double clearance =
                 CheckedRealEigen<double>(clearance_input, "clearance");
-            if (!std::isfinite(security_margin) || security_margin < 0.0 ||
-                !std::isfinite(clearance) || clearance < 0.0 ||
-                (clearance > 0.0 && clearance < security_margin))
-                throw std::invalid_argument(
-                    "clearance must be finite and at least security_margin");
+            ValidateMargins(security_margin, clearance);
             if (collision_model.GetConfigurationSize() !=
                 collision_model.GetVelocitySize())
                 throw std::invalid_argument(
@@ -245,26 +239,20 @@ void BindPlanningCollision(pybind11::module_ &module) {
                                      clearance](const Eigen::VectorXd &state) {
                     if (collision_model.GetCollisionPairCount() == 0)
                         return 0.0;
-                    const double deficit =
-                        std::max(0.0, clearance - cache->CostDistance(state).distance);
+                    const double deficit = std::max(0.0, clearance - cache->CostDistance(state));
                     return deficit * deficit;
                 });
-                if (collision_model.GetConfigurationSize() ==
-                    collision_model.GetVelocitySize()) {
-                    result.SetStateCostGradient(
-                        [&collision_model,
-                         clearance](const Eigen::VectorXd &state) -> Eigen::VectorXd {
-                            if (collision_model.GetCollisionPairCount() == 0)
-                                return Eigen::VectorXd::Zero(state.size());
-                            const auto query =
-                                collision_model.MinimumDistanceWithGradient(state);
-                            const double deficit = std::max(
-                                0.0, clearance - query.distance_result.distance);
-                            if (deficit == 0.0)
-                                return Eigen::VectorXd::Zero(state.size());
-                            return (-2.0 * deficit * query.gradient).eval();
-                        });
-                }
+                result.SetStateCostGradient(
+                    [&collision_model, clearance](const Eigen::VectorXd &state) -> Eigen::VectorXd {
+                        if (collision_model.GetCollisionPairCount() == 0)
+                            return Eigen::VectorXd::Zero(state.size());
+                        const auto query = collision_model.MinimumDistanceWithGradient(state);
+                        const double deficit =
+                            std::max(0.0, clearance - query.distance_result.distance);
+                        if (deficit == 0.0)
+                            return Eigen::VectorXd::Zero(state.size());
+                        return (-2.0 * deficit * query.gradient).eval();
+                    });
             }
             return RetainPlanningResource(
                 std::move(result),

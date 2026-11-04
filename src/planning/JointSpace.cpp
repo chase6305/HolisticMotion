@@ -1,7 +1,9 @@
 #include "holistic_motion/planning/JointSpace.h"
 
-#include <set>
+#include <algorithm>
+#include <functional>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include "../utility/AnglePhase.h"
@@ -38,10 +40,30 @@ JointSpace::JointSpace(Eigen::VectorXd lower_limits, Eigen::VectorXd upper_limit
             static_cast<std::size_t>(data->lower_limits.size()))
             throw std::invalid_argument(
                 "joint names must match the planning dimension");
-        std::set<std::string> names;
-        for (const auto &name : data->joint_names)
-            if (name.empty() || !names.insert(name).second)
-                throw std::invalid_argument("joint names must be nonempty and unique");
+        bool valid = !data->joint_names.front().empty();
+        // Strictly increasing names are unique; inspect the first conflict before sorting.
+        if (valid) {
+            const auto conflict = std::adjacent_find(
+                data->joint_names.begin(), data->joint_names.end(), std::greater_equal<>());
+            if (conflict != data->joint_names.end()) {
+                // Search the increasing prefix before allocating scratch storage.
+                const auto &following = *(conflict + 1);
+                valid = !following.empty() &&
+                        (following < data->joint_names.front() ||
+                         !std::binary_search(data->joint_names.begin(), conflict + 1, following));
+                if (valid) {
+                    std::vector<std::string_view> names;
+                    names.reserve(data->joint_names.size());
+                    for (const auto &name : data->joint_names)
+                        names.push_back(name);
+                    std::sort(names.begin(), names.end());
+                    valid = !names.front().empty() &&
+                            std::adjacent_find(names.begin(), names.end()) == names.end();
+                }
+            }
+        }
+        if (!valid)
+            throw std::invalid_argument("joint names must be nonempty and unique");
     }
     data->continuous.assign(static_cast<std::size_t>(data->lower_limits.size()), false);
     data_ = std::move(data);
@@ -73,10 +95,11 @@ std::vector<std::size_t> JointSpace::GetContinuousJoints() const {
 }
 
 JointSpace JointSpace::WithJointWeights(const Eigen::VectorXd &weights) const {
-    if (weights.size() != GetDOF() || !weights.allFinite() ||
-        (weights.array() <= 0.0).any())
+    if (weights.size() != GetDOF() || !weights.allFinite() || (weights.array() <= 0.0).any())
         throw std::invalid_argument(
             "joint weights must be finite, positive, and dimensionally compatible");
+    if (weights == data_->weights)
+        return *this;
     auto data = std::make_shared<Data>(*data_);
     data->weights = weights;
     return JointSpace(std::move(data));
@@ -99,6 +122,8 @@ JointSpace::WithContinuousJoints(const std::vector<std::size_t> &indices) const 
                 "continuous joint limits cannot represent a full revolution");
         continuous[index] = true;
     }
+    if (continuous == data_->continuous)
+        return *this;
     auto data = std::make_shared<Data>(*data_);
     data->continuous = std::move(continuous);
     return JointSpace(std::move(data));

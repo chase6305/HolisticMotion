@@ -17,6 +17,13 @@ python -m pip install '.[retargeting]' \
 为 Python worker 选择工具层模式。
 运行时组合与诊断见[安装指南](installation.md)。
 
+`PinocchioRetargetingSolver` 与 `PinkRetargetingSolver` 分别实现 DLS 和有界任务空间
+优化，共用模型、模式索引、配置校验与热启动操作。Pink 不再继承具体的 DLS 算法，
+也不持有 DLS 工作区；其构造参数和 `prepare/reset/solve_ik` 调用方式保持不变。
+`CuroboRetargetingSolver` 仍复用 Pink 的单 seed 优化，只增加多 seed 调度。
+依赖 `isinstance(solver, PinocchioRetargetingSolver)` 识别所有求解器的调用方，
+需要显式检查所支持的具体算法类型或实际使用的操作。
+
 ```python
 from holistic_motion.kit.retargeting import (
     CenterOfMassTask,
@@ -250,6 +257,7 @@ frame 与关节组映射，并缓存 active indices、速度限制和 Pink 数�
 应用需要调整结果时，应先复制 `result.configuration`，从而避免 UI 或控制器代码
 通过返回值意外修改求解器历史状态。
 目标矩阵必须是有效 SE(3) 变换，包含正确的齐次末行和右手正交旋转矩阵。
+Pink 的时间、权重和容差标量选项同样要求实数，包括 NumPy 标量及虚部为零的复数。
 复数位姿会在转换前被拒绝，不会丢弃虚部后继续求解。
 增益、代价、权重、配置、支撑顶点、平衡目标和结果诊断也必须是实数。
 非法种子或目标更新会被拒绝，并保留先前的求解器状态。

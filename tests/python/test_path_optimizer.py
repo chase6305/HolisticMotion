@@ -77,6 +77,30 @@ def test_path_optimizer_does_not_revalidate_known_edge_endpoints():
     assert result.statistics.collision_checks == 4
 
 
+@pytest.mark.parametrize("reject_at", [None, 0.25, 1.0])
+def test_path_optimizer_validates_interiors_before_exact_endpoint(reject_at):
+    visited = []
+
+    def validator(q):
+        value = float(q[0])
+        visited.append(value)
+        return value != reject_at
+
+    optimizer = hm.PathOptimizer([-2.0], [2.0], validator)
+    result = optimizer.optimize([[0.0], [1.0]], _options(edge_resolution=0.25))
+
+    assert visited == (
+        [0.0, 0.25] if reject_at == 0.25 else [0.0, 0.25, 0.5, 0.75, 1.0]
+    )
+    assert result.statistics.collision_checks == len(visited)
+    expected = (
+        hm.PathOptimizationStatus.UNCHANGED
+        if reject_at is None
+        else hm.PathOptimizationStatus.INVALID_PATH
+    )
+    assert result.status == expected
+
+
 def test_path_optimizer_state_cost_pushes_path_away_from_obstacle():
     def clearance_cost(q):
         deficit = max(0.0, 0.6 - np.linalg.norm(q))

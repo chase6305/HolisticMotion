@@ -8,6 +8,7 @@ namespace robotics {
 template <typename LieGroup>
 class TrajectoryDoubleS : public TrajectoryBase<LieGroup> {
 private:
+    friend class detail::TrajectoryBuilder<LieGroup>;
     using Tangent = typename LieGroup::Tangent;
 
 public:

@@ -298,10 +298,9 @@ typename SE_2_3Base<_Derived>::LieGroup SE_2_3Base<_Derived>::Compose(
         J_mc_mb->setIdentity();
     }
 
-    return LieGroup(
-            GetRotation() * m_se_2_3.GetTranslation() + GetTranslation(),
-            AsSO3().compose(m_se_2_3.AsSO3()).GetQuat(),
-            GetRotation() * m_se_2_3.linearVelocity() + linearVelocity());
+    return LieGroup(GetRotation() * m_se_2_3.GetTranslation() + GetTranslation(),
+                    AsSO3().Compose(m_se_2_3.AsSO3()).GetQuat(),
+                    GetRotation() * m_se_2_3.linearVelocity() + linearVelocity());
 }
 
 template <typename _Derived>

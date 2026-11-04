@@ -53,9 +53,9 @@ public:
     DataType& Coeffs() { return data_; }
     const DataType& Coeffs() const { return data_; }
 
-    using Base::angle;
-    using Base::imag;
-    using Base::real;
+    using Base::Angle;
+    using Base::Imag;
+    using Base::Real;
     using Base::x;
     using Base::y;
 
@@ -83,9 +83,9 @@ public:
 
     const DataType& Coeffs() const { return data_; }
 
-    using Base::angle;
-    using Base::imag;
-    using Base::real;
+    using Base::Angle;
+    using Base::Imag;
+    using Base::Real;
     using Base::x;
     using Base::y;
 

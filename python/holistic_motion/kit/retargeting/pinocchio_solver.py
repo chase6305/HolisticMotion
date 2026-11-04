@@ -54,12 +54,12 @@ def _stable_norm(value) -> float:
         norm = float(np.linalg.norm(values))
     if norm == 0.0:
         # Squared components may underflow even when the vector is nonzero.
-        return float(np.hypot.reduce(np.abs(values))) if values.any() else norm
+        return abs(float(np.hypot.reduce(values))) if values.any() else norm
     if (np.isfinite(norm) and norm >= _MIN_NORMAL_NORM) or not np.isfinite(
         values
     ).all():
         return norm
-    return float(np.hypot.reduce(np.abs(values)))
+    return abs(float(np.hypot.reduce(values)))
 
 
 def _load_pinocchio():
@@ -214,11 +214,11 @@ class _PinocchioSolveWorkspace:
     full_velocity: np.ndarray
 
 
-class PinocchioRetargetingSolver:
-    """Damped least-squares multi-frame retargeting with warm starts.
+class _RetargetingSession:
+    """Model, mode and warm-start operations shared by Pinocchio solvers.
 
-    Pinocchio Data and warm-start history are mutable. Prepare one instance per
-    worker, and serialize its solve, reset, mode and configuration operations.
+    Concrete algorithms provide solve() and their own numerical workspaces.
+    Pinocchio Data and history are mutable; use one session per worker.
     """
 
     def __init__(
@@ -288,7 +288,7 @@ class PinocchioRetargetingSolver:
         self._frame_ids = self._resolve_frames()
         self._group_velocity_indices = self._resolve_joint_groups()
         self._mode_plans: dict[RetargetingMode, _RetargetingModePlan] = {}
-        self._solve_workspaces: dict[RetargetingMode, _PinocchioSolveWorkspace] = {}
+        self._workspaces = {}
         self._lower_position_limits = np.asarray(
             self.model.lowerPositionLimit, dtype=float
         ).copy()
@@ -350,7 +350,7 @@ class PinocchioRetargetingSolver:
             if mode is not None:
                 self.mode_manager.set_mode(mode)
             plan = self._mode_plan()
-            self._solve_workspace(plan)
+            self._prepare_workspace(plan)
         except BaseException:
             if self.mode is not previous:
                 self.mode_manager.set_mode(previous)
@@ -358,116 +358,6 @@ class PinocchioRetargetingSolver:
 
     def reset(self, configuration: Optional[Sequence[float]] = None) -> None:
         self._last_q = self._configuration(configuration)
-
-    def solve(
-        self,
-        targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
-        seed: Optional[Sequence[float]] = None,
-    ) -> RetargetingResult:
-        """Solve IK and update the warm start only after result validation.
-
-        A returned result, including budget exhaustion, becomes the next seed.
-        Failure to construct a valid result leaves the previous seed intact.
-        """
-
-        normalized = self._normalize_targets(targets)
-        plan = self._mode_plan()
-        desired_poses = {
-            name: self.pin.SE3(target.pose[:3, :3], target.pose[:3, 3])
-            for name, target in normalized.items()
-        }
-        q = self._configuration(seed) if seed is not None else self._last_q.copy()
-        active = plan.active_velocity_indices
-        started = perf_counter()
-        residual = float("inf")
-        workspace = self._solve_workspace(plan)
-        weighted_error = workspace.weighted_error
-        weighted_jacobian = workspace.weighted_jacobian
-        full_velocity = workspace.full_velocity
-        full_velocity.fill(0.0)
-
-        for iteration in range(1, self.max_iterations + 1):
-            if active.size:
-                self.pin.computeJointJacobians(self.model, self.data, q)
-            else:
-                self.pin.forwardKinematics(self.model, self.data, q)
-            self.pin.updateFramePlacements(self.model, self.data)
-            for target_index, (name, frame_id) in enumerate(
-                zip(plan.targets, plan.frame_ids)
-            ):
-                target = normalized[name]
-                desired = desired_poses[name]
-                current = self.data.oMf[frame_id]
-                error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
-                rows = slice(6 * target_index, 6 * (target_index + 1))
-                scale = np.sqrt(target.weight)
-                weighted_error[rows] = scale * error
-                if active.size:
-                    jacobian = np.asarray(
-                        self.pin.getFrameJacobian(
-                            self.model,
-                            self.data,
-                            frame_id,
-                            self.pin.ReferenceFrame.LOCAL,
-                        ),
-                        dtype=float,
-                    ).reshape(6, self.model.nv)
-                    weighted_jacobian[rows] = scale * jacobian[:, active]
-            residual = _stable_norm(weighted_error)
-            if residual <= self.tolerance or not active.size:
-                break
-            jacobian = weighted_jacobian
-            if jacobian.shape[0] <= jacobian.shape[1]:
-                system = workspace.system
-                np.matmul(jacobian, jacobian.T, out=system)
-                system.flat[:: system.shape[0] + 1] += self.damping
-                velocity = jacobian.T @ self._linear_solve(system, weighted_error)
-            else:
-                system = workspace.system
-                np.matmul(jacobian.T, jacobian, out=system)
-                system.flat[:: system.shape[0] + 1] += self.damping
-                right_hand_side = workspace.right_hand_side
-                np.matmul(jacobian.T, weighted_error, out=right_hand_side)
-                velocity = self._linear_solve(system, right_hand_side)
-            full_velocity[active] = self.step_size * velocity
-            q = np.asarray(self.pin.integrate(self.model, q, full_velocity))
-            q = self._project_limits(q)
-
-        # If the budget is exhausted, the final integration above advances q
-        # beyond the state whose residual was computed at the loop entrance.
-        # Re-evaluate q so every returned metric describes configuration.
-        if (
-            active.size
-            and iteration == self.max_iterations
-            and residual > self.tolerance
-        ):
-            self.pin.forwardKinematics(self.model, self.data, q)
-            self.pin.updateFramePlacements(self.model, self.data)
-            residual = 0.0
-            for name, frame_id in zip(plan.targets, plan.frame_ids):
-                current = self.data.oMf[frame_id]
-                error = np.asarray(
-                    self.pin.log6(current.inverse() * desired_poses[name]).vector
-                )
-                weighted_norm = np.sqrt(normalized[name].weight) * _stable_norm(error)
-                residual = float(np.hypot(residual, weighted_norm))
-
-        objective = 0.5 * residual * residual
-        if not np.isfinite(objective):
-            # The residual remains useful even when its square exceeds double.
-            objective = float("nan")
-
-        result = RetargetingResult(
-            configuration=q,
-            success=residual <= self.tolerance,
-            iterations=iteration,
-            residual=residual,
-            solve_ms=(perf_counter() - started) * 1000.0,
-            mode=self.mode,
-            objective=objective,
-        )
-        self._last_q = result.configuration.copy()
-        return result
 
     def solve_ik(
         self,
@@ -571,35 +461,6 @@ class PinocchioRetargetingSolver:
         self._mode_plans[self.mode] = plan
         return plan
 
-    def _solve_workspace(self, plan: _RetargetingModePlan) -> _PinocchioSolveWorkspace:
-        cached = self._solve_workspaces.get(self.mode)
-        if cached is not None:
-            return cached
-        task_dimension = 6 * len(plan.targets)
-        active_size = plan.active_velocity_indices.size
-        system_size = min(task_dimension, active_size) if active_size else 0
-        cached = _PinocchioSolveWorkspace(
-            weighted_error=np.empty(task_dimension, dtype=float),
-            weighted_jacobian=(
-                np.empty((task_dimension, active_size), dtype=float)
-                if active_size
-                else None
-            ),
-            system=(
-                np.empty((system_size, system_size), dtype=float)
-                if system_size
-                else None
-            ),
-            right_hand_side=(
-                np.empty(active_size, dtype=float)
-                if active_size and task_dimension > active_size
-                else None
-            ),
-            full_velocity=np.zeros(self.model.nv, dtype=float),
-        )
-        self._solve_workspaces[self.mode] = cached
-        return cached
-
     def _resolve_frames(self) -> dict[str, int]:
         resolved = {}
         for logical_name, frame_name in self.frames.items():
@@ -608,9 +469,6 @@ class PinocchioRetargetingSolver:
                 raise ValueError(f"URDF has no frame named {frame_name!r}")
             resolved[logical_name] = frame_id
         return resolved
-
-    def _validate_mode_configuration(self) -> None:
-        self._mode_plan()
 
     def _project_limits(self, q: np.ndarray) -> np.ndarray:
         # Normalize manifold coordinates before applying coordinate bounds:
@@ -657,8 +515,149 @@ class PinocchioRetargetingSolver:
             resolved[group] = np.asarray(sorted(set(indices)), dtype=int)
         return resolved
 
-    def _active_velocity_indices(self) -> np.ndarray:
-        return self._mode_plan().active_velocity_indices
+
+class PinocchioRetargetingSolver(_RetargetingSession):
+    """Damped least-squares multi-frame retargeting with warm starts.
+
+    Prepare one instance per worker, and serialize its solve, reset, mode and
+    configuration operations. Other algorithms share the session, not this solve.
+    """
+
+    def _prepare_workspace(self, plan: _RetargetingModePlan) -> None:
+        self._solve_workspace(plan)
+
+    def solve(
+        self,
+        targets: Mapping[str, Union[RetargetingTarget, np.ndarray]],
+        seed: Optional[Sequence[float]] = None,
+    ) -> RetargetingResult:
+        """Solve IK and update the warm start only after result validation.
+
+        A returned result, including budget exhaustion, becomes the next seed.
+        Failure to construct a valid result leaves the previous seed intact.
+        """
+
+        normalized = self._normalize_targets(targets)
+        plan = self._mode_plan()
+        desired_tasks = []
+        for name, frame_id in zip(plan.targets, plan.frame_ids):
+            target = normalized[name]
+            desired = self.pin.SE3(target.pose[:3, :3], target.pose[:3, 3])
+            desired_tasks.append((frame_id, desired, np.sqrt(target.weight)))
+        q = self._configuration(seed) if seed is not None else self._last_q.copy()
+        active = plan.active_velocity_indices
+        started = perf_counter()
+        residual = float("inf")
+        workspace = self._solve_workspace(plan)
+        weighted_error = workspace.weighted_error
+        weighted_jacobian = workspace.weighted_jacobian
+        full_velocity = workspace.full_velocity
+        full_velocity.fill(0.0)
+
+        for iteration in range(1, self.max_iterations + 1):
+            if active.size:
+                self.pin.computeJointJacobians(self.model, self.data, q)
+            else:
+                self.pin.forwardKinematics(self.model, self.data, q)
+            self.pin.updateFramePlacements(self.model, self.data)
+            for target_index, (frame_id, desired, scale) in enumerate(desired_tasks):
+                current = self.data.oMf[frame_id]
+                error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
+                rows = slice(6 * target_index, 6 * (target_index + 1))
+                weighted_error[rows] = scale * error
+                if active.size:
+                    jacobian = np.asarray(
+                        self.pin.getFrameJacobian(
+                            self.model,
+                            self.data,
+                            frame_id,
+                            self.pin.ReferenceFrame.LOCAL,
+                        ),
+                        dtype=float,
+                    ).reshape(6, self.model.nv)
+                    weighted_jacobian[rows] = scale * jacobian[:, active]
+            residual = _stable_norm(weighted_error)
+            if residual <= self.tolerance or not active.size:
+                break
+            jacobian = weighted_jacobian
+            if jacobian.shape[0] <= jacobian.shape[1]:
+                system = workspace.system
+                np.matmul(jacobian, jacobian.T, out=system)
+                system.flat[:: system.shape[0] + 1] += self.damping
+                velocity = jacobian.T @ self._linear_solve(system, weighted_error)
+            else:
+                system = workspace.system
+                np.matmul(jacobian.T, jacobian, out=system)
+                system.flat[:: system.shape[0] + 1] += self.damping
+                right_hand_side = workspace.right_hand_side
+                np.matmul(jacobian.T, weighted_error, out=right_hand_side)
+                velocity = self._linear_solve(system, right_hand_side)
+            full_velocity[active] = self.step_size * velocity
+            q = np.asarray(self.pin.integrate(self.model, q, full_velocity))
+            q = self._project_limits(q)
+
+        # If the budget is exhausted, the final integration above advances q
+        # beyond the state whose residual was computed at the loop entrance.
+        # Re-evaluate q so every returned metric describes configuration.
+        if (
+            active.size
+            and iteration == self.max_iterations
+            and residual > self.tolerance
+        ):
+            self.pin.forwardKinematics(self.model, self.data, q)
+            self.pin.updateFramePlacements(self.model, self.data)
+            residual = 0.0
+            for frame_id, desired, scale in desired_tasks:
+                current = self.data.oMf[frame_id]
+                error = np.asarray(self.pin.log6(current.inverse() * desired).vector)
+                weighted_norm = scale * _stable_norm(error)
+                residual = float(np.hypot(residual, weighted_norm))
+
+        objective = 0.5 * residual * residual
+        if not np.isfinite(objective):
+            # The residual remains useful even when its square exceeds double.
+            objective = float("nan")
+
+        result = RetargetingResult(
+            configuration=q,
+            success=residual <= self.tolerance,
+            iterations=iteration,
+            residual=residual,
+            solve_ms=(perf_counter() - started) * 1000.0,
+            mode=self.mode,
+            objective=objective,
+        )
+        self._last_q = result.configuration.copy()
+        return result
+
+    def _solve_workspace(self, plan: _RetargetingModePlan) -> _PinocchioSolveWorkspace:
+        cached = self._workspaces.get(self.mode)
+        if cached is not None:
+            return cached
+        task_dimension = 6 * len(plan.targets)
+        active_size = plan.active_velocity_indices.size
+        system_size = min(task_dimension, active_size) if active_size else 0
+        cached = _PinocchioSolveWorkspace(
+            weighted_error=np.empty(task_dimension, dtype=float),
+            weighted_jacobian=(
+                np.empty((task_dimension, active_size), dtype=float)
+                if active_size
+                else None
+            ),
+            system=(
+                np.empty((system_size, system_size), dtype=float)
+                if system_size
+                else None
+            ),
+            right_hand_side=(
+                np.empty(active_size, dtype=float)
+                if active_size and task_dimension > active_size
+                else None
+            ),
+            full_velocity=np.zeros(self.model.nv, dtype=float),
+        )
+        self._workspaces[self.mode] = cached
+        return cached
 
 
 # Compatibility with the class name used by dexe_teleoperate.

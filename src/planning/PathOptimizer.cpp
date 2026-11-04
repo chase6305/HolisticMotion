@@ -29,49 +29,30 @@ double WeightedStateCostSum(const std::vector<double> &costs, double weight,
 
 class OptimizationContext {
   public:
-    OptimizationContext(
-        const Eigen::VectorXd &lower, const Eigen::VectorXd &upper,
-        const Eigen::VectorXd &weights, const std::vector<bool> &continuous,
-        const PathOptimizer::StateValidator &validator,
-        const PathOptimizer::StateCost &state_cost,
-        const PathOptimizer::StateCostGradient &state_cost_gradient,
-        const PathOptimizationOptions &options,
-        PathOptimizationStatistics &statistics,
-        std::chrono::steady_clock::time_point deadline)
-        : lower_(lower), upper_(upper), weights_(weights),
-          metric_(weights, continuous),
-          geometry_metric_(weights),
-          inverse_weights_(weights.cwiseInverse()),
-          has_continuous_(std::any_of(continuous.begin(), continuous.end(),
-                                      [](bool value) { return value; })),
-          continuous_(continuous), validator_(validator),
-          state_cost_(state_cost), state_cost_gradient_(state_cost_gradient),
-          options_(options), statistics_(statistics), deadline_(deadline) {}
+    OptimizationContext(const Eigen::VectorXd &lower, const Eigen::VectorXd &upper,
+                        const Eigen::VectorXd &weights, const std::vector<bool> &continuous,
+                        const PathOptimizer::StateValidator &validator,
+                        const PathOptimizer::StateCost &state_cost,
+                        const PathOptimizer::StateCostGradient &state_cost_gradient,
+                        const PathOptimizationOptions &options,
+                        PathOptimizationStatistics &statistics,
+                        std::chrono::steady_clock::time_point deadline)
+        : lower_(lower), upper_(upper), weights_(weights), metric_(weights, continuous),
+          geometry_metric_(weights), inverse_weights_(weights.cwiseInverse()),
+          continuous_(continuous), validator_(validator), state_cost_(state_cost),
+          state_cost_gradient_(state_cost_gradient), options_(options), statistics_(statistics),
+          deadline_(deadline) {}
 
-    bool TimedOut() const {
-        return std::chrono::steady_clock::now() >= deadline_;
-    }
-
-    Eigen::VectorXd Difference(const Eigen::VectorXd &from,
-                               const Eigen::VectorXd &to) const {
-        return detail::Difference(from, to, continuous_);
-    }
+    bool TimedOut() const { return std::chrono::steady_clock::now() >= deadline_; }
 
     bool SameState(const Eigen::VectorXd &from, const Eigen::VectorXd &to) const {
-        for (Eigen::Index i = 0; i < from.size(); ++i) {
-            const double delta = to[i] - from[i];
-            const double difference = continuous_[static_cast<std::size_t>(i)]
-                                          ? detail::WrappedDifference(delta)
-                                          : delta;
-            if (difference != 0.0) return false;
-        }
-        return true;
+        return metric_.SameState(from, to);
     }
 
     void DifferenceInto(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
                         Eigen::VectorXd &difference) const {
         difference = to - from;
-        if (has_continuous_)
+        if (metric_.HasContinuous())
             for (Eigen::Index i = 0; i < difference.size(); ++i)
                 if (continuous_[static_cast<std::size_t>(i)])
                     difference[i] = detail::WrappedDifference(difference[i]);
@@ -83,15 +64,9 @@ class OptimizationContext {
     }
 
     Eigen::VectorXd NormalizeInterpolation(Eigen::VectorXd state) const {
-        if (!has_continuous_)
+        if (!metric_.HasContinuous())
             return state;
-        return detail::Normalize(std::move(state), lower_, upper_, continuous_,
-                                 false);
-    }
-
-    template <class Derived>
-    double SquaredNorm(const Eigen::MatrixBase<Derived> &value) const {
-        return geometry_metric_.SquaredNorm(value);
+        return detail::Normalize(std::move(state), lower_, upper_, continuous_, false);
     }
 
     double Distance(const Eigen::VectorXd &first,
@@ -111,15 +86,14 @@ class OptimizationContext {
             return 0.0;
         Eigen::VectorXd previous(lower_.size()), next(lower_.size());
         DifferenceInto(path[0], path[1], previous);
-        double length =
-            options_.length_weight > 0.0 ? geometry_metric_.Norm(previous) : 0.0;
+        double length = options_.length_weight > 0.0 ? geometry_metric_.Norm(previous) : 0.0;
         double smoothness = 0.0;
         for (std::size_t i = 1; i + 1 < path.size(); ++i) {
             DifferenceInto(path[i], path[i + 1], next);
             if (options_.length_weight > 0.0)
                 length += geometry_metric_.Norm(next);
             if (options_.smoothness_weight > 0.0)
-                smoothness += SquaredNorm(next - previous);
+                smoothness += geometry_metric_.SquaredNorm(next - previous);
             previous.swap(next);
         }
         if (options_.smoothness_weight > 0.0 && !std::isnormal(smoothness)) {
@@ -128,8 +102,7 @@ class OptimizationContext {
             for (std::size_t i = 1; i + 1 < path.size(); ++i) {
                 DifferenceInto(path[i], path[i + 1], next);
                 norm = std::hypot(
-                    norm, geometry_metric_.ScaledNorm(
-                              next - previous, options_.smoothness_weight));
+                    norm, geometry_metric_.ScaledNorm(next - previous, options_.smoothness_weight));
                 previous.swap(next);
             }
             return options_.length_weight * length + norm * norm;
@@ -287,8 +260,7 @@ class OptimizationContext {
                 break;
         }
         if (!gradient.allFinite())
-            throw std::invalid_argument(
-                "finite-difference state cost gradient must be finite");
+            throw std::invalid_argument("finite-difference state cost gradient must be finite");
         return gradient;
     }
 
@@ -304,37 +276,27 @@ class OptimizationContext {
     }
 
     bool IsMotionValid(const Eigen::VectorXd &from, const Eigen::VectorXd &to) {
-        if (TimedOut())
+        if (!IsMotionInteriorValid(from, to))
             return false;
-        if (!validator_)
-            return true;
-        const Eigen::VectorXd difference = Difference(from, to);
-        const std::size_t segments = SegmentCount(difference);
-        for (std::size_t i = 1; i < segments; ++i) {
-            if (TimedOut() ||
-                !IsStateValid(NormalizeInterpolation(
-                    from + static_cast<double>(i) / segments * difference)) ||
-                TimedOut())
-                return false;
-        }
         // Reconstructing the endpoint can round it across a validity boundary.
         // Validate the exact waypoint that will be returned to the caller.
-        return !TimedOut() && IsStateValid(to) && !TimedOut();
+        return !validator_ || (!TimedOut() && IsStateValid(to) && !TimedOut());
     }
 
-    bool IsMotionInteriorValid(const Eigen::VectorXd &from,
-                               const Eigen::VectorXd &to) {
+    bool IsMotionInteriorValid(const Eigen::VectorXd &from, const Eigen::VectorXd &to) {
         if (TimedOut())
             return false;
         if (!validator_)
             return true;
-        const Eigen::VectorXd difference = Difference(from, to);
+        const Eigen::VectorXd difference = detail::Difference(from, to, continuous_);
         const std::size_t segments = SegmentCount(difference);
+        Eigen::VectorXd sample;
         for (std::size_t i = 1; i < segments; ++i) {
-            if (TimedOut() ||
-                !IsStateValid(NormalizeInterpolation(
-                    from + static_cast<double>(i) / segments * difference)) ||
-                TimedOut())
+            if (TimedOut())
+                return false;
+            sample = from + static_cast<double>(i) / segments * difference;
+            sample = NormalizeInterpolation(std::move(sample));
+            if (!IsStateValid(sample) || TimedOut())
                 return false;
         }
         return true;
@@ -342,8 +304,7 @@ class OptimizationContext {
 
   private:
     double NormalizeCoordinate(double value, Eigen::Index index) const {
-        return detail::NormalizeCoordinate(value, index, lower_, upper_,
-                                           continuous_);
+        return detail::NormalizeCoordinate(value, index, lower_, upper_, continuous_);
     }
 
     const Eigen::VectorXd &lower_;
@@ -352,7 +313,6 @@ class OptimizationContext {
     detail::JointSpaceMetric metric_;
     detail::WeightedGeometry geometry_metric_;
     Eigen::VectorXd inverse_weights_;
-    bool has_continuous_{false};
     const std::vector<bool> &continuous_;
     const PathOptimizer::StateValidator &validator_;
     const PathOptimizer::StateCost &state_cost_;
@@ -543,7 +503,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                                            options.smoothness_weight);
     Eigen::VectorXd gradient(lower_limits.size());
     Eigen::VectorXd direction(lower_limits.size());
-    Eigen::VectorXd previous(lower_limits.size());
     Eigen::VectorXd candidate(lower_limits.size());
     bool any_update = false;
     for (std::size_t sweep = 0; sweep < options.max_iterations; ++sweep) {
@@ -572,7 +531,7 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
             context.PreconditionedDescent(gradient, direction);
             if (direction.cwiseAbs().maxCoeff() <= 1e-15)
                 continue;
-            previous = result.path[i];
+            const auto &previous = result.path[i];
             const double previous_local_objective =
                 geometry.LocalObjective() +
                 options.state_cost_weight * current_state_cost;
@@ -587,29 +546,22 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 // absolute coordinate epsilon. Stop only if it changes no state.
                 if (context.SameState(previous, candidate))
                     break;
-                result.path[i] = candidate;
                 const double candidate_geometry = geometry.CandidateObjective(
                     result.path[i - 1], candidate, result.path[i + 1]);
-                if (!std::isfinite(candidate_geometry)) {
-                    result.path[i] = previous;
+                if (!std::isfinite(candidate_geometry))
                     continue;
-                }
                 // Other waypoints are unchanged. Comparing only the affected
                 // non-negative terms prevents unrelated large costs from
                 // hiding an improvement or accepting a locally worse trial.
                 // The candidate state cost is non-negative, so geometry alone
                 // is a lower bound before invoking that callback.
                 if (previous_local_objective - candidate_geometry <
-                    options.minimum_improvement) {
-                    result.path[i] = previous;
+                    options.minimum_improvement)
                     continue;
-                }
                 const double candidate_state_cost =
                     context.StateCostValue(candidate);
-                if (context.TimedOut()) {
-                    result.path[i] = previous;
+                if (context.TimedOut())
                     break;
-                }
                 const double candidate_local_objective =
                     candidate_geometry +
                     options.state_cost_weight * candidate_state_cost;
@@ -618,12 +570,12 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                     context.IsStateValid(candidate) &&
                     context.IsMotionInteriorValid(result.path[i - 1], candidate) &&
                     context.IsMotionInteriorValid(candidate, result.path[i + 1])) {
+                    result.path[i].swap(candidate);
                     if (options.state_cost_weight > 0.0)
                         state_costs[i] = candidate_state_cost;
                     accepted = true;
                     break;
                 }
-                result.path[i] = previous;
                 if (context.TimedOut())
                     break;
             }

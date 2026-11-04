@@ -609,12 +609,6 @@ bool TrajectoryBase<LieGroup>::GetLimitFromConstraintProfile(
                         "Trajectory constraint dimension does not match path");
                 return false;
             }
-            if (PathType::Bezier5thCartesianSpace == this->path_type_) {
-                const double ratio = 1.0;
-                velocity_limits *= ratio;
-                acceleration_limits *= ratio;
-                jerk_limits *= ratio;
-            }
             max_velocity_ = velocity_limits;
             max_acceleration_ = acceleration_limits;
             max_jerk_ = jerk_limits;

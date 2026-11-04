@@ -117,3 +117,46 @@ def test_complex_tracker_result_is_rejected(prefix, name, imaginary):
     result_type = getattr(kinematics, prefix + "ContinuousResult")
     with pytest.raises(TypeError, match="real"):
         result_type(**values)
+
+
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+@pytest.mark.parametrize("value", [np.complex64(0.1), np.complex128(0.1 + 1j)])
+def test_complex_tracker_dt_is_rejected_before_query(prefix, value):
+    from holistic_motion import kinematics
+
+    class NoQuerySolver(Solver):
+        @staticmethod
+        def solve(*_args):
+            raise AssertionError("invalid duration reached the solver")
+
+    tracker_type = getattr(kinematics, prefix + "ContinuousTracker")
+    tracker = tracker_type(NoQuerySolver(), np.zeros(7))
+    with pytest.raises(TypeError, match="real"):
+        tracker.solve(np.eye(4), value)
+    assert tracker.frame_index == 0
+
+
+@pytest.mark.parametrize("prefix", ["SRS", "FEP"])
+def test_tracker_dt_owns_scalar_before_solver_reentry(prefix):
+    from holistic_motion import kinematics
+
+    duration = np.array(0.1)
+
+    class ReentrantSolver(Solver):
+        @staticmethod
+        def solve(*_args):
+            duration[...] = 10.0
+            return [np.full(7, 0.01)]
+
+    class Tracker(getattr(kinematics, prefix + "ContinuousTracker")):
+        def _seeded_method(self):
+            return None
+
+        def _all_configurations_method(self):
+            return None
+
+    tracker = Tracker(ReentrantSolver(), np.zeros(7))
+    result = tracker.solve(np.eye(4), duration)
+    np.testing.assert_allclose(result.velocity, np.full(7, 0.1), rtol=1e-14)
+    np.testing.assert_allclose(result.acceleration, np.ones(7), rtol=1e-14)
+    assert duration == 10.0

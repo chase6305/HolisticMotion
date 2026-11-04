@@ -132,12 +132,40 @@ def test_joint_space_retains_the_same_metric_between_planning_and_optimization()
     np.testing.assert_array_equal(optimizer.joint_space.joint_weights, [4.0, 0.25])
 
 
-@pytest.mark.parametrize("names", [["x"], ["x", "x"], ["x", ""]])
+@pytest.mark.parametrize(
+    "names", [["x"], ["x", "x"], ["x", ""], ["", "x"], ["a\x00x", "a\x00x"]]
+)
 def test_joint_space_rejects_ambiguous_joint_order(names):
     import holistic_motion as hm
 
-    with pytest.raises(ValueError, match="joint names"):
+    with pytest.raises(ValueError, match="joint names") as error:
         hm.JointSpace([-1, -1], [1, 1], names)
+    expected = (
+        "joint names must match the planning dimension"
+        if len(names) != 2
+        else "joint names must be nonempty and unique"
+    )
+    assert str(error.value) == expected
+
+
+@pytest.mark.parametrize("order", [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]])
+def test_joint_name_validation_preserves_owned_binary_names_and_order(order):
+    import gc
+
+    import holistic_motion as hm
+
+    names = ["a", "a\x00first", "a\x00second", "z" * 96]
+    names = [names[index] for index in order]
+    provided = list(names)
+    space = hm.JointSpace([-1.0] * 4, [1.0] * 4, provided)
+    snapshot = space.with_joint_weights([1.0] * 4)
+    provided[:] = ["changed"] * 4
+    del provided, space
+    gc.collect()
+    assert snapshot.joint_names == names
+    returned = snapshot.joint_names
+    returned.reverse()
+    assert snapshot.joint_names == names
 
 
 @pytest.mark.parametrize("change", ["weights", "periodic"])

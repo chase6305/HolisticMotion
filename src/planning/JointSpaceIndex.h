@@ -26,25 +26,10 @@ class JointSpaceIndex {
         Refresh(count, state_at, metric);
         std::size_t best = 0;
         double distance = std::numeric_limits<double>::infinity();
-        if (nodes_.empty()) {
-            for (std::size_t i = 0; i < count; ++i) {
-                const double candidate =
-                    metric.SquaredDistance(state_at(i), query);
-                if (candidate < distance ||
-                    (candidate == distance &&
-                     ((!std::isnormal(candidate) &&
-                       metric.IsCloser(state_at(i), state_at(best), query,
-                                       candidate, distance, i < best)) ||
-                      (std::isnormal(candidate) && i < best)))) {
-                    distance = candidate;
-                    best = i;
-                }
-            }
-            return best;
-        }
         // Recent states often lie near the current target. Search the append
-        // buffer first to tighten the bound used by the balanced tree.
-        for (std::size_t i = indexed_count_; i < count; ++i)
+        // buffer first to tighten the bound used by the balanced tree. With
+        // no index, the same candidate comparison covers the complete scan.
+        for (std::size_t i = nodes_.empty() ? 0 : indexed_count_; i < count; ++i)
             Consider(i, state_at, query, metric, best, distance);
         if (!nodes_.empty())
             SearchNearest(0, state_at, query, metric, best, distance);
@@ -52,10 +37,10 @@ class JointSpaceIndex {
     }
 
     template <class StateAt>
-    std::vector<std::size_t> Near(std::size_t count, const StateAt &state_at,
-                                  const Eigen::VectorXd &query, double radius,
-                                  const JointSpaceMetric &metric) {
-        std::vector<std::size_t> result;
+    void Near(std::size_t count, const StateAt &state_at,
+              const Eigen::VectorXd &query, double radius,
+              const JointSpaceMetric &metric, std::vector<std::size_t> &result) {
+        result.clear();
         const double squared_radius = radius * radius;
         const auto collect = [&](std::size_t index) {
             const double distance =
@@ -69,7 +54,7 @@ class JointSpaceIndex {
         if (!metric.HasContinuous() && metric.Dimension() <= 3) {
             for (std::size_t i = 0; i < count; ++i)
                 collect(i);
-            return result;
+            return;
         }
         Refresh(count, state_at, metric);
         if (!nodes_.empty())
@@ -80,7 +65,6 @@ class JointSpaceIndex {
         // rewiring, and all equal-distance ties identical to the linear scan.
         if (!nodes_.empty())
             std::sort(result.begin(), result.end());
-        return result;
     }
 
   private:

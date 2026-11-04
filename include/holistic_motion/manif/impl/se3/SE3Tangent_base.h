@@ -279,14 +279,12 @@ void SE3TangentBase<_Derived>::FillQ(
                              // that V*W = (W*V).transpose() !!!
     const Eigen::Matrix<Scalar, 3, 3> WVW = WV * W;
     const Eigen::Matrix<Scalar, 3, 3> VWW = VW * W;
-    Q.noalias() =
-            +A * V + B * (WV + VW + WVW) -
-            C * (VWW - VWW.transpose() -
-                 Scalar(3) *
-                         WVW)  // Note on this change wrt. Barfoot: it happens
-                               // that V*W*W = -(W*W*V).transpose() !!!
-            - D * WVW * W;  // Note on this change wrt. Barfoot: it happens that
-                            // W*V*W*W = W*W*V*W !!!
+    Q.noalias() = A * V + B * (WV + VW + WVW) -
+                  C * (VWW - VWW.transpose() -
+                       Scalar(3) * WVW) // Note on this change wrt. Barfoot: it happens
+                                        // that V*W*W = -(W*W*V).transpose() !!!
+                  - D * WVW * W;        // Note on this change wrt. Barfoot: it happens that
+                                        // W*V*W*W = W*W*V*W !!!
 }
 
 template <typename _Derived>

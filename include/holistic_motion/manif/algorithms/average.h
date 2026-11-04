@@ -2,256 +2,129 @@
 #define _HOLISTIC_MOTION_HOLISTIC_MOTION_AVERAGE_H_
 
 #include "holistic_motion/manif/impl/lie_group_base.h"
-//#include "holistic_motion/manif/interpolation.h"
-#include <iostream>
-namespace holistic_motion {
-namespace robotics {
-// template <template <typename LieGroup, typename...Args> class Container,
-//          typename LieGroup, typename...Args>
-// LieGroup
-// average_slerp(const Container<LieGroup, Args...>& mans)
-//{
-//  if (mans.empty())
-//    return LieGroup();
-//  else if (mans.size() == 1)
-//    return *mans.begin();
 
-//  auto it = mans.begin();
+namespace holistic_motion::robotics {
 
-//  LieGroup carry = *it;
-
-//  ++it;
-//  double i = 2;
-//  for (; it != mans.end(); ++it, ++i)
-//  {
-//    carry = Interpolate(carry, *it, (i-1.)/i);
-//  }
-
-//  return carry;
-//}
-
-/**
- * @brief Compute an average point on Lie groups given a list of
- * 'close' points.
- * @param[in] points A list of 'close' points to compute an average point from.
- * @param[in] eps, update norm threshold to break the iterative averaging.
- * @param[in] max_iterations, max number of iterations.
- * @return The average point of the input points.
- *
- * @note see (a)
- * "Bi-invariant Means in Lie Groups.
- * Application to Left-in variant Polyaffine Transformations" p. 21 Sec. 4.2
- * @link
- * ftp://ftp-sop.inria.fr/epidaure/Publications/Arsigny/arsigny_rr_biinvariant_mean.pdf
- *
- * @note see also (b)
- * "A globally convergent numerical algorithm for computing the center of
- * mass on compact Lie groups."
- * @link
- * http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.721.8010&rep=rep1&type=pdf
- */
-template <template <typename LieGroup, typename... Args> class Container,
-          typename LieGroup,
+/// Iterative mean of nearby group elements. eps bounds the squared update norm.
+/// See Arsigny et al., Bi-invariant Means in Lie Groups, section 4.2, and
+/// Manton, A globally convergent numerical algorithm for computing the center
+/// of mass on compact Lie groups.
+template <template <typename LieGroup, typename... Args> class Container, typename LieGroup,
           typename... Args>
-LieGroup AverageBiinvariant(const Container<LieGroup, Args...>& points,
-                            typename LieGroup::Scalar eps =
-                                    Constants<typename LieGroup::Scalar>::eps,
-                            int max_iterations = 20) {
+LieGroup
+AverageBiinvariant(const Container<LieGroup, Args...> &points,
+                   typename LieGroup::Scalar eps = Constants<typename LieGroup::Scalar>::eps,
+                   int max_iterations = 20) {
     using Scalar = typename LieGroup::Scalar;
     using Tangent = typename LieGroup::Tangent;
-
     HOLISTIC_MOTION_CHECK(!points.empty(), "Points container is empty !");
-    if (points.size() == 1) return *points.begin();
-
-    LieGroup avg = *points.begin();
-
-    const Scalar w = Scalar(1) / Scalar(points.size());
-
-    Tangent ts;
-    int i = 0;
-    for (; i < max_iterations; ++i) {
-        auto it = points.begin();
-        const auto end = points.end();
-
-        ts.SetZero();
-        for (; it != end; ++it) {
-            // Update as in (a) & (b)
-            ts += ((*it) - avg);
-        }
-        ts *= w;  // doing the common product by 1/N just once
-
-        //////////////
-        // Stopping criterion is from (b)
-        //////////////
-
-        if (ts.Coeffs().squaredNorm() < eps) break;
-
-        avg += ts;
-
-        //////////////
-        // Stopping criterion is from (a)
-        //////////////
-
-        //    const LieGroup avg_0 = avg;
-        //    avg += ts;
-
-        //    if (avg.Between(avg_0).log().Coeffs().squaredNorm() < eps)
-        //      break;
+    LieGroup average = *points.begin();
+    if (points.size() == 1)
+        return average;
+    const Scalar weight = Scalar(1) / Scalar(points.size());
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+        Tangent update;
+        update.SetZero();
+        for (const auto &point : points)
+            update += point - average;
+        update *= weight;
+        if (update.Coeffs().squaredNorm() < eps)
+            break;
+        average += update;
     }
-
-    // std::cout << "Biinvariant stopped after " << i << " iterations.\n";
-
-    return avg;
+    return average;
 }
 
-template <template <typename LieGroup, typename... Args> class Container,
-          typename LieGroup,
+/// Jacobian-weighted mean of nearby group elements, with a squared update bound.
+template <template <typename LieGroup, typename... Args> class Container, typename LieGroup,
           typename... Args>
-LieGroup Average(const Container<LieGroup, Args...>& points,
-                 typename LieGroup::Scalar eps =
-                         Constants<typename LieGroup::Scalar>::eps,
+LieGroup Average(const Container<LieGroup, Args...> &points,
+                 typename LieGroup::Scalar eps = Constants<typename LieGroup::Scalar>::eps,
                  int max_iterations = 20) {
     using Scalar = typename LieGroup::Scalar;
     using Tangent = typename LieGroup::Tangent;
-
     HOLISTIC_MOTION_CHECK(!points.empty(), "Points container is empty !");
-    if (points.size() == 1) return *points.begin();
-
-    LieGroup avg = *points.begin();
-
-    const Scalar w = Scalar(1) / Scalar(points.size());
-
-    Tangent ts, tmp;
-    typename LieGroup::Jacobian Jr, G;
-    for (int i = 0; i < max_iterations; ++i) {
-        auto it = points.begin();
-        const auto end = points.end();
-
-        ts.SetZero();
-        for (; it != end; ++it) {
-            tmp = avg.Between(*it).Log();
-
-            // Neither (a) nor (b) use G for weighting
-            Jr = tmp.Rjac();
-            G.noalias() = Jr.transpose() * Jr;
-
-            ts += G * tmp;
+    LieGroup average = *points.begin();
+    if (points.size() == 1)
+        return average;
+    const Scalar weight = Scalar(1) / Scalar(points.size());
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+        Tangent update;
+        update.SetZero();
+        for (const auto &point : points) {
+            const Tangent error = average.Between(point).Log();
+            // Jr(error) * error = error, so Jr^T * Jr * error = Jr^T * error.
+            update.Coeffs().noalias() += error.Rjac().transpose() * error.Coeffs();
         }
-        ts *= w;  // doing the common product by 1/N just once
-
-        // This stopping criterion is derived from (b)
-        typename LieGroup::Jacobian G = ts.Rjac().transpose() * ts.Rjac();
-        const Scalar n = ts.Coeffs().transpose() * G * ts.Coeffs();
-
-        if (n < Constants<Scalar>::eps) break;
-
-        avg += ts;
+        update *= weight;
+        if (update.Coeffs().squaredNorm() < eps)
+            break;
+        average += update;
     }
-
-    return avg;
+    return average;
 }
 
-// ftp://ftp-sop.inria.fr/epidaure/Publications/Arsigny/arsigny_rr_biinvariant_mean.pdf
-// page 38
-// https://hal.inria.fr/hal-00938320/document#subsection.118
-// page 94
-template <template <typename LieGroup, typename... Args> class Container,
-          typename LieGroup,
+/// Left Frechet iteration for nearby elements; eps bounds the squared metric update.
+/// Reference: Arsigny et al., Bi-invariant Means in Lie Groups, page 38.
+template <template <typename LieGroup, typename... Args> class Container, typename LieGroup,
           typename... Args>
-LieGroup AverageFrechetLeft(const Container<LieGroup, Args...>& points,
-                            typename LieGroup::Scalar eps =
-                                    Constants<typename LieGroup::Scalar>::eps,
-                            int max_iterations = 20) {
+LieGroup
+AverageFrechetLeft(const Container<LieGroup, Args...> &points,
+                   typename LieGroup::Scalar eps = Constants<typename LieGroup::Scalar>::eps,
+                   int max_iterations = 20) {
     using Scalar = typename LieGroup::Scalar;
     using Tangent = typename LieGroup::Tangent;
-
     HOLISTIC_MOTION_CHECK(!points.empty(), "Points container is empty !");
-    if (points.size() == 1) return *points.begin();
-
-    LieGroup avg = *points.begin();
-
-    const Scalar w = Scalar(1) / Scalar(points.size());
-
-    Tangent ts, tmp;
-    typename LieGroup::Jacobian Jl;
-    int i = 0;
-    for (; i < max_iterations; ++i) {
-        auto it = points.begin();
-        const auto end = points.end();
-
-        ts.SetZero();
-        const LieGroup avg_0 = avg;
-
-        for (; it != end; ++it) {
-            tmp = (*it) - avg_0;  // Log( Avg^-1 . Xi )
-
-            Jl = avg_0.Log().Ljac();  // Jl(Avg)
-
-            ts += Jl * tmp * w;
-        }
-
-        // Avg = Avg . Exp( Jl^-1(Avg) . ts )
-        avg = avg_0 + (avg_0.Log().Ljacinv() * ts);
-
-        tmp = avg_0.Log().Ljac() * (avg - avg_0);
-
-        if (tmp.Coeffs().SquaredNorm() < eps) break;
+    LieGroup average = *points.begin();
+    if (points.size() == 1)
+        return average;
+    const Scalar weight = Scalar(1) / Scalar(points.size());
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+        const LieGroup previous = average;
+        const Tangent origin = previous.Log();
+        const auto jacobian = origin.Ljac();
+        Tangent update;
+        update.SetZero();
+        for (const auto &point : points)
+            update += jacobian * (point - previous) * weight;
+        average = previous + (origin.Ljacinv() * update);
+        const Tangent displacement = jacobian * (average - previous);
+        if (displacement.Coeffs().squaredNorm() < eps)
+            break;
     }
-
-    // std::cout << "Frechet Left stopped after " << i << " iterations.\n";
-
-    return avg;
+    return average;
 }
 
-template <template <typename LieGroup, typename... Args> class Container,
-          typename LieGroup,
+/// Right Frechet iteration for nearby elements; eps bounds the squared metric update.
+template <template <typename LieGroup, typename... Args> class Container, typename LieGroup,
           typename... Args>
-LieGroup AverageFrechetRight(const Container<LieGroup, Args...>& points,
-                             typename LieGroup::Scalar eps =
-                                     Constants<typename LieGroup::Scalar>::eps,
-                             int max_iterations = 20) {
+LieGroup
+AverageFrechetRight(const Container<LieGroup, Args...> &points,
+                    typename LieGroup::Scalar eps = Constants<typename LieGroup::Scalar>::eps,
+                    int max_iterations = 20) {
     using Scalar = typename LieGroup::Scalar;
     using Tangent = typename LieGroup::Tangent;
-
     HOLISTIC_MOTION_CHECK(!points.empty(), "Points container is empty !");
-    if (points.size() == 1) return *points.begin();
-
-    LieGroup avg = *points.begin();
-
-    const Scalar w = Scalar(1) / Scalar(points.size());
-
-    Tangent ts, tmp;
-    typename LieGroup::Jacobian Jr;
-    int i = 0;
-    for (; i < max_iterations; ++i) {
-        auto it = points.begin();
-        const auto end = points.end();
-
-        ts.SetZero();
-        const LieGroup avg_0 = avg;
-
-        for (; it != end; ++it) {
-            tmp = it->Lminus(avg_0);  // Log( Xi . Avg^-1 )
-
-            Jr = avg_0.Log().Rjac();  // Jr(Avg)
-
-            ts += Jr * tmp * w;
-        }
-
-        // Avg = Exp(Jr^-1(Avg) . ts) * Avg
-        avg = avg_0.Lplus(avg_0.log().Rjacinv() * ts);
-
-        tmp = avg_0.Log().Rjac() * (avg.Lminus(avg_0));
-
-        if (tmp.Coeffs().SquaredNorm() < eps) break;
+    LieGroup average = *points.begin();
+    if (points.size() == 1)
+        return average;
+    const Scalar weight = Scalar(1) / Scalar(points.size());
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+        const LieGroup previous = average;
+        const Tangent origin = previous.Log();
+        const auto jacobian = origin.Rjac();
+        Tangent update;
+        update.SetZero();
+        for (const auto &point : points)
+            update += jacobian * point.Lminus(previous) * weight;
+        average = previous.Lplus(origin.Rjacinv() * update);
+        const Tangent displacement = jacobian * average.Lminus(previous);
+        if (displacement.Coeffs().squaredNorm() < eps)
+            break;
     }
-
-    // std::cout << "Frechet Right stopped after " << i << " iterations.\n";
-
-    return avg;
+    return average;
 }
 
-}  // namespace robotics
-}  // namespace holistic_motion
+} // namespace holistic_motion::robotics
 
-#endif /* _HOLISTIC_MOTION_HOLISTIC_MOTION_AVERAGE_H_ */
+#endif

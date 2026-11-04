@@ -31,6 +31,18 @@ find_package(fmt REQUIRED CONFIG)
 find_package(spdlog REQUIRED CONFIG)
 find_package(urdfdom REQUIRED CONFIG)
 
+add_library(holistic_motion_model ${HOLISTICMOTION_MODEL_SOURCES})
+add_library(HolisticMotion::model ALIAS holistic_motion_model)
+set_target_properties(holistic_motion_model PROPERTIES EXPORT_NAME model)
+target_compile_features(holistic_motion_model PUBLIC cxx_std_17)
+target_include_directories(holistic_motion_model PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+target_link_libraries(holistic_motion_model
+    PUBLIC Eigen3::Eigen PRIVATE fmt::fmt urdfdom::urdfdom)
+target_compile_options(holistic_motion_model PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
+
 add_library(holistic_motion ${HOLISTICMOTION_CORE_SOURCES})
 if(HOLISTICMOTION_ENABLE_CUDA)
     enable_language(CUDA)
@@ -59,7 +71,7 @@ target_include_directories(holistic_motion
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
 target_link_libraries(holistic_motion
-    PUBLIC Eigen3::Eigen fmt::fmt spdlog::spdlog urdfdom::urdfdom)
+    PUBLIC holistic_motion_model fmt::fmt PRIVATE spdlog::spdlog)
 target_compile_options(holistic_motion PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
 
@@ -71,6 +83,7 @@ if(HOLISTICMOTION_ENABLE_COLLISION)
     add_library(HolisticMotion::collision ALIAS holistic_motion_collision)
     set_target_properties(holistic_motion_collision PROPERTIES
         EXPORT_NAME collision)
+    target_compile_features(holistic_motion_collision PUBLIC cxx_std_17)
     target_include_directories(holistic_motion_collision PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
@@ -88,6 +101,7 @@ if(HOLISTICMOTION_ENABLE_COLLISION)
 endif()
 
 include(cmake/modules/HolisticMotionBuildIdentity.cmake)
+holistic_motion_use_build_identity(holistic_motion_model)
 holistic_motion_use_build_identity(holistic_motion)
 if(HOLISTICMOTION_ENABLE_COLLISION)
     holistic_motion_use_build_identity(holistic_motion_collision)
@@ -242,6 +256,7 @@ endif()
 holistic_motion_configure_build_identity()
 
 include(CMakePackageConfigHelpers)
+install(TARGETS holistic_motion_model EXPORT HolisticMotionModelTargets)
 install(TARGETS holistic_motion EXPORT HolisticMotionCoreTargets)
 if(HOLISTICMOTION_ENABLE_COLLISION)
     install(TARGETS holistic_motion_collision EXPORT HolisticMotionCollisionTargets)
@@ -261,6 +276,8 @@ endif()
 install(DIRECTORY include/holistic_motion/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/holistic_motion
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+install(EXPORT HolisticMotionModelTargets NAMESPACE HolisticMotion::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
 install(EXPORT HolisticMotionCoreTargets NAMESPACE HolisticMotion::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
 if(HOLISTICMOTION_ENABLE_COLLISION)
@@ -282,9 +299,5 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionConfigVersion.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionTargets.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
-configure_file(cmake/HolisticMotionConanDeps.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionConanDeps.cmake @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/HolisticMotionConanDeps.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/HolisticMotion)
 install(FILES THIRD_PARTY_NOTICES.md
         DESTINATION ${CMAKE_INSTALL_DATADIR}/HolisticMotion)

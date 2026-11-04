@@ -11,12 +11,9 @@ public:
   KinematicsCapabilities GetCapabilities() const override;
 
   /// Require at least six valid coordinate nodes; any remaining nodes must
-  /// be FIXED or UNKNOWN. Invalid joint models throw std::invalid_argument.
-  explicit URKinematics(URParameters urp, const std::vector<JointNode> &joint_node)
-      : params_(urp) {
-      InitializeJointModel(joint_node, 6);
-      holistic_motion::utility::LogDebug("Constructing URKinematics...");
-  };
+  /// be FIXED or UNKNOWN. Invalid geometry, offsets, directions, transforms,
+  /// or joint models throw std::invalid_argument.
+  explicit URKinematics(URParameters urp, const std::vector<JointNode> &joint_node);
   virtual ~URKinematics() = default;
 
   /// \brief get the forward kinematics
@@ -37,15 +34,6 @@ public:
                      Eigen::VectorXd &joint_seed,
                      std::vector<double> &dist) const override final;
 
-  /// \brief get the nearst inverse kinematics
-  ///
-  /// \param target_pose
-  /// \param ik_solutions
-  /// \param joints_seed
-  /// \return bool success or not
-  virtual bool GetNearstIK(const SE3d &target_pose, IkRtn &ik_solutions,
-                           Eigen::VectorXd &joint_seed,
-                           double &min_dist) const override final;
 
 private:
     URParameters params_;  ///< Contains 6 geometric parameters and

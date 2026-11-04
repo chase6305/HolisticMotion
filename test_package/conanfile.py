@@ -7,6 +7,7 @@ import sys
 from conan import ConanFile
 from conan.tools.build import can_run
 from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.env import VirtualRunEnv
 from conan.tools.files import load
 
 
@@ -61,11 +62,14 @@ class HolisticMotionTestPackage(ConanFile):
 
     def build(self):
         cmake = CMake(self)
-        cmake.configure()
-        cmake.build()
+        # Shared companions need their private runtime libraries during linking.
+        with VirtualRunEnv(self).vars().apply():
+            cmake.configure()
+            cmake.build()
 
     def test(self):
         if can_run(self):
+            self.run(self.cpp.build.bindir + "/model_consumer", env="conanrun")
             self.run(self.cpp.build.bindir + "/trajectory_consumer", env="conanrun")
             self.run(self.cpp.build.bindir + "/coordinate_consumer", env="conanrun")
             self.run(self.cpp.build.bindir + "/fep_consumer", env="conanrun")

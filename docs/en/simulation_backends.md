@@ -48,6 +48,8 @@ Use the returned session as a context manager, call `reset()`, then
 `ObservationBackend` implements `capture(StateFrame)` and `close`;
 `VisualizationBackend` implements `publish(StateFrame)` and `close`.
 Already constructed adapters can instead be passed to `SimulationSession` directly.
+Step durations must be finite, positive real scalars. Invalid durations, including
+NumPy complex scalars, are rejected before the physics adapter advances.
 
 Every step returns `StepResult.state`, an optional `ObservationFrame`, and a
 `viewer_error`. State includes a session-wide episode ID, step ID, simulation time,
