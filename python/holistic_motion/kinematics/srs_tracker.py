@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from math import atan2, hypot, isfinite
 from numbers import Integral
-from typing import Union
+from typing import NamedTuple, Union
 
 import numpy as np
 
@@ -46,7 +46,7 @@ class SRSContinuousOptions:
         scalars = tuple(
             require_real(getattr(self, name), name=name) for name in scalar_names
         )
-        if any(np.ndim(value) != 0 for value in scalars):
+        if any(isinstance(value, np.ndarray) and value.ndim != 0 for value in scalars):
             raise ValueError("tracker weights and thresholds must be scalars")
         try:
             scalars = tuple(float(value) for value in scalars)
@@ -54,7 +54,7 @@ class SRSContinuousOptions:
             raise ValueError(
                 "tracker weights and thresholds must be finite and non-negative"
             ) from error
-        if not all(np.isfinite(value) and value >= 0.0 for value in scalars):
+        if not all(isfinite(value) and value >= 0.0 for value in scalars):
             raise ValueError(
                 "tracker weights and thresholds must be finite and non-negative"
             )
@@ -140,8 +140,16 @@ class SRSContinuousResult:
         metrics = tuple(
             require_real(getattr(self, name), name=name) for name in metric_names
         )
-        if not all(np.isfinite(value) for value in metrics):
+        if any(isinstance(value, np.ndarray) and value.ndim != 0 for value in metrics):
+            raise ValueError("result metrics must be scalars")
+        try:
+            metrics = tuple(float(value) for value in metrics)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("result metrics must be finite") from error
+        if not all(isfinite(value) for value in metrics):
             raise ValueError("result metrics must be finite")
+        for name, value in zip(metric_names, metrics):
+            object.__setattr__(self, name, value)
         if self.minimum_singular_value < 0.0:
             raise ValueError("minimum_singular_value must be non-negative")
         if self.position_error < 0.0 or self.angle_error < 0.0:
@@ -151,13 +159,6 @@ class SRSContinuousResult:
             if not isinstance(value, (bool, np.bool_)):
                 raise TypeError(f"{name} must be boolean")
             object.__setattr__(self, name, bool(value))
-        for name in (
-            "redundancy",
-            "minimum_singular_value",
-            "position_error",
-            "angle_error",
-        ):
-            object.__setattr__(self, name, float(getattr(self, name)))
         if not isinstance(self.candidate_count, Integral) or isinstance(
             self.candidate_count, bool
         ):
@@ -165,6 +166,19 @@ class SRSContinuousResult:
         if self.candidate_count < 1:
             raise ValueError("candidate_count must be positive")
         object.__setattr__(self, "candidate_count", int(self.candidate_count))
+
+
+class _EvaluatedCandidate(NamedTuple):
+    """Validated values used for ranking and publishing the selected sample."""
+
+    score: float
+    joints: np.ndarray
+    velocity: np.ndarray
+    acceleration: np.ndarray
+    configuration: tuple[int, int, int]
+    redundancy: float
+    position_error: float
+    angle_error: float
 
 
 class SRSContinuousTracker:
@@ -214,8 +228,6 @@ class SRSContinuousTracker:
             or np.any(self._lower > self._upper)
         ):
             raise ValueError("solver returned invalid seven-axis joint limits")
-        self._bounded_lower = np.isfinite(self._lower)
-        self._bounded_upper = np.isfinite(self._upper)
         self._max_velocity = self._limit_vector(
             self.options.max_velocity, "max_velocity"
         )
@@ -263,11 +275,13 @@ class SRSContinuousTracker:
             raise ValueError("initial_joints must contain seven finite values")
         if np.any(values < self._lower) or np.any(values > self._upper):
             raise ValueError("initial_joints violate joint limits")
-        native = self.solver.configuration(values)
+        native = self.solver.configuration(values.copy())
         configuration, redundancy = self._validated_configuration(native)
 
+        # Allocate the new history before replacing the accepted state.
+        velocity = np.zeros(self._dof)
         self._joints = values.copy()
-        self._velocity = np.zeros(self._dof)
+        self._velocity = velocity
         self._configuration = configuration
         self._redundancy = redundancy
         self._pending_branch = None
@@ -276,7 +290,14 @@ class SRSContinuousTracker:
 
     def solve(self, target: np.ndarray, dt: float) -> SRSContinuousResult:
         pose = validated_transform(target, name="target")
-        if not np.isfinite(dt) or dt <= 0.0:
+        dt = require_real(dt, name="dt")
+        if isinstance(dt, np.ndarray) and dt.ndim != 0:
+            raise ValueError("dt must be a scalar")
+        try:
+            dt = float(dt)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("dt must be finite and positive") from error
+        if not isfinite(dt) or dt <= 0.0:
             raise ValueError("dt must be finite and positive")
 
         with np.errstate(over="ignore", invalid="ignore"):
@@ -292,50 +313,51 @@ class SRSContinuousTracker:
             raise ValueError(
                 f"no {self._solver_label} candidate satisfies continuity limits"
             )
-        evaluated.sort(key=lambda item: item[0])
-        previous_pending = self._pending_branch, self._pending_count
+        evaluated.sort(key=lambda item: item.score)
+        previous_state = (
+            self._joints,
+            self._velocity,
+            self._configuration,
+            self._redundancy,
+            self._frame_index,
+            self._pending_branch,
+            self._pending_count,
+        )
         try:
             selected = self._apply_hysteresis(evaluated)
-            (
-                _,
-                joints,
-                velocity,
-                acceleration,
-                branch,
-                position_error,
-                angle_error,
-            ) = selected
             previous_branch = self._configuration
-            native = self.solver.configuration(joints)
-            redundancy = self._unwrap_scalar(float(native.redundancy), self._redundancy)
-            singular_values = np.linalg.svd(
-                np.asarray(self.solver.jacobian(joints), dtype=float),
-                compute_uv=False,
-            )
-            minimum = float(singular_values[-1]) if singular_values.size else 0.0
+            redundancy = self._unwrap_scalar(selected.redundancy, self._redundancy)
+            minimum = self._minimum_singular_value(selected.joints)
             result = self._result_type(
-                joints=joints,
-                velocity=velocity,
-                acceleration=acceleration,
-                configuration=branch,
+                joints=selected.joints,
+                velocity=selected.velocity,
+                acceleration=selected.acceleration,
+                configuration=selected.configuration,
                 redundancy=redundancy,
-                branch_changed=branch != previous_branch,
+                branch_changed=selected.configuration != previous_branch,
                 near_singularity=minimum <= self.options.singular_value_threshold,
                 minimum_singular_value=minimum,
-                position_error=position_error,
-                angle_error=angle_error,
+                position_error=selected.position_error,
+                angle_error=selected.angle_error,
                 candidate_count=len(evaluated),
             )
-        except Exception:
-            self._pending_branch, self._pending_count = previous_pending
+            self._joints = selected.joints
+            self._velocity = selected.velocity
+            self._configuration = selected.configuration
+            self._redundancy = redundancy
+            self._frame_index += 1
+            return result
+        except BaseException:
+            (
+                self._joints,
+                self._velocity,
+                self._configuration,
+                self._redundancy,
+                self._frame_index,
+                self._pending_branch,
+                self._pending_count,
+            ) = previous_state
             raise
-
-        self._joints = joints
-        self._velocity = velocity
-        self._configuration = branch
-        self._redundancy = redundancy
-        self._frame_index += 1
-        return result
 
     def _evaluate_candidates(self, candidates, pose, predicted, dt):
         evaluated = []
@@ -358,9 +380,13 @@ class SRSContinuousTracker:
                 & (np.abs(acceleration) <= self._max_acceleration + 1e-12)
             ):
                 continue
-            branch = self._configuration_of(joints)
-            actual = np.asarray(self.solver.forward(joints), dtype=float)
-            if actual.shape != (4, 4) or not np.isfinite(actual).all():
+            branch, redundancy = self._validated_configuration(
+                self.solver.configuration(joints.copy())
+            )
+            raw_pose = self.solver.forward(joints.copy())
+            try:
+                actual = validated_transform(raw_pose, name="solver forward result")
+            except (TypeError, ValueError, OverflowError):
                 continue
             position_error, angle_error = self._pose_error(actual, pose)
             if not isfinite(position_error) or not isfinite(angle_error):
@@ -376,14 +402,15 @@ class SRSContinuousTracker:
             if not isfinite(score):
                 continue
             evaluated.append(
-                (
-                    score,
-                    joints,
-                    velocity,
-                    acceleration,
-                    branch,
-                    position_error,
-                    angle_error,
+                _EvaluatedCandidate(
+                    score=score,
+                    joints=joints,
+                    velocity=velocity,
+                    acceleration=acceleration,
+                    configuration=branch,
+                    redundancy=redundancy,
+                    position_error=position_error,
+                    angle_error=angle_error,
                 )
             )
         return evaluated
@@ -397,35 +424,33 @@ class SRSContinuousTracker:
             try:
                 candidates.extend(
                     self._finite_candidates(
-                        self.solver.solve(target, self._joints, self._seeded_method())
+                        self.solver.solve(
+                            target.copy(), self._joints.copy(), self._seeded_method()
+                        )
                     )
                 )
             except ValueError:
                 pass
-            singular_values = np.linalg.svd(
-                np.asarray(self.solver.jacobian(self._joints), dtype=float),
-                compute_uv=False,
-            )
             near_singularity = (
-                singular_values.size == 0
-                or singular_values[-1] <= self.options.singular_value_threshold
+                self._minimum_singular_value(self._joints)
+                <= self.options.singular_value_threshold
             )
             refresh = (
                 not candidates
+                or near_singularity
+                or self._frame_index % self.options.candidate_refresh_interval == 0
                 or any(
                     self._configuration_of(item) != self._configuration
                     for item in candidates
                 )
-                or near_singularity
-                or self._frame_index % self.options.candidate_refresh_interval == 0
             )
         if refresh:
             try:
                 candidates.extend(
                     self._finite_candidates(
                         self.solver.solve(
-                            target,
-                            self._joints,
+                            target.copy(),
+                            self._joints.copy(),
                             self._all_configurations_method(),
                         )
                     )
@@ -460,7 +485,16 @@ class SRSContinuousTracker:
             except (TypeError, ValueError, OverflowError):
                 continue
             if values.shape == (self._dof,) and np.isfinite(values).all():
-                yield values
+                # Enumeration and refresh queries may reuse backend storage.
+                yield values.copy()
+
+    def _minimum_singular_value(self, joints: np.ndarray) -> float:
+        jacobian = real_array(
+            self.solver.jacobian(joints.copy()), name="solver Jacobian"
+        )
+        if jacobian.shape != (6, self._dof) or not np.isfinite(jacobian).all():
+            raise ValueError("solver Jacobian must be a finite 6x7 matrix")
+        return float(np.linalg.svd(jacobian, compute_uv=False)[-1])
 
     def _all_configurations_method(self):
         import holistic_motion as hm
@@ -474,13 +508,14 @@ class SRSContinuousTracker:
 
     def _apply_hysteresis(self, evaluated):
         best = evaluated[0]
-        best_branch = best[4]
+        best_branch = best.configuration
         if best_branch == self._configuration:
             self._pending_branch = None
             self._pending_count = 0
             return best
         current = next(
-            (item for item in evaluated if item[4] == self._configuration), None
+            (item for item in evaluated if item.configuration == self._configuration),
+            None,
         )
         if current is None:
             self._pending_branch = None
@@ -539,7 +574,7 @@ class SRSContinuousTracker:
 
     def _configuration_of(self, joints: np.ndarray) -> tuple[int, int, int]:
         configuration, _ = self._validated_configuration(
-            self.solver.configuration(joints)
+            self.solver.configuration(joints.copy())
         )
         return configuration
 
@@ -547,8 +582,11 @@ class SRSContinuousTracker:
     def _validated_configuration(native) -> tuple[tuple[int, int, int], float]:
         try:
             raw_branch = (native.shoulder, native.elbow, native.wrist)
-            redundancy = float(native.redundancy)
-        except (AttributeError, TypeError, ValueError) as error:
+            redundancy = require_real(native.redundancy, name="solver redundancy")
+            if isinstance(redundancy, np.ndarray) and redundancy.ndim != 0:
+                raise ValueError("redundancy must be a scalar")
+            redundancy = float(redundancy)
+        except (AttributeError, TypeError, ValueError, OverflowError) as error:
             raise ValueError("solver returned an invalid configuration") from error
         if not isfinite(redundancy):
             raise ValueError("solver returned an invalid configuration")

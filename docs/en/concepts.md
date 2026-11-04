@@ -265,6 +265,9 @@ q_command = result.joints
 The tracker expands periodic angles near the predicted state, applies branch
 hysteresis, filters candidates by pose and dynamic limits, and reports
 singularity, branch-change, velocity, acceleration, and residual diagnostics.
+`dt` must be a finite positive scalar. A failed or cancelled `solve()` leaves
+the previous accepted state and branch hysteresis unchanged, so the caller can
+retry the target. Result arrays are owned, read-only snapshots.
 The native `SRSKinematics` keeps no streaming-target history and can still be
 used directly. Geometry measurements are computed at construction and after
 successful model updates; `analyze_geometry(tolerance)` only classifies that
