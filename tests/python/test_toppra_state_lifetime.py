@@ -1,5 +1,6 @@
 """Construction-only motion buffers do not remain owned by trajectories."""
 
+import gc
 import weakref
 
 import numpy as np
@@ -23,6 +24,9 @@ def test_numpy_grid_positions_are_released_before_constraint_construction(
 
     def compute_after_release(trajectory, *args):
         assert positions
+        # PyPy may need a second collection to release extension-backed arrays.
+        gc.collect()
+        gc.collect()
         assert all(reference() is None for reference, _ in positions)
         return compute(trajectory, *args)
 
@@ -65,6 +69,8 @@ def test_torch_physical_result_sources_are_released_without_changing_sampling(
             clone_sources[id(value)]
             for value in (result.path_speeds, result.path_accelerations)
         ]
+        gc.collect()
+        gc.collect()
         assert all(reference() is None for reference, _ in physical_sources)
         assert sum(size for _, size in physical_sources) == 2 * (129 + 128) * 8
 
