@@ -133,8 +133,10 @@ with no allocated world collision cache do not impose this restriction.
 
 Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
 `voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose
-quaternions are rejected before replacing the current world. Each obstacle
-requires an explicit pose; missing mesh poses are rejected before the loader
+quaternions are rejected before replacing the current world. Voxel ESDF features
+must be a nonempty floating Torch tensor with finite values within float16
+storage range, matching the upstream grid shape and device requirements. Each
+obstacle requires an explicit pose; missing mesh poses are rejected before the loader
 can clear the existing world. A public `Scene`
 must keep its `objects` and typed obstacle lists consistent. Spheres are
 represented as analytic capsules with coincident endpoints because the

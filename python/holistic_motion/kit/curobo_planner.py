@@ -359,6 +359,19 @@ class CuroboPlanner:
                     value = _positive(value, f"{name} {field}")
                     if _float32(value, f"{name} {field}") <= 0.0:
                         raise ValueError(f"{name} {field} rounds to zero in float32")
+        for grid in scene.voxel:
+            features = getattr(grid, "feature_tensor", None)
+            if not self._torch.is_tensor(features) or not features.is_floating_point():
+                raise TypeError(f"{grid.name} ESDF features must be a floating tensor")
+            if features.numel() == 0:
+                raise ValueError(f"{grid.name} ESDF features must be nonempty")
+            minimum, maximum = (bound.item() for bound in self._torch.aminmax(features))
+            # The public voxel loader stores ESDF distances in float16.
+            limit = self._torch.finfo(self._torch.float16).max
+            if not (-limit <= minimum <= maximum <= limit):
+                raise ValueError(
+                    f"{grid.name} ESDF features must stay finite in float16 storage"
+                )
         if scene.sphere:
             # The upstream SceneData loader omits Sphere objects. A capsule
             # with coincident endpoints is an exact analytic sphere, avoiding

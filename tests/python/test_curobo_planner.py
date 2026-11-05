@@ -659,6 +659,64 @@ def test_malformed_scene_is_rejected_before_replacing_the_world(backend, scene):
         assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
 
 
+@pytest.mark.parametrize(
+    "values, dtype",
+    [
+        (None, None),
+        ([0.0] * 8, None),
+        ([0] * 8, "int64"),
+        ([], "float32"),
+        ([float("nan")] * 8, "float32"),
+        ([float("inf")] * 8, "float16"),
+        ([70000.0] * 8, "float64"),
+        ([65536.0] * 8, "bfloat16"),
+        ([-65536.0] * 8, "bfloat16"),
+    ],
+)
+def test_invalid_voxel_distances_preserve_the_existing_world(backend, values, dtype):
+    features = values
+    if dtype is not None:
+        features = backend.torch.tensor(values, dtype=getattr(backend.torch, dtype))
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": features,
+            }
+        }
+    }
+    with CuroboPlanner(backend.path) as planner:
+        native = backend.instances[0]
+        previous = native.scene
+        with pytest.raises((TypeError, ValueError), match="ESDF"):
+            planner.update_world(scene)
+        assert native.scene is previous and native.resets == 0
+        assert planner.plan([0, 0], [0.1, 0.1]).success
+
+
+def test_voxel_distances_are_owned_during_creation_and_replacement(backend):
+    features = backend.torch.ones(8, dtype=backend.torch.float16)
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": features,
+            }
+        }
+    }
+    with CuroboPlanner(backend.path, scene=scene) as planner:
+        native = backend.instances[0]
+        features.fill_(-1)
+        assert backend.torch.all(native.scene.voxel[0].feature_tensor == 1)
+        planner.update_world(scene)
+        features.fill_(2)
+        assert backend.torch.all(native.scene.voxel[0].feature_tensor == -1)
+
+
 def test_public_scene_objects_receive_the_same_geometry_checks(backend):
     from curobo.scene import Scene
 

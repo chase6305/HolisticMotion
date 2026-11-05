@@ -424,3 +424,26 @@ def test_real_curobo_invalid_geometry_preserves_the_existing_world(
         planner.update_world(scene)
     result = planner.plan(start, goal)
     assert result.success, result.message
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 70000.0])
+def test_real_curobo_invalid_voxel_distances_preserve_the_existing_world(
+    problem, value
+):
+    import torch
+
+    planner, start, goal = problem
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": torch.full((8,), value),
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="ESDF"):
+        planner.update_world(scene)
+    result = planner.plan(start, goal)
+    assert result.success, result.message
