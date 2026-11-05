@@ -369,3 +369,34 @@ def test_real_curobo_rejects_incompatible_live_capture_layout_before_kernel_laun
         )
     result = planner.plan(start, goal)
     assert result.success, result.message
+
+
+def test_real_curobo_world_updates_finish_before_another_stream_plans(problem):
+    import torch
+
+    planner, start, goal = problem
+    edit_stream, plan_stream = torch.cuda.Stream(), torch.cuda.Stream()
+    try:
+        with torch.cuda.stream(edit_stream):
+            planner.update_world(
+                {
+                    "cuboid": {
+                        "blocked": {
+                            "dims": [100.0] * 3,
+                            "pose": [0, 0, 0, 1, 0, 0, 0],
+                        }
+                    }
+                }
+            )
+        with torch.cuda.stream(plan_stream):
+            result = planner.plan(start, goal, max_attempts=2)
+            assert not result.success and result.trajectory is None
+        far = np.eye(4)
+        far[:3, 3] = [200.0] * 3
+        with torch.cuda.stream(edit_stream):
+            planner.update_obstacle_pose("blocked", far)
+        with torch.cuda.stream(plan_stream):
+            result = planner.plan(start, goal)
+            assert result.success, result.message
+    finally:
+        planner.update_world({})

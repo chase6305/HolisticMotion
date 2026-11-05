@@ -116,7 +116,11 @@ and upstream `xyz, wxyz` layout. `None` is an empty world; self-collision checki
 remains enabled. Updates replace the entire world and reset RRT search state.
 Reserve collision capacity at construction. A failed world update blocks
 planning until a replacement update succeeds. Requests and updates on one
-instance are serialized; separate instances can run concurrent GPU work.
+instance are serialized. Backend calls across instances in one process are
+also serialized: upstream lazy captures use CUDA's global mode, which forbids
+concurrent allocations from another planner thread. Use separate processes
+for concurrent GPU work (`spawn` when using Python multiprocessing). Updates
+finish device work before returning, so later calls can use another CUDA stream.
 
 On the qualified upstream/Warp combination, live instances with allocated
 world collision caches must use the same cache layout when any instance uses

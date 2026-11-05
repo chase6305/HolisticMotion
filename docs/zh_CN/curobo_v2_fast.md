@@ -97,7 +97,9 @@ planner.update_link_collision_spheres("attached_object", None)
 `curobo.scene.Scene`。障碍物位姿相对已配置基座，遵循上游 `xyz, wxyz` 顺序。
 `None` 表示空环境，自碰撞仍开启。更新会替换整个场景并清空 RRT 搜索状态；构造时
 预留碰撞容量。更新失败后阻止规划，直到完整替换成功。同一实例的调用和更新串行化；
-并行 GPU 请求使用独立实例。
+同进程不同实例的后端调用也串行化：上游延迟 capture 使用 CUDA 全局模式，会禁止
+另一规划线程同时分配设备数据。并行 GPU 请求使用独立进程（Python multiprocessing
+使用 `spawn`）。更新返回前完成设备操作，后续调用可切换 CUDA stream。
 
 验证的上游／Warp 组合存在跨实例 capture 限制：有环境碰撞缓存的存活实例中，只要
 任意实例开启 CUDA graphs，就须使用相同缓存布局。适配器在构造时检查并拒绝不兼容

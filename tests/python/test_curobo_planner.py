@@ -17,6 +17,7 @@ from holistic_motion.kit.curobo_planner import CuroboPlanner, CuroboTrajectory
 def backend(tmp_path, monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda _device=None: None)
     instances = []
     configs = []
 
@@ -783,7 +784,7 @@ def test_world_replacement_discards_obsolete_mesh_geometry(backend, monkeypatch)
 
         monkeypatch.setattr(native, "update_world", update)
         planner.update_world({})
-        assert events == ["sync", "clear", "load"]
+        assert events == ["sync", "clear", "load", "sync"]
         assert native.resets == 1
 
 
@@ -875,3 +876,41 @@ def test_layout_registry_does_not_keep_abandoned_planners_alive(backend):
     assert reference() is None
     with CuroboPlanner(backend.path, collision_cache={"capsule": 2}):
         pass
+
+
+def test_different_planner_threads_do_not_allocate_during_a_backend_capture(
+    backend, monkeypatch
+):
+    entered, release, requested, updated = Event(), Event(), Event(), Event()
+    with CuroboPlanner(backend.path) as first, CuroboPlanner(backend.path) as second:
+        first_native, second_native = backend.instances
+        solve = first_native.plan_cspace
+        update = second_native.update_link_inertial
+
+        def blocked_solve(*args, **kwargs):
+            entered.set()
+            assert release.wait(5.0)
+            return solve(*args, **kwargs)
+
+        def record_update(*args):
+            updated.set()
+            return update(*args)
+
+        def submit_update():
+            requested.set()
+            second.update_link_inertial("payload", mass=0, com=[0] * 3, inertia=[0] * 6)
+
+        monkeypatch.setattr(first_native, "plan_cspace", blocked_solve)
+        monkeypatch.setattr(second_native, "update_link_inertial", record_update)
+        with ThreadPoolExecutor(2) as workers:
+            query = workers.submit(first.plan, [0, 0], [0.1, 0.1])
+            try:
+                assert entered.wait(5.0)
+                edit = workers.submit(submit_update)
+                assert requested.wait(5.0)
+                assert not updated.wait(0.05)
+            finally:
+                release.set()
+            assert query.result(timeout=5.0).success
+            edit.result(timeout=5.0)
+        assert updated.is_set()

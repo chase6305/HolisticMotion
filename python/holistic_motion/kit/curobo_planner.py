@@ -10,9 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import wraps
 from numbers import Integral
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from weakref import ref
 
 import numpy as np
@@ -23,7 +24,18 @@ __all__ = ["CuroboPlanner", "CuroboPlanningResult", "CuroboTrajectory"]
 
 _POSITION_LIMIT_TOLERANCE = 1e-6
 _LIVE_PLANNERS = []
-_LIVE_PLANNERS_LOCK = Lock()
+_BACKEND_LOCK = RLock()
+
+
+def _serialized_backend_call(method):
+    # Upstream captures in CUDA's global mode. Allocating on another planner's
+    # thread during a lazy capture is forbidden, even on an independent stream.
+    @wraps(method)
+    def call(*args, **kwargs):
+        with _BACKEND_LOCK:
+            return method(*args, **kwargs)
+
+    return call
 
 
 def _names(values):
@@ -129,9 +141,10 @@ class CuroboPlanner:
     or a public ``curobo.scene.Scene`` instance. None means an empty world;
     self-collision checking remains enabled. Scene poses use the robot base
     frame, meters and ``wxyz`` quaternions. The backend always selects RRT and
-    TimeOpt. Calls and updates on one instance are serialized.
+    TimeOpt. Backend operations are serialized within each process.
     """
 
+    @_serialized_backend_call
     def __init__(
         self,
         robot_config,
@@ -177,7 +190,6 @@ class CuroboPlanner:
         self._Pose = Pose
         self._Scene = Scene
         self._Capsule = Capsule
-        self._lock = Lock()
         self._planner = None
         self._world_valid = True
         self._robot_update_failed = None
@@ -246,25 +258,25 @@ class CuroboPlanner:
             # New Warp generic specializations can unload modules referenced
             # by another planner's PyTorch captures. Reject incompatible live
             # layouts before the new planner launches collision kernels.
-            with _LIVE_PLANNERS_LOCK:
-                live = []
-                for reference in _LIVE_PLANNERS:
-                    other = reference()
-                    if other is None:
-                        continue
-                    live.append(reference)
-                    if (
-                        self._collision_layout
-                        and other._collision_layout
-                        and self._collision_layout != other._collision_layout
-                        and (self._use_cuda_graph or other._use_cuda_graph)
-                    ):
-                        raise RuntimeError(
-                            "Live cuRobo CUDA graph planners must share a collision cache layout. "
-                            "Use matching caches, separate processes, or construct all planners "
-                            "with use_cuda_graph=False."
-                        )
-                _LIVE_PLANNERS[:] = [*live, ref(self)]
+            live = []
+            for reference in _LIVE_PLANNERS:
+                other = reference()
+                if other is None:
+                    continue
+                live.append(reference)
+                if (
+                    self._collision_layout
+                    and other._collision_layout
+                    and self._collision_layout != other._collision_layout
+                    and (self._use_cuda_graph or other._use_cuda_graph)
+                ):
+                    raise RuntimeError(
+                        "Live cuRobo CUDA graph planners must share a collision cache layout. "
+                        "Use matching caches, separate processes, or construct all planners "
+                        "with use_cuda_graph=False."
+                    )
+            self._torch.cuda.synchronize(self._device)
+            _LIVE_PLANNERS[:] = [*live, ref(self)]
         except BaseException:
             planner.destroy()
             raise
@@ -383,18 +395,21 @@ class CuroboPlanner:
             )
         return planner
 
+    @_serialized_backend_call
     def warmup(self, num_iterations=2):
         """Compile and capture representative pose and RRT branches once."""
         num_iterations = _count(num_iterations, "num_iterations")
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             self._planning_backend().warmup(
                 enable_graph=True, num_warmup_iterations=num_iterations
             )
+            self._torch.cuda.synchronize(self._device)
 
+    @_serialized_backend_call
     def update_world(self, scene):
         """Replace all world obstacles, retaining allocated backend capacities."""
         scene = self._scene(scene)
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._open()
             self._world_valid = False
             try:
@@ -407,8 +422,10 @@ class CuroboPlanner:
                 planner.update_world(scene)
             finally:
                 planner.reset_seed()
+                self._torch.cuda.synchronize(self._device)
             self._world_valid = True
 
+    @_serialized_backend_call
     def update_obstacle_pose(self, obstacle_name, transform):
         """Move an existing world obstacle without rebuilding its geometry.
 
@@ -422,7 +439,7 @@ class CuroboPlanner:
             validated_transform(transform, name="obstacle transform"),
             "obstacle transform",
         )
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             checker = planner.scene_collision_checker
             if not checker.check_obstacle_exists(obstacle_name):
@@ -435,8 +452,10 @@ class CuroboPlanner:
                 checker.update_obstacle_pose(obstacle_name, pose)
             finally:
                 planner.reset_seed()
+                self._torch.cuda.synchronize(self._device)
             self._world_valid = True
 
+    @_serialized_backend_call
     def update_link_inertial(self, link_name, *, mass, com, inertia):
         """Replace a link's complete inertial properties and reset RRT state.
 
@@ -468,7 +487,7 @@ class CuroboPlanner:
             )
         properties = np.concatenate(([mass], com, inertia))
         converted = _float32(properties, "inertial properties")
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             if (
                 link_name
@@ -482,10 +501,12 @@ class CuroboPlanner:
                     link_name, float(converted[0]), com_tensor, inertia_tensor
                 )
                 planner.reset_seed()
+                self._torch.cuda.synchronize(self._device)
             except BaseException:
                 self._robot_update_failed = "inertial"
                 raise
 
+    @_serialized_backend_call
     def update_link_collision_spheres(self, link_name, spheres):
         """Replace a link's collision spheres, or restore its configuration.
 
@@ -513,7 +534,7 @@ class CuroboPlanner:
             converted = _float32(spheres, "spheres")
             if np.any(converted[:, 3] <= 0.0):
                 raise ValueError("sphere radii round to zero in float32")
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             params = planner.attachment_manager.kinematics_params
             if link_name not in params.link_name_to_idx_map:
@@ -538,6 +559,7 @@ class CuroboPlanner:
                 else:
                     params.update_link_spheres(link_name, tensor)
                 planner.reset_seed()
+                self._torch.cuda.synchronize(self._device)
             except BaseException:
                 self._robot_update_failed = "collision sphere"
                 raise
@@ -570,6 +592,7 @@ class CuroboPlanner:
             tensor, joint_names=list(self._backend_names)
         )
 
+    @_serialized_backend_call
     def plan(
         self,
         start,
@@ -592,7 +615,7 @@ class CuroboPlanner:
             enable_graph_attempt, "enable_graph_attempt", minimum=0
         )
         endpoint_tolerance = _positive(endpoint_tolerance, "endpoint_tolerance")
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             goal_position, goal_state = self._position(goal, "goal")
@@ -606,9 +629,10 @@ class CuroboPlanner:
                 result, start_position, goal_position, endpoint_tolerance
             )
 
+    @_serialized_backend_call
     def forward_kinematics(self, position):
         """Return owned base-frame 4x4 transforms for the configured tools."""
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._open()
             # Accept the same float32 bound roundoff as a returned trajectory,
             # so callers can evaluate FK on any accepted result sample.
@@ -625,6 +649,7 @@ class CuroboPlanner:
             for name in self._tool_frames
         }
 
+    @_serialized_backend_call
     def plan_pose(self, start, tool_poses, *, max_attempts=4, enable_graph_attempt=1):
         """Plan from rest to named base-frame tool targets given as 4x4 matrices.
 
@@ -648,7 +673,7 @@ class CuroboPlanner:
             name: validated_transform(tool_poses[name], name=name)
             for name in self._tool_frames
         }
-        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             poses = {}
@@ -791,21 +816,21 @@ class CuroboPlanner:
         times = np.arange(arrays["position"].shape[0], dtype=float) * dt
         return CuroboTrajectory(self._joint_names, times, **arrays)
 
+    @_serialized_backend_call
     def close(self):
         """Release backend resources; already returned trajectories stay valid."""
-        with self._lock:
-            if self._planner is not None:
-                planner = self._planner
-                self._planner = None
-                try:
-                    planner.destroy()
-                finally:
-                    with _LIVE_PLANNERS_LOCK:
-                        _LIVE_PLANNERS[:] = [
-                            reference
-                            for reference in _LIVE_PLANNERS
-                            if (other := reference()) is not None and other is not self
-                        ]
+        if self._planner is not None:
+            planner = self._planner
+            self._planner = None
+            try:
+                planner.destroy()
+                self._torch.cuda.synchronize(self._device)
+            finally:
+                _LIVE_PLANNERS[:] = [
+                    reference
+                    for reference in _LIVE_PLANNERS
+                    if (other := reference()) is not None and other is not self
+                ]
 
     def __enter__(self):
         self._open()
