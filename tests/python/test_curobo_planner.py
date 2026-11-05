@@ -58,7 +58,11 @@ def backend(tmp_path, monkeypatch):
                 joint_names=["slide", "shoulder"],
                 position=torch.tensor([[-2.0, -1.0], [2.0, 1.0]]),
             )
-            self.kinematics = SimpleNamespace(get_joint_limits=lambda: limits)
+            self.kinematics = SimpleNamespace(
+                get_joint_limits=lambda: limits,
+                kinematics_config=SimpleNamespace(link_name_to_idx_map={"payload": 0}),
+            )
+            self.inertial_updates = []
             instances.append(self)
 
         def plan_cspace(self, goal, start, **kwargs):
@@ -106,6 +110,9 @@ def backend(tmp_path, monkeypatch):
 
         def reset_seed(self):
             self.resets += 1
+
+        def update_link_inertial(self, *args):
+            self.inertial_updates.append(args)
 
         def warmup(self, **kwargs):
             self.warmup_options = kwargs
@@ -194,6 +201,7 @@ def test_name_permutations_trimmed_timing_and_owned_outputs(backend):
     assert backend.configs[0]["enable_timeopt"] is True
     assert backend.configs[0]["self_collision_check"] is True
     assert backend.configs[0]["graph_planner_algorithm"] == "rrt"
+    assert backend.configs[0]["robot"]["load_dynamics"] is True
 
 
 @pytest.mark.parametrize(
@@ -336,3 +344,56 @@ def test_scene_file_is_parsed_for_both_construction_and_updates(backend, tmp_pat
         assert backend.instances[0].scene.data == {"cuboid": {}}
         planner.update_world(scene)
         assert backend.instances[0].scene.data == {"cuboid": {}}
+
+
+def test_inertial_updates_keep_units_order_and_reset_search(backend):
+    with CuroboPlanner(backend.path) as planner:
+        planner.update_link_inertial(
+            "payload",
+            mass=2.0,
+            com=[0.1, 0.2, 0.3],
+            inertia=[1.0, 2.0, 2.0, 0.1, 0.0, 0.0],
+        )
+        native = backend.instances[0]
+        link, mass, com, inertia = native.inertial_updates[0]
+        assert link == "payload" and mass == 2.0
+        np.testing.assert_allclose(com, [0.1, 0.2, 0.3])
+        np.testing.assert_allclose(inertia, [1.0, 2.0, 2.0, 0.1, 0.0, 0.0])
+        assert native.resets == 1
+
+
+@pytest.mark.parametrize(
+    "mass, inertia",
+    [
+        (-1.0, [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+        (1.0, [-1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+        (1.0, [1.0, 1.0, 3.0, 0.0, 0.0, 0.0]),
+        (1.0, [1.0, 1.0, 1.0, float("nan"), 0.0, 0.0]),
+    ],
+)
+def test_invalid_inertial_updates_do_not_touch_the_backend(backend, mass, inertia):
+    with CuroboPlanner(backend.path) as planner:
+        with pytest.raises(ValueError):
+            planner.update_link_inertial(
+                "payload", mass=mass, com=[0.0, 0.0, 0.0], inertia=inertia
+            )
+        assert backend.instances[0].inertial_updates == []
+        assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+
+
+def test_partial_inertial_update_failure_requires_reconstruction(backend, monkeypatch):
+    with CuroboPlanner(backend.path) as planner:
+
+        def failed_update(*_args):
+            raise RuntimeError("partial dynamics update")
+
+        monkeypatch.setattr(backend.instances[0], "update_link_inertial", failed_update)
+        with pytest.raises(RuntimeError, match="partial dynamics"):
+            planner.update_link_inertial(
+                "payload",
+                mass=1.0,
+                com=[0.0, 0.0, 0.0],
+                inertia=[1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            )
+        with pytest.raises(RuntimeError, match="recreating"):
+            planner.plan([0.0, 0.0], [0.1, 0.1])

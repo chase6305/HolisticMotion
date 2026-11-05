@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -79,3 +80,80 @@ def test_real_curobo_pose_planning_uses_named_tool_transforms(problem):
     for name, transform in target.items():
         np.testing.assert_allclose(final[name][:3, 3], transform[:3, 3], atol=0.005)
         np.testing.assert_allclose(final[name][:3, :3], transform[:3, :3], atol=0.05)
+
+
+def test_real_curobo_payload_updates_preserve_old_results(problem):
+    link = os.environ.get("HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK")
+    if not link:
+        pytest.skip(
+            "Set HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK for a reserved massless link"
+        )
+    planner, start, goal = problem
+    before = planner.plan(start, goal)
+    assert before.success, before.message
+    snapshot = before.trajectory.position.copy()
+    planner.update_link_inertial(
+        link, mass=1.0, com=[0.0, 0.0, 0.1], inertia=[0.01, 0.01, 0.01, 0.0, 0.0, 0.0]
+    )
+    try:
+        loaded = planner.plan(start, goal)
+        assert loaded.success, loaded.message
+        np.testing.assert_array_equal(before.trajectory.position, snapshot)
+    finally:
+        planner.update_link_inertial(
+            link, mass=0.0, com=[0.0, 0.0, 0.0], inertia=[0.0] * 6
+        )
+
+
+def test_real_curobo_fk_and_torque_against_independent_pinocchio(problem):
+    pin = pytest.importorskip("pinocchio")
+    import yaml
+    from holistic_motion.configuration import JointPositionMap
+
+    config_path = Path(os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"])
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    kin = config.get("robot_cfg", config)["kinematics"]
+    urdf = Path(kin["urdf_path"])
+    if not urdf.is_absolute():
+        pytest.skip(
+            "Independent Pinocchio check requires an explicit absolute URDF path"
+        )
+    model = pin.buildModelFromUrdf(str(urdf))
+    data = model.createData()
+    planner, start, goal = problem
+    mapping = JointPositionMap.from_model(model, planner.joint_names)
+    reference = pin.neutral(model)
+    locked = kin.get("lock_joints", {})
+    if locked:
+        locked_mapping = JointPositionMap.from_model(model, list(locked))
+        reference = locked_mapping.configuration_with_joint_positions(
+            reference, list(locked.values())
+        )
+    base_id = model.getFrameId(kin["base_link"])
+    for fraction in np.linspace(0.0, 1.0, 7):
+        values = start + (goal - start) * fraction
+        full = mapping.configuration_with_joint_positions(reference, values)
+        pin.forwardKinematics(model, data, full)
+        pin.updateFramePlacements(model, data)
+        actual = planner.forward_kinematics(values)
+        for name, matrix in actual.items():
+            expected = data.oMf[base_id].inverse() * data.oMf[model.getFrameId(name)]
+            np.testing.assert_allclose(matrix, expected.homogeneous, atol=2e-6)
+
+    result = planner.plan(start, goal)
+    assert result.success, result.message
+    indices = [
+        model.joints[model.getJointId(name)].idx_v for name in planner.joint_names
+    ]
+    for position, velocity, acceleration in zip(
+        result.trajectory.position,
+        result.trajectory.velocity,
+        result.trajectory.acceleration,
+    ):
+        full = mapping.configuration_with_joint_positions(reference, position)
+        full_velocity, full_acceleration = np.zeros(model.nv), np.zeros(model.nv)
+        full_velocity[indices] = velocity
+        full_acceleration[indices] = acceleration
+        torque = pin.rnea(model, data, full, full_velocity, full_acceleration)[indices]
+        assert np.isfinite(torque).all()
+        assert np.all(np.abs(torque) <= model.effortLimit[indices] * 1.001 + 1e-5)

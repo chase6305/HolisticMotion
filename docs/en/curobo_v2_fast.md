@@ -5,7 +5,9 @@
 `holistic_motion.kit.curobo_planner` integrates the current NVIDIA cuRobo v2
 `MotionPlanner`, with RRT, B-spline optimization and TimeOpt enabled. It supports
 rest-to-rest joint goals, named tool-pose goals, FK and scene replacement. The
-backend is optional and independent of the native collision extension.
+backend is optional and independent of the native collision extension. Dynamics
+are explicitly enabled in every planning stage, including when the caller's
+upstream example YAML has `load_dynamics: false`.
 
 ## Install the optional runtime
 
@@ -60,6 +62,8 @@ float32 conversion. The adapter does not infer continuous-joint winding.
 Pose goals use base-frame homogeneous matrices in meters. Every configured
 tool must have a target; no quaternion convention needs to be guessed:
 
+Within the same open planner context:
+
 ```python
 targets = planner.forward_kinematics(q_goal)  # Or caller-supplied 4x4 matrices.
 result = planner.plan_pose(q_start, targets)
@@ -71,6 +75,14 @@ again with FK. `plan()` separately checks joint endpoints with its
 `endpoint_tolerance` (default `1e-3`).
 
 ## Scenes, results and lifetime
+
+`update_link_inertial(link_name, mass=..., com=..., inertia=...)` replaces a
+link's complete inertial properties. COM is a link-frame [3] vector in meters;
+inertia about the COM is `[ixx, iyy, izz, ixy, ixz, iyz]` in link axes, kg*m².
+The adapter validates finite float32 values, non-negative mass and physically
+consistent principal moments, updates upstream dynamics and clears RRT state.
+This does not attach collision geometry. A backend inertial-update failure
+blocks further planning and requires recreating the instance.
 
 `scene=` and `update_world(scene)` accept a local scene YAML, upstream scene
 dictionary or `curobo.scene.Scene`. Poses use the configured robot base frame

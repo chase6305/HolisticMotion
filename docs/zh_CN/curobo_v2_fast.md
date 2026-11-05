@@ -4,7 +4,8 @@
 
 `holistic_motion.kit.curobo_planner` 实际接入新版 NVIDIA cuRobo v2
 `MotionPlanner`，启用 RRT、B 样条优化与 TimeOpt。支持静止边界关节规划、具名工具
-位姿规划、FK 和场景替换。后端可选，独立于原生碰撞扩展。
+位姿规划、FK 和场景替换。后端可选，独立于原生碰撞扩展。所有规划阶段显式启用
+动力学，即使调用方的上游示例 YAML 写着 `load_dynamics: false`。
 
 ## 安装可选运行时
 
@@ -53,6 +54,8 @@ with CuroboPlanner(
 位姿目标使用基座坐标系中的 4×4 齐次矩阵，平移单位为米。必须提供每个已配置工具
 的目标，不需要猜测四元数顺序：
 
+在同一个尚未关闭的 planner 上下文中：
+
 ```python
 targets = planner.forward_kinematics(q_goal)  # 也可由调用方提供矩阵。
 result = planner.plan_pose(q_start, targets)
@@ -63,6 +66,12 @@ result = planner.plan_pose(q_start, targets)
 `endpoint_tolerance` 检查关节端点，默认 `1e-3`。
 
 ## 场景、结果与生命周期
+
+`update_link_inertial(link_name, mass=..., com=..., inertia=...)` 完整替换单个
+link 的惯性参数。COM 为 link 坐标系中的三维米制向量；质心处惯量按 link 轴表达，
+使用 `[ixx, iyy, izz, ixy, ixz, iyz]`，单位 kg*m²。适配器检查 float32 有限值、
+非负质量及物理一致的主惯量，更新上游动力学并清空 RRT 状态。这不会附着碰撞几何。
+底层惯量更新失败后阻止后续规划，必须重建实例。
 
 `scene=` 和 `update_world(scene)` 接受本地场景 YAML、上游场景字典或
 `curobo.scene.Scene`。障碍物位姿相对已配置基座，遵循上游 `xyz, wxyz` 顺序。

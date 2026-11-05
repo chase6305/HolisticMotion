@@ -165,8 +165,21 @@ class CuroboPlanner:
         self._lock = Lock()
         self._planner = None
         self._world_valid = True
+        self._dynamics_valid = True
+        import yaml
+
+        robot = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(robot, Mapping):
+            raise TypeError("robot_config must contain a robot dictionary")
+        robot = robot.get("robot_cfg", robot)
+        if not isinstance(robot, Mapping):
+            raise TypeError("robot_cfg must be a robot dictionary")
+        robot = dict(robot)
+        # The upstream example YAML disables dynamics. Enable them in every
+        # planning stage so torque checks and later payload updates agree.
+        robot["load_dynamics"] = True
         config = MotionPlannerCfg.create(
-            robot=str(config_path),
+            robot=robot,
             scene_model=self._scene(scene),
             collision_cache=deepcopy(collision_cache),
             device_cfg=DeviceCfg(device=selected_device, dtype=torch.float32),
@@ -253,6 +266,10 @@ class CuroboPlanner:
 
     def _planning_backend(self):
         planner = self._open()
+        if not self._dynamics_valid:
+            raise RuntimeError(
+                "A failed inertial update requires recreating CuroboPlanner"
+            )
         if not self._world_valid:
             raise RuntimeError(
                 "A failed world update requires a successful update_world before planning"
@@ -278,6 +295,63 @@ class CuroboPlanner:
             finally:
                 planner.reset_seed()
             self._world_valid = True
+
+    def update_link_inertial(self, link_name, *, mass, com, inertia):
+        """Replace a link's complete inertial properties and reset RRT state.
+
+        Mass is in kg, COM is [3] in the link frame, and inertia about the COM
+        is [ixx, iyy, izz, ixy, ixz, iyz] in kg*m^2, expressed in link axes.
+        This updates dynamics only; it does not attach collision geometry.
+        A backend update failure requires closing and recreating this instance.
+        """
+        if not isinstance(link_name, str) or not link_name:
+            raise ValueError("link_name must be a nonempty string")
+        if isinstance(mass, (bool, np.bool_)):
+            raise TypeError("mass must be a real number")
+        mass = finite_scalar(mass, "mass")
+        if mass < 0:
+            raise ValueError("mass must be non-negative")
+        com = real_array(com, name="com", copy=True)
+        inertia = real_array(inertia, name="inertia", copy=True)
+        if com.shape != (3,) or not np.isfinite(com).all():
+            raise ValueError("com must be a finite vector of size 3")
+        if inertia.shape != (6,) or not np.isfinite(inertia).all():
+            raise ValueError("inertia must be a finite vector of size 6")
+        xx, yy, zz, xy, xz, yz = inertia
+        matrix = np.array([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]])
+        moments = np.linalg.eigvalsh(matrix)
+        tolerance = 1e-12 * max(1.0, float(np.max(np.abs(moments))))
+        if moments[0] < -tolerance or moments[2] > moments[0] + moments[1] + tolerance:
+            raise ValueError(
+                "inertia must be positive semidefinite and satisfy the moment triangle inequality"
+            )
+        properties = np.concatenate(([mass], com, inertia))
+        with np.errstate(over="ignore", invalid="ignore"):
+            converted = properties.astype(np.float32)
+        if (
+            not np.isfinite(converted).all()
+            or np.max(np.abs(converted - properties)) > 1e-6
+        ):
+            raise ValueError(
+                "inertial properties lose more than 1e-6 during float32 conversion"
+            )
+        with self._lock:
+            planner = self._planning_backend()
+            if (
+                link_name
+                not in planner.kinematics.kinematics_config.link_name_to_idx_map
+            ):
+                raise ValueError(f"unknown cuRobo link: {link_name}")
+            com_tensor = self._torch.as_tensor(converted[1:4], device=self._device)
+            inertia_tensor = self._torch.as_tensor(converted[4:], device=self._device)
+            try:
+                planner.update_link_inertial(
+                    link_name, float(converted[0]), com_tensor, inertia_tensor
+                )
+                planner.reset_seed()
+            except BaseException:
+                self._dynamics_valid = False
+                raise
 
     def _position(self, value, name):
         position = real_array(value, name=name, copy=True)
@@ -338,9 +412,10 @@ class CuroboPlanner:
     def _tool_transforms(self, planner, state):
         poses = planner.compute_kinematics(state).tool_poses
         return {
-            name: self._numpy(poses.get_link_pose(name).get_matrix())
-            .reshape(4, 4)
-            .copy()
+            name: validated_transform(
+                self._numpy(poses.get_link_pose(name).get_matrix()).reshape(4, 4),
+                name=f"cuRobo tool {name}",
+            )
             for name in self._tool_frames
         }
 
@@ -352,9 +427,7 @@ class CuroboPlanner:
         configuration. No external quaternion convention is assumed.
         """
         max_attempts = _count(max_attempts, "max_attempts")
-        if not isinstance(tool_poses, Mapping) or set(tool_poses) != set(
-            self._tool_frames
-        ):
+        if not self._tool_frames or not isinstance(tool_poses, Mapping) or set(tool_poses) != set(self._tool_frames):
             raise ValueError(
                 "tool_poses must map every configured tool to a 4x4 transform"
             )
@@ -367,7 +440,8 @@ class CuroboPlanner:
             start_position, current_state = self._position(start, "start")
             poses = {}
             for name, transform in targets.items():
-                converted = transform.astype(np.float32)
+                with np.errstate(over="ignore", invalid="ignore"):
+                    converted = transform.astype(np.float32)
                 if (
                     not np.isfinite(converted).all()
                     or np.max(np.abs(converted - transform)) > 1e-6
