@@ -21,8 +21,22 @@ def backend(tmp_path, monkeypatch):
     configs = []
 
     class Scene:
-        def __init__(self, data=None):
+        def __init__(self, data=None, **kwargs):
             self.data = data
+            for kind in ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel"):
+                values = [
+                    SimpleNamespace(name=name, **fields)
+                    for name, fields in (data or {}).get(kind, {}).items()
+                ]
+                setattr(self, kind, kwargs.get(kind, values))
+            self.objects = [
+                value
+                for kind in ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel")
+                for value in getattr(self, kind)
+            ]
+
+        def __iter__(self):
+            return iter(self.objects)
 
         @classmethod
         def create(cls, data):
@@ -161,7 +175,7 @@ def backend(tmp_path, monkeypatch):
             "MotionPlanner": MotionPlanner,
             "MotionPlannerCfg": MotionPlannerCfg,
         },
-        "curobo.scene": {"Scene": Scene},
+        "curobo.scene": {"Scene": Scene, "Capsule": SimpleNamespace},
         "curobo.trajectory_timeopt": {"TrajectoryTimeOpt": object},
         "curobo.types": {
             "DeviceCfg": SimpleNamespace,
@@ -586,3 +600,69 @@ def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
             planner.plan([0.0, 0.0], [0.1, 0.1])
         with pytest.raises(RuntimeError, match="recreating"):
             planner.warmup()
+
+
+@pytest.mark.parametrize(
+    "scene",
+    [
+        {"cubiod": {}},
+        {"objects": []},
+        {"cuboid": {"": {"dims": [1, 1, 1]}}},
+        {"cuboid": {"same": {}}, "sphere": {"same": {}}},
+        {"cuboid": {"box": {"dims": [-1, 1, 1]}}},
+        {"cuboid": {"box": {"dims": [0, 1, 1]}}},
+        {"cuboid": {"box": {"dims": [1, 1]}}},
+        {"cuboid": {"box": {"dims": [float("inf"), 1, 1]}}},
+        {"sphere": {"ball": {"radius": -0.1}}},
+        {"sphere": {"ball": {"radius": float("nan")}}},
+        {"cuboid": {"box": {"pose": [0, 0, 0, 0, 0, 0, 0]}}},
+        {"cuboid": {"box": {"pose": [0, 0, 0, 2, 0, 0, 0]}}},
+        {"cuboid": {"box": {"pose": [float("nan"), 0, 0, 1, 0, 0, 0]}}},
+        {"capsule": {"pill": {"base": [0, 0], "radius": 0.1}}},
+        {"mesh": {"mesh": {"scale": [1, 0, 1]}}},
+    ],
+)
+def test_malformed_scene_is_rejected_before_replacing_the_world(backend, scene):
+    with CuroboPlanner(backend.path) as planner:
+        native = backend.instances[0]
+        previous = native.scene
+        with pytest.raises((TypeError, ValueError)):
+            planner.update_world(scene)
+        assert native.scene is previous and native.resets == 0
+        assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+
+
+def test_public_scene_objects_receive_the_same_geometry_checks(backend):
+    from curobo.scene import Scene
+
+    scene = Scene.create({"sphere": {"ball": {"radius": -1.0}}})
+    with pytest.raises(ValueError, match="radius"):
+        CuroboPlanner(backend.path, scene=scene)
+    assert backend.instances == []
+
+
+def test_scene_spheres_use_exact_capsules_during_creation_and_replacement(backend):
+    pose = [0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0]
+    scene = {"sphere": {"ball": {"pose": pose, "radius": 0.1}}}
+    with CuroboPlanner(backend.path, scene=scene) as planner:
+        native = backend.instances[0]
+        assert native.scene.sphere == []
+        capsule = native.scene.capsule[0]
+        assert capsule.name == "ball" and capsule.radius == 0.1
+        assert capsule.pose == pose
+        scene["sphere"]["ball"]["radius"] = 0.2
+        assert capsule.radius == 0.1
+        planner.update_world(scene)
+        assert native.scene.sphere == []
+        assert native.scene.capsule[0].radius == 0.2
+        assert native.resets == 1
+
+
+def test_scene_objects_cannot_hide_obstacles_from_typed_storage(backend):
+    from curobo.scene import Scene
+
+    scene = Scene()
+    scene.objects.append(SimpleNamespace(name="hidden", radius=0.1))
+    with pytest.raises(ValueError, match="typed obstacle lists"):
+        CuroboPlanner(backend.path, scene=scene)
+    assert backend.instances == []

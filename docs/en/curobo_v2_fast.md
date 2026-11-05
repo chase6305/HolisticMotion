@@ -118,6 +118,14 @@ Reserve collision capacity at construction. A failed world update blocks
 planning until a replacement update succeeds. Requests and updates on one
 instance are serialized; use separate instances for concurrent GPU work.
 
+Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
+`voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose
+quaternions are rejected before replacing the current world. A public `Scene`
+must keep its `objects` and typed obstacle lists consistent. Spheres are
+represented as analytic capsules with coincident endpoints because the
+qualified upstream loader otherwise omits them. Reserve `collision_cache={"capsule": N}`
+for later sphere or capsule replacements; no mesh approximation is introduced.
+
 A successful `CuroboPlanningResult` contains a `CuroboTrajectory` with read-only,
 owned NumPy `time`, `position`, `velocity`, `acceleration` and optional `jerk`
 arrays. Rows follow the trimmed interpolation horizon, the returned timestep

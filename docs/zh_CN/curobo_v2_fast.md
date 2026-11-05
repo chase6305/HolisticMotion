@@ -99,6 +99,12 @@ planner.update_link_collision_spheres("attached_object", None)
 预留碰撞容量。更新失败后阻止规划，直到完整替换成功。同一实例的调用和更新串行化；
 并行 GPU 请求使用独立实例。
 
+场景字典支持 `cuboid`、`sphere`、`capsule`、`cylinder`、`mesh`、`voxel`。
+替换环境前拒绝未知类型、重名障碍物、无效尺寸及非单位位姿四元数。
+公开 `Scene` 的 `objects` 必须与各类型障碍物列表一致。验证的上游加载器会遗漏
+环境球，因此适配器将球转换为端点重合的解析胶囊体，不引入 mesh 近似。
+后续需要替换球或胶囊体时，构造中预留 `collision_cache={"capsule": N}`。
+
 成功的 `CuroboPlanningResult` 包含 `CuroboTrajectory`：只读且自行持有数据的
 NumPy `time`、`position`、`velocity`、`acceleration` 以及可选 `jerk` 数组。
 按有效插值长度、实际返回步长和请求关节顺序转换，移除 padding 与锁定关节。

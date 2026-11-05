@@ -25,7 +25,9 @@ def problem():
                 "Explicit HOLISTICMOTION_TEST_CUROBO_" + name + " JSON is required"
             )
         coordinates.append(np.asarray(json.loads(text), dtype=float))
-    with CuroboPlanner(path, collision_cache={"cuboid": 4}) as planner:
+    with CuroboPlanner(
+        path, collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2}
+    ) as planner:
         planner.warmup(1)
         yield planner, *coordinates
 
@@ -226,3 +228,25 @@ def test_real_curobo_link_collision_spheres_block_and_restore_planning(problem):
     result = planner.plan(start, goal)
     assert result.success, result.message
     np.testing.assert_array_equal(previous.trajectory.position, snapshot)
+
+
+@pytest.mark.parametrize(
+    "kind, geometry",
+    [
+        ("sphere", {"radius": 100.0}),
+        ("capsule", {"radius": 100.0, "base": [0, 0, -1], "tip": [0, 0, 1]}),
+        ("cylinder", {"radius": 100.0, "height": 100.0}),
+    ],
+)
+def test_real_curobo_analytic_world_primitives_are_not_omitted(problem, kind, geometry):
+    planner, start, goal = problem
+    obstacle = {"pose": [0, 0, 0, 1, 0, 0, 0], **geometry}
+    planner.update_world({kind: {"blocked": obstacle}})
+    try:
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success
+        assert result.trajectory is None
+    finally:
+        planner.update_world({})
+    result = planner.plan(start, goal)
+    assert result.success, result.message

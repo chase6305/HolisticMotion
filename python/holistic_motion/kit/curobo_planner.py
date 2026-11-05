@@ -51,6 +51,14 @@ def _count(value, name, minimum=1):
     return int(value)
 
 
+def _float32(value, name):
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        converted = np.asarray(value, dtype=np.float32)
+        if not np.isfinite(converted).all() or np.any(np.abs(converted - value) > 1e-6):
+            raise ValueError(f"{name} loses more than 1e-6 during float32 conversion")
+    return converted
+
+
 @dataclass(frozen=True)
 class CuroboTrajectory:
     """Owned sampled trajectory; rows follow ``time`` and ``joint_names``.
@@ -147,7 +155,7 @@ class CuroboPlanner:
         try:
             import torch
             from curobo.motion_planner import MotionPlanner, MotionPlannerCfg
-            from curobo.scene import Scene
+            from curobo.scene import Capsule, Scene
             from curobo.trajectory_timeopt import TrajectoryTimeOpt  # noqa: F401
             from curobo.types import DeviceCfg, GoalToolPose, JointState, Pose
         except ImportError as error:
@@ -164,6 +172,7 @@ class CuroboPlanner:
         self._GoalToolPose = GoalToolPose
         self._Pose = Pose
         self._Scene = Scene
+        self._Capsule = Capsule
         self._lock = Lock()
         self._planner = None
         self._world_valid = True
@@ -246,6 +255,7 @@ class CuroboPlanner:
         return self._limits[1].copy()
 
     def _scene(self, scene):
+        supported = ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel")
         if scene is None:
             return self._Scene()
         if isinstance(scene, (str, Path)):
@@ -256,10 +266,69 @@ class CuroboPlanner:
             if not isinstance(scene, Mapping):
                 raise TypeError("scene file must contain a scene dictionary")
         if isinstance(scene, Mapping):
-            return self._Scene.create(deepcopy(dict(scene)))
-        if isinstance(scene, self._Scene):
-            return deepcopy(scene)
-        raise TypeError("scene must be a local path, dictionary or cuRobo Scene")
+            unknown = set(scene) - set(supported)
+            if unknown:
+                raise ValueError(f"unsupported scene obstacle types: {list(unknown)}")
+            scene = self._Scene.create(deepcopy(dict(scene)))
+        elif isinstance(scene, self._Scene):
+            scene = deepcopy(scene)
+        else:
+            raise TypeError("scene must be a local path, dictionary or cuRobo Scene")
+        obstacles = list(scene)
+        typed = [obstacle for kind in supported for obstacle in getattr(scene, kind)]
+        if {id(value) for value in obstacles} != {id(value) for value in typed}:
+            raise ValueError("Scene objects must match its typed obstacle lists")
+        names = set()
+        for obstacle in obstacles:
+            name = obstacle.name
+            if not isinstance(name, str) or not name or name in names:
+                raise ValueError("scene obstacle names must be nonempty and unique")
+            names.add(name)
+            pose = getattr(obstacle, "pose", None)
+            if pose is not None:
+                pose = real_array(pose, name=f"{name} pose")
+                if pose.shape != (7,) or not np.isfinite(pose).all():
+                    raise ValueError(f"{name} pose must be finite [xyz, wxyz]")
+                if abs(np.linalg.norm(pose[3:]) - 1.0) > 1e-5:
+                    raise ValueError(f"{name} pose quaternion must have unit norm")
+                _float32(pose, f"{name} pose")
+            for field in ("dims", "base", "tip", "scale"):
+                value = getattr(obstacle, field, None)
+                if value is None:
+                    continue
+                value = real_array(value, name=f"{name} {field}")
+                if value.shape != (3,) or not np.isfinite(value).all():
+                    raise ValueError(
+                        f"{name} {field} must be a finite vector of size 3"
+                    )
+                if field == "dims" and np.any(value <= 0.0):
+                    raise ValueError(f"{name} dimensions must be positive")
+                if field == "scale" and np.any(value == 0.0):
+                    raise ValueError(f"{name} scale must be nonzero")
+                _float32(value, f"{name} {field}")
+            for field in ("radius", "height", "voxel_size"):
+                value = getattr(obstacle, field, None)
+                if value is not None:
+                    value = _positive(value, f"{name} {field}")
+                    if _float32(value, f"{name} {field}") <= 0.0:
+                        raise ValueError(f"{name} {field} rounds to zero in float32")
+        if scene.sphere:
+            # The upstream SceneData loader omits Sphere objects. A capsule
+            # with coincident endpoints is an exact analytic sphere, avoiding
+            # both silent obstacle omission and mesh approximation.
+            capsules = list(scene.capsule)
+            capsules.extend(
+                self._Capsule(name=ball.name, pose=ball.pose, radius=ball.radius)
+                for ball in scene.sphere
+            )
+            scene = self._Scene(
+                cuboid=scene.cuboid,
+                capsule=capsules,
+                cylinder=scene.cylinder,
+                mesh=scene.mesh,
+                voxel=scene.voxel,
+            )
+        return scene
 
     @staticmethod
     def _numpy(tensor):
@@ -332,15 +401,7 @@ class CuroboPlanner:
                 "inertia must be positive semidefinite and satisfy the moment triangle inequality"
             )
         properties = np.concatenate(([mass], com, inertia))
-        with np.errstate(over="ignore", invalid="ignore"):
-            converted = properties.astype(np.float32)
-        if (
-            not np.isfinite(converted).all()
-            or np.max(np.abs(converted - properties)) > 1e-6
-        ):
-            raise ValueError(
-                "inertial properties lose more than 1e-6 during float32 conversion"
-            )
+        converted = _float32(properties, "inertial properties")
         with self._lock:
             planner = self._planning_backend()
             if (
@@ -383,14 +444,9 @@ class CuroboPlanner:
                 raise ValueError(
                     "spheres must be finite [N, 4] rows with positive radii"
                 )
-            with np.errstate(over="ignore", invalid="ignore"):
-                converted = spheres.astype(np.float32)
-            if (
-                not np.isfinite(converted).all()
-                or np.any(converted[:, 3] <= 0.0)
-                or np.max(np.abs(converted - spheres)) > 1e-6
-            ):
-                raise ValueError("spheres cannot be represented accurately in float32")
+            converted = _float32(spheres, "spheres")
+            if np.any(converted[:, 3] <= 0.0):
+                raise ValueError("sphere radii round to zero in float32")
         with self._lock:
             planner = self._planning_backend()
             params = planner.attachment_manager.kinematics_params
@@ -431,12 +487,7 @@ class CuroboPlanner:
             position > self._limits[1] + limit_tolerance
         ):
             raise ValueError(f"{name} is outside the configured joint limits")
-        with np.errstate(over="ignore", invalid="ignore"):
-            converted = position.astype(np.float32)
-        if not np.isfinite(converted).all() or np.any(
-            np.abs(converted - position) > 1e-6
-        ):
-            raise ValueError(f"{name} loses more than 1e-6 during float32 conversion")
+        converted = _float32(position, name)
         if np.any(converted < self._limits[0] - limit_tolerance) or np.any(
             converted > self._limits[1] + limit_tolerance
         ):
@@ -536,15 +587,7 @@ class CuroboPlanner:
             start_position, current_state = self._position(start, "start")
             poses = {}
             for name, transform in targets.items():
-                with np.errstate(over="ignore", invalid="ignore"):
-                    converted = transform.astype(np.float32)
-                if (
-                    not np.isfinite(converted).all()
-                    or np.max(np.abs(converted - transform)) > 1e-6
-                ):
-                    raise ValueError(
-                        "tool pose loses more than 1e-6 during float32 conversion"
-                    )
+                converted = _float32(transform, "tool pose")
                 poses[name] = self._Pose.from_matrix(
                     self._torch.as_tensor(
                         converted, device=self._device, dtype=self._torch.float32
