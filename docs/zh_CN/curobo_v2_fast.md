@@ -115,6 +115,9 @@ NumPy `time`、`position`、`velocity`、`acceleration` 以及可选 `jerk` 数�
 约束速度与加速度，不具备等价的力矩／jerk 契约。实际使用前检查目标负载下的碰撞球
 覆盖和动力学数据；控制器及硬件执行不在适配器范围内。
 
+NumPy 接口自行管理后端所需的 autograd 上下文，可在调用方的 `torch.no_grad()` 或
+`torch.inference_mode()` 中构造和调用；每次调用后恢复调用方的状态。
+
 ## 示例与测试
 
 ```bash

@@ -52,8 +52,9 @@ def _count(value, name, minimum=1):
 
 
 def _float32(value, name):
+    value = np.asarray(value, dtype=float)
     with np.errstate(over="ignore", invalid="ignore", under="ignore"):
-        converted = np.asarray(value, dtype=np.float32)
+        converted = value.astype(np.float32)
         if not np.isfinite(converted).all() or np.any(np.abs(converted - value) > 1e-6):
             raise ValueError(f"{name} loses more than 1e-6 during float32 conversion")
     return converted
@@ -189,24 +190,25 @@ class CuroboPlanner:
         # The upstream example YAML disables dynamics. Enable them in every
         # planning stage so torque checks and later payload updates agree.
         robot["load_dynamics"] = True
-        config = MotionPlannerCfg.create(
-            robot=robot,
-            scene_model=self._scene(scene),
-            collision_cache=deepcopy(collision_cache),
-            device_cfg=DeviceCfg(device=selected_device, dtype=torch.float32),
-            graph_planner_algorithm="rrt",
-            enable_timeopt=True,
-            self_collision_check=True,
-            interpolation_dt=interpolation_dt,
-            use_cuda_graph=bool(use_cuda_graph),
-            position_tolerance=self._position_tolerance,
-            orientation_tolerance=self._orientation_tolerance,
-        )
-        # The qualified upstream LM seed executor retains a grad-enabled input
-        # on each replay. Use its public multi-seed IK configuration so this
-        # long-lived planner does not accumulate those CUDA allocations.
-        config.ik_solver_config.use_lm_seed = False
-        planner = MotionPlanner(config)
+        with torch.inference_mode(False), torch.enable_grad():
+            config = MotionPlannerCfg.create(
+                robot=robot,
+                scene_model=self._scene(scene),
+                collision_cache=deepcopy(collision_cache),
+                device_cfg=DeviceCfg(device=selected_device, dtype=torch.float32),
+                graph_planner_algorithm="rrt",
+                enable_timeopt=True,
+                self_collision_check=True,
+                interpolation_dt=interpolation_dt,
+                use_cuda_graph=bool(use_cuda_graph),
+                position_tolerance=self._position_tolerance,
+                orientation_tolerance=self._orientation_tolerance,
+            )
+            # The qualified upstream LM seed executor retains a grad-enabled input
+            # on each replay. Use its public multi-seed IK configuration so this
+            # long-lived planner does not accumulate those CUDA allocations.
+            config.ik_solver_config.use_lm_seed = False
+            planner = MotionPlanner(config)
         try:
             self._backend_names = _names(planner.joint_names)
             self._tool_frames = tuple(planner.tool_frames)
@@ -354,7 +356,7 @@ class CuroboPlanner:
     def warmup(self, num_iterations=2):
         """Compile and capture representative pose and RRT branches once."""
         num_iterations = _count(num_iterations, "num_iterations")
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             self._planning_backend().warmup(
                 enable_graph=True, num_warmup_iterations=num_iterations
             )
@@ -362,7 +364,7 @@ class CuroboPlanner:
     def update_world(self, scene):
         """Replace all world obstacles, retaining allocated backend capacities."""
         scene = self._scene(scene)
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._open()
             self._world_valid = False
             try:
@@ -402,7 +404,7 @@ class CuroboPlanner:
             )
         properties = np.concatenate(([mass], com, inertia))
         converted = _float32(properties, "inertial properties")
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             if (
                 link_name
@@ -447,7 +449,7 @@ class CuroboPlanner:
             converted = _float32(spheres, "spheres")
             if np.any(converted[:, 3] <= 0.0):
                 raise ValueError("sphere radii round to zero in float32")
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             params = planner.attachment_manager.kinematics_params
             if link_name not in params.link_name_to_idx_map:
@@ -526,7 +528,7 @@ class CuroboPlanner:
             enable_graph_attempt, "enable_graph_attempt", minimum=0
         )
         endpoint_tolerance = _positive(endpoint_tolerance, "endpoint_tolerance")
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             goal_position, goal_state = self._position(goal, "goal")
@@ -542,7 +544,7 @@ class CuroboPlanner:
 
     def forward_kinematics(self, position):
         """Return owned base-frame 4x4 transforms for the configured tools."""
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._open()
             # Accept the same float32 bound roundoff as a returned trajectory,
             # so callers can evaluate FK on any accepted result sample.
@@ -582,7 +584,7 @@ class CuroboPlanner:
             name: validated_transform(tool_poses[name], name=name)
             for name in self._tool_frames
         }
-        with self._lock:
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             poses = {}

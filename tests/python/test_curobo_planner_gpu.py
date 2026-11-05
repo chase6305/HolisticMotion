@@ -250,3 +250,25 @@ def test_real_curobo_analytic_world_primitives_are_not_omitted(problem, kind, ge
         planner.update_world({})
     result = planner.plan(start, goal)
     assert result.success, result.message
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode):
+    import torch
+
+    _existing, start, goal = problem
+    with getattr(torch, mode)():
+        caller_state = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+        with CuroboPlanner(
+            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]
+        ) as planner:
+            planner.warmup(1)
+            joint_result = planner.plan(start, goal)
+            assert joint_result.success, joint_result.message
+            targets = planner.forward_kinematics(goal)
+            pose_result = planner.plan_pose(start, targets)
+            assert pose_result.success, pose_result.message
+        assert (
+            torch.is_grad_enabled(),
+            torch.is_inference_mode_enabled(),
+        ) == caller_state

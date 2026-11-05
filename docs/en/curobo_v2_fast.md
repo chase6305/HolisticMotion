@@ -140,6 +140,10 @@ acceleration; it is not a torque/jerk equivalent. Review collision-sphere covera
 and robot dynamics for the intended workload before using planned motions.
 Controllers and hardware execution are outside this adapter.
 
+The NumPy interface manages the backend's internal autograd context. It can be
+constructed and called inside a caller's `torch.no_grad()` or
+`torch.inference_mode()` block; the caller's state is restored after each call.
+
 ## Run the example and tests
 
 ```bash

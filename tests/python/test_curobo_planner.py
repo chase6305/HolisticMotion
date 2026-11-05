@@ -615,6 +615,7 @@ def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
         {"cuboid": {"box": {"dims": [float("inf"), 1, 1]}}},
         {"sphere": {"ball": {"radius": -0.1}}},
         {"sphere": {"ball": {"radius": float("nan")}}},
+        {"sphere": {"ball": {"radius": 16777217.0}}},
         {"cuboid": {"box": {"pose": [0, 0, 0, 0, 0, 0, 0]}}},
         {"cuboid": {"box": {"pose": [0, 0, 0, 2, 0, 0, 0]}}},
         {"cuboid": {"box": {"pose": [float("nan"), 0, 0, 1, 0, 0, 0]}}},
@@ -666,3 +667,65 @@ def test_scene_objects_cannot_hide_obstacles_from_typed_storage(backend):
     with pytest.raises(ValueError, match="typed obstacle lists"):
         CuroboPlanner(backend.path, scene=scene)
     assert backend.instances == []
+
+
+@pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+def test_backend_owns_its_autograd_context_and_restores_the_caller(
+    backend, monkeypatch, mode
+):
+    torch = backend.torch
+    from curobo.motion_planner import MotionPlannerCfg
+
+    observed = []
+
+    def record_context(call):
+        def recorded(*args, **kwargs):
+            observed.append(
+                (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+            )
+            return call(*args, **kwargs)
+
+        return recorded
+
+    monkeypatch.setattr(
+        MotionPlannerCfg, "create", record_context(MotionPlannerCfg.create)
+    )
+    with getattr(torch, mode)():
+        before = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+        with CuroboPlanner(backend.path) as planner:
+            native = backend.instances[0]
+            for name in (
+                "plan_cspace",
+                "update_world",
+                "compute_kinematics",
+                "update_link_inertial",
+                "warmup",
+            ):
+                monkeypatch.setattr(native, name, record_context(getattr(native, name)))
+            params = native.attachment_manager.kinematics_params
+            monkeypatch.setattr(
+                params,
+                "update_link_spheres",
+                record_context(params.update_link_spheres),
+            )
+            planner.warmup(1)
+            assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+            targets = planner.forward_kinematics([0.1, 0.1])
+            assert planner.plan_pose([0.0, 0.0], targets).success
+            planner.update_world({})
+            planner.update_link_inertial(
+                "payload", mass=0, com=[0] * 3, inertia=[0] * 6
+            )
+            planner.update_link_collision_spheres("payload", [[0, 0, 0, 0.1]])
+            assert (
+                torch.is_grad_enabled(),
+                torch.is_inference_mode_enabled(),
+            ) == before
+            with pytest.raises(ValueError):
+                planner.plan([99.0, 0.0], [0.1, 0.1])
+            assert (
+                torch.is_grad_enabled(),
+                torch.is_inference_mode_enabled(),
+            ) == before
+    assert len(observed) >= 8
+    assert all(value == (True, False) for value in observed)
