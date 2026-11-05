@@ -324,6 +324,23 @@ def test_pose_planning_preserves_frames_order_and_validates_final_fk(backend):
         assert "tool target" in rejected.message
 
 
+def test_fk_accepts_result_bound_roundoff_while_requests_keep_strict_limits(backend):
+    with CuroboPlanner(backend.path) as planner:
+
+        def rounded_endpoint(state):
+            state.position[0, 0, -1, 2] += 4e-7
+
+        backend.instances[0].failure = rounded_endpoint
+        result = planner.plan([0.0, 0.0], [1.0, 0.0])
+        assert result.success, result.message
+        endpoint = result.trajectory.position[-1]
+        assert endpoint[0] > planner.upper_limits[0]
+        actual = planner.forward_kinematics(endpoint)
+        np.testing.assert_allclose(actual["tool"][:2, 3], endpoint)
+        with pytest.raises(ValueError, match="outside"):
+            planner.plan([0.0, 0.0], endpoint)
+
+
 def test_invalid_pose_and_unknown_tools_do_not_reach_planning(backend):
     with CuroboPlanner(backend.path) as planner:
         with pytest.raises(ValueError, match="every configured tool"):

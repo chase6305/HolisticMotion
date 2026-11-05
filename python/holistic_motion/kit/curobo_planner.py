@@ -20,6 +20,8 @@ from .._validation import finite_scalar, real_array, validated_transform
 
 __all__ = ["CuroboPlanner", "CuroboPlanningResult", "CuroboTrajectory"]
 
+_POSITION_LIMIT_TOLERANCE = 1e-6
+
 
 def _names(values):
     if isinstance(values, str):
@@ -357,14 +359,16 @@ class CuroboPlanner:
                 self._dynamics_valid = False
                 raise
 
-    def _position(self, value, name):
+    def _position(self, value, name, limit_tolerance=0.0):
         position = real_array(value, name=name, copy=True)
         if (
             position.shape != (len(self._joint_names),)
             or not np.isfinite(position).all()
         ):
             raise ValueError(f"{name} must be a finite scalar joint vector")
-        if np.any(position < self._limits[0]) or np.any(position > self._limits[1]):
+        if np.any(position < self._limits[0] - limit_tolerance) or np.any(
+            position > self._limits[1] + limit_tolerance
+        ):
             raise ValueError(f"{name} is outside the configured joint limits")
         with np.errstate(over="ignore", invalid="ignore"):
             converted = position.astype(np.float32)
@@ -372,7 +376,9 @@ class CuroboPlanner:
             np.abs(converted - position) > 1e-6
         ):
             raise ValueError(f"{name} loses more than 1e-6 during float32 conversion")
-        if np.any(converted < self._limits[0]) or np.any(converted > self._limits[1]):
+        if np.any(converted < self._limits[0] - limit_tolerance) or np.any(
+            converted > self._limits[1] + limit_tolerance
+        ):
             raise ValueError(f"{name} rounds outside the configured joint limits")
         return position, self._joint_state(converted)
 
@@ -426,7 +432,9 @@ class CuroboPlanner:
         """Return owned base-frame 4x4 transforms for the configured tools."""
         with self._lock:
             planner = self._open()
-            _, state = self._position(position, "position")
+            # Accept the same float32 bound roundoff as a returned trajectory,
+            # so callers can evaluate FK on any accepted result sample.
+            _, state = self._position(position, "position", _POSITION_LIMIT_TOLERANCE)
             return self._tool_transforms(planner, state)
 
     def _tool_transforms(self, planner, state):
@@ -556,8 +564,10 @@ class CuroboPlanner:
                 and np.max(np.abs(trajectory.position[-1] - goal)) > endpoint_tolerance
             ):
                 raise ValueError("cuRobo trajectory endpoints do not match the request")
-            if np.any(trajectory.position < self._limits[0] - 1e-6) or np.any(
-                trajectory.position > self._limits[1] + 1e-6
+            if np.any(
+                trajectory.position < self._limits[0] - _POSITION_LIMIT_TOLERANCE
+            ) or np.any(
+                trajectory.position > self._limits[1] + _POSITION_LIMIT_TOLERANCE
             ):
                 raise ValueError("cuRobo trajectory exceeds joint position limits")
         except (TypeError, ValueError) as error:
