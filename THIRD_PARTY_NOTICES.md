@@ -46,7 +46,7 @@ including NLopt; those packages retain their own licenses.
 
 - Project: NVIDIA cuRobo
 - Upstream: <https://github.com/NVlabs/curobo>
-- Qualified source: `b29a8c2ee6869585bb05b056b9ab53b9c0753106`
+- Qualified source: `299d7a6c271476c7e9fd9ecd1a37a462f14754d1`
 - License: Apache License 2.0
 - Copyright: NVIDIA Corporation
 
