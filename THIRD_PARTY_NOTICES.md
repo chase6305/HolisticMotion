@@ -42,9 +42,25 @@ enforces mimic-induced position limits, and reports native optimizer failures.
 This optional backend requires PyTorch and the upstream runtime dependencies,
 including NLopt; those packages retain their own licenses.
 
+### NVIDIA cuRobo v2 (optional Python planning backend)
+
+- Project: NVIDIA cuRobo
+- Upstream: <https://github.com/NVlabs/curobo>
+- Qualified source: `b29a8c2ee6869585bb05b056b9ab53b9c0753106`
+- License: Apache License 2.0
+- Copyright: NVIDIA Corporation
+
+`holistic_motion.kit.curobo_planner` imports the upstream public motion planner,
+scene and state APIs only when explicitly constructed. Callers install cuRobo
+and its CUDA/PyTorch/Warp dependencies separately and provide local robot
+configurations and assets. No upstream source, generated GPU artifacts or
+robot assets are vendored or downloaded by the adapter. Transitive dependencies
+and external assets retain their respective licenses.
+
 ## Algorithm and design references
 
-The projects below are not imported, linked, or vendored at runtime.
+The local algorithms described below do not import their upstream projects.
+The separate optional integrations above have their own runtime dependencies.
 
 ## TOPPRA
 

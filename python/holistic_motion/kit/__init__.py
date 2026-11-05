@@ -1,6 +1,6 @@
 """High-level tools, loaded independently when first requested."""
 
-__all__ = ["kinematics", "retargeting", "simulation"]
+__all__ = ["curobo_planner", "kinematics", "retargeting", "simulation"]
 
 
 def __getattr__(name):

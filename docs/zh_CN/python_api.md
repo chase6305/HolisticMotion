@@ -21,6 +21,13 @@
    :show-inheritance:
 ```
 
+## NVIDIA cuRobo v2 规划
+
+```{eval-rst}
+.. automodule:: holistic_motion.kit.curobo_planner
+   :members:
+```
+
 ## Retargeting
 
 ```{eval-rst}

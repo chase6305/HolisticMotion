@@ -2,8 +2,7 @@
 
 <div class="language-switcher">English · <a href="../zh_CN/planning.html">简体中文</a></div>
 
-For the proposed optional NVIDIA GPU backend, see
-{doc}`curobo_v2_fast`. It describes integration work that has not been implemented.
+For the optional NVIDIA cuRobo v2 GPU planning backend, see {doc}`curobo_v2_fast`.
 
 HolisticMotion contains its own compact C++17 joint-space planning
 implementation. It does not link, vendor, or import OMPL. The initial planner

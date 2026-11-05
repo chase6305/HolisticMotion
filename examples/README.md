@@ -47,7 +47,8 @@ and the complete model configurations.
 - `python/visualization/`: interactive Viser applications.
 - `python/trajectory/`: trajectory generation and visualization.
 - `python/retargeting/`: Pinocchio and Pink-style task-space IK examples.
-- `python/planning/`: dependency-free RRT algorithm examples.
+- `python/planning/`: native RRT examples and the optional NVIDIA cuRobo v2
+  `curobo_plan.py` example; supply `--robot-config`, `--start`, and `--goal`.
 - `python/simulation/`: caller-provided simulation backend composition.
 - `configs/`: robot-specific example profiles; library code never depends on them.
 
