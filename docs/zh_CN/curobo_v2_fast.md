@@ -7,9 +7,13 @@
 位姿规划、FK 和场景替换。后端可选，独立于原生碰撞扩展。所有规划阶段显式启用
 动力学，即使调用方的上游示例 YAML 写着 `load_dynamics: false`。
 
+适配器使用上游多种子 IK，并关闭 LM 种子生成。验证的提交中，LM CUDA graph 会在
+连续位姿请求时持有历史梯度输入；此配置用于保持长期规划的显存占用有界。
+
 ## 安装可选运行时
 
-需要 Python 3.10+、NVIDIA GPU 以及匹配的 CUDA／PyTorch 环境。按
+需要 Python 3.10+、NVIDIA GPU 以及匹配的 CUDA／PyTorch 环境。cuRobo 使用单独
+安装的 CUDA 运行时；HolisticMotion 的原生 `--cuda` 构建选项控制 FEP 批处理组件。按
 [上游安装说明](https://github.com/NVlabs/curobo/blob/b29a8c2ee6869585bb05b056b9ab53b9c0753106/docs/getting-started/installation.rst)
 选择 CUDA 版本。例如，在单独的 CUDA 13 环境中：
 

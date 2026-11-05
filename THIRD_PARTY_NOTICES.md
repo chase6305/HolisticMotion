@@ -94,7 +94,7 @@ cuRobo informed the collision-sphere representation, batched-query design,
 deterministic multi-seed retargeting, and the separation between seed
 generation, feasibility-aware optimization, and best-solution tracking.
 HolisticMotion's sphere fitting, collision model, path optimizer, cuRobo-style
-retargeting, and query APIs are maintained locally and do not depend on cuRobo,
+retargeting, and native collision-query APIs are maintained locally and do not depend on cuRobo,
 PyTorch, or Warp. The separate optional dex-retargeting hand backend uses PyTorch.
 
 ## Scope

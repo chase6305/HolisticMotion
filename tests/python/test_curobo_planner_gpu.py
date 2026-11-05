@@ -1,5 +1,6 @@
 """Opt-in NVIDIA cuRobo v2 checks using caller-provided robot/scene assets."""
 
+import gc
 import json
 import os
 from pathlib import Path
@@ -177,3 +178,25 @@ def test_real_curobo_fk_and_torque_against_independent_pinocchio(problem):
         torque = pin.rnea(model, data, full, full_velocity, full_acceleration)[indices]
         assert np.isfinite(torque).all()
         assert np.all(np.abs(torque) <= model.effortLimit[indices] * 1.001 + 1e-5)
+
+
+def test_real_curobo_repeated_pose_queries_keep_cuda_memory_bounded(problem):
+    import torch
+
+    planner, start, goal = problem
+    targets = planner.forward_kinematics(goal)
+    for _ in range(2):
+        result = planner.plan_pose(start, targets)
+        assert result.success, result.message
+    torch.cuda.synchronize()
+    gc.collect()
+    before = torch.cuda.memory_allocated()
+    for _ in range(128):
+        result = planner.plan_pose(start, targets)
+        assert result.success, result.message
+    torch.cuda.synchronize()
+    gc.collect()
+    after = torch.cuda.memory_allocated()
+    # The upstream grad-enabled LM input copy retained at least 1 KiB/request
+    # on the qualified commit. Allow small lazy allocations, not that growth.
+    assert after <= before + 64 * 1024

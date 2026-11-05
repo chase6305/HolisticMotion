@@ -132,8 +132,13 @@ def backend(tmp_path, monkeypatch):
     class MotionPlannerCfg:
         @staticmethod
         def create(**kwargs):
-            configs.append(kwargs)
-            return kwargs
+            class Config(dict):
+                pass
+
+            config = Config(kwargs)
+            config.ik_solver_config = SimpleNamespace(use_lm_seed=True)
+            configs.append(config)
+            return config
 
     for name, members in {
         "curobo": {},
@@ -211,6 +216,7 @@ def test_name_permutations_trimmed_timing_and_owned_outputs(backend):
     assert backend.configs[0]["self_collision_check"] is True
     assert backend.configs[0]["graph_planner_algorithm"] == "rrt"
     assert backend.configs[0]["robot"]["load_dynamics"] is True
+    assert backend.configs[0].ik_solver_config.use_lm_seed is False
 
 
 @pytest.mark.parametrize(

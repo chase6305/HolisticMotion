@@ -9,9 +9,15 @@ backend is optional and independent of the native collision extension. Dynamics
 are explicitly enabled in every planning stage, including when the caller's
 upstream example YAML has `load_dynamics: false`.
 
+The adapter uses upstream multi-seed IK with LM seed generation disabled. On
+the qualified commit, the LM CUDA graph retains historical grad-enabled inputs
+across pose requests; this configuration keeps repeated planning memory bounded.
+
 ## Install the optional runtime
 
 Use Python 3.10+ and an NVIDIA GPU with a compatible CUDA/PyTorch installation.
+cuRobo uses its separately installed CUDA runtime; HolisticMotion's native
+`--cuda` build option controls the FEP batch component.
 Follow the [upstream installation guide](https://github.com/NVlabs/curobo/blob/b29a8c2ee6869585bb05b056b9ab53b9c0753106/docs/getting-started/installation.rst)
 for your CUDA version. For example, in a separate CUDA 13 environment:
 

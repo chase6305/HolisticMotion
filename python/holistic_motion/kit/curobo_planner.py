@@ -191,6 +191,10 @@ class CuroboPlanner:
             position_tolerance=self._position_tolerance,
             orientation_tolerance=self._orientation_tolerance,
         )
+        # The qualified upstream LM seed executor retains a grad-enabled input
+        # on each replay. Use its public multi-seed IK configuration so this
+        # long-lived planner does not accumulate those CUDA allocations.
+        config.ik_solver_config.use_lm_seed = False
         planner = MotionPlanner(config)
         try:
             self._backend_names = _names(planner.joint_names)
