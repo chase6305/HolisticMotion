@@ -402,9 +402,25 @@ def test_real_curobo_world_updates_finish_before_another_stream_plans(problem):
         planner.update_world({})
 
 
-def test_real_curobo_missing_mesh_pose_preserves_the_existing_world(problem):
+@pytest.mark.parametrize(
+    "scene, message",
+    [
+        ({"mesh": {"unplaced": {}}}, "explicit.*pose"),
+        (
+            {"cuboid": {"box": {"dims": [1e-50, 1, 1], "pose": [0, 0, 0, 1, 0, 0, 0]}}},
+            "dims rounds to zero",
+        ),
+        (
+            {"mesh": {"mesh": {"scale": [1, 1e-50, 1], "pose": [0, 0, 0, 1, 0, 0, 0]}}},
+            "scale rounds to zero",
+        ),
+    ],
+)
+def test_real_curobo_invalid_geometry_preserves_the_existing_world(
+    problem, scene, message
+):
     planner, start, goal = problem
-    with pytest.raises(ValueError, match="explicit.*pose"):
-        planner.update_world({"mesh": {"unplaced": {}}})
+    with pytest.raises(ValueError, match=message):
+        planner.update_world(scene)
     result = planner.plan(start, goal)
     assert result.success, result.message

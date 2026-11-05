@@ -350,7 +350,9 @@ class CuroboPlanner:
                     raise ValueError(f"{name} dimensions must be positive")
                 if field == "scale" and np.any(value == 0.0):
                     raise ValueError(f"{name} scale must be nonzero")
-                _float32(value, f"{name} {field}")
+                converted = _float32(value, f"{name} {field}")
+                if field in ("dims", "scale") and np.any(converted == 0.0):
+                    raise ValueError(f"{name} {field} rounds to zero in float32")
             for field in ("radius", "height", "voxel_size"):
                 value = getattr(obstacle, field, None)
                 if value is not None:

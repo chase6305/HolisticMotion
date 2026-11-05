@@ -631,6 +631,7 @@ def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
         {"cuboid": {"same": {}}, "sphere": {"same": {}}},
         {"cuboid": {"box": {"dims": [-1, 1, 1]}}},
         {"cuboid": {"box": {"dims": [0, 1, 1]}}},
+        {"cuboid": {"box": {"dims": [1e-50, 1, 1]}}},
         {"cuboid": {"box": {"dims": [1, 1]}}},
         {"cuboid": {"box": {"dims": [float("inf"), 1, 1]}}},
         {"sphere": {"ball": {"radius": -0.1}}},
@@ -641,6 +642,7 @@ def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
         {"cuboid": {"box": {"pose": [float("nan"), 0, 0, 1, 0, 0, 0]}}},
         {"capsule": {"pill": {"base": [0, 0], "radius": 0.1}}},
         {"mesh": {"mesh": {"scale": [1, 0, 1]}}},
+        {"mesh": {"mesh": {"scale": [1, 1e-50, 1]}}},
     ],
 )
 def test_malformed_scene_is_rejected_before_replacing_the_world(backend, scene):
