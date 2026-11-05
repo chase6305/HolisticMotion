@@ -400,3 +400,11 @@ def test_real_curobo_world_updates_finish_before_another_stream_plans(problem):
             assert result.success, result.message
     finally:
         planner.update_world({})
+
+
+def test_real_curobo_missing_mesh_pose_preserves_the_existing_world(problem):
+    planner, start, goal = problem
+    with pytest.raises(ValueError, match="explicit.*pose"):
+        planner.update_world({"mesh": {"unplaced": {}}})
+    result = planner.plan(start, goal)
+    assert result.success, result.message

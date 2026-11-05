@@ -324,7 +324,9 @@ def test_backend_output_is_checked_before_success(backend, edit, message):
 
 
 def test_scene_snapshot_replacement_resets_search_and_close_is_idempotent(backend):
-    scene = {"cuboid": {"wall": {"dims": [1.0, 2.0, 3.0]}}}
+    scene = {
+        "cuboid": {"wall": {"dims": [1.0, 2.0, 3.0], "pose": [0, 0, 0, 1, 0, 0, 0]}}
+    }
     planner = CuroboPlanner(backend.path, scene=scene)
     scene["cuboid"]["wall"]["dims"][0] = 100
     native = backend.instances[0]
@@ -642,6 +644,10 @@ def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
     ],
 )
 def test_malformed_scene_is_rejected_before_replacing_the_world(backend, scene):
+    for obstacles in scene.values():
+        if isinstance(obstacles, dict):
+            for fields in obstacles.values():
+                fields.setdefault("pose", [0, 0, 0, 1, 0, 0, 0])
     with CuroboPlanner(backend.path) as planner:
         native = backend.instances[0]
         previous = native.scene
@@ -654,7 +660,9 @@ def test_malformed_scene_is_rejected_before_replacing_the_world(backend, scene):
 def test_public_scene_objects_receive_the_same_geometry_checks(backend):
     from curobo.scene import Scene
 
-    scene = Scene.create({"sphere": {"ball": {"radius": -1.0}}})
+    scene = Scene.create(
+        {"sphere": {"ball": {"radius": -1.0, "pose": [0, 0, 0, 1, 0, 0, 0]}}}
+    )
     with pytest.raises(ValueError, match="radius"):
         CuroboPlanner(backend.path, scene=scene)
     assert backend.instances == []
@@ -711,7 +719,10 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
     with getattr(torch, mode)():
         before = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
         with CuroboPlanner(
-            backend.path, scene={"cuboid": {"box": {"dims": [0.1] * 3}}}
+            backend.path,
+            scene={
+                "cuboid": {"box": {"dims": [0.1] * 3, "pose": [0, 0, 0, 1, 0, 0, 0]}}
+            },
         ) as planner:
             native = backend.instances[0]
             for name in (
@@ -789,7 +800,9 @@ def test_world_replacement_discards_obsolete_mesh_geometry(backend, monkeypatch)
 
 
 def test_obstacle_pose_updates_preserve_geometry_and_validate_names(backend):
-    scene = {"cuboid": {"box": {"dims": [0.1, 0.1, 0.1]}}}
+    scene = {
+        "cuboid": {"box": {"dims": [0.1, 0.1, 0.1], "pose": [0, 0, 0, 1, 0, 0, 0]}}
+    }
     with CuroboPlanner(backend.path, scene=scene) as planner:
         transform = np.eye(4)
         transform[:3, 3] = [1.0, 2.0, 3.0]
@@ -914,3 +927,18 @@ def test_different_planner_threads_do_not_allocate_during_a_backend_capture(
             assert query.result(timeout=5.0).success
             edit.result(timeout=5.0)
         assert updated.is_set()
+
+
+@pytest.mark.parametrize(
+    "kind", ["cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel"]
+)
+def test_missing_obstacle_pose_is_rejected_without_invalidating_the_current_world(
+    backend, kind
+):
+    with CuroboPlanner(backend.path) as planner:
+        native = backend.instances[0]
+        previous = native.scene
+        with pytest.raises(ValueError, match="explicit.*pose"):
+            planner.update_world({kind: {"unplaced": {}}})
+        assert native.scene is previous and native.resets == 0
+        assert planner.plan([0, 0], [0.1, 0.1]).success

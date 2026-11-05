@@ -329,13 +329,14 @@ class CuroboPlanner:
                 raise ValueError("scene obstacle names must be nonempty and unique")
             names.add(name)
             pose = getattr(obstacle, "pose", None)
-            if pose is not None:
-                pose = real_array(pose, name=f"{name} pose")
-                if pose.shape != (7,) or not np.isfinite(pose).all():
-                    raise ValueError(f"{name} pose must be finite [xyz, wxyz]")
-                if abs(np.linalg.norm(pose[3:]) - 1.0) > 1e-5:
-                    raise ValueError(f"{name} pose quaternion must have unit norm")
-                _float32(pose, f"{name} pose")
+            if pose is None:
+                raise ValueError(f"{name} requires an explicit [xyz, wxyz] pose")
+            pose = real_array(pose, name=f"{name} pose")
+            if pose.shape != (7,) or not np.isfinite(pose).all():
+                raise ValueError(f"{name} pose must be finite [xyz, wxyz]")
+            if abs(np.linalg.norm(pose[3:]) - 1.0) > 1e-5:
+                raise ValueError(f"{name} pose quaternion must have unit norm")
+            _float32(pose, f"{name} pose")
             for field in ("dims", "base", "tip", "scale"):
                 value = getattr(obstacle, field, None)
                 if value is None:

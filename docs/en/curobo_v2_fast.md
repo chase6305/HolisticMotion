@@ -133,7 +133,9 @@ with no allocated world collision cache do not impose this restriction.
 
 Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
 `voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose
-quaternions are rejected before replacing the current world. A public `Scene`
+quaternions are rejected before replacing the current world. Each obstacle
+requires an explicit pose; missing mesh poses are rejected before the loader
+can clear the existing world. A public `Scene`
 must keep its `objects` and typed obstacle lists consistent. Spheres are
 represented as analytic capsules with coincident endpoints because the
 qualified upstream loader otherwise omits them. Reserve `collision_cache={"capsule": N}`
