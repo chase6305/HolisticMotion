@@ -28,6 +28,7 @@ logging
 cpp_api
 python_api
 architecture
+curobo_v2_fast
 development
 project_layout
 ```

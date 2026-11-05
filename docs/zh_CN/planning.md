@@ -2,6 +2,8 @@
 
 <div class="language-switcher"><a href="../en/planning.html">English</a> · 简体中文</div>
 
+可选 NVIDIA GPU 后端的接入设计见 {doc}`curobo_v2_fast`；该提案尚未实现运行时集成。
+
 HolisticMotion 自主实现了一套紧凑的 C++17 关节空间规划算法，不链接、不内置，
 也不导入 OMPL。目前有意只提供 `RRT_CONNECT`、`RRT_STAR` 和
 `INFORMED_RRT_STAR` 三种算法。
