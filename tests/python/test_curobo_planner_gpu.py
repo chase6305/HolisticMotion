@@ -319,3 +319,53 @@ def test_real_curobo_mesh_replacement_and_pose_updates_use_current_geometry(prob
         planner.update_world({})
     result = planner.plan(start, goal)
     assert result.success, result.message
+
+
+def test_real_curobo_instances_keep_worlds_dynamics_and_lifetimes_independent(problem):
+    planner, start, goal = problem
+    previous = planner.plan(start, goal)
+    assert previous.success, previous.message
+    snapshot = previous.trajectory.position.copy()
+    with CuroboPlanner(
+        os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+        collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2, "mesh": 2},
+    ) as other:
+        other.warmup(1)
+        other.update_world(
+            {
+                "cuboid": {
+                    "blocked": {
+                        "dims": [100.0] * 3,
+                        "pose": [0, 0, 0, 1, 0, 0, 0],
+                    }
+                }
+            }
+        )
+        assert not other.plan(start, goal, max_attempts=2).success
+        result = planner.plan(start, goal)
+        assert result.success, result.message
+        other.update_world({})
+        link = os.environ.get("HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK")
+        if link:
+            other.update_link_inertial(
+                link, mass=1000.0, com=[0, 0, 0.1], inertia=[1, 1, 1, 0, 0, 0]
+            )
+            assert not other.plan(start, goal, max_attempts=2).success
+            result = planner.plan(start, goal)
+            assert result.success, result.message
+    result = planner.plan(start, goal)
+    assert result.success, result.message
+    np.testing.assert_array_equal(previous.trajectory.position, snapshot)
+
+
+def test_real_curobo_rejects_incompatible_live_capture_layout_before_kernel_launch(
+    problem,
+):
+    planner, start, goal = problem
+    with pytest.raises(RuntimeError, match="share a collision cache layout"):
+        CuroboPlanner(
+            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+            collision_cache={"cuboid": 2},
+        )
+    result = planner.plan(start, goal)
+    assert result.success, result.message

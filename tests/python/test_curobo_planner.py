@@ -96,7 +96,14 @@ def backend(tmp_path, monkeypatch):
             self.attachment_manager = SimpleNamespace(kinematics_params=params)
             self.obstacle_poses = {}
             self.scene_collision_checker = SimpleNamespace(
-                data=SimpleNamespace(meshes=None),
+                data=SimpleNamespace(
+                    meshes=None,
+                    get_valid_data=lambda: [
+                        type(kind.title() + "Data", (), {"max_n": count})()
+                        for kind in ("cuboid", "capsule", "cylinder", "mesh")
+                        if (count := (config["collision_cache"] or {}).get(kind, 0)) > 0
+                    ],
+                ),
                 check_obstacle_exists=lambda name: any(
                     obstacle.name == name for obstacle in self.scene
                 ),
@@ -824,3 +831,47 @@ def test_partial_obstacle_pose_update_blocks_planning_until_world_recovery(
             planner.plan([0.0, 0.0], [0.1, 0.1])
         planner.update_world({})
         assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+
+
+def test_incompatible_live_graph_layouts_fail_before_capture_and_release_on_close(
+    backend,
+):
+    first = CuroboPlanner(backend.path, collision_cache={"cuboid": 4})
+    try:
+        with pytest.raises(RuntimeError, match="share a collision cache layout"):
+            CuroboPlanner(backend.path, collision_cache={"capsule": 2})
+        assert backend.instances[-1].destroyed
+        with CuroboPlanner(backend.path, collision_cache={"cuboid": 4}) as matching:
+            assert matching.plan([0, 0], [0.1, 0.1]).success
+        assert first.plan([0, 0], [0.1, 0.1]).success
+    finally:
+        first.close()
+    with CuroboPlanner(backend.path, collision_cache={"capsule": 2}) as changed:
+        assert changed.plan([0, 0], [0.1, 0.1]).success
+
+
+def test_distinct_layouts_work_without_graphs_but_cannot_invalidate_a_live_capture(
+    backend,
+):
+    with CuroboPlanner(
+        backend.path, collision_cache={"cuboid": 4}, use_cuda_graph=False
+    ):
+        with CuroboPlanner(
+            backend.path, collision_cache={"capsule": 2}, use_cuda_graph=False
+        ):
+            pass
+        with pytest.raises(RuntimeError, match="share a collision cache layout"):
+            CuroboPlanner(backend.path, collision_cache={"capsule": 2})
+
+
+def test_layout_registry_does_not_keep_abandoned_planners_alive(backend):
+    import gc
+    from weakref import ref
+
+    planner = CuroboPlanner(backend.path, collision_cache={"cuboid": 4})
+    reference = ref(planner)
+    del planner
+    gc.collect()
+    assert reference() is None
+    with CuroboPlanner(backend.path, collision_cache={"capsule": 2}):
+        pass

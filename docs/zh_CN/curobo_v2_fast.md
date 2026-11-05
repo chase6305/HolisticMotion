@@ -99,6 +99,12 @@ planner.update_link_collision_spheres("attached_object", None)
 预留碰撞容量。更新失败后阻止规划，直到完整替换成功。同一实例的调用和更新串行化；
 并行 GPU 请求使用独立实例。
 
+验证的上游／Warp 组合存在跨实例 capture 限制：有环境碰撞缓存的存活实例中，只要
+任意实例开启 CUDA graphs，就须使用相同缓存布局。适配器在构造时检查并拒绝不兼容
+组合，避免新增 Warp 泛型特化使另一实例的旧 capture 失效。相同布局的场景、惯量和
+生命周期仍各自独立。需要不同布局时使用独立进程，或将**所有**实例构造为
+`use_cuda_graph=False`。没有分配环境碰撞缓存的实例不施加此限制。
+
 场景字典支持 `cuboid`、`sphere`、`capsule`、`cylinder`、`mesh`、`voxel`。
 替换环境前拒绝未知类型、重名障碍物、无效尺寸及非单位位姿四元数。
 公开 `Scene` 的 `objects` 必须与各类型障碍物列表一致。验证的上游加载器会遗漏

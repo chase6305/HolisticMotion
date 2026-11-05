@@ -116,7 +116,16 @@ and upstream `xyz, wxyz` layout. `None` is an empty world; self-collision checki
 remains enabled. Updates replace the entire world and reset RRT search state.
 Reserve collision capacity at construction. A failed world update blocks
 planning until a replacement update succeeds. Requests and updates on one
-instance are serialized; use separate instances for concurrent GPU work.
+instance are serialized; separate instances can run concurrent GPU work.
+
+On the qualified upstream/Warp combination, live instances with allocated
+world collision caches must use the same cache layout when any instance uses
+CUDA graphs. The adapter checks this at construction: adding a different
+layout can recompile a Warp generic module and invalidate another instance's
+existing capture. Matching layouts keep worlds, inertial properties and
+lifetimes independent. Use separate processes, or construct **all** instances
+with `use_cuda_graph=False`, when different layouts are required. Instances
+with no allocated world collision cache do not impose this restriction.
 
 Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
 `voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose

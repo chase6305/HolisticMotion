@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
 from threading import Lock
+from weakref import ref
 
 import numpy as np
 
@@ -21,6 +22,8 @@ from .._validation import finite_scalar, real_array, validated_transform
 __all__ = ["CuroboPlanner", "CuroboPlanningResult", "CuroboTrajectory"]
 
 _POSITION_LIMIT_TOLERANCE = 1e-6
+_LIVE_PLANNERS = []
+_LIVE_PLANNERS_LOCK = Lock()
 
 
 def _names(values):
@@ -235,6 +238,33 @@ class CuroboPlanner:
                     "cuRobo must provide finite ordered scalar joint limits"
                 )
             self._device = planner.default_joint_state.position.device
+            self._use_cuda_graph = bool(use_cuda_graph)
+            self._collision_layout = tuple(
+                (type(data).__name__, data.max_n)
+                for data in planner.scene_collision_checker.data.get_valid_data()
+            )
+            # New Warp generic specializations can unload modules referenced
+            # by another planner's PyTorch captures. Reject incompatible live
+            # layouts before the new planner launches collision kernels.
+            with _LIVE_PLANNERS_LOCK:
+                live = []
+                for reference in _LIVE_PLANNERS:
+                    other = reference()
+                    if other is None:
+                        continue
+                    live.append(reference)
+                    if (
+                        self._collision_layout
+                        and other._collision_layout
+                        and self._collision_layout != other._collision_layout
+                        and (self._use_cuda_graph or other._use_cuda_graph)
+                    ):
+                        raise RuntimeError(
+                            "Live cuRobo CUDA graph planners must share a collision cache layout. "
+                            "Use matching caches, separate processes, or construct all planners "
+                            "with use_cuda_graph=False."
+                        )
+                _LIVE_PLANNERS[:] = [*live, ref(self)]
         except BaseException:
             planner.destroy()
             raise
@@ -767,7 +797,15 @@ class CuroboPlanner:
             if self._planner is not None:
                 planner = self._planner
                 self._planner = None
-                planner.destroy()
+                try:
+                    planner.destroy()
+                finally:
+                    with _LIVE_PLANNERS_LOCK:
+                        _LIVE_PLANNERS[:] = [
+                            reference
+                            for reference in _LIVE_PLANNERS
+                            if (other := reference()) is not None and other is not self
+                        ]
 
     def __enter__(self):
         self._open()
