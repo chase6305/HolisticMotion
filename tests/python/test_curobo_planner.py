@@ -94,6 +94,16 @@ def backend(tmp_path, monkeypatch):
                 reset_link_spheres=lambda link: replace_spheres(link, original),
             )
             self.attachment_manager = SimpleNamespace(kinematics_params=params)
+            self.obstacle_poses = {}
+            self.scene_collision_checker = SimpleNamespace(
+                data=SimpleNamespace(meshes=None),
+                check_obstacle_exists=lambda name: any(
+                    obstacle.name == name for obstacle in self.scene
+                ),
+                update_obstacle_pose=lambda name, pose: self.obstacle_poses.update(
+                    {name: pose.clone()}
+                ),
+            )
             instances.append(self)
 
         def plan_cspace(self, goal, start, **kwargs):
@@ -692,7 +702,9 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
     )
     with getattr(torch, mode)():
         before = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
-        with CuroboPlanner(backend.path) as planner:
+        with CuroboPlanner(
+            backend.path, scene={"cuboid": {"box": {"dims": [0.1] * 3}}}
+        ) as planner:
             native = backend.instances[0]
             for name in (
                 "plan_cspace",
@@ -703,6 +715,12 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
             ):
                 monkeypatch.setattr(native, name, record_context(getattr(native, name)))
             params = native.attachment_manager.kinematics_params
+            checker = native.scene_collision_checker
+            monkeypatch.setattr(
+                checker,
+                "update_obstacle_pose",
+                record_context(checker.update_obstacle_pose),
+            )
             monkeypatch.setattr(
                 params,
                 "update_link_spheres",
@@ -712,6 +730,7 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
             assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
             targets = planner.forward_kinematics([0.1, 0.1])
             assert planner.plan_pose([0.0, 0.0], targets).success
+            planner.update_obstacle_pose("box", np.eye(4))
             planner.update_world({})
             planner.update_link_inertial(
                 "payload", mass=0, com=[0] * 3, inertia=[0] * 6
@@ -729,3 +748,79 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
             ) == before
     assert len(observed) >= 8
     assert all(value == (True, False) for value in observed)
+
+
+def test_world_replacement_discards_obsolete_mesh_geometry(backend, monkeypatch):
+    with CuroboPlanner(backend.path) as planner:
+        native = backend.instances[0]
+        events = []
+        cache = {"shape": "old geometry", "removed": "unused geometry"}
+        meshes = SimpleNamespace(get_cached_mesh_names=lambda: list(cache))
+
+        def clear(*, clear_warp_cache):
+            assert clear_warp_cache
+            events.append("clear")
+            cache.clear()
+
+        meshes.clear = clear
+        native.scene_collision_checker.data.meshes = meshes
+        monkeypatch.setattr(
+            backend.torch.cuda, "synchronize", lambda _device: events.append("sync")
+        )
+        original_update = native.update_world
+
+        def update(scene):
+            events.append("load")
+            assert cache == {}
+            original_update(scene)
+
+        monkeypatch.setattr(native, "update_world", update)
+        planner.update_world({})
+        assert events == ["sync", "clear", "load"]
+        assert native.resets == 1
+
+
+def test_obstacle_pose_updates_preserve_geometry_and_validate_names(backend):
+    scene = {"cuboid": {"box": {"dims": [0.1, 0.1, 0.1]}}}
+    with CuroboPlanner(backend.path, scene=scene) as planner:
+        transform = np.eye(4)
+        transform[:3, 3] = [1.0, 2.0, 3.0]
+        planner.update_obstacle_pose("box", transform)
+        transform.fill(99.0)
+        native = backend.instances[0]
+        np.testing.assert_array_equal(
+            native.obstacle_poses["box"][:3, 3], [1.0, 2.0, 3.0]
+        )
+        assert native.scene.data == scene
+        assert native.resets == 1
+        with pytest.raises(ValueError, match="unknown cuRobo obstacle"):
+            planner.update_obstacle_pose("absent", np.eye(4))
+        with pytest.raises(ValueError, match="rotation"):
+            planner.update_obstacle_pose(
+                "box", np.zeros((4, 4)) + np.diag([0, 0, 0, 1])
+            )
+        assert native.resets == 1
+
+
+def test_partial_obstacle_pose_update_blocks_planning_until_world_recovery(
+    backend, monkeypatch
+):
+    with CuroboPlanner(
+        backend.path,
+        scene={"sphere": {"ball": {"radius": 0.1, "pose": [0, 0, 0, 1, 0, 0, 0]}}},
+    ) as planner:
+        native = backend.instances[0]
+
+        def fail(*_args):
+            raise RuntimeError("partial pose update")
+
+        monkeypatch.setattr(
+            native.scene_collision_checker, "update_obstacle_pose", fail
+        )
+        with pytest.raises(RuntimeError, match="partial pose"):
+            planner.update_obstacle_pose("ball", np.eye(4))
+        assert native.resets == 1
+        with pytest.raises(RuntimeError, match="failed world update"):
+            planner.plan([0.0, 0.0], [0.1, 0.1])
+        planner.update_world({})
+        assert planner.plan([0.0, 0.0], [0.1, 0.1]).success

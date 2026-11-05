@@ -368,7 +368,41 @@ class CuroboPlanner:
             planner = self._open()
             self._world_valid = False
             try:
+                meshes = planner.scene_collision_checker.data.meshes
+                if meshes is not None and meshes.get_cached_mesh_names():
+                    # The upstream cache keys geometry only by obstacle name
+                    # and otherwise retains meshes removed from the world.
+                    self._torch.cuda.synchronize(self._device)
+                    meshes.clear(clear_warp_cache=True)
                 planner.update_world(scene)
+            finally:
+                planner.reset_seed()
+            self._world_valid = True
+
+    def update_obstacle_pose(self, obstacle_name, transform):
+        """Move an existing world obstacle without rebuilding its geometry.
+
+        ``transform`` is a base-frame 4x4 matrix, in meters. RRT state is
+        reset, while mesh geometry, storage capacity and captures are retained.
+        A backend failure blocks planning until update_world succeeds.
+        """
+        if not isinstance(obstacle_name, str) or not obstacle_name:
+            raise ValueError("obstacle_name must be a nonempty string")
+        transform = _float32(
+            validated_transform(transform, name="obstacle transform"),
+            "obstacle transform",
+        )
+        with self._lock, self._torch.inference_mode(False), self._torch.enable_grad():
+            planner = self._planning_backend()
+            checker = planner.scene_collision_checker
+            if not checker.check_obstacle_exists(obstacle_name):
+                raise ValueError(f"unknown cuRobo obstacle: {obstacle_name}")
+            pose = self._Pose.from_matrix(
+                self._torch.as_tensor(transform, device=self._device)
+            )
+            self._world_valid = False
+            try:
+                checker.update_obstacle_pose(obstacle_name, pose)
             finally:
                 planner.reset_seed()
             self._world_valid = True

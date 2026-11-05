@@ -26,7 +26,7 @@ def problem():
             )
         coordinates.append(np.asarray(json.loads(text), dtype=float))
     with CuroboPlanner(
-        path, collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2}
+        path, collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2, "mesh": 2}
     ) as planner:
         planner.warmup(1)
         yield planner, *coordinates
@@ -246,6 +246,14 @@ def test_real_curobo_analytic_world_primitives_are_not_omitted(problem, kind, ge
         result = planner.plan(start, goal, max_attempts=2)
         assert not result.success
         assert result.trajectory is None
+        far = np.eye(4)
+        far[:3, 3] = [200.0] * 3
+        planner.update_obstacle_pose("blocked", far)
+        moved = planner.plan(start, goal)
+        assert moved.success, moved.message
+        planner.update_obstacle_pose("blocked", np.eye(4))
+        restored = planner.plan(start, goal, max_attempts=2)
+        assert not restored.success and restored.trajectory is None
     finally:
         planner.update_world({})
     result = planner.plan(start, goal)
@@ -272,3 +280,42 @@ def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode)
             torch.is_grad_enabled(),
             torch.is_inference_mode_enabled(),
         ) == caller_state
+
+
+def test_real_curobo_mesh_replacement_and_pose_updates_use_current_geometry(problem):
+    import trimesh
+
+    planner, start, goal = problem
+
+    def mesh_scene(size):
+        geometry = trimesh.creation.box(extents=[size] * 3)
+        return {
+            "mesh": {
+                "shape": {
+                    "vertices": geometry.vertices.tolist(),
+                    "faces": geometry.faces.tolist(),
+                    "pose": [2, 2, 2, 1, 0, 0, 0],
+                }
+            }
+        }
+
+    try:
+        for size, expected_success in ((0.01, True), (100.0, False), (0.01, True)):
+            planner.update_world(mesh_scene(size))
+            result = planner.plan(start, goal, max_attempts=2)
+            assert result.success == expected_success, result.message
+        planner.update_world(mesh_scene(100.0))
+        far = np.eye(4)
+        far[:3, 3] = [200.0] * 3
+        planner.update_obstacle_pose("shape", far)
+        result = planner.plan(start, goal)
+        assert result.success, result.message
+        near = np.eye(4)
+        near[:3, 3] = [2.0] * 3
+        planner.update_obstacle_pose("shape", near)
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success and result.trajectory is None
+    finally:
+        planner.update_world({})
+    result = planner.plan(start, goal)
+    assert result.success, result.message

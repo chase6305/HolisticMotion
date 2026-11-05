@@ -126,6 +126,15 @@ represented as analytic capsules with coincident endpoints because the
 qualified upstream loader otherwise omits them. Reserve `collision_cache={"capsule": N}`
 for later sphere or capsule replacements; no mesh approximation is introduced.
 
+Complete world replacement also discards old Warp mesh geometry. This prevents
+the upstream name-only cache from reusing an old shape under the same name or
+retaining every removed mesh. Mesh replacement waits for device work before
+releasing geometry; allocated collision storage and captures are retained.
+To move an existing obstacle efficiently, use
+`update_obstacle_pose(name, transform)` with a base-frame 4x4 matrix. This keeps
+its geometry and resets RRT state. A failed pose update requires a successful
+complete `update_world()` before planning resumes.
+
 A successful `CuroboPlanningResult` contains a `CuroboTrajectory` with read-only,
 owned NumPy `time`, `position`, `velocity`, `acceleration` and optional `jerk`
 arrays. Rows follow the trimmed interpolation horizon, the returned timestep

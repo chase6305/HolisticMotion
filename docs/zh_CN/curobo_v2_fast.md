@@ -105,6 +105,12 @@ planner.update_link_collision_spheres("attached_object", None)
 环境球，因此适配器将球转换为端点重合的解析胶囊体，不引入 mesh 近似。
 后续需要替换球或胶囊体时，构造中预留 `collision_cache={"capsule": N}`。
 
+完整替换环境时也会清除旧 Warp 网格几何，避免上游仅按名称缓存而复用同名旧形状，
+或持续积累已移除的网格。释放网格前等待设备工作完成，保留碰撞存储容量和 capture。
+只移动已有障碍物时，使用 `update_obstacle_pose(name, transform)`，传入基座系
+4×4 矩阵；此路径保留几何并清空 RRT 状态。位姿更新失败后须成功完整替换环境，
+才能继续规划。
+
 成功的 `CuroboPlanningResult` 包含 `CuroboTrajectory`：只读且自行持有数据的
 NumPy `time`、`position`、`velocity`、`acceleration` 以及可选 `jerk` 数组。
 按有效插值长度、实际返回步长和请求关节顺序转换，移除 padding 与锁定关节。
