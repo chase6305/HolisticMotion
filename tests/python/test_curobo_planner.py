@@ -65,6 +65,21 @@ def backend(tmp_path, monkeypatch):
                 kinematics_config=SimpleNamespace(link_name_to_idx_map={"payload": 0}),
             )
             self.inertial_updates = []
+            original = torch.tensor([[0.0, 0.0, 0.0, -100.0]] * 3)
+            self.spheres = original.clone()
+            self.sphere_updates = []
+
+            def replace_spheres(link, value):
+                self.spheres.copy_(value)
+                self.sphere_updates.append(link)
+
+            params = SimpleNamespace(
+                link_name_to_idx_map={"payload": 0, "bare_link": 1},
+                get_number_of_spheres=lambda link: 3 if link == "payload" else 0,
+                update_link_spheres=replace_spheres,
+                reset_link_spheres=lambda link: replace_spheres(link, original),
+            )
+            self.attachment_manager = SimpleNamespace(kinematics_params=params)
             instances.append(self)
 
         def plan_cspace(self, goal, start, **kwargs):
@@ -502,3 +517,72 @@ def test_partial_inertial_update_failure_requires_reconstruction(backend, monkey
             )
         with pytest.raises(RuntimeError, match="recreating"):
             planner.plan([0.0, 0.0], [0.1, 0.1])
+
+
+def test_collision_sphere_replacement_pads_restores_and_keeps_old_results(backend):
+    with CuroboPlanner(backend.path) as planner:
+        previous = planner.plan([0.0, 0.0], [0.1, 0.1]).trajectory
+        snapshot = previous.position.copy()
+        native = backend.instances[0]
+        spheres = np.array([[0.1, 0.2, 0.3, 0.05], [-0.1, 0.0, 0.2, 0.02]])
+        planner.update_link_collision_spheres("payload", spheres)
+        spheres.fill(99.0)
+        np.testing.assert_allclose(
+            native.spheres,
+            [[0.1, 0.2, 0.3, 0.05], [-0.1, 0.0, 0.2, 0.02], [0, 0, 0, -100]],
+        )
+        planner.update_link_collision_spheres("payload", [[0.0, 0.0, 0.4, 0.1]])
+        np.testing.assert_array_equal(native.spheres[1:, 3], [-100.0, -100.0])
+        planner.update_link_collision_spheres("payload", None)
+        np.testing.assert_array_equal(native.spheres, [[0.0, 0.0, 0.0, -100.0]] * 3)
+        assert native.resets == 3
+        np.testing.assert_array_equal(previous.position, snapshot)
+
+
+@pytest.mark.parametrize(
+    "spheres",
+    [
+        [],
+        [[0.0, 0.0, 0.0]],
+        [[0, 0, 0, 0]],
+        [[0, 0, 0, -1]],
+        [[0, 0, np.nan, 0.1]],
+        [[0, 0, 0, np.inf]],
+        [[1e40, 0, 0, 0.1]],
+        [[0, 0, 0, 1e-100]],
+        [[0, 0, 0, 1j]],
+        [[0, 0, 0, 0.1]] * 4,
+    ],
+)
+def test_invalid_collision_spheres_leave_robot_unchanged(backend, spheres):
+    with CuroboPlanner(backend.path) as planner:
+        with pytest.raises((ValueError, TypeError)):
+            planner.update_link_collision_spheres("payload", spheres)
+        native = backend.instances[0]
+        assert native.sphere_updates == [] and native.resets == 0
+        assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+
+
+@pytest.mark.parametrize("link", ["unknown", "bare_link", "", None])
+def test_collision_sphere_updates_require_an_existing_allocated_link(backend, link):
+    with CuroboPlanner(backend.path) as planner:
+        with pytest.raises(ValueError):
+            planner.update_link_collision_spheres(link, [[0, 0, 0, 0.1]])
+        assert backend.instances[0].sphere_updates == []
+
+
+def test_partial_collision_sphere_update_blocks_reuse(backend, monkeypatch):
+    with CuroboPlanner(backend.path) as planner:
+        params = backend.instances[0].attachment_manager.kinematics_params
+
+        def failed_update(*_args):
+            raise RuntimeError("partial geometry update")
+
+        monkeypatch.setattr(params, "update_link_spheres", failed_update)
+        with pytest.raises(RuntimeError, match="partial geometry"):
+            planner.update_link_collision_spheres("payload", [[0, 0, 0, 0.1]])
+        planner.update_world({})
+        with pytest.raises(RuntimeError, match="failed collision sphere update"):
+            planner.plan([0.0, 0.0], [0.1, 0.1])
+        with pytest.raises(RuntimeError, match="recreating"):
+            planner.warmup()

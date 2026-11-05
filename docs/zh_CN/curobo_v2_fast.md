@@ -80,6 +80,19 @@ link 的惯性参数。COM 为 link 坐标系中的三维米制向量；质心�
 非负质量及物理一致的主惯量，更新上游动力学并清空 RRT 状态。这不会附着碰撞几何。
 底层惯量更新失败后阻止后续规划，必须重建实例。
 
+`update_link_collision_spheres(link_name, spheres)` 用调用方提供的
+`[x, y, z, radius]` 行完整替换单个 link 的碰撞球，坐标相对该 link，单位为米，
+半径必须为正。机器人配置须预留足够球槽，例如附着物 link 上的
+`extra_collision_spheres`；多余槽位会禁用。传入 `None` 恢复该 link 的原始配置球。
+更新同时作用于 IK、RRT 和轨迹碰撞检查，并清空 RRT 状态；质量和环境障碍物需
+另外显式更新。底层球更新部分失败后须重建规划器。
+
+```python
+planner.update_link_collision_spheres("attached_object", [[0, 0, 0.1, 0.05]])
+# 使用调用方定义的载荷几何规划，随后恢复 YAML 中的模型。
+planner.update_link_collision_spheres("attached_object", None)
+```
+
 `scene=` 和 `update_world(scene)` 接受本地场景 YAML、上游场景字典或
 `curobo.scene.Scene`。障碍物位姿相对已配置基座，遵循上游 `xyz, wxyz` 顺序。
 `None` 表示空环境，自碰撞仍开启。更新会替换整个场景并清空 RRT 搜索状态；构造时

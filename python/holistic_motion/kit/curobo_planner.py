@@ -167,7 +167,7 @@ class CuroboPlanner:
         self._lock = Lock()
         self._planner = None
         self._world_valid = True
-        self._dynamics_valid = True
+        self._robot_update_failed = None
         import yaml
 
         robot = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -272,9 +272,9 @@ class CuroboPlanner:
 
     def _planning_backend(self):
         planner = self._open()
-        if not self._dynamics_valid:
+        if self._robot_update_failed is not None:
             raise RuntimeError(
-                "A failed inertial update requires recreating CuroboPlanner"
+                f"A failed {self._robot_update_failed} update requires recreating CuroboPlanner"
             )
         if not self._world_valid:
             raise RuntimeError(
@@ -356,7 +356,68 @@ class CuroboPlanner:
                 )
                 planner.reset_seed()
             except BaseException:
-                self._dynamics_valid = False
+                self._robot_update_failed = "inertial"
+                raise
+
+    def update_link_collision_spheres(self, link_name, spheres):
+        """Replace a link's collision spheres, or restore its configuration.
+
+        ``spheres`` contains link-frame [x, y, z, radius] rows in meters.
+        Radii must be positive and the link must have enough preallocated
+        sphere slots. Unused slots are disabled. Passing None restores all
+        original spheres from the robot configuration. Inertial properties
+        and world obstacles are unchanged; update them separately if needed.
+        A backend update failure requires recreating this instance.
+        """
+        if not isinstance(link_name, str) or not link_name:
+            raise ValueError("link_name must be a nonempty string")
+        if spheres is not None:
+            spheres = real_array(spheres, name="spheres", copy=True)
+            if (
+                spheres.ndim != 2
+                or spheres.shape[1] != 4
+                or spheres.shape[0] == 0
+                or not np.isfinite(spheres).all()
+                or np.any(spheres[:, 3] <= 0.0)
+            ):
+                raise ValueError(
+                    "spheres must be finite [N, 4] rows with positive radii"
+                )
+            with np.errstate(over="ignore", invalid="ignore"):
+                converted = spheres.astype(np.float32)
+            if (
+                not np.isfinite(converted).all()
+                or np.any(converted[:, 3] <= 0.0)
+                or np.max(np.abs(converted - spheres)) > 1e-6
+            ):
+                raise ValueError("spheres cannot be represented accurately in float32")
+        with self._lock:
+            planner = self._planning_backend()
+            params = planner.attachment_manager.kinematics_params
+            if link_name not in params.link_name_to_idx_map:
+                raise ValueError(f"unknown cuRobo link: {link_name}")
+            capacity = params.get_number_of_spheres(link_name)
+            if capacity == 0:
+                raise ValueError(
+                    f"cuRobo link has no collision sphere slots: {link_name}"
+                )
+            if spheres is not None:
+                if len(spheres) > capacity:
+                    raise ValueError(
+                        f"{link_name} has {capacity} sphere slots, requested {len(spheres)}"
+                    )
+                padded = np.zeros((capacity, 4), dtype=np.float32)
+                padded[:, 3] = -100.0
+                padded[: len(spheres)] = converted
+                tensor = self._torch.as_tensor(padded, device=self._device)
+            try:
+                if spheres is None:
+                    params.reset_link_spheres(link_name)
+                else:
+                    params.update_link_spheres(link_name, tensor)
+                planner.reset_seed()
+            except BaseException:
+                self._robot_update_failed = "collision sphere"
                 raise
 
     def _position(self, value, name, limit_tolerance=0.0):

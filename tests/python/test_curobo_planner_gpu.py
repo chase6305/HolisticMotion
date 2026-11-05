@@ -200,3 +200,29 @@ def test_real_curobo_repeated_pose_queries_keep_cuda_memory_bounded(problem):
     # The upstream grad-enabled LM input copy retained at least 1 KiB/request
     # on the qualified commit. Allow small lazy allocations, not that growth.
     assert after <= before + 64 * 1024
+
+
+def test_real_curobo_link_collision_spheres_block_and_restore_planning(problem):
+    link = os.environ.get("HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK")
+    if not link:
+        pytest.skip("Set HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK for a reserved link")
+    planner, start, goal = problem
+    previous = planner.plan(start, goal)
+    assert previous.success, previous.message
+    snapshot = previous.trajectory.position.copy()
+    planner.update_link_collision_spheres(link, [[0.0, 0.0, 0.0, 100.0]])
+    try:
+        for query in (
+            lambda: planner.plan(start, goal, max_attempts=2),
+            lambda: planner.plan_pose(
+                start, planner.forward_kinematics(goal), max_attempts=2
+            ),
+        ):
+            result = query()
+            assert not result.success
+            assert result.trajectory is None
+    finally:
+        planner.update_link_collision_spheres(link, None)
+    result = planner.plan(start, goal)
+    assert result.success, result.message
+    np.testing.assert_array_equal(previous.trajectory.position, snapshot)

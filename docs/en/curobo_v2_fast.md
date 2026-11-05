@@ -94,6 +94,22 @@ consistent principal moments, updates upstream dynamics and clears RRT state.
 This does not attach collision geometry. A backend inertial-update failure
 blocks further planning and requires recreating the instance.
 
+`update_link_collision_spheres(link_name, spheres)` replaces all collision
+spheres on a link with caller-supplied `[x, y, z, radius]` rows, in meters in
+that link's frame. Radii must be positive. Reserve enough slots in the robot
+configuration (for example, `extra_collision_spheres` on an attached-object
+link); unused slots are disabled. Passing `None` restores that link's original
+configured spheres. The update is shared by IK, RRT and trajectory collision
+checking and clears cached RRT state. It does not update mass or remove world
+obstacles. Update those explicitly when carrying an object. A partial backend
+sphere-update failure requires recreating the planner.
+
+```python
+planner.update_link_collision_spheres("attached_object", [[0, 0, 0.1, 0.05]])
+# Plan with this caller-defined payload geometry, then restore the YAML model.
+planner.update_link_collision_spheres("attached_object", None)
+```
+
 `scene=` and `update_world(scene)` accept a local scene YAML, upstream scene
 dictionary or `curobo.scene.Scene`. Poses use the configured robot base frame
 and upstream `xyz, wxyz` layout. `None` is an empty world; self-collision checking
