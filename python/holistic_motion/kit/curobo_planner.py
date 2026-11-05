@@ -41,11 +41,11 @@ def _positive(value, name):
     return value
 
 
-def _count(value, name):
+def _count(value, name, minimum=1):
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise TypeError(f"{name} must be an integer")
-    if value < 1:
-        raise ValueError(f"{name} must be positive")
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
     return int(value)
 
 
@@ -370,23 +370,39 @@ class CuroboPlanner:
             raise ValueError(f"{name} loses more than 1e-6 during float32 conversion")
         if np.any(converted < self._limits[0]) or np.any(converted > self._limits[1]):
             raise ValueError(f"{name} rounds outside the configured joint limits")
+        return position, self._joint_state(converted)
+
+    def _joint_state(self, positions):
         tensor = self._torch.as_tensor(
-            converted[self._to_backend][None, :],
+            np.asarray(positions, dtype=np.float32)[self._to_backend][None, :],
             dtype=self._torch.float32,
             device=self._device,
         )
-        return position, self._JointState.from_position(
+        return self._JointState.from_position(
             tensor, joint_names=list(self._backend_names)
         )
 
-    def plan(self, start, goal, *, max_attempts=4, endpoint_tolerance=1e-3):
+    def plan(
+        self,
+        start,
+        goal,
+        *,
+        max_attempts=4,
+        enable_graph_attempt=1,
+        endpoint_tolerance=1e-3,
+    ):
         """Plan a rest-to-rest joint motion, preserving supplied scalar order.
 
         Invalid inputs raise before solving. Upstream planning failure or
         rejected output returns ``success=False`` and no trajectory. This is
         a sampled result; it is not a continuous collision/torque certificate.
+        ``enable_graph_attempt=0`` uses RRT on the first attempt; the default
+        first tries direct optimization, then enables RRT on the second attempt.
         """
         max_attempts = _count(max_attempts, "max_attempts")
+        enable_graph_attempt = _count(
+            enable_graph_attempt, "enable_graph_attempt", minimum=0
+        )
         endpoint_tolerance = _positive(endpoint_tolerance, "endpoint_tolerance")
         with self._lock:
             planner = self._planning_backend()
@@ -396,7 +412,7 @@ class CuroboPlanner:
                 goal_state,
                 current_state,
                 max_attempts=max_attempts,
-                enable_graph_attempt=1,
+                enable_graph_attempt=enable_graph_attempt,
             )
             return self._planning_result(
                 result, start_position, goal_position, endpoint_tolerance
@@ -419,7 +435,7 @@ class CuroboPlanner:
             for name in self._tool_frames
         }
 
-    def plan_pose(self, start, tool_poses, *, max_attempts=4):
+    def plan_pose(self, start, tool_poses, *, max_attempts=4, enable_graph_attempt=1):
         """Plan from rest to named base-frame tool targets given as 4x4 matrices.
 
         Supply every configured tool. Position/orientation tolerances come
@@ -427,7 +443,14 @@ class CuroboPlanner:
         configuration. No external quaternion convention is assumed.
         """
         max_attempts = _count(max_attempts, "max_attempts")
-        if not self._tool_frames or not isinstance(tool_poses, Mapping) or set(tool_poses) != set(self._tool_frames):
+        enable_graph_attempt = _count(
+            enable_graph_attempt, "enable_graph_attempt", minimum=0
+        )
+        if (
+            not self._tool_frames
+            or not isinstance(tool_poses, Mapping)
+            or set(tool_poses) != set(self._tool_frames)
+        ):
             raise ValueError(
                 "tool_poses must map every configured tool to a 4x4 transform"
             )
@@ -456,15 +479,21 @@ class CuroboPlanner:
                 )
             goal = self._GoalToolPose.from_poses(poses)
             result = self._planning_result(
-                planner.plan_pose(goal, current_state, max_attempts=max_attempts),
+                planner.plan_pose(
+                    goal,
+                    current_state,
+                    max_attempts=max_attempts,
+                    enable_graph_attempt=enable_graph_attempt,
+                ),
                 start_position,
             )
             if not result.success:
                 return result
-            _, end = self._position(
-                result.trajectory.position[-1], "trajectory endpoint"
-            )
-            actual = self._tool_transforms(planner, end)
+            end = self._joint_state(result.trajectory.position[-1])
+            try:
+                actual = self._tool_transforms(planner, end)
+            except (TypeError, ValueError) as error:
+                return CuroboPlanningResult(False, str(error))
             for name, target in targets.items():
                 relative = actual[name][:3, :3].T @ target[:3, :3]
                 sine = 0.5 * np.linalg.norm(
@@ -495,9 +524,27 @@ class CuroboPlanner:
                 False, "cuRobo returned an invalid success mask"
             )
         if not bool(success.item()):
-            return CuroboPlanningResult(
-                False, str(getattr(result, "status", None) or "cuRobo planning failed")
-            )
+            message = str(getattr(result, "status", None) or "cuRobo planning failed")
+            debug = getattr(result, "debug_info", None)
+            validation = debug.get("validation") if isinstance(debug, Mapping) else None
+            if isinstance(validation, Mapping):
+                failed = []
+                for key, label in (
+                    ("collision_valid", "collision"),
+                    ("limits_and_dynamics_valid", "joint limits/dynamics"),
+                    ("path_valid", "path/pose"),
+                ):
+                    mask = validation.get(key)
+                    if (
+                        self._torch.is_tensor(mask)
+                        and mask.dtype == self._torch.bool
+                        and mask.numel()
+                        and not bool(mask.any().item())
+                    ):
+                        failed.append(label)
+                if failed:
+                    message += " (failed checks: " + ", ".join(failed) + ")"
+            return CuroboPlanningResult(False, message)
         try:
             trajectory = self._trajectory(result.get_interpolated_plan())
             if np.max(np.abs(trajectory.position[0] - start)) > endpoint_tolerance or (
@@ -537,7 +584,26 @@ class CuroboPlanner:
         dt = self._numpy(state.dt)
         if dt.size != 1:
             raise ValueError("cuRobo trajectory must have one interpolation timestep")
-        dt = _positive(dt.item(), "cuRobo trajectory dt")
+        dt = finite_scalar(dt.item(), "cuRobo trajectory dt")
+        if dt < 0.0:
+            raise ValueError("cuRobo trajectory dt must be non-negative")
+        if dt == 0.0:
+            position = arrays["position"]
+            if (
+                position.shape[0] == 0
+                or not np.all(position == position[0])
+                or any(
+                    value is not None
+                    and (value.shape != position.shape or np.any(value != 0.0))
+                    for name, value in arrays.items()
+                    if name != "position"
+                )
+            ):
+                raise ValueError("a zero timestep requires a stationary trajectory")
+            arrays = {
+                name: None if value is None else value[:1]
+                for name, value in arrays.items()
+            }
         times = np.arange(arrays["position"].shape[0], dtype=float) * dt
         return CuroboTrajectory(self._joint_names, times, **arrays)
 

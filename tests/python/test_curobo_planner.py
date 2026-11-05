@@ -3,7 +3,9 @@
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
@@ -71,7 +73,14 @@ def backend(tmp_path, monkeypatch):
                 return None
             if self.failure == "failed":
                 return SimpleNamespace(
-                    success=torch.tensor([[False]]), status="INFEASIBLE"
+                    success=torch.tensor([[False]]),
+                    status="INFEASIBLE",
+                    debug_info={
+                        "validation": {
+                            "collision_valid": torch.tensor([False]),
+                            "path_valid": torch.tensor([True]),
+                        }
+                    },
                 )
             # The public trim helper preserves singleton batch and seed axes
             # and includes locked joints in a different output order.
@@ -213,6 +222,9 @@ def test_unsuccessful_results_never_expose_a_trajectory(backend, failure, messag
         result = planner.plan([0.0, 0.0], [0.2, 0.3])
         assert not result.success and result.trajectory is None
         assert message in result.message
+        if failure == "failed":
+            assert "failed checks: collision" in result.message
+            assert "path/pose" not in result.message
 
 
 @pytest.mark.parametrize(
@@ -239,7 +251,7 @@ def test_invalid_coordinates_do_not_reach_the_backend(backend, value, error):
         (lambda state: state.velocity.fill_(float("inf")), "finite"),
         (lambda state: state.position.fill_(0.9), "endpoints"),
         (lambda state: setattr(state, "dt", None), "timed"),
-        (lambda state: state.dt.fill_(0.0), "positive"),
+        (lambda state: state.dt.fill_(0.0), "stationary"),
         (
             lambda state: setattr(state, "joint_names", ["x", "locked", "shoulder"]),
             "missing",
@@ -379,6 +391,76 @@ def test_invalid_inertial_updates_do_not_touch_the_backend(backend, mass, inerti
             )
         assert backend.instances[0].inertial_updates == []
         assert planner.plan([0.0, 0.0], [0.1, 0.1]).success
+
+
+def test_explicit_rrt_attempt_policy_is_forwarded_and_validated(backend):
+    with CuroboPlanner(backend.path) as planner:
+        assert planner.plan([0.0, 0.0], [0.1, 0.1], enable_graph_attempt=0).success
+        assert backend.instances[0].calls[-1][2]["enable_graph_attempt"] == 0
+        for value, exception in ((True, TypeError), (-1, ValueError), (0.5, TypeError)):
+            with pytest.raises(exception):
+                planner.plan([0.0, 0.0], [0.1, 0.1], enable_graph_attempt=value)
+
+
+def test_exact_stationary_zero_timestep_is_an_owned_single_instant(backend):
+    with CuroboPlanner(backend.path) as planner:
+
+        def stationary(state):
+            state.dt.zero_()
+            state.velocity.zero_()
+            state.acceleration.zero_()
+            state.jerk.zero_()
+
+        backend.instances[0].failure = stationary
+        result = planner.plan([0.0, 0.0], [0.0, 0.0])
+        assert result.success, result.message
+        assert result.trajectory.duration == 0.0
+        assert result.trajectory.time.size == 1
+        np.testing.assert_array_equal(result.trajectory.position, [[0.0, 0.0]])
+
+
+def test_cpu_device_and_missing_v2_api_fail_before_backend_construction(
+    backend, monkeypatch
+):
+    with pytest.raises(RuntimeError, match="CUDA device"):
+        CuroboPlanner(backend.path, device="cpu")
+    monkeypatch.setitem(sys.modules, "curobo.trajectory_timeopt", None)
+    with pytest.raises(ImportError, match="cuRobo v2"):
+        CuroboPlanner(backend.path)
+    assert backend.instances == []
+
+
+def test_world_update_waits_for_active_solve_and_preserves_its_output(
+    backend, monkeypatch
+):
+    with CuroboPlanner(backend.path) as planner:
+        native = backend.instances[0]
+        entered, release, update_entered = Event(), Event(), Event()
+        original_plan, original_update = native.plan_cspace, native.update_world
+
+        def blocked_plan(*args, **kwargs):
+            entered.set()
+            assert release.wait(5.0)
+            return original_plan(*args, **kwargs)
+
+        def update(scene):
+            update_entered.set()
+            return original_update(scene)
+
+        monkeypatch.setattr(native, "plan_cspace", blocked_plan)
+        monkeypatch.setattr(native, "update_world", update)
+        with ThreadPoolExecutor(2) as workers:
+            query = workers.submit(planner.plan, [0.0, 0.0], [0.1, 0.1])
+            try:
+                assert entered.wait(5.0)
+                edit = workers.submit(planner.update_world, {})
+                assert not update_entered.wait(0.05)
+            finally:
+                release.set()
+            result = query.result(timeout=5.0)
+            edit.result(timeout=5.0)
+        assert result.success and update_entered.is_set()
+        np.testing.assert_allclose(result.trajectory.position, [[0.0, 0.0], [0.1, 0.1]])
 
 
 def test_partial_inertial_update_failure_requires_reconstruction(backend, monkeypatch):

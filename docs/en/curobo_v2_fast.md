@@ -74,6 +74,10 @@ result = planner.plan_pose(q_start, targets)
 again with FK. `plan()` separately checks joint endpoints with its
 `endpoint_tolerance` (default `1e-3`).
 
+Both planning methods accept `enable_graph_attempt=0` to use RRT from the first
+attempt. The default `1` first tries direct optimization and enables RRT on the
+second attempt. `max_attempts` bounds retries.
+
 ## Scenes, results and lifetime
 
 `update_link_inertial(link_name, mass=..., com=..., inertia=...)` replaces a
@@ -96,7 +100,7 @@ A successful `CuroboPlanningResult` contains a `CuroboTrajectory` with read-only
 owned NumPy `time`, `position`, `velocity`, `acceleration` and optional `jerk`
 arrays. Rows follow the trimmed interpolation horizon, the returned timestep
 and requested joint order; locked joints and padding are removed. Failed
-requests contain a message and no trajectory. Invalid caller inputs raise
+requests contain a message, available upstream validation failures, and no trajectory. Invalid caller inputs raise
 before solving. Results are samples, not an interpolating trajectory object.
 Do not refit them through TOPPRA and assume their original constraints survive.
 

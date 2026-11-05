@@ -65,6 +65,9 @@ result = planner.plan_pose(q_start, targets)
 （默认 0.05 rad），对返回终点重新做 FK 检查。`plan()` 则使用独立的
 `endpoint_tolerance` 检查关节端点，默认 `1e-3`。
 
+两种规划方法均支持 `enable_graph_attempt=0`，从第一次尝试就使用 RRT；默认值 `1`
+先直接优化，再于第二次尝试启用 RRT。`max_attempts` 限制重试次数。
+
 ## 场景、结果与生命周期
 
 `update_link_inertial(link_name, mass=..., com=..., inertia=...)` 完整替换单个
@@ -82,7 +85,7 @@ link 的惯性参数。COM 为 link 坐标系中的三维米制向量；质心�
 成功的 `CuroboPlanningResult` 包含 `CuroboTrajectory`：只读且自行持有数据的
 NumPy `time`、`position`、`velocity`、`acceleration` 以及可选 `jerk` 数组。
 按有效插值长度、实际返回步长和请求关节顺序转换，移除 padding 与锁定关节。
-下一次求解或关闭规划器不会改变先前结果。失败包含诊断且没有轨迹；无效调用参数在
+下一次求解或关闭规划器不会改变先前结果。失败保留可用的上游验收诊断且没有轨迹；无效调用参数在
 求解前抛错。结果是采样数据，不是插值轨迹，不能经 TOPPRA 重拟合后沿用原约束结论。
 
 上游采样碰撞／动力学验收不等于连续时间可行性证明。现有 HolisticMotion TOPPRA

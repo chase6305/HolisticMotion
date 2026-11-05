@@ -82,6 +82,26 @@ def test_real_curobo_pose_planning_uses_named_tool_transforms(problem):
         np.testing.assert_allclose(final[name][:3, :3], transform[:3, :3], atol=0.05)
 
 
+def test_real_curobo_rrt_initializes_a_successful_route(problem):
+    planner, start, goal = problem
+    result = planner.plan(start, goal, enable_graph_attempt=0)
+    assert result.success, result.message
+    np.testing.assert_allclose(result.trajectory.position[0], start, atol=1e-3)
+    np.testing.assert_allclose(result.trajectory.position[-1], goal, atol=1e-3)
+
+
+def test_real_curobo_stationary_request_preserves_the_requested_position(problem):
+    planner, start, _goal = problem
+    result = planner.plan(start, start)
+    assert result.success, result.message
+    assert result.trajectory.duration >= 0.0
+    np.testing.assert_allclose(
+        result.trajectory.position,
+        np.broadcast_to(start, result.trajectory.position.shape),
+        atol=1e-3,
+    )
+
+
 def test_real_curobo_payload_updates_preserve_old_results(problem):
     link = os.environ.get("HOLISTICMOTION_TEST_CUROBO_PAYLOAD_LINK")
     if not link:
