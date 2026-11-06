@@ -129,16 +129,33 @@ def backend(tmp_path, monkeypatch):
             )
             self.attachment_manager = SimpleNamespace(kinematics_params=params)
             self.obstacle_poses = {}
+            storage = SimpleNamespace(
+                voxels=voxel_storage(self.scene, config["collision_cache"])
+            )
+            for kind, field in (
+                ("cuboid", "cuboids"),
+                ("capsule", "capsules"),
+                ("cylinder", "cylinders"),
+                ("mesh", "meshes"),
+            ):
+                count = (config["collision_cache"] or {}).get(kind) or len(
+                    getattr(self.scene, kind)
+                )
+                value = (
+                    type(kind.title() + "Data", (), {"max_n": count})()
+                    if count
+                    else None
+                )
+                if kind == "mesh" and value is not None:
+                    value.get_cached_mesh_names = list
+                setattr(storage, field, value)
+            storage.get_valid_data = lambda: [
+                value
+                for field in ("cuboids", "capsules", "cylinders", "meshes", "voxels")
+                if (value := getattr(storage, field)) is not None
+            ]
             self.scene_collision_checker = SimpleNamespace(
-                data=SimpleNamespace(
-                    meshes=None,
-                    voxels=voxel_storage(self.scene, config["collision_cache"]),
-                    get_valid_data=lambda: [
-                        type(kind.title() + "Data", (), {"max_n": count})()
-                        for kind in ("cuboid", "capsule", "cylinder", "mesh")
-                        if (count := (config["collision_cache"] or {}).get(kind, 0)) > 0
-                    ],
-                ),
+                data=storage,
                 check_obstacle_exists=lambda name: any(
                     obstacle.name == name for obstacle in self.scene
                 ),
@@ -1333,4 +1350,49 @@ def test_missing_obstacle_pose_is_rejected_without_invalidating_the_current_worl
         with pytest.raises(ValueError, match="explicit.*pose"):
             planner.update_world({kind: {"unplaced": fields}})
         assert native.scene is previous and native.resets == 0
+        assert planner.plan([0, 0], [0.1, 0.1]).success
+
+
+@pytest.mark.parametrize(
+    "kind, geometry",
+    [
+        ("cuboid", {"dims": [0.1, 0.1, 0.1]}),
+        ("sphere", {"radius": 0.1}),
+        ("capsule", {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]}),
+        ("cylinder", {"radius": 0.1, "height": 0.2}),
+        (
+            "mesh",
+            {"vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "faces": [[0, 1, 2]]},
+        ),
+    ],
+)
+@pytest.mark.parametrize("reserved", [False, True])
+def test_scene_capacity_errors_preserve_world_and_backend_state(
+    backend, kind, geometry, reserved
+):
+    voxel = {
+        "occupied": {
+            "dims": [1, 1, 1],
+            "voxel_size": 0.5,
+            "pose": [0, 0, 0, 1, 0, 0, 0],
+            "feature_tensor": -backend.torch.ones((2, 2, 2)),
+        }
+    }
+    cache = {"voxel": {"layers": 1, "dims": [1, 1, 1], "voxel_size": 0.5}}
+    if reserved:
+        cache["capsule" if kind == "sphere" else kind] = 1
+    fields = dict(geometry, pose=[100, 100, 100, 1, 0, 0, 0])
+    with CuroboPlanner(
+        backend.path, scene={"voxel": voxel}, collision_cache=cache
+    ) as planner:
+        native = backend.instances[-1]
+        if reserved:
+            planner.update_world({"voxel": voxel, kind: {"valid": fields}})
+        previous = native.scene
+        resets = native.resets
+        bad = {kind: {str(index): fields for index in range(2 if reserved else 1)}}
+        with pytest.raises(ValueError, match="capacity|not allocated"):
+            planner.update_world(bad)
+        assert native.scene is previous
+        assert native.resets == resets
         assert planner.plan([0, 0], [0.1, 0.1]).success

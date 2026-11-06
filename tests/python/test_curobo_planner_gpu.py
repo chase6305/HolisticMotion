@@ -675,3 +675,71 @@ def test_real_curobo_unreserved_voxel_update_keeps_an_empty_world(problem):
             other.update_world(_free_voxel_scene(torch.ones((8, 8, 8))))
         result = other.plan(start, goal)
         assert result.success, result.message
+
+
+@pytest.mark.parametrize("kind", ["cuboid", "sphere", "capsule", "cylinder", "mesh"])
+def test_real_curobo_scene_capacity_errors_preserve_world_and_mesh_cache(problem, kind):
+    import trimesh
+
+    planner, start, goal = problem
+    box = trimesh.creation.box(extents=[0.1] * 3)
+    geometry = {
+        "cuboid": {"dims": [0.1] * 3},
+        "sphere": {"radius": 0.1},
+        "capsule": {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]},
+        "cylinder": {"radius": 0.1, "height": 0.2},
+        "mesh": {"vertices": box.vertices.tolist(), "faces": box.faces.tolist()},
+    }
+    far_pose = [200, 200, 200, 1, 0, 0, 0]
+    planner.update_world(
+        {
+            "cuboid": {
+                "occupied": {"dims": [100.0] * 3, "pose": [0, 0, 0, 1, 0, 0, 0]}
+            },
+            "mesh": {"retained": dict(geometry["mesh"], pose=far_pose)},
+        }
+    )
+    try:
+        data = planner._planner.scene_collision_checker.data
+        names = data.get_obstacle_names()
+        cached_meshes = data.meshes.get_cached_mesh_names()
+        assert cached_meshes
+        count = _COLLISION_CACHE["capsule" if kind == "sphere" else kind] + 1
+        bad = {
+            kind: {
+                str(index): dict(geometry[kind], pose=far_pose)
+                for index in range(count)
+            }
+        }
+        with pytest.raises(ValueError, match="capacity"):
+            planner.update_world(bad)
+        assert data.get_obstacle_names() == names
+        assert data.meshes.get_cached_mesh_names() == cached_meshes
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success and result.trajectory is None
+        far = np.eye(4)
+        far[:3, 3] = 200
+        planner.update_obstacle_pose("occupied", far)
+        moved = planner.plan(start, goal)
+        assert moved.success, moved.message
+    finally:
+        planner.update_world({})
+
+
+def test_real_curobo_unreserved_geometry_keeps_an_empty_world(problem):
+    _planner, start, goal = problem
+    geometry = {
+        "cuboid": {"dims": [0.1] * 3},
+        "sphere": {"radius": 0.1},
+        "capsule": {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]},
+        "cylinder": {"radius": 0.1, "height": 0.2},
+        "mesh": {"vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "faces": [[0, 1, 2]]},
+    }
+    with CuroboPlanner(os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]) as other:
+        for kind, fields in geometry.items():
+            with pytest.raises(ValueError, match="not allocated"):
+                other.update_world(
+                    {kind: {"unreserved": dict(fields, pose=[0, 0, 0, 1, 0, 0, 0])}}
+                )
+            result = other.plan(start, goal)
+            assert result.success, result.message

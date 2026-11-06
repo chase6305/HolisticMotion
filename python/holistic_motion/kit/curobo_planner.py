@@ -234,7 +234,7 @@ class CuroboPlanner:
             planner = MotionPlanner(config)
         try:
             with self._execution_context():
-                self._check_voxel_capacity(planner, prepared_scene)
+                self._check_scene_capacity(planner, prepared_scene)
                 if prepared_scene.voxel:
                     planner.update_world(prepared_scene)
                 self._set_voxel_shapes(planner, prepared_scene)
@@ -493,20 +493,31 @@ class CuroboPlanner:
         return initial, cache
 
     @staticmethod
-    def _check_voxel_capacity(planner, scene):
-        if not scene.voxel:
-            return
-        data = planner.scene_collision_checker.data.voxels
-        if data is None:
-            raise ValueError("voxel collision cache is not allocated")
-        if len(scene.voxel) > data.max_n:
-            raise ValueError(
-                f"voxel layer capacity is {data.max_n}, requested {len(scene.voxel)}"
-            )
-        for grid in scene.voxel:
-            if grid.feature_tensor.numel() > data.features.shape[2]:
+    def _check_scene_capacity(planner, scene):
+        data = planner.scene_collision_checker.data
+        for kind, field in (
+            ("cuboid", "cuboids"),
+            ("capsule", "capsules"),
+            ("cylinder", "cylinders"),
+            ("mesh", "meshes"),
+            ("voxel", "voxels"),
+        ):
+            obstacles = getattr(scene, kind)
+            if not obstacles:
+                continue
+            storage = getattr(data, field)
+            if storage is None:
+                raise ValueError(f"{kind} collision cache is not allocated")
+            if len(obstacles) > storage.max_n:
+                unit = "layer" if kind == "voxel" else "obstacle"
                 raise ValueError(
-                    f"voxel feature capacity is {data.features.shape[2]}, "
+                    f"{kind} {unit} capacity is {storage.max_n}, "
+                    f"requested {len(obstacles)}"
+                )
+        for grid in scene.voxel:
+            if grid.feature_tensor.numel() > data.voxels.features.shape[2]:
+                raise ValueError(
+                    f"voxel feature capacity is {data.voxels.features.shape[2]}, "
                     f"requested {grid.feature_tensor.numel()} for {grid.name}"
                 )
 
@@ -557,7 +568,7 @@ class CuroboPlanner:
         scene = self._scene(scene)
         with self._execution_context():
             planner = self._open()
-            self._check_voxel_capacity(planner, scene)
+            self._check_scene_capacity(planner, scene)
             self._world_valid = False
             try:
                 meshes = planner.scene_collision_checker.data.meshes
