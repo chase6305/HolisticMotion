@@ -472,6 +472,20 @@ class CuroboPlanner:
 
     def _scene_configuration(self, scene, collision_cache):
         cache = deepcopy(collision_cache)
+        # Reject known initial overflows before the upstream constructor can
+        # fail with only part of its resources initialized.
+        if isinstance(cache, Mapping):
+            for kind in ("cuboid", "capsule", "cylinder", "mesh"):
+                capacity = cache.get(kind)
+                if (
+                    isinstance(capacity, Integral)
+                    and capacity > 0
+                    and len(getattr(scene, kind)) > capacity
+                ):
+                    raise ValueError(
+                        f"{kind} obstacle capacity is {capacity}, "
+                        f"requested {len(getattr(scene, kind))}"
+                    )
         if not scene.voxel:
             return scene, cache
         cache = {} if cache is None else dict(cache)

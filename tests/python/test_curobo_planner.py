@@ -1396,3 +1396,28 @@ def test_scene_capacity_errors_preserve_world_and_backend_state(
         assert native.scene is previous
         assert native.resets == resets
         assert planner.plan([0, 0], [0.1, 0.1]).success
+
+
+@pytest.mark.parametrize("kind", ["cuboid", "sphere", "capsule", "cylinder", "mesh"])
+def test_initial_geometry_capacity_errors_precede_backend_construction(backend, kind):
+    geometry = {
+        "cuboid": {"dims": [0.1] * 3},
+        "sphere": {"radius": 0.1},
+        "capsule": {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]},
+        "cylinder": {"radius": 0.1, "height": 0.2},
+        "mesh": {"vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "faces": [[0, 1, 2]]},
+    }
+    scene = {
+        kind: {
+            str(index): dict(geometry[kind], pose=[0, 0, 0, 1, 0, 0, 0])
+            for index in range(2)
+        }
+    }
+    with pytest.raises(ValueError, match="capacity"):
+        CuroboPlanner(
+            backend.path,
+            scene=scene,
+            collision_cache={"capsule" if kind == "sphere" else kind: 1},
+        )
+    assert backend.configs == []
+    assert backend.instances == []

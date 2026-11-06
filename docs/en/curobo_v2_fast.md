@@ -159,6 +159,8 @@ that exceed either capacity are rejected before changing the current world.
 The same rule applies to cuboid, capsule, cylinder and mesh counts, including
 spheres represented as capsules. Updates that require an unallocated obstacle
 type are also rejected before clearing any current obstacles or mesh geometry.
+Initial scene counts above an explicit positive reservation are rejected before
+constructing the backend, avoiding partially initialized upstream resources.
 
 Complete world replacement also discards old Warp mesh geometry. This prevents
 the upstream name-only cache from reusing an old shape under the same name or

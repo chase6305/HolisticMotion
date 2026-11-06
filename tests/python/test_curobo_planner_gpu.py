@@ -743,3 +743,23 @@ def test_real_curobo_unreserved_geometry_keeps_an_empty_world(problem):
                 )
             result = other.plan(start, goal)
             assert result.success, result.message
+
+
+def test_real_curobo_initial_capacity_error_preserves_existing_capture(
+    problem, recwarn
+):
+    planner, start, goal = problem
+    geometry = {"dims": [0.1] * 3, "pose": [0, 0, 0, 1, 0, 0, 0]}
+    with pytest.raises(ValueError, match="capacity"):
+        CuroboPlanner(
+            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+            scene={"cuboid": {"first": geometry, "second": geometry}},
+            collision_cache={"cuboid": 1},
+        )
+    gc.collect()
+    assert not any(
+        issubclass(warning.category, pytest.PytestUnraisableExceptionWarning)
+        for warning in recwarn
+    )
+    result = planner.plan(start, goal)
+    assert result.success, result.message
