@@ -8,6 +8,7 @@ This module is independent of HolisticMotion's native collision component.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from functools import wraps
@@ -206,9 +207,9 @@ class CuroboPlanner:
         # The upstream example YAML disables dynamics. Enable them in every
         # planning stage so torque checks and later payload updates agree.
         robot["load_dynamics"] = True
-        with torch.inference_mode(False), torch.enable_grad():
-            device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
-            self._device = device_cfg.device
+        device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
+        self._device = device_cfg.device
+        with self._execution_context():
             prepared_scene = self._scene(scene)
             initial_scene, cache = self._scene_configuration(
                 prepared_scene, collision_cache
@@ -232,7 +233,7 @@ class CuroboPlanner:
             config.ik_solver_config.use_lm_seed = False
             planner = MotionPlanner(config)
         try:
-            with torch.inference_mode(False), torch.enable_grad():
+            with self._execution_context():
                 self._check_voxel_capacity(planner, prepared_scene)
                 if prepared_scene.voxel:
                     planner.update_world(prepared_scene)
@@ -290,7 +291,8 @@ class CuroboPlanner:
             self._torch.cuda.synchronize(self._device)
             _LIVE_PLANNERS[:] = [*live, ref(self)]
         except BaseException:
-            planner.destroy()
+            with self._execution_context():
+                planner.destroy()
             raise
         self._planner = planner
 
@@ -517,6 +519,16 @@ class CuroboPlanner:
             raise RuntimeError("CuroboPlanner is closed")
         return self._planner
 
+    @contextmanager
+    def _execution_context(self):
+        with (
+            self._torch.inference_mode(False),
+            self._torch.enable_grad(),
+            self._torch.autocast("cpu", enabled=False),
+            self._torch.autocast(self._device.type, enabled=False),
+        ):
+            yield
+
     def _planning_backend(self):
         planner = self._open()
         if self._robot_update_failed is not None:
@@ -533,7 +545,7 @@ class CuroboPlanner:
     def warmup(self, num_iterations=2):
         """Compile and capture representative pose and RRT branches once."""
         num_iterations = _count(num_iterations, "num_iterations")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             self._planning_backend().warmup(
                 enable_graph=True, num_warmup_iterations=num_iterations
             )
@@ -543,7 +555,7 @@ class CuroboPlanner:
     def update_world(self, scene):
         """Replace all world obstacles, retaining allocated backend capacities."""
         scene = self._scene(scene)
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._open()
             self._check_voxel_capacity(planner, scene)
             self._world_valid = False
@@ -575,7 +587,7 @@ class CuroboPlanner:
             validated_transform(transform, name="obstacle transform"),
             "obstacle transform",
         )
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             checker = planner.scene_collision_checker
             if not checker.check_obstacle_exists(obstacle_name):
@@ -623,7 +635,7 @@ class CuroboPlanner:
             )
         properties = np.concatenate(([mass], com, inertia))
         converted = _float32(properties, "inertial properties")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             if (
                 link_name
@@ -670,7 +682,7 @@ class CuroboPlanner:
             converted = _float32(spheres, "spheres")
             if np.any(converted[:, 3] <= 0.0):
                 raise ValueError("sphere radii round to zero in float32")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             params = planner.attachment_manager.kinematics_params
             if link_name not in params.link_name_to_idx_map:
@@ -751,7 +763,7 @@ class CuroboPlanner:
             enable_graph_attempt, "enable_graph_attempt", minimum=0
         )
         endpoint_tolerance = _positive(endpoint_tolerance, "endpoint_tolerance")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             goal_position, goal_state = self._position(goal, "goal")
@@ -768,7 +780,7 @@ class CuroboPlanner:
     @_serialized_backend_call
     def forward_kinematics(self, position):
         """Return owned base-frame 4x4 transforms for the configured tools."""
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._open()
             # Accept the same float32 bound roundoff as a returned trajectory,
             # so callers can evaluate FK on any accepted result sample.
@@ -809,7 +821,7 @@ class CuroboPlanner:
             name: validated_transform(tool_poses[name], name=name)
             for name in self._tool_frames
         }
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             poses = {}
@@ -959,8 +971,9 @@ class CuroboPlanner:
             planner = self._planner
             self._planner = None
             try:
-                planner.destroy()
-                self._torch.cuda.synchronize(self._device)
+                with self._execution_context():
+                    planner.destroy()
+                    self._torch.cuda.synchronize(self._device)
             finally:
                 _LIVE_PLANNERS[:] = [
                     reference

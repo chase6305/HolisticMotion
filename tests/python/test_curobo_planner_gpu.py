@@ -286,12 +286,23 @@ def test_real_curobo_analytic_world_primitives_are_not_omitted(problem, kind, ge
 
 
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
-def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode):
+@pytest.mark.parametrize("amp_dtype", [None, "float16", "bfloat16"])
+def test_real_curobo_cold_planning_inside_torch_inference_context(
+    problem, mode, amp_dtype
+):
     import torch
 
     _existing, start, goal = problem
-    with getattr(torch, mode)():
-        caller_state = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+    dtype = torch.float16 if amp_dtype is None else getattr(torch, amp_dtype)
+    with (
+        getattr(torch, mode)(),
+        torch.autocast("cuda", dtype=dtype, enabled=amp_dtype is not None),
+    ):
+        caller_state = (
+            torch.is_grad_enabled(),
+            torch.is_inference_mode_enabled(),
+            torch.is_autocast_enabled(),
+        )
         with CuroboPlanner(
             os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
             scene=_free_voxel_scene(torch.ones((8, 8, 8))),
@@ -306,6 +317,7 @@ def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode)
         assert (
             torch.is_grad_enabled(),
             torch.is_inference_mode_enabled(),
+            torch.is_autocast_enabled(),
         ) == caller_state
 
 

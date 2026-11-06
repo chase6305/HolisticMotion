@@ -1069,8 +1069,9 @@ def test_scene_objects_cannot_hide_obstacles_from_typed_storage(backend):
 
 
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
+@pytest.mark.parametrize("autocast", [False, True])
 def test_backend_owns_its_autograd_context_and_restores_the_caller(
-    backend, monkeypatch, mode
+    backend, monkeypatch, mode, autocast
 ):
     torch = backend.torch
     from curobo.motion_planner import MotionPlannerCfg
@@ -1080,7 +1081,11 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
     def record_context(call):
         def recorded(*args, **kwargs):
             observed.append(
-                (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+                (
+                    torch.is_grad_enabled(),
+                    torch.is_inference_mode_enabled(),
+                    (torch.ones(2, 2) @ torch.ones(2, 2)).dtype,
+                )
             )
             return call(*args, **kwargs)
 
@@ -1089,7 +1094,10 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
     monkeypatch.setattr(
         MotionPlannerCfg, "create", record_context(MotionPlannerCfg.create)
     )
-    with getattr(torch, mode)():
+    with (
+        getattr(torch, mode)(),
+        torch.autocast("cpu", dtype=torch.bfloat16, enabled=autocast),
+    ):
         before = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
         with CuroboPlanner(
             backend.path,
@@ -1104,6 +1112,7 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
                 "compute_kinematics",
                 "update_link_inertial",
                 "warmup",
+                "destroy",
             ):
                 monkeypatch.setattr(native, name, record_context(getattr(native, name)))
             params = native.attachment_manager.kinematics_params
@@ -1132,6 +1141,9 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
                 torch.is_grad_enabled(),
                 torch.is_inference_mode_enabled(),
             ) == before
+            assert (torch.ones(2, 2) @ torch.ones(2, 2)).dtype == (
+                torch.bfloat16 if autocast else torch.float32
+            )
             with pytest.raises(ValueError):
                 planner.plan([99.0, 0.0], [0.1, 0.1])
             assert (
@@ -1139,7 +1151,7 @@ def test_backend_owns_its_autograd_context_and_restores_the_caller(
                 torch.is_inference_mode_enabled(),
             ) == before
     assert len(observed) >= 8
-    assert all(value == (True, False) for value in observed)
+    assert all(value == (True, False, torch.float32) for value in observed)
 
 
 def test_world_replacement_discards_obsolete_mesh_geometry(backend, monkeypatch):
