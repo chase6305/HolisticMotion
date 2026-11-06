@@ -397,14 +397,24 @@ def test_real_curobo_instances_keep_worlds_dynamics_and_lifetimes_independent(pr
     np.testing.assert_array_equal(previous.trajectory.position, snapshot)
 
 
+@pytest.mark.parametrize("with_voxel_scene", [False, True])
 def test_real_curobo_rejects_incompatible_live_capture_layout_before_kernel_launch(
-    problem,
+    problem, with_voxel_scene
 ):
+    import torch
+
     planner, start, goal = problem
+    cache = {"cuboid": 2}
+    scene = None
+    if with_voxel_scene:
+        cache = dict(_COLLISION_CACHE)
+        cache["voxel"] = dict(cache["voxel"], layers=3)
+        scene = _free_voxel_scene(torch.ones((8, 8, 8)))
     with pytest.raises(RuntimeError, match="share a collision cache layout"):
         CuroboPlanner(
             os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
-            collision_cache={"cuboid": 2},
+            collision_cache=cache,
+            scene=scene,
         )
     result = planner.plan(start, goal)
     assert result.success, result.message
