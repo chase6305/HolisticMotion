@@ -9,6 +9,27 @@ import numpy as np
 import pytest
 from holistic_motion.kit.curobo_planner import CuroboPlanner
 
+_COLLISION_CACHE = {
+    "cuboid": 4,
+    "capsule": 2,
+    "cylinder": 2,
+    "mesh": 2,
+    "voxel": {"layers": 2, "dims": [3.9] * 3, "voxel_size": 0.3},
+}
+
+
+def _free_voxel_scene(features):
+    return {
+        "voxel": {
+            "grid": {
+                "dims": [8.0] * 3,
+                "voxel_size": 1.0,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": features,
+            }
+        }
+    }
+
 
 @pytest.fixture(scope="module")
 def problem():
@@ -25,8 +46,12 @@ def problem():
                 "Explicit HOLISTICMOTION_TEST_CUROBO_" + name + " JSON is required"
             )
         coordinates.append(np.asarray(json.loads(text), dtype=float))
+    import torch
+
     with CuroboPlanner(
-        path, collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2, "mesh": 2}
+        path,
+        scene=_free_voxel_scene(torch.ones((8, 8, 8)).transpose(0, 1)),
+        collision_cache=_COLLISION_CACHE,
     ) as planner:
         planner.warmup(1)
         yield planner, *coordinates
@@ -261,14 +286,27 @@ def test_real_curobo_analytic_world_primitives_are_not_omitted(problem, kind, ge
 
 
 @pytest.mark.parametrize("mode", ["no_grad", "inference_mode"])
-def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode):
+@pytest.mark.parametrize("amp_dtype", [None, "float16", "bfloat16"])
+def test_real_curobo_cold_planning_inside_torch_inference_context(
+    problem, mode, amp_dtype
+):
     import torch
 
     _existing, start, goal = problem
-    with getattr(torch, mode)():
-        caller_state = (torch.is_grad_enabled(), torch.is_inference_mode_enabled())
+    dtype = torch.float16 if amp_dtype is None else getattr(torch, amp_dtype)
+    with (
+        getattr(torch, mode)(),
+        torch.autocast("cuda", dtype=dtype, enabled=amp_dtype is not None),
+    ):
+        caller_state = (
+            torch.is_grad_enabled(),
+            torch.is_inference_mode_enabled(),
+            torch.is_autocast_enabled(),
+        )
         with CuroboPlanner(
-            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]
+            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+            scene=_free_voxel_scene(torch.ones((8, 8, 8))),
+            collision_cache=_COLLISION_CACHE,
         ) as planner:
             planner.warmup(1)
             joint_result = planner.plan(start, goal)
@@ -279,6 +317,7 @@ def test_real_curobo_cold_planning_inside_torch_inference_context(problem, mode)
         assert (
             torch.is_grad_enabled(),
             torch.is_inference_mode_enabled(),
+            torch.is_autocast_enabled(),
         ) == caller_state
 
 
@@ -328,7 +367,7 @@ def test_real_curobo_instances_keep_worlds_dynamics_and_lifetimes_independent(pr
     snapshot = previous.trajectory.position.copy()
     with CuroboPlanner(
         os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
-        collision_cache={"cuboid": 4, "capsule": 2, "cylinder": 2, "mesh": 2},
+        collision_cache=_COLLISION_CACHE,
     ) as other:
         other.warmup(1)
         other.update_world(
@@ -358,14 +397,24 @@ def test_real_curobo_instances_keep_worlds_dynamics_and_lifetimes_independent(pr
     np.testing.assert_array_equal(previous.trajectory.position, snapshot)
 
 
+@pytest.mark.parametrize("with_voxel_scene", [False, True])
 def test_real_curobo_rejects_incompatible_live_capture_layout_before_kernel_launch(
-    problem,
+    problem, with_voxel_scene
 ):
+    import torch
+
     planner, start, goal = problem
+    cache = {"cuboid": 2}
+    scene = None
+    if with_voxel_scene:
+        cache = dict(_COLLISION_CACHE)
+        cache["voxel"] = dict(cache["voxel"], layers=3)
+        scene = _free_voxel_scene(torch.ones((8, 8, 8)))
     with pytest.raises(RuntimeError, match="share a collision cache layout"):
         CuroboPlanner(
             os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
-            collision_cache={"cuboid": 2},
+            collision_cache=cache,
+            scene=scene,
         )
     result = planner.plan(start, goal)
     assert result.success, result.message
@@ -445,5 +494,272 @@ def test_real_curobo_invalid_voxel_distances_preserve_the_existing_world(
     }
     with pytest.raises(ValueError, match="ESDF"):
         planner.update_world(scene)
+    result = planner.plan(start, goal)
+    assert result.success, result.message
+
+
+@pytest.mark.parametrize(
+    "representation, public_scene",
+    [
+        ("cpu_float32", False),
+        ("cuda_nonleaf", False),
+        ("cpu_strided", True),
+        ("cuda_float64", True),
+    ],
+)
+def test_real_curobo_voxel_input_storage_and_ownership(
+    problem, representation, public_scene
+):
+    import torch
+
+    planner, start, goal = problem
+    values = torch.ones((8, 8, 8))
+    if representation == "cuda_nonleaf":
+        values = values.cuda().requires_grad_(True) * 2
+    elif representation == "cpu_strided":
+        values = values.half().transpose(0, 1)
+    elif representation == "cuda_float64":
+        values = values.double().cuda()
+    scene = _free_voxel_scene(values)
+    if public_scene:
+        from curobo.scene import Scene
+
+        scene = Scene.create(scene)
+    try:
+        planner.update_world(scene)
+        result = planner.plan(start, goal)
+        assert result.success, result.message
+        snapshot = result.trajectory.position.copy()
+        with torch.inference_mode():
+            values.fill_(-1)
+        preserved = planner.plan(start, goal)
+        assert preserved.success, preserved.message
+        planner.update_world(scene)
+        blocked = planner.plan(start, goal, max_attempts=2)
+        assert not blocked.success and blocked.trajectory is None
+        np.testing.assert_array_equal(result.trajectory.position, snapshot)
+    finally:
+        planner.update_world({})
+    assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("count", [1, 511, 513])
+def test_real_curobo_invalid_voxel_counts_preserve_an_occupied_world(problem, count):
+    import torch
+
+    planner, start, goal = problem
+    occupied = _free_voxel_scene(-torch.ones((8, 8, 8)))
+    malformed = _free_voxel_scene(torch.ones(count))
+    planner.update_world(occupied)
+    try:
+        assert not planner.plan(start, goal, max_attempts=2).success
+        with pytest.raises(ValueError, match="feature count.*grid shape"):
+            planner.update_world(malformed)
+        blocked = planner.plan(start, goal, max_attempts=2)
+        assert not blocked.success and blocked.trajectory is None
+        with pytest.raises(ValueError, match="feature count.*grid shape"):
+            CuroboPlanner(
+                os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+                scene=malformed,
+                collision_cache=_COLLISION_CACHE,
+            )
+    finally:
+        planner.update_world({})
+    assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("count, size", [(13, 0.1), (3, 0.3)])
+def test_real_curobo_voxel_grid_indexing_uses_integer_counts(problem, count, size):
+    import torch
+
+    planner, start, goal = problem
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [count * size] * 3,
+                "voxel_size": size,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": torch.ones((count,) * 3),
+            }
+        }
+    }
+    with CuroboPlanner(
+        os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+        scene=scene,
+        collision_cache=_COLLISION_CACHE,
+    ) as other:
+        data = other._planner.scene_collision_checker.data.voxels
+        original_buffer = data.params.data_ptr()
+        for replace in (False, True):
+            if replace:
+                other.update_world(scene)
+            assert data.params.data_ptr() == original_buffer
+            assert data.params[0, 0, :3].to(torch.int64).tolist() == [count] * 3
+            assert other.plan(start, goal).success
+    assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("explicit_cache", [True, False])
+def test_real_curobo_initial_voxels_preserve_reserved_capacity(problem, explicit_cache):
+    import torch
+
+    _planner, start, goal = problem
+    small = {
+        "dims": [0.9] * 3,
+        "voxel_size": 0.3,
+        "pose": [0, 0, 0, 1, 0, 0, 0],
+        "feature_tensor": torch.ones((3,) * 3),
+    }
+    large = dict(small, dims=[3.9] * 3, feature_tensor=torch.ones((13,) * 3))
+    scene = {"voxel": {"small": small}}
+    cache = dict(_COLLISION_CACHE)
+    if not explicit_cache:
+        cache.pop("voxel")
+        scene["voxel"]["large"] = large
+    with CuroboPlanner(
+        os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+        scene=scene,
+        collision_cache=cache,
+    ) as other:
+        data = other._planner.scene_collision_checker.data.voxels
+        assert data.max_n == 2 and data.features.shape[2] == 13**3
+        pointers = (data.params.data_ptr(), data.features.data_ptr())
+        other.update_world({"voxel": {"small": small, "large": large}})
+        assert (data.params.data_ptr(), data.features.data_ptr()) == pointers
+        result = other.plan(start, goal)
+        assert result.success, result.message
+        snapshot = result.trajectory.position.copy()
+        other.update_world({"voxel": {"small": small}})
+        assert other.plan(start, goal).success
+        np.testing.assert_array_equal(result.trajectory.position, snapshot)
+
+
+@pytest.mark.parametrize("overflow", ["layers", "cells"])
+def test_real_curobo_voxel_capacity_errors_keep_occupied_world(problem, overflow):
+    import torch
+
+    planner, start, goal = problem
+    grid = {
+        "dims": [3.9] * 3,
+        "voxel_size": 0.3,
+        "pose": [0, 0, 0, 1, 0, 0, 0],
+        "feature_tensor": -torch.ones((13,) * 3),
+    }
+    planner.update_world({"voxel": {"occupied": grid}})
+    try:
+        if overflow == "layers":
+            replacement = {"voxel": {str(i): grid for i in range(3)}}
+        else:
+            replacement = {
+                "voxel": {
+                    "grid": dict(
+                        grid, dims=[4.2] * 3, feature_tensor=torch.ones((14,) * 3)
+                    )
+                }
+            }
+        with pytest.raises(ValueError, match="voxel.*capacity"):
+            planner.update_world(replacement)
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success and result.trajectory is None
+    finally:
+        planner.update_world({})
+    assert planner.plan(start, goal).success
+
+
+def test_real_curobo_unreserved_voxel_update_keeps_an_empty_world(problem):
+    import torch
+
+    _planner, start, goal = problem
+    with CuroboPlanner(os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]) as other:
+        with pytest.raises(ValueError, match="voxel.*not allocated"):
+            other.update_world(_free_voxel_scene(torch.ones((8, 8, 8))))
+        result = other.plan(start, goal)
+        assert result.success, result.message
+
+
+@pytest.mark.parametrize("kind", ["cuboid", "sphere", "capsule", "cylinder", "mesh"])
+def test_real_curobo_scene_capacity_errors_preserve_world_and_mesh_cache(problem, kind):
+    import trimesh
+
+    planner, start, goal = problem
+    box = trimesh.creation.box(extents=[0.1] * 3)
+    geometry = {
+        "cuboid": {"dims": [0.1] * 3},
+        "sphere": {"radius": 0.1},
+        "capsule": {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]},
+        "cylinder": {"radius": 0.1, "height": 0.2},
+        "mesh": {"vertices": box.vertices.tolist(), "faces": box.faces.tolist()},
+    }
+    far_pose = [200, 200, 200, 1, 0, 0, 0]
+    planner.update_world(
+        {
+            "cuboid": {
+                "occupied": {"dims": [100.0] * 3, "pose": [0, 0, 0, 1, 0, 0, 0]}
+            },
+            "mesh": {"retained": dict(geometry["mesh"], pose=far_pose)},
+        }
+    )
+    try:
+        data = planner._planner.scene_collision_checker.data
+        names = data.get_obstacle_names()
+        cached_meshes = data.meshes.get_cached_mesh_names()
+        assert cached_meshes
+        count = _COLLISION_CACHE["capsule" if kind == "sphere" else kind] + 1
+        bad = {
+            kind: {
+                str(index): dict(geometry[kind], pose=far_pose)
+                for index in range(count)
+            }
+        }
+        with pytest.raises(ValueError, match="capacity"):
+            planner.update_world(bad)
+        assert data.get_obstacle_names() == names
+        assert data.meshes.get_cached_mesh_names() == cached_meshes
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success and result.trajectory is None
+        far = np.eye(4)
+        far[:3, 3] = 200
+        planner.update_obstacle_pose("occupied", far)
+        moved = planner.plan(start, goal)
+        assert moved.success, moved.message
+    finally:
+        planner.update_world({})
+
+
+def test_real_curobo_unreserved_geometry_keeps_an_empty_world(problem):
+    _planner, start, goal = problem
+    geometry = {
+        "cuboid": {"dims": [0.1] * 3},
+        "sphere": {"radius": 0.1},
+        "capsule": {"radius": 0.1, "base": [0, 0, 0], "tip": [0, 0, 1]},
+        "cylinder": {"radius": 0.1, "height": 0.2},
+        "mesh": {"vertices": [[0, 0, 0], [1, 0, 0], [0, 1, 0]], "faces": [[0, 1, 2]]},
+    }
+    with CuroboPlanner(os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]) as other:
+        for kind, fields in geometry.items():
+            with pytest.raises(ValueError, match="not allocated"):
+                other.update_world(
+                    {kind: {"unreserved": dict(fields, pose=[0, 0, 0, 1, 0, 0, 0])}}
+                )
+            result = other.plan(start, goal)
+            assert result.success, result.message
+
+
+def test_real_curobo_initial_capacity_error_preserves_existing_capture(
+    problem, recwarn
+):
+    planner, start, goal = problem
+    geometry = {"dims": [0.1] * 3, "pose": [0, 0, 0, 1, 0, 0, 0]}
+    with pytest.raises(ValueError, match="capacity"):
+        CuroboPlanner(
+            os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+            scene={"cuboid": {"first": geometry, "second": geometry}},
+            collision_cache={"cuboid": 1},
+        )
+    gc.collect()
+    assert not any(
+        issubclass(warning.category, pytest.PytestUnraisableExceptionWarning)
+        for warning in recwarn
+    )
     result = planner.plan(start, goal)
     assert result.success, result.message

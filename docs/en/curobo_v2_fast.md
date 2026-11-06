@@ -135,13 +135,32 @@ Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
 `voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose
 quaternions are rejected before replacing the current world. Voxel ESDF features
 must be a nonempty floating Torch tensor with finite values within float16
-storage range, matching the upstream grid shape and device requirements. Each
+storage range, matching the upstream grid shape. CPU and CUDA tensors are
+copied into owned, contiguous float16 storage on the planner's device for both
+construction and world replacement. Strided tensors and tensors with autograd
+history are accepted as data; scene preparation detaches their values. Each
+grid must have at least one cell on each axis and exactly the corresponding
+number of features, within the backend's 32-bit indexing and float32 integer
+precision. Validated integer cell counts are stored directly in the backend;
+float32 extent/resolution roundoff does not change the grid shape. Each
 obstacle requires an explicit pose; missing mesh poses are rejected before the loader
 can clear the existing world. A public `Scene`
 must keep its `objects` and typed obstacle lists consistent. Spheres are
 represented as analytic capsules with coincident endpoints because the
 qualified upstream loader otherwise omits them. Reserve `collision_cache={"capsule": N}`
 for later sphere or capsule replacements; no mesh approximation is introduced.
+
+For voxel replacement, reserve `collision_cache={"voxel": {"layers": 2,
+"dims": [4, 4, 4], "voxel_size": 0.1}}`. These dimensions and resolution
+determine the feature capacity of each layer. An initial small grid preserves
+that reservation; without an explicit voxel reservation, the initial grids
+determine the layer count and largest feature capacity. Later voxel updates
+that exceed either capacity are rejected before changing the current world.
+The same rule applies to cuboid, capsule, cylinder and mesh counts, including
+spheres represented as capsules. Updates that require an unallocated obstacle
+type are also rejected before clearing any current obstacles or mesh geometry.
+Initial scene counts above an explicit positive reservation are rejected before
+constructing the backend, avoiding partially initialized upstream resources.
 
 Complete world replacement also discards old Warp mesh geometry. This prevents
 the upstream name-only cache from reusing an old shape under the same name or
@@ -168,7 +187,10 @@ Controllers and hardware execution are outside this adapter.
 
 The NumPy interface manages the backend's internal autograd context. It can be
 constructed and called inside a caller's `torch.no_grad()` or
-`torch.inference_mode()` block; the caller's state is restored after each call.
+`torch.inference_mode()` block. Backend operations disable CPU/CUDA autocast
+to retain their configured dtype, including when the caller uses float16 or
+bfloat16 autocast. The caller's gradient, inference and autocast settings are
+restored after each call.
 
 ## Run the example and tests
 

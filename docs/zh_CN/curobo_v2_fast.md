@@ -111,10 +111,23 @@ planner.update_link_collision_spheres("attached_object", None)
 替换环境前拒绝未知类型、重名障碍物、无效尺寸及非单位位姿四元数。所有障碍物须有
 显式位姿，缺少 mesh 位姿时在加载器清除现有场景前即拒绝输入。
 voxel 的 ESDF 数据须为非空浮点 Torch tensor，数值有限且在 float16 存储范围内，
-并满足上游的栅格形状和设备要求。
+并满足上游的栅格形状要求。构造及场景替换时，CPU / CUDA tensor 均复制到规划设备上
+独立、连续的 float16 存储中。支持非连续张量及带 autograd 历史的张量；场景数据复制
+时会脱离梯度图。
+每个轴至少包含一个单元，ESDF 元素数须与栅格形状完全一致，并满足后端 32 位索引和
+float32 整数精度限制。适配器直接写入验证后的整数单元数，避免 float32 尺寸 / 分辨率
+相除的舍入误差改变栅格形状。
 公开 `Scene` 的 `objects` 必须与各类型障碍物列表一致。验证的上游加载器会遗漏
 环境球，因此适配器将球转换为端点重合的解析胶囊体，不引入 mesh 近似。
 后续需要替换球或胶囊体时，构造中预留 `collision_cache={"capsule": N}`。
+
+替换 voxel 时可预留 `collision_cache={"voxel": {"layers": 2,
+"dims": [4, 4, 4], "voxel_size": 0.1}}`，尺寸和分辨率决定每层 ESDF 的容量。
+初始小栅格会保留该预留空间；没有显式指定时，按初始栅格数量及最大元素数分配。
+后续 voxel 超过层数或每层容量时，在改变原世界前拒绝请求。
+cuboid、capsule、cylinder 和 mesh 的数量也会提前检查；sphere 计入 capsule 容量。
+超过容量或使用未分配的几何类型时，在清除原障碍物和网格几何前拒绝请求。
+初始场景数量超过显式正容量时，在构造后端前即拒绝，避免上游资源只完成部分初始化。
 
 完整替换环境时也会清除旧 Warp 网格几何，避免上游仅按名称缓存而复用同名旧形状，
 或持续积累已移除的网格。释放网格前等待设备工作完成，保留碰撞存储容量和 capture。
@@ -133,7 +146,9 @@ NumPy `time`、`position`、`velocity`、`acceleration` 以及可选 `jerk` 数�
 覆盖和动力学数据；控制器及硬件执行不在适配器范围内。
 
 NumPy 接口自行管理后端所需的 autograd 上下文，可在调用方的 `torch.no_grad()` 或
-`torch.inference_mode()` 中构造和调用；每次调用后恢复调用方的状态。
+`torch.inference_mode()` 中构造和调用。后端计算期间关闭 CPU / CUDA autocast，
+保留其配置的数值类型；调用方可使用 float16 或 bfloat16 autocast。
+调用后恢复外层梯度、inference 和 autocast 状态。
 
 ## 示例与测试
 

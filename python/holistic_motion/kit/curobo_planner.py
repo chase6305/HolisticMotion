@@ -8,9 +8,11 @@ This module is independent of HolisticMotion's native collision component.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
+from contextlib import contextmanager
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from functools import wraps
+from math import prod
 from numbers import Integral
 from pathlib import Path
 from threading import RLock
@@ -205,12 +207,18 @@ class CuroboPlanner:
         # The upstream example YAML disables dynamics. Enable them in every
         # planning stage so torque checks and later payload updates agree.
         robot["load_dynamics"] = True
-        with torch.inference_mode(False), torch.enable_grad():
+        device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
+        self._device = device_cfg.device
+        with self._execution_context():
+            prepared_scene = self._scene(scene)
+            initial_scene, cache = self._scene_configuration(
+                prepared_scene, collision_cache
+            )
             config = MotionPlannerCfg.create(
                 robot=robot,
-                scene_model=self._scene(scene),
-                collision_cache=deepcopy(collision_cache),
-                device_cfg=DeviceCfg(device=selected_device, dtype=torch.float32),
+                scene_model=initial_scene,
+                collision_cache=cache,
+                device_cfg=device_cfg,
                 graph_planner_algorithm="rrt",
                 enable_timeopt=True,
                 self_collision_check=True,
@@ -225,6 +233,11 @@ class CuroboPlanner:
             config.ik_solver_config.use_lm_seed = False
             planner = MotionPlanner(config)
         try:
+            with self._execution_context():
+                self._check_scene_capacity(planner, prepared_scene)
+                if prepared_scene.voxel:
+                    planner.update_world(prepared_scene)
+                self._set_voxel_shapes(planner, prepared_scene)
             self._backend_names = _names(planner.joint_names)
             self._tool_frames = tuple(planner.tool_frames)
             self._joint_names = requested_names or self._backend_names
@@ -278,7 +291,8 @@ class CuroboPlanner:
             self._torch.cuda.synchronize(self._device)
             _LIVE_PLANNERS[:] = [*live, ref(self)]
         except BaseException:
-            planner.destroy()
+            with self._execution_context():
+                planner.destroy()
             raise
         self._planner = planner
 
@@ -313,11 +327,9 @@ class CuroboPlanner:
             unknown = set(scene) - set(supported)
             if unknown:
                 raise ValueError(f"unsupported scene obstacle types: {list(unknown)}")
-            scene = self._Scene.create(deepcopy(dict(scene)))
-        elif isinstance(scene, self._Scene):
-            scene = deepcopy(scene)
-        else:
+        elif not isinstance(scene, self._Scene):
             raise TypeError("scene must be a local path, dictionary or cuRobo Scene")
+        scene = self._copy_scene(scene)
         obstacles = list(scene)
         typed = [obstacle for kind in supported for obstacle in getattr(scene, kind)]
         if {id(value) for value in obstacles} != {id(value) for value in typed}:
@@ -360,17 +372,23 @@ class CuroboPlanner:
                     if _float32(value, f"{name} {field}") <= 0.0:
                         raise ValueError(f"{name} {field} rounds to zero in float32")
         for grid in scene.voxel:
-            features = getattr(grid, "feature_tensor", None)
-            if not self._torch.is_tensor(features) or not features.is_floating_point():
-                raise TypeError(f"{grid.name} ESDF features must be a floating tensor")
-            if features.numel() == 0:
-                raise ValueError(f"{grid.name} ESDF features must be nonempty")
-            minimum, maximum = (bound.item() for bound in self._torch.aminmax(features))
-            # The public voxel loader stores ESDF distances in float16.
-            limit = self._torch.finfo(self._torch.float16).max
-            if not (-limit <= minimum <= maximum <= limit):
+            shape = grid.get_grid_shape()[0]
+            if any(size < 1 for size in shape):
                 raise ValueError(
-                    f"{grid.name} ESDF features must stay finite in float16 storage"
+                    f"{grid.name} grid shape must have at least one cell per axis"
+                )
+            if prod(shape) > np.iinfo(np.int32).max:
+                raise ValueError(f"{grid.name} grid shape exceeds 32-bit indexing")
+            if np.any(
+                np.asarray(shape, dtype=np.float32).astype(float)
+                != np.asarray(shape, dtype=float)
+            ):
+                raise ValueError(
+                    f"{grid.name} grid shape loses integer float32 precision"
+                )
+            if grid.feature_tensor.numel() != prod(shape):
+                raise ValueError(
+                    f"{grid.name} ESDF feature count does not match grid shape {shape}"
                 )
         if scene.sphere:
             # The upstream SceneData loader omits Sphere objects. A capsule
@@ -390,6 +408,133 @@ class CuroboPlanner:
             )
         return scene
 
+    def _copy_scene(self, scene):
+        if isinstance(scene, Mapping):
+            grids = (scene.get("voxel") or {}).items()
+        else:
+            grids = ((grid.name, grid) for grid in scene.voxel)
+        memo = {}
+        for name, grid in grids:
+            features = (
+                grid.get("feature_tensor")
+                if isinstance(grid, Mapping)
+                else grid.feature_tensor
+            )
+            if not self._torch.is_tensor(features) or not features.is_floating_point():
+                raise TypeError(f"{name} ESDF features must be a floating tensor")
+            if features.numel() == 0:
+                raise ValueError(f"{name} ESDF features must be nonempty")
+            minimum, maximum = (bound.item() for bound in self._torch.aminmax(features))
+            limit = self._torch.finfo(self._torch.float16).max
+            if not (-limit <= minimum <= maximum <= limit):
+                raise ValueError(
+                    f"{name} ESDF features must stay finite in float16 storage"
+                )
+            # Non-leaf tensors cannot be deepcopied. Copy their values directly
+            # into the contiguous float16 storage required by the Warp loader.
+            with self._torch.inference_mode(False), self._torch.no_grad():
+                owned_features = features.detach().to(
+                    device=self._device,
+                    dtype=self._torch.float16,
+                    copy=True,
+                    memory_format=self._torch.contiguous_format,
+                )
+            if isinstance(grid, Mapping):
+                metadata = dict(grid)
+                metadata.pop("feature_tensor", None)
+                owned_grid = deepcopy(metadata)
+                owned_grid["feature_tensor"] = owned_features
+            else:
+                owned_grid = copy(grid)
+                owned_grid.feature_tensor = None
+                owned_grid = deepcopy(owned_grid)
+                owned_grid.feature_tensor = owned_features
+                owned_grid.feature_dtype = owned_features.dtype
+            memo[id(grid)] = owned_grid
+        copied = deepcopy(dict(scene) if isinstance(scene, Mapping) else scene, memo)
+        if isinstance(copied, Mapping):
+            copied = self._Scene.create(copied)
+        return copied
+
+    def _set_voxel_shapes(self, planner, scene):
+        # The batch loader divides float32 extents by resolution, then the
+        # kernel truncates those quotients. Store the validated integer counts
+        # directly so e.g. 1.3 / 0.1 cannot become twelve cells.
+        if scene.voxel:
+            data = planner.scene_collision_checker.data.voxels
+            for grid in scene.voxel:
+                shape = self._torch.as_tensor(
+                    grid.get_grid_shape()[0],
+                    dtype=data.params.dtype,
+                    device=self._device,
+                )
+                data.params[0, data.get_idx(grid.name), :3].copy_(shape)
+
+    def _scene_configuration(self, scene, collision_cache):
+        cache = deepcopy(collision_cache)
+        # Reject known initial overflows before the upstream constructor can
+        # fail with only part of its resources initialized.
+        if isinstance(cache, Mapping):
+            for kind in ("cuboid", "capsule", "cylinder", "mesh"):
+                capacity = cache.get(kind)
+                if (
+                    isinstance(capacity, Integral)
+                    and capacity > 0
+                    and len(getattr(scene, kind)) > capacity
+                ):
+                    raise ValueError(
+                        f"{kind} obstacle capacity is {capacity}, "
+                        f"requested {len(getattr(scene, kind))}"
+                    )
+        if not scene.voxel:
+            return scene, cache
+        cache = {} if cache is None else dict(cache)
+        if cache.get("voxel") is None:
+            largest = max(scene.voxel, key=lambda grid: grid.feature_tensor.numel())
+            cache["voxel"] = {
+                "layers": len(scene.voxel),
+                "dims": largest.dims,
+                "voxel_size": largest.voxel_size,
+            }
+        # The upstream initial-scene path ignores the voxel reservation.
+        # Allocate its fixed buffers empty, then load the complete scene.
+        initial = copy(scene)
+        initial.voxel = []
+        voxel_ids = {id(grid) for grid in scene.voxel}
+        initial.objects = [
+            obstacle for obstacle in scene if id(obstacle) not in voxel_ids
+        ]
+        return initial, cache
+
+    @staticmethod
+    def _check_scene_capacity(planner, scene):
+        data = planner.scene_collision_checker.data
+        for kind, field in (
+            ("cuboid", "cuboids"),
+            ("capsule", "capsules"),
+            ("cylinder", "cylinders"),
+            ("mesh", "meshes"),
+            ("voxel", "voxels"),
+        ):
+            obstacles = getattr(scene, kind)
+            if not obstacles:
+                continue
+            storage = getattr(data, field)
+            if storage is None:
+                raise ValueError(f"{kind} collision cache is not allocated")
+            if len(obstacles) > storage.max_n:
+                unit = "layer" if kind == "voxel" else "obstacle"
+                raise ValueError(
+                    f"{kind} {unit} capacity is {storage.max_n}, "
+                    f"requested {len(obstacles)}"
+                )
+        for grid in scene.voxel:
+            if grid.feature_tensor.numel() > data.voxels.features.shape[2]:
+                raise ValueError(
+                    f"voxel feature capacity is {data.voxels.features.shape[2]}, "
+                    f"requested {grid.feature_tensor.numel()} for {grid.name}"
+                )
+
     @staticmethod
     def _numpy(tensor):
         return tensor.detach().cpu().numpy()
@@ -398,6 +543,16 @@ class CuroboPlanner:
         if self._planner is None:
             raise RuntimeError("CuroboPlanner is closed")
         return self._planner
+
+    @contextmanager
+    def _execution_context(self):
+        with (
+            self._torch.inference_mode(False),
+            self._torch.enable_grad(),
+            self._torch.autocast("cpu", enabled=False),
+            self._torch.autocast(self._device.type, enabled=False),
+        ):
+            yield
 
     def _planning_backend(self):
         planner = self._open()
@@ -415,7 +570,7 @@ class CuroboPlanner:
     def warmup(self, num_iterations=2):
         """Compile and capture representative pose and RRT branches once."""
         num_iterations = _count(num_iterations, "num_iterations")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             self._planning_backend().warmup(
                 enable_graph=True, num_warmup_iterations=num_iterations
             )
@@ -425,8 +580,9 @@ class CuroboPlanner:
     def update_world(self, scene):
         """Replace all world obstacles, retaining allocated backend capacities."""
         scene = self._scene(scene)
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._open()
+            self._check_scene_capacity(planner, scene)
             self._world_valid = False
             try:
                 meshes = planner.scene_collision_checker.data.meshes
@@ -436,6 +592,7 @@ class CuroboPlanner:
                     self._torch.cuda.synchronize(self._device)
                     meshes.clear(clear_warp_cache=True)
                 planner.update_world(scene)
+                self._set_voxel_shapes(planner, scene)
             finally:
                 planner.reset_seed()
                 self._torch.cuda.synchronize(self._device)
@@ -455,7 +612,7 @@ class CuroboPlanner:
             validated_transform(transform, name="obstacle transform"),
             "obstacle transform",
         )
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             checker = planner.scene_collision_checker
             if not checker.check_obstacle_exists(obstacle_name):
@@ -503,7 +660,7 @@ class CuroboPlanner:
             )
         properties = np.concatenate(([mass], com, inertia))
         converted = _float32(properties, "inertial properties")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             if (
                 link_name
@@ -550,7 +707,7 @@ class CuroboPlanner:
             converted = _float32(spheres, "spheres")
             if np.any(converted[:, 3] <= 0.0):
                 raise ValueError("sphere radii round to zero in float32")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             params = planner.attachment_manager.kinematics_params
             if link_name not in params.link_name_to_idx_map:
@@ -631,7 +788,7 @@ class CuroboPlanner:
             enable_graph_attempt, "enable_graph_attempt", minimum=0
         )
         endpoint_tolerance = _positive(endpoint_tolerance, "endpoint_tolerance")
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             goal_position, goal_state = self._position(goal, "goal")
@@ -648,7 +805,7 @@ class CuroboPlanner:
     @_serialized_backend_call
     def forward_kinematics(self, position):
         """Return owned base-frame 4x4 transforms for the configured tools."""
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._open()
             # Accept the same float32 bound roundoff as a returned trajectory,
             # so callers can evaluate FK on any accepted result sample.
@@ -689,7 +846,7 @@ class CuroboPlanner:
             name: validated_transform(tool_poses[name], name=name)
             for name in self._tool_frames
         }
-        with self._torch.inference_mode(False), self._torch.enable_grad():
+        with self._execution_context():
             planner = self._planning_backend()
             start_position, current_state = self._position(start, "start")
             poses = {}
@@ -839,8 +996,9 @@ class CuroboPlanner:
             planner = self._planner
             self._planner = None
             try:
-                planner.destroy()
-                self._torch.cuda.synchronize(self._device)
+                with self._execution_context():
+                    planner.destroy()
+                    self._torch.cuda.synchronize(self._device)
             finally:
                 _LIVE_PLANNERS[:] = [
                     reference
