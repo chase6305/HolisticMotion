@@ -13,6 +13,7 @@ HolisticMotion 是一个带 Python 绑定的 C++17 机器人运动库，提供�
 | --- | --- |
 | 运动学 | URDF 模型、FK/IK，以及数值、OPW、UR、SRS、FEP 求解器 |
 | 规划 | 零空间规划、RRT-Connect、RRT*、Informed RRT* 和可行路径优化 |
+| NVIDIA cuRobo v2 | 可选 GPU 关节／位姿规划，启用 RRT、B 样条优化和 TimeOpt |
 | 轨迹 | Double-S、梯形速度、TOPPRA，以及可选的可微 PyTorch 重定时 |
 | 碰撞 | 可选的 Pinocchio/Coal 网格查询和球体模型 |
 | 重定向 | 手臂、腿部、全身，以及可选的手部重定向 |
@@ -61,6 +62,7 @@ times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 
 - [运动学与核心概念](docs/zh_CN/concepts.md)
 - [运动规划](docs/zh_CN/planning.md) · [轨迹生成](docs/zh_CN/trajectory.md)
+- [NVIDIA cuRobo v2 集成](docs/zh_CN/curobo_v2_fast.md)
 - [碰撞查询与球体拟合](docs/zh_CN/collision.md)
 - [姿态重定向](docs/zh_CN/retargeting.md)
 - [可运行示例](examples/README.md) · [完整文档](docs/zh_CN/index.md)

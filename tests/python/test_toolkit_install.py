@@ -57,6 +57,7 @@ import sys
 import holistic_motion as hm
 from holistic_motion.trajectory import ToppraTrajectory
 from holistic_motion.configuration import JointCoordinate, JointPositionMap
+from holistic_motion.kit.curobo_planner import CuroboPlanner
 from holistic_motion.visualization.viser import configure_scene
 assert hm.runtime_info().pure_python
 assert hm.runtime_info().collision_compiled is False
@@ -64,6 +65,8 @@ assert not hm.runtime_info().native_loaded
 assert not hasattr(hm, 'Robot')
 assert 'pinocchio' not in sys.modules
 assert 'torch' not in sys.modules
+assert 'curobo' not in sys.modules
+assert callable(CuroboPlanner)
 assert 'trimesh' not in sys.modules
 assert 'viser' not in sys.modules
 assert 'holistic_motion.visualization.viser.robot' not in sys.modules

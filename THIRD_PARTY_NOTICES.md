@@ -42,9 +42,25 @@ enforces mimic-induced position limits, and reports native optimizer failures.
 This optional backend requires PyTorch and the upstream runtime dependencies,
 including NLopt; those packages retain their own licenses.
 
+### NVIDIA cuRobo v2 (optional Python planning backend)
+
+- Project: NVIDIA cuRobo
+- Upstream: <https://github.com/NVlabs/curobo>
+- Qualified source: `299d7a6c271476c7e9fd9ecd1a37a462f14754d1`
+- License: Apache License 2.0
+- Copyright: NVIDIA Corporation
+
+`holistic_motion.kit.curobo_planner` imports the upstream public motion planner,
+scene and state APIs only when explicitly constructed. Callers install cuRobo
+and its CUDA/PyTorch/Warp dependencies separately and provide local robot
+configurations and assets. No upstream source, generated GPU artifacts or
+robot assets are vendored or downloaded by the adapter. Transitive dependencies
+and external assets retain their respective licenses.
+
 ## Algorithm and design references
 
-The projects below are not imported, linked, or vendored at runtime.
+The local algorithms described below do not import their upstream projects.
+The separate optional integrations above have their own runtime dependencies.
 
 ## TOPPRA
 
@@ -78,7 +94,7 @@ cuRobo informed the collision-sphere representation, batched-query design,
 deterministic multi-seed retargeting, and the separation between seed
 generation, feasibility-aware optimization, and best-solution tracking.
 HolisticMotion's sphere fitting, collision model, path optimizer, cuRobo-style
-retargeting, and query APIs are maintained locally and do not depend on cuRobo,
+retargeting, and native collision-query APIs are maintained locally and do not depend on cuRobo,
 PyTorch, or Warp. The separate optional dex-retargeting hand backend uses PyTorch.
 
 ## Scope

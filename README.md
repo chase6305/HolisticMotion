@@ -14,6 +14,7 @@ Robot models are supplied by the caller through explicit URDF paths.
 | --- | --- |
 | Kinematics | URDF models, FK/IK, numerical, OPW, UR, SRS, and FEP solvers |
 | Planning | Null-space planning, RRT-Connect, RRT*, Informed RRT*, and feasible path optimization |
+| NVIDIA cuRobo v2 | Optional GPU joint/pose planning with RRT, B-spline optimization and TimeOpt |
 | Trajectories | Double-S, trapezoidal, TOPPRA, and optional differentiable PyTorch timing |
 | Collision | Optional Pinocchio/Coal mesh queries and sphere models |
 | Retargeting | Arm, leg, full-body, and optional hand retargeting |
@@ -64,6 +65,7 @@ installation and runtime requirements.
 
 - [Kinematics and core concepts](docs/en/concepts.md)
 - [Planning](docs/en/planning.md) · [Trajectories](docs/en/trajectory.md)
+- [NVIDIA cuRobo v2 integration](docs/en/curobo_v2_fast.md)
 - [Collision and sphere fitting](docs/en/collision.md)
 - [Retargeting](docs/en/retargeting.md)
 - [Runnable examples](examples/README.md) · [Full documentation](docs/en/index.md)

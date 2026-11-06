@@ -318,7 +318,7 @@ def test_toolkit_module_exports_preserve_imports_and_discovery():
             """
 from importlib import import_module
 import holistic_motion.kit as kit
-expected = {'kinematics', 'retargeting', 'simulation'}
+expected = {'curobo_planner', 'kinematics', 'retargeting', 'simulation'}
 assert set(kit.__all__) == expected
 assert expected <= set(dir(kit))
 namespace = {}
