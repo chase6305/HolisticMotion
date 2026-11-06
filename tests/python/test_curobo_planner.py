@@ -21,11 +21,16 @@ def backend(tmp_path, monkeypatch):
     instances = []
     configs = []
 
+    class VoxelGrid(SimpleNamespace):
+        def get_grid_shape(self):
+            return [round(dim / self.voxel_size) for dim in self.dims], None, None
+
     class Scene:
         def __init__(self, data=None, **kwargs):
             for kind in ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel"):
+                obstacle_type = VoxelGrid if kind == "voxel" else SimpleNamespace
                 values = [
-                    SimpleNamespace(name=name, **fields)
+                    obstacle_type(name=name, **fields)
                     for name, fields in (data or {}).get(kind, {}).items()
                 ]
                 setattr(self, kind, kwargs.get(kind, values))
@@ -817,6 +822,53 @@ def test_voxel_conversion_does_not_change_other_scene_tensor_fields(backend):
         assert owned.mesh[0].vertices.dtype == torch.float32
         assert owned.mesh[0].vertices.data_ptr() != values.data_ptr()
         torch.testing.assert_close(owned.mesh[0].vertices, values, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("count", [1, 7, 9])
+@pytest.mark.parametrize("construction", [False, True])
+def test_voxel_feature_count_matches_grid_before_backend_use(
+    backend, count, construction
+):
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones(count),
+            }
+        }
+    }
+    if construction:
+        with pytest.raises(ValueError, match="feature.*count|grid.*shape"):
+            CuroboPlanner(backend.path, scene=scene)
+        assert backend.instances == []
+    else:
+        with CuroboPlanner(backend.path) as planner:
+            previous = backend.instances[0].scene
+            with pytest.raises(ValueError, match="feature.*count|grid.*shape"):
+                planner.update_world(scene)
+            assert backend.instances[0].scene is previous
+            assert planner.plan([0, 0], [0.1, 0.1]).success
+
+
+def test_voxel_axes_must_contain_cells_before_the_world_changes(backend):
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [0.1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones(1),
+            }
+        }
+    }
+    with CuroboPlanner(backend.path) as planner:
+        previous = backend.instances[0].scene
+        with pytest.raises(ValueError, match="one cell per axis"):
+            planner.update_world(scene)
+        assert backend.instances[0].scene is previous
+        assert planner.plan([0, 0], [0.1, 0.1]).success
 
 
 def test_scene_spheres_use_exact_capsules_during_creation_and_replacement(backend):

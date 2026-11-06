@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from copy import copy, deepcopy
 from dataclasses import dataclass
 from functools import wraps
+from math import prod
 from numbers import Integral
 from pathlib import Path
 from threading import RLock
@@ -359,6 +360,16 @@ class CuroboPlanner:
                     value = _positive(value, f"{name} {field}")
                     if _float32(value, f"{name} {field}") <= 0.0:
                         raise ValueError(f"{name} {field} rounds to zero in float32")
+        for grid in scene.voxel:
+            shape = grid.get_grid_shape()[0]
+            if any(size < 1 for size in shape):
+                raise ValueError(
+                    f"{grid.name} grid shape must have at least one cell per axis"
+                )
+            if grid.feature_tensor.numel() != prod(shape):
+                raise ValueError(
+                    f"{grid.name} ESDF feature count does not match grid shape {shape}"
+                )
         if scene.sphere:
             # The upstream SceneData loader omits Sphere objects. A capsule
             # with coincident endpoints is an exact analytic sphere, avoiding

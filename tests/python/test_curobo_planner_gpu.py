@@ -519,3 +519,28 @@ def test_real_curobo_voxel_input_storage_and_ownership(
     finally:
         planner.update_world({})
     assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("count", [1, 511, 513])
+def test_real_curobo_invalid_voxel_counts_preserve_an_occupied_world(problem, count):
+    import torch
+
+    planner, start, goal = problem
+    occupied = _free_voxel_scene(-torch.ones((8, 8, 8)))
+    malformed = _free_voxel_scene(torch.ones(count))
+    planner.update_world(occupied)
+    try:
+        assert not planner.plan(start, goal, max_attempts=2).success
+        with pytest.raises(ValueError, match="feature count.*grid shape"):
+            planner.update_world(malformed)
+        blocked = planner.plan(start, goal, max_attempts=2)
+        assert not blocked.success and blocked.trajectory is None
+        with pytest.raises(ValueError, match="feature count.*grid shape"):
+            CuroboPlanner(
+                os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+                scene=malformed,
+                collision_cache=_COLLISION_CACHE,
+            )
+    finally:
+        planner.update_world({})
+    assert planner.plan(start, goal).success
