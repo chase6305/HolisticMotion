@@ -25,18 +25,34 @@ def backend(tmp_path, monkeypatch):
         def get_grid_shape(self):
             return [round(dim / self.voxel_size) for dim in self.dims], None, None
 
-    def voxel_storage(scene):
-        if not scene.voxel:
+    def voxel_storage(scene, cache):
+        specification = (cache or {}).get("voxel")
+        if scene.voxel:
+            layers = len(scene.voxel)
+            cells = scene.voxel[0].feature_tensor.numel()
+        elif specification is not None:
+            layers = specification.get("layers", 1)
+            cells = int(
+                np.prod(
+                    [
+                        round(dim / specification.get("voxel_size", 0.02))
+                        for dim in specification.get("dims", [1, 1, 1])
+                    ]
+                )
+            )
+        else:
             return None
-        names = [grid.name for grid in scene.voxel]
-        dims = torch.tensor([grid.dims for grid in scene.voxel], dtype=torch.float32)
-        sizes = torch.tensor(
-            [grid.voxel_size for grid in scene.voxel], dtype=torch.float32
+        data = SimpleNamespace(
+            max_n=layers,
+            names=[grid.name for grid in scene.voxel],
+            params=torch.zeros((1, layers, 4)),
+            features=torch.zeros((1, layers, cells, 1), dtype=torch.float16),
         )
-        return SimpleNamespace(
-            params=torch.cat((dims / sizes[:, None], sizes[:, None]), dim=1)[None],
-            get_idx=lambda name: names.index(name),
-        )
+        data.get_idx = lambda name: data.names.index(name)
+        for index, grid in enumerate(scene.voxel):
+            data.params[0, index, :3] = torch.tensor(grid.dims) / grid.voxel_size
+            data.params[0, index, 3] = grid.voxel_size
+        return data
 
     class Scene:
         def __init__(self, data=None, **kwargs):
@@ -116,7 +132,7 @@ def backend(tmp_path, monkeypatch):
             self.scene_collision_checker = SimpleNamespace(
                 data=SimpleNamespace(
                     meshes=None,
-                    voxels=voxel_storage(self.scene),
+                    voxels=voxel_storage(self.scene, config["collision_cache"]),
                     get_valid_data=lambda: [
                         type(kind.title() + "Data", (), {"max_n": count})()
                         for kind in ("cuboid", "capsule", "cylinder", "mesh")
@@ -168,7 +184,20 @@ def backend(tmp_path, monkeypatch):
 
         def update_world(self, scene):
             self.scene = scene
-            self.scene_collision_checker.data.voxels = voxel_storage(scene)
+            data = self.scene_collision_checker.data.voxels
+            if scene.voxel:
+                if data is None or len(scene.voxel) > data.max_n:
+                    raise ValueError("voxel cache capacity")
+                for grid in scene.voxel:
+                    if grid.feature_tensor.numel() > data.features.shape[2]:
+                        raise ValueError("voxel feature capacity")
+            if data is not None:
+                data.names = [grid.name for grid in scene.voxel]
+                for index, grid in enumerate(scene.voxel):
+                    data.params[0, index, :3] = (
+                        torch.tensor(grid.dims) / grid.voxel_size
+                    )
+                    data.params[0, index, 3] = grid.voxel_size
 
         def compute_kinematics(self, state):
             matrix = torch.eye(4)[None]
@@ -935,6 +964,81 @@ def test_voxel_shape_respects_backend_index_precision(backend, dims, size, messa
         with pytest.raises(ValueError, match=message):
             planner.update_world(scene)
         assert backend.instances[0].scene is previous
+
+
+def test_explicit_voxel_reservation_survives_a_small_initial_grid(backend):
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [0.9] * 3,
+                "voxel_size": 0.3,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones((3, 3, 3)),
+            }
+        }
+    }
+    cache = {"voxel": {"layers": 2, "dims": [3.9] * 3, "voxel_size": 0.3}}
+    with CuroboPlanner(backend.path, scene=scene, collision_cache=cache) as planner:
+        data = backend.instances[0].scene_collision_checker.data.voxels
+        assert data.max_n == 2 and data.features.shape[2] == 13**3
+        params = data.params.data_ptr()
+        scene["voxel"]["grid"]["dims"] = [3.9] * 3
+        scene["voxel"]["grid"]["feature_tensor"] = backend.torch.ones((13,) * 3)
+        planner.update_world(scene)
+        assert data.params.data_ptr() == params
+
+
+def test_inferred_voxel_storage_fits_the_largest_initial_grid(backend):
+    grids = {}
+    for name, count in (("small", 3), ("large", 13)):
+        grids[name] = {
+            "dims": [count * 0.3] * 3,
+            "voxel_size": 0.3,
+            "pose": [0, 0, 0, 1, 0, 0, 0],
+            "feature_tensor": backend.torch.ones((count,) * 3),
+        }
+    with CuroboPlanner(backend.path, scene={"voxel": grids}):
+        data = backend.instances[0].scene_collision_checker.data.voxels
+        assert data.max_n == 2 and data.features.shape[2] == 13**3
+
+
+@pytest.mark.parametrize("overflow", ["layers", "cells", "unallocated"])
+def test_voxel_capacity_errors_preserve_the_world(backend, overflow):
+    initial = {
+        "voxel": {
+            "grid": {
+                "dims": [1] * 3,
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones(8),
+            }
+        }
+    }
+    with CuroboPlanner(backend.path, scene=initial) as planner:
+        native = backend.instances[0]
+        previous = native.scene
+        resets = native.resets
+        if overflow == "layers":
+            replacement = {
+                "voxel": dict(initial["voxel"], extra=initial["voxel"]["grid"])
+            }
+        elif overflow == "cells":
+            replacement = {
+                "voxel": {
+                    "grid": dict(
+                        initial["voxel"]["grid"],
+                        dims=[1.5] * 3,
+                        feature_tensor=backend.torch.ones(27),
+                    )
+                }
+            }
+        else:
+            native.scene_collision_checker.data.voxels = None
+            replacement = initial
+        with pytest.raises(ValueError, match="voxel.*capacity|voxel.*allocated"):
+            planner.update_world(replacement)
+        assert native.scene is previous and native.resets == resets
+        assert planner.plan([0, 0], [0.1, 0.1]).success
 
 
 def test_scene_spheres_use_exact_capsules_during_creation_and_replacement(backend):

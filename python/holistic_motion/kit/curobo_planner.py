@@ -210,10 +210,13 @@ class CuroboPlanner:
             device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
             self._device = device_cfg.device
             prepared_scene = self._scene(scene)
+            initial_scene, cache = self._scene_configuration(
+                prepared_scene, collision_cache
+            )
             config = MotionPlannerCfg.create(
                 robot=robot,
-                scene_model=prepared_scene,
-                collision_cache=deepcopy(collision_cache),
+                scene_model=initial_scene,
+                collision_cache=cache,
                 device_cfg=device_cfg,
                 graph_planner_algorithm="rrt",
                 enable_timeopt=True,
@@ -230,6 +233,9 @@ class CuroboPlanner:
             planner = MotionPlanner(config)
         try:
             with torch.inference_mode(False), torch.enable_grad():
+                self._check_voxel_capacity(planner, prepared_scene)
+                if prepared_scene.voxel:
+                    planner.update_world(prepared_scene)
                 self._set_voxel_shapes(planner, prepared_scene)
             self._backend_names = _names(planner.joint_names)
             self._tool_frames = tuple(planner.tool_frames)
@@ -462,6 +468,46 @@ class CuroboPlanner:
                 )
                 data.params[0, data.get_idx(grid.name), :3].copy_(shape)
 
+    def _scene_configuration(self, scene, collision_cache):
+        cache = deepcopy(collision_cache)
+        if not scene.voxel:
+            return scene, cache
+        cache = {} if cache is None else dict(cache)
+        if cache.get("voxel") is None:
+            largest = max(scene.voxel, key=lambda grid: grid.feature_tensor.numel())
+            cache["voxel"] = {
+                "layers": len(scene.voxel),
+                "dims": largest.dims,
+                "voxel_size": largest.voxel_size,
+            }
+        # The upstream initial-scene path ignores the voxel reservation.
+        # Allocate its fixed buffers empty, then load the complete scene.
+        initial = copy(scene)
+        initial.voxel = []
+        voxel_ids = {id(grid) for grid in scene.voxel}
+        initial.objects = [
+            obstacle for obstacle in scene if id(obstacle) not in voxel_ids
+        ]
+        return initial, cache
+
+    @staticmethod
+    def _check_voxel_capacity(planner, scene):
+        if not scene.voxel:
+            return
+        data = planner.scene_collision_checker.data.voxels
+        if data is None:
+            raise ValueError("voxel collision cache is not allocated")
+        if len(scene.voxel) > data.max_n:
+            raise ValueError(
+                f"voxel layer capacity is {data.max_n}, requested {len(scene.voxel)}"
+            )
+        for grid in scene.voxel:
+            if grid.feature_tensor.numel() > data.features.shape[2]:
+                raise ValueError(
+                    f"voxel feature capacity is {data.features.shape[2]}, "
+                    f"requested {grid.feature_tensor.numel()} for {grid.name}"
+                )
+
     @staticmethod
     def _numpy(tensor):
         return tensor.detach().cpu().numpy()
@@ -499,6 +545,7 @@ class CuroboPlanner:
         scene = self._scene(scene)
         with self._torch.inference_mode(False), self._torch.enable_grad():
             planner = self._open()
+            self._check_voxel_capacity(planner, scene)
             self._world_valid = False
             try:
                 meshes = planner.scene_collision_checker.data.meshes

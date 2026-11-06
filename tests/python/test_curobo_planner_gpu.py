@@ -14,7 +14,7 @@ _COLLISION_CACHE = {
     "capsule": 2,
     "cylinder": 2,
     "mesh": 2,
-    "voxel": {"layers": 1, "dims": [8.0] * 3, "voxel_size": 1.0},
+    "voxel": {"layers": 2, "dims": [3.9] * 3, "voxel_size": 0.3},
 }
 
 
@@ -575,3 +575,81 @@ def test_real_curobo_voxel_grid_indexing_uses_integer_counts(problem, count, siz
             assert data.params[0, 0, :3].to(torch.int64).tolist() == [count] * 3
             assert other.plan(start, goal).success
     assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("explicit_cache", [True, False])
+def test_real_curobo_initial_voxels_preserve_reserved_capacity(problem, explicit_cache):
+    import torch
+
+    _planner, start, goal = problem
+    small = {
+        "dims": [0.9] * 3,
+        "voxel_size": 0.3,
+        "pose": [0, 0, 0, 1, 0, 0, 0],
+        "feature_tensor": torch.ones((3,) * 3),
+    }
+    large = dict(small, dims=[3.9] * 3, feature_tensor=torch.ones((13,) * 3))
+    scene = {"voxel": {"small": small}}
+    cache = dict(_COLLISION_CACHE)
+    if not explicit_cache:
+        cache.pop("voxel")
+        scene["voxel"]["large"] = large
+    with CuroboPlanner(
+        os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+        scene=scene,
+        collision_cache=cache,
+    ) as other:
+        data = other._planner.scene_collision_checker.data.voxels
+        assert data.max_n == 2 and data.features.shape[2] == 13**3
+        pointers = (data.params.data_ptr(), data.features.data_ptr())
+        other.update_world({"voxel": {"small": small, "large": large}})
+        assert (data.params.data_ptr(), data.features.data_ptr()) == pointers
+        result = other.plan(start, goal)
+        assert result.success, result.message
+        snapshot = result.trajectory.position.copy()
+        other.update_world({"voxel": {"small": small}})
+        assert other.plan(start, goal).success
+        np.testing.assert_array_equal(result.trajectory.position, snapshot)
+
+
+@pytest.mark.parametrize("overflow", ["layers", "cells"])
+def test_real_curobo_voxel_capacity_errors_keep_occupied_world(problem, overflow):
+    import torch
+
+    planner, start, goal = problem
+    grid = {
+        "dims": [3.9] * 3,
+        "voxel_size": 0.3,
+        "pose": [0, 0, 0, 1, 0, 0, 0],
+        "feature_tensor": -torch.ones((13,) * 3),
+    }
+    planner.update_world({"voxel": {"occupied": grid}})
+    try:
+        if overflow == "layers":
+            replacement = {"voxel": {str(i): grid for i in range(3)}}
+        else:
+            replacement = {
+                "voxel": {
+                    "grid": dict(
+                        grid, dims=[4.2] * 3, feature_tensor=torch.ones((14,) * 3)
+                    )
+                }
+            }
+        with pytest.raises(ValueError, match="voxel.*capacity"):
+            planner.update_world(replacement)
+        result = planner.plan(start, goal, max_attempts=2)
+        assert not result.success and result.trajectory is None
+    finally:
+        planner.update_world({})
+    assert planner.plan(start, goal).success
+
+
+def test_real_curobo_unreserved_voxel_update_keeps_an_empty_world(problem):
+    import torch
+
+    _planner, start, goal = problem
+    with CuroboPlanner(os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"]) as other:
+        with pytest.raises(ValueError, match="voxel.*not allocated"):
+            other.update_world(_free_voxel_scene(torch.ones((8, 8, 8))))
+        result = other.plan(start, goal)
+        assert result.success, result.message

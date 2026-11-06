@@ -150,6 +150,13 @@ represented as analytic capsules with coincident endpoints because the
 qualified upstream loader otherwise omits them. Reserve `collision_cache={"capsule": N}`
 for later sphere or capsule replacements; no mesh approximation is introduced.
 
+For voxel replacement, reserve `collision_cache={"voxel": {"layers": 2,
+"dims": [4, 4, 4], "voxel_size": 0.1}}`. These dimensions and resolution
+determine the feature capacity of each layer. An initial small grid preserves
+that reservation; without an explicit voxel reservation, the initial grids
+determine the layer count and largest feature capacity. Later voxel updates
+that exceed either capacity are rejected before changing the current world.
+
 Complete world replacement also discards old Warp mesh geometry. This prevents
 the upstream name-only cache from reusing an old shape under the same name or
 retaining every removed mesh. Mesh replacement waits for device work before
