@@ -135,7 +135,10 @@ Scene dictionary keys are `cuboid`, `sphere`, `capsule`, `cylinder`, `mesh` and
 `voxel`. Unknown types, duplicate names, invalid dimensions and non-unit pose
 quaternions are rejected before replacing the current world. Voxel ESDF features
 must be a nonempty floating Torch tensor with finite values within float16
-storage range, matching the upstream grid shape and device requirements. Each
+storage range, matching the upstream grid shape. CPU and CUDA tensors are
+copied into owned, contiguous float16 storage on the planner's device for both
+construction and world replacement. Strided tensors and tensors with autograd
+history are accepted as data; scene preparation detaches their values. Each
 obstacle requires an explicit pose; missing mesh poses are rejected before the loader
 can clear the existing world. A public `Scene`
 must keep its `objects` and typed obstacle lists consistent. Spheres are

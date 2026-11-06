@@ -8,7 +8,7 @@ This module is independent of HolisticMotion's native collision component.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from functools import wraps
 from numbers import Integral
@@ -206,11 +206,13 @@ class CuroboPlanner:
         # planning stage so torque checks and later payload updates agree.
         robot["load_dynamics"] = True
         with torch.inference_mode(False), torch.enable_grad():
+            device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
+            self._device = device_cfg.device
             config = MotionPlannerCfg.create(
                 robot=robot,
                 scene_model=self._scene(scene),
                 collision_cache=deepcopy(collision_cache),
-                device_cfg=DeviceCfg(device=selected_device, dtype=torch.float32),
+                device_cfg=device_cfg,
                 graph_planner_algorithm="rrt",
                 enable_timeopt=True,
                 self_collision_check=True,
@@ -313,11 +315,9 @@ class CuroboPlanner:
             unknown = set(scene) - set(supported)
             if unknown:
                 raise ValueError(f"unsupported scene obstacle types: {list(unknown)}")
-            scene = self._Scene.create(deepcopy(dict(scene)))
-        elif isinstance(scene, self._Scene):
-            scene = deepcopy(scene)
-        else:
+        elif not isinstance(scene, self._Scene):
             raise TypeError("scene must be a local path, dictionary or cuRobo Scene")
+        scene = self._copy_scene(scene)
         obstacles = list(scene)
         typed = [obstacle for kind in supported for obstacle in getattr(scene, kind)]
         if {id(value) for value in obstacles} != {id(value) for value in typed}:
@@ -359,19 +359,6 @@ class CuroboPlanner:
                     value = _positive(value, f"{name} {field}")
                     if _float32(value, f"{name} {field}") <= 0.0:
                         raise ValueError(f"{name} {field} rounds to zero in float32")
-        for grid in scene.voxel:
-            features = getattr(grid, "feature_tensor", None)
-            if not self._torch.is_tensor(features) or not features.is_floating_point():
-                raise TypeError(f"{grid.name} ESDF features must be a floating tensor")
-            if features.numel() == 0:
-                raise ValueError(f"{grid.name} ESDF features must be nonempty")
-            minimum, maximum = (bound.item() for bound in self._torch.aminmax(features))
-            # The public voxel loader stores ESDF distances in float16.
-            limit = self._torch.finfo(self._torch.float16).max
-            if not (-limit <= minimum <= maximum <= limit):
-                raise ValueError(
-                    f"{grid.name} ESDF features must stay finite in float16 storage"
-                )
         if scene.sphere:
             # The upstream SceneData loader omits Sphere objects. A capsule
             # with coincident endpoints is an exact analytic sphere, avoiding
@@ -389,6 +376,54 @@ class CuroboPlanner:
                 voxel=scene.voxel,
             )
         return scene
+
+    def _copy_scene(self, scene):
+        if isinstance(scene, Mapping):
+            grids = (scene.get("voxel") or {}).items()
+        else:
+            grids = ((grid.name, grid) for grid in scene.voxel)
+        memo = {}
+        for name, grid in grids:
+            features = (
+                grid.get("feature_tensor")
+                if isinstance(grid, Mapping)
+                else grid.feature_tensor
+            )
+            if not self._torch.is_tensor(features) or not features.is_floating_point():
+                raise TypeError(f"{name} ESDF features must be a floating tensor")
+            if features.numel() == 0:
+                raise ValueError(f"{name} ESDF features must be nonempty")
+            minimum, maximum = (bound.item() for bound in self._torch.aminmax(features))
+            limit = self._torch.finfo(self._torch.float16).max
+            if not (-limit <= minimum <= maximum <= limit):
+                raise ValueError(
+                    f"{name} ESDF features must stay finite in float16 storage"
+                )
+            # Non-leaf tensors cannot be deepcopied. Copy their values directly
+            # into the contiguous float16 storage required by the Warp loader.
+            with self._torch.inference_mode(False), self._torch.no_grad():
+                owned_features = features.detach().to(
+                    device=self._device,
+                    dtype=self._torch.float16,
+                    copy=True,
+                    memory_format=self._torch.contiguous_format,
+                )
+            if isinstance(grid, Mapping):
+                metadata = dict(grid)
+                metadata.pop("feature_tensor", None)
+                owned_grid = deepcopy(metadata)
+                owned_grid["feature_tensor"] = owned_features
+            else:
+                owned_grid = copy(grid)
+                owned_grid.feature_tensor = None
+                owned_grid = deepcopy(owned_grid)
+                owned_grid.feature_tensor = owned_features
+                owned_grid.feature_dtype = owned_features.dtype
+            memo[id(grid)] = owned_grid
+        copied = deepcopy(dict(scene) if isinstance(scene, Mapping) else scene, memo)
+        if isinstance(copied, Mapping):
+            copied = self._Scene.create(copied)
+        return copied
 
     @staticmethod
     def _numpy(tensor):

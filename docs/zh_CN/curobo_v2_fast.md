@@ -111,7 +111,9 @@ planner.update_link_collision_spheres("attached_object", None)
 替换环境前拒绝未知类型、重名障碍物、无效尺寸及非单位位姿四元数。所有障碍物须有
 显式位姿，缺少 mesh 位姿时在加载器清除现有场景前即拒绝输入。
 voxel 的 ESDF 数据须为非空浮点 Torch tensor，数值有限且在 float16 存储范围内，
-并满足上游的栅格形状和设备要求。
+并满足上游的栅格形状要求。构造及场景替换时，CPU / CUDA tensor 均复制到规划设备上
+独立、连续的 float16 存储中。支持非连续张量及带 autograd 历史的张量；场景数据复制
+时会脱离梯度图。
 公开 `Scene` 的 `objects` 必须与各类型障碍物列表一致。验证的上游加载器会遗漏
 环境球，因此适配器将球转换为端点重合的解析胶囊体，不引入 mesh 近似。
 后续需要替换球或胶囊体时，构造中预留 `collision_cache={"capsule": N}`。

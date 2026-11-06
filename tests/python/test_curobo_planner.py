@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from types import ModuleType, SimpleNamespace
+from types import MappingProxyType, ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,7 +23,6 @@ def backend(tmp_path, monkeypatch):
 
     class Scene:
         def __init__(self, data=None, **kwargs):
-            self.data = data
             for kind in ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel"):
                 values = [
                     SimpleNamespace(name=name, **fields)
@@ -196,7 +195,9 @@ def backend(tmp_path, monkeypatch):
         "curobo.scene": {"Scene": Scene, "Capsule": SimpleNamespace},
         "curobo.trajectory_timeopt": {"TrajectoryTimeOpt": object},
         "curobo.types": {
-            "DeviceCfg": SimpleNamespace,
+            "DeviceCfg": lambda device, dtype: SimpleNamespace(
+                device=torch.device("cpu"), dtype=dtype
+            ),
             "JointState": JointState,
             "Pose": Pose,
             "GoalToolPose": GoalToolPose,
@@ -330,9 +331,9 @@ def test_scene_snapshot_replacement_resets_search_and_close_is_idempotent(backen
     planner = CuroboPlanner(backend.path, scene=scene)
     scene["cuboid"]["wall"]["dims"][0] = 100
     native = backend.instances[0]
-    assert native.scene.data["cuboid"]["wall"]["dims"][0] == 1.0
+    assert native.scene.cuboid[0].dims[0] == 1.0
     planner.update_world({})
-    assert native.scene.data == {} and native.resets == 1
+    assert list(native.scene) == [] and native.resets == 1
     planner.warmup(3)
     assert native.warmup_options == {"enable_graph": True, "num_warmup_iterations": 3}
     planner.close()
@@ -423,11 +424,18 @@ def test_failed_world_update_disables_planning_until_replaced(backend, monkeypat
 
 def test_scene_file_is_parsed_for_both_construction_and_updates(backend, tmp_path):
     scene = tmp_path / "scene.yml"
-    scene.write_text("cuboid: {}\n", encoding="utf-8")
+    scene.write_text(
+        "cuboid:\n  box:\n    dims: [1, 1, 1]\n    pose: [0, 0, 0, 1, 0, 0, 0]\n",
+        encoding="utf-8",
+    )
     with CuroboPlanner(backend.path, scene=scene) as planner:
-        assert backend.instances[0].scene.data == {"cuboid": {}}
+        assert backend.instances[0].scene.cuboid[0].dims == [1, 1, 1]
+        scene.write_text(
+            "cuboid:\n  box:\n    dims: [2, 2, 2]\n    pose: [0, 0, 0, 1, 0, 0, 0]\n",
+            encoding="utf-8",
+        )
         planner.update_world(scene)
-        assert backend.instances[0].scene.data == {"cuboid": {}}
+        assert backend.instances[0].scene.cuboid[0].dims == [2, 2, 2]
 
 
 def test_inertial_updates_keep_units_order_and_reset_search(backend):
@@ -717,6 +725,57 @@ def test_voxel_distances_are_owned_during_creation_and_replacement(backend):
         assert backend.torch.all(native.scene.voxel[0].feature_tensor == -1)
 
 
+@pytest.mark.parametrize("public_scene", [False, True])
+@pytest.mark.parametrize(
+    "representation", ["float32", "float64", "nonleaf", "strided", "inference"]
+)
+def test_voxel_features_use_owned_contiguous_detached_storage(
+    backend, public_scene, representation
+):
+    torch = backend.torch
+    features = torch.arange(8, dtype=torch.float32).reshape(2, 2, 2) / 10
+    if representation == "float64":
+        features = features.double()
+    elif representation == "nonleaf":
+        features = features.requires_grad_(True) * 2
+    elif representation == "strided":
+        features = features.half().transpose(0, 1)
+    elif representation == "inference":
+        with torch.inference_mode():
+            features = features.clone()
+    expected = features.detach().half().contiguous().clone()
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": features,
+            }
+        }
+    }
+    if public_scene:
+        from curobo.scene import Scene
+
+        scene = Scene.create(scene)
+    with CuroboPlanner(backend.path, scene=scene) as planner:
+        native = backend.instances[0]
+        for replace in (False, True):
+            if replace:
+                with torch.inference_mode():
+                    planner.update_world(scene)
+            owned = native.scene.voxel[0].feature_tensor
+            assert owned.dtype == torch.float16
+            assert owned.device == native.default_joint_state.position.device
+            assert owned.is_contiguous() and not owned.requires_grad
+            assert not owned.is_inference()
+            assert owned.data_ptr() != features.data_ptr()
+            torch.testing.assert_close(owned, expected)
+        with torch.inference_mode():
+            features.fill_(-1)
+        torch.testing.assert_close(owned, expected)
+
+
 def test_public_scene_objects_receive_the_same_geometry_checks(backend):
     from curobo.scene import Scene
 
@@ -726,6 +785,38 @@ def test_public_scene_objects_receive_the_same_geometry_checks(backend):
     with pytest.raises(ValueError, match="radius"):
         CuroboPlanner(backend.path, scene=scene)
     assert backend.instances == []
+
+
+def test_voxel_conversion_does_not_change_other_scene_tensor_fields(backend):
+    torch = backend.torch
+    values = torch.tensor(
+        [[0.123456, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=torch.float32
+    )
+    scene = MappingProxyType(
+        {
+            "voxel": {
+                "grid": {
+                    "dims": [1, 1, 1.5],
+                    "voxel_size": 0.5,
+                    "pose": [0, 0, 0, 1, 0, 0, 0],
+                    "feature_tensor": values,
+                }
+            },
+            "mesh": {
+                "mesh": {
+                    "vertices": values,
+                    "faces": [[0, 1, 2]],
+                    "pose": [0, 0, 0, 1, 0, 0, 0],
+                }
+            },
+        }
+    )
+    with CuroboPlanner(backend.path, scene=scene):
+        owned = backend.instances[0].scene
+        assert owned.voxel[0].feature_tensor.dtype == torch.float16
+        assert owned.mesh[0].vertices.dtype == torch.float32
+        assert owned.mesh[0].vertices.data_ptr() != values.data_ptr()
+        torch.testing.assert_close(owned.mesh[0].vertices, values, rtol=0, atol=0)
 
 
 def test_scene_spheres_use_exact_capsules_during_creation_and_replacement(backend):
@@ -872,7 +963,7 @@ def test_obstacle_pose_updates_preserve_geometry_and_validate_names(backend):
         np.testing.assert_array_equal(
             native.obstacle_poses["box"][:3, 3], [1.0, 2.0, 3.0]
         )
-        assert native.scene.data == scene
+        assert native.scene.cuboid[0].dims == scene["cuboid"]["box"]["dims"]
         assert native.resets == 1
         with pytest.raises(ValueError, match="unknown cuRobo obstacle"):
             planner.update_obstacle_pose("absent", np.eye(4))
@@ -998,7 +1089,14 @@ def test_missing_obstacle_pose_is_rejected_without_invalidating_the_current_worl
     with CuroboPlanner(backend.path) as planner:
         native = backend.instances[0]
         previous = native.scene
+        fields = {}
+        if kind == "voxel":
+            fields = {
+                "dims": [1, 1, 1],
+                "voxel_size": 0.5,
+                "feature_tensor": backend.torch.ones(8),
+            }
         with pytest.raises(ValueError, match="explicit.*pose"):
-            planner.update_world({kind: {"unplaced": {}}})
+            planner.update_world({kind: {"unplaced": fields}})
         assert native.scene is previous and native.resets == 0
         assert planner.plan([0, 0], [0.1, 0.1]).success
