@@ -25,6 +25,19 @@ def backend(tmp_path, monkeypatch):
         def get_grid_shape(self):
             return [round(dim / self.voxel_size) for dim in self.dims], None, None
 
+    def voxel_storage(scene):
+        if not scene.voxel:
+            return None
+        names = [grid.name for grid in scene.voxel]
+        dims = torch.tensor([grid.dims for grid in scene.voxel], dtype=torch.float32)
+        sizes = torch.tensor(
+            [grid.voxel_size for grid in scene.voxel], dtype=torch.float32
+        )
+        return SimpleNamespace(
+            params=torch.cat((dims / sizes[:, None], sizes[:, None]), dim=1)[None],
+            get_idx=lambda name: names.index(name),
+        )
+
     class Scene:
         def __init__(self, data=None, **kwargs):
             for kind in ("cuboid", "sphere", "capsule", "cylinder", "mesh", "voxel"):
@@ -103,6 +116,7 @@ def backend(tmp_path, monkeypatch):
             self.scene_collision_checker = SimpleNamespace(
                 data=SimpleNamespace(
                     meshes=None,
+                    voxels=voxel_storage(self.scene),
                     get_valid_data=lambda: [
                         type(kind.title() + "Data", (), {"max_n": count})()
                         for kind in ("cuboid", "capsule", "cylinder", "mesh")
@@ -154,6 +168,7 @@ def backend(tmp_path, monkeypatch):
 
         def update_world(self, scene):
             self.scene = scene
+            self.scene_collision_checker.data.voxels = voxel_storage(scene)
 
         def compute_kinematics(self, state):
             matrix = torch.eye(4)[None]
@@ -869,6 +884,57 @@ def test_voxel_axes_must_contain_cells_before_the_world_changes(backend):
             planner.update_world(scene)
         assert backend.instances[0].scene is previous
         assert planner.plan([0, 0], [0.1, 0.1]).success
+
+
+@pytest.mark.parametrize("count, size", [(13, 0.1), (3, 0.3), (21, 0.05)])
+def test_voxel_counts_survive_float32_dimension_roundoff(backend, count, size):
+    dims = [count * size] * 3
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": dims.copy(),
+                "voxel_size": size,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones((count,) * 3),
+            }
+        }
+    }
+    with CuroboPlanner(backend.path, scene=scene) as planner:
+        native = backend.instances[0]
+        for replace in (False, True):
+            if replace:
+                planner.update_world(scene)
+            actual = native.scene_collision_checker.data.voxels.params[0, 0, :3]
+            assert actual.trunc().tolist() == [count] * 3
+            assert native.scene.voxel[0].dims == dims
+            assert native.scene.voxel[0].voxel_size == size
+    assert scene["voxel"]["grid"]["dims"] == dims
+
+
+@pytest.mark.parametrize(
+    "dims, size, message",
+    [
+        ([2**31, 1, 1], 1.0, "32-bit indexing"),
+        ([2048, 2048, 1024], 1.0, "32-bit indexing"),
+        ([(2**24 + 1) * 2**-24, 2**-24, 2**-24], 2**-24, "integer float32 precision"),
+    ],
+)
+def test_voxel_shape_respects_backend_index_precision(backend, dims, size, message):
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": dims,
+                "voxel_size": size,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": backend.torch.ones(1),
+            }
+        }
+    }
+    with CuroboPlanner(backend.path) as planner:
+        previous = backend.instances[0].scene
+        with pytest.raises(ValueError, match=message):
+            planner.update_world(scene)
+        assert backend.instances[0].scene is previous
 
 
 def test_scene_spheres_use_exact_capsules_during_creation_and_replacement(backend):

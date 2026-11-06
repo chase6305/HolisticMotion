@@ -209,9 +209,10 @@ class CuroboPlanner:
         with torch.inference_mode(False), torch.enable_grad():
             device_cfg = DeviceCfg(device=selected_device, dtype=torch.float32)
             self._device = device_cfg.device
+            prepared_scene = self._scene(scene)
             config = MotionPlannerCfg.create(
                 robot=robot,
-                scene_model=self._scene(scene),
+                scene_model=prepared_scene,
                 collision_cache=deepcopy(collision_cache),
                 device_cfg=device_cfg,
                 graph_planner_algorithm="rrt",
@@ -228,6 +229,8 @@ class CuroboPlanner:
             config.ik_solver_config.use_lm_seed = False
             planner = MotionPlanner(config)
         try:
+            with torch.inference_mode(False), torch.enable_grad():
+                self._set_voxel_shapes(planner, prepared_scene)
             self._backend_names = _names(planner.joint_names)
             self._tool_frames = tuple(planner.tool_frames)
             self._joint_names = requested_names or self._backend_names
@@ -366,6 +369,15 @@ class CuroboPlanner:
                 raise ValueError(
                     f"{grid.name} grid shape must have at least one cell per axis"
                 )
+            if prod(shape) > np.iinfo(np.int32).max:
+                raise ValueError(f"{grid.name} grid shape exceeds 32-bit indexing")
+            if np.any(
+                np.asarray(shape, dtype=np.float32).astype(float)
+                != np.asarray(shape, dtype=float)
+            ):
+                raise ValueError(
+                    f"{grid.name} grid shape loses integer float32 precision"
+                )
             if grid.feature_tensor.numel() != prod(shape):
                 raise ValueError(
                     f"{grid.name} ESDF feature count does not match grid shape {shape}"
@@ -436,6 +448,20 @@ class CuroboPlanner:
             copied = self._Scene.create(copied)
         return copied
 
+    def _set_voxel_shapes(self, planner, scene):
+        # The batch loader divides float32 extents by resolution, then the
+        # kernel truncates those quotients. Store the validated integer counts
+        # directly so e.g. 1.3 / 0.1 cannot become twelve cells.
+        if scene.voxel:
+            data = planner.scene_collision_checker.data.voxels
+            for grid in scene.voxel:
+                shape = self._torch.as_tensor(
+                    grid.get_grid_shape()[0],
+                    dtype=data.params.dtype,
+                    device=self._device,
+                )
+                data.params[0, data.get_idx(grid.name), :3].copy_(shape)
+
     @staticmethod
     def _numpy(tensor):
         return tensor.detach().cpu().numpy()
@@ -482,6 +508,7 @@ class CuroboPlanner:
                     self._torch.cuda.synchronize(self._device)
                     meshes.clear(clear_warp_cache=True)
                 planner.update_world(scene)
+                self._set_voxel_shapes(planner, scene)
             finally:
                 planner.reset_seed()
                 self._torch.cuda.synchronize(self._device)

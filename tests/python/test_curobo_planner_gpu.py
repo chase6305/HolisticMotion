@@ -544,3 +544,34 @@ def test_real_curobo_invalid_voxel_counts_preserve_an_occupied_world(problem, co
     finally:
         planner.update_world({})
     assert planner.plan(start, goal).success
+
+
+@pytest.mark.parametrize("count, size", [(13, 0.1), (3, 0.3)])
+def test_real_curobo_voxel_grid_indexing_uses_integer_counts(problem, count, size):
+    import torch
+
+    planner, start, goal = problem
+    scene = {
+        "voxel": {
+            "grid": {
+                "dims": [count * size] * 3,
+                "voxel_size": size,
+                "pose": [0, 0, 0, 1, 0, 0, 0],
+                "feature_tensor": torch.ones((count,) * 3),
+            }
+        }
+    }
+    with CuroboPlanner(
+        os.environ["HOLISTICMOTION_TEST_CUROBO_ROBOT_CONFIG"],
+        scene=scene,
+        collision_cache=_COLLISION_CACHE,
+    ) as other:
+        data = other._planner.scene_collision_checker.data.voxels
+        original_buffer = data.params.data_ptr()
+        for replace in (False, True):
+            if replace:
+                other.update_world(scene)
+            assert data.params.data_ptr() == original_buffer
+            assert data.params[0, 0, :3].to(torch.int64).tolist() == [count] * 3
+            assert other.plan(start, goal).success
+    assert planner.plan(start, goal).success

@@ -139,6 +139,10 @@ storage range, matching the upstream grid shape. CPU and CUDA tensors are
 copied into owned, contiguous float16 storage on the planner's device for both
 construction and world replacement. Strided tensors and tensors with autograd
 history are accepted as data; scene preparation detaches their values. Each
+grid must have at least one cell on each axis and exactly the corresponding
+number of features, within the backend's 32-bit indexing and float32 integer
+precision. Validated integer cell counts are stored directly in the backend;
+float32 extent/resolution roundoff does not change the grid shape. Each
 obstacle requires an explicit pose; missing mesh poses are rejected before the loader
 can clear the existing world. A public `Scene`
 must keep its `objects` and typed obstacle lists consistent. Spheres are
