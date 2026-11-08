@@ -18,11 +18,11 @@ across pose requests; this configuration keeps repeated planning memory bounded.
 Use Python 3.10+ and an NVIDIA GPU with a compatible CUDA/PyTorch installation.
 cuRobo uses its separately installed CUDA runtime; HolisticMotion's native
 `--cuda` build option controls the FEP batch component.
-Follow the [upstream installation guide](https://github.com/NVlabs/curobo/blob/299d7a6c271476c7e9fd9ecd1a37a462f14754d1/docs/getting-started/installation.rst)
+Follow the [upstream installation guide](https://github.com/NVlabs/curobo/blob/5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d/docs/getting-started/installation.rst)
 for your CUDA version. For example, in a separate CUDA 13 environment:
 
 ```bash
-python -m pip install 'nvidia-curobo[cu13-torch] @ git+https://github.com/NVlabs/curobo.git@299d7a6c271476c7e9fd9ecd1a37a462f14754d1'
+python -m pip install 'nvidia-curobo[cu13-torch] @ git+https://github.com/NVlabs/curobo.git@5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d'
 ```
 
 The adapter checks for the v2 public planner and TimeOpt API; v1 `MotionGen`
@@ -214,7 +214,9 @@ export HOLISTICMOTION_TEST_CUROBO_GOAL='[0.1, 0.2, 0.3]'
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python python -m pytest tests/python/test_curobo_planner_gpu.py -q
 ```
 
-Validation targets upstream commit `299d7a6c271476c7e9fd9ecd1a37a462f14754d1`.
+Validation targets upstream commit `5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d`.
 GPU tests cover joint and pose planning, output ownership, obstacle rejection
 and recovery after world replacement. A missing configuration skips GPU tests;
 a configured test must actually construct and run the backend.
+
+The updated RRT growth and TimeOpt implementation was validated on Franka, UR10e and dual UR10e: 146 GPU tests passed, with four payload checks skipped for UR configurations without a reserved payload link. Inverse dynamics remains enabled; the adapter does not opt into upstream’s new dynamics bypass.

@@ -14,11 +14,11 @@
 
 需要 Python 3.10+、NVIDIA GPU 以及匹配的 CUDA／PyTorch 环境。cuRobo 使用单独
 安装的 CUDA 运行时；HolisticMotion 的原生 `--cuda` 构建选项控制 FEP 批处理组件。按
-[上游安装说明](https://github.com/NVlabs/curobo/blob/299d7a6c271476c7e9fd9ecd1a37a462f14754d1/docs/getting-started/installation.rst)
+[上游安装说明](https://github.com/NVlabs/curobo/blob/5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d/docs/getting-started/installation.rst)
 选择 CUDA 版本。例如，在单独的 CUDA 13 环境中：
 
 ```bash
-python -m pip install 'nvidia-curobo[cu13-torch] @ git+https://github.com/NVlabs/curobo.git@299d7a6c271476c7e9fd9ecd1a37a462f14754d1'
+python -m pip install 'nvidia-curobo[cu13-torch] @ git+https://github.com/NVlabs/curobo.git@5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d'
 ```
 
 适配器检查 v2 的公开 planner 与 TimeOpt API，不支持 v1 `MotionGen`。
@@ -171,6 +171,8 @@ export HOLISTICMOTION_TEST_CUROBO_GOAL='[0.1, 0.2, 0.3]'
 HOLISTICMOTION_PURE_PYTHON=1 PYTHONPATH=python python -m pytest tests/python/test_curobo_planner_gpu.py -q
 ```
 
-验证对应上游提交 `299d7a6c271476c7e9fd9ecd1a37a462f14754d1`，覆盖关节／位姿
+验证对应上游提交 `5e4f23d63d9ec58aca4ce8277a75d20f7b02cc7d`，覆盖关节／位姿
 规划、结果所有权、障碍物拒绝与场景替换后的恢复。未提供配置时跳过 GPU 测试；
 配置后必须实际构造并运行后端。
+
+新版 RRT 生长与 TimeOpt 已在 Franka、UR10e 和双 UR10e 上验证：146 项 GPU 测试通过；UR 配置未预留 payload link 的 4 项负载检查跳过。适配器继续启用逆动力学，不启用上游新增的动力学绕过选项。
