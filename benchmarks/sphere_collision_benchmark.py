@@ -157,9 +157,11 @@ def compare_packages(args):
                 env=environment,
                 text=True,
                 capture_output=True,
-                check=True,
+                check=False,
                 timeout=120,
             )
+            if completed.returncode:
+                raise RuntimeError(f"{label}: {completed.stderr}")
             rows = json.loads(completed.stdout)
             identity = [
                 (r["spheres"], r["pairs"], r["query"], r["checksum"]) for r in rows
