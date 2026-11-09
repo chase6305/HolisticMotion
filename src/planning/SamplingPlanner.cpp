@@ -249,10 +249,13 @@ double PathLength(const std::vector<Eigen::VectorXd> &path,
 
 void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
               std::size_t attempts) {
-    if (path.size() < 3)
+    if (path.size() < 3 || attempts == 0)
         return;
     std::vector<double> cumulative;
-    for (std::size_t attempt = 0; attempt < attempts && path.size() >= 3;
+    // Continuous shortcuts improve geometry but introduce new vertices. Reserve
+    // part of the same attempt budget to remove redundant stops before timing.
+    const std::size_t random_attempts = attempts / 2;
+    for (std::size_t attempt = 0; attempt < random_attempts && path.size() >= 3;
          ++attempt) {
         if (context.TimedOut())
             return;
@@ -321,6 +324,45 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
             append(path[i]);
         path = std::move(shortened);
     }
+
+    if (path.size() < 3 || context.TimedOut())
+        return;
+    cumulative.resize(path.size());
+    cumulative[0] = 0.0;
+    for (std::size_t i = 1; i < path.size(); ++i)
+        cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
+    if (!std::isfinite(cumulative.back()))
+        return;
+
+    std::vector<Eigen::VectorXd> shortened;
+    shortened.reserve(path.size());
+    shortened.push_back(path.front());
+    std::size_t remaining = attempts - random_attempts;
+    std::size_t current = 0;
+    while (current + 1 < path.size()) {
+        if (context.TimedOut())
+            return;
+        std::size_t next = current + 1;
+        for (std::size_t candidate = path.size() - 1;
+             candidate > current + 1 && remaining > 0; --candidate) {
+            --remaining;
+            // Keep the original path if metric roundoff cannot establish that
+            // removing these vertices is non-increasing in length.
+            if (context.Distance(path[current], path[candidate]) >
+                cumulative[candidate] - cumulative[current])
+                continue;
+            const bool valid = context.IsMotionValid(path[current], path[candidate]);
+            if (context.TimedOut())
+                return;
+            if (valid) {
+                next = candidate;
+                break;
+            }
+        }
+        shortened.push_back(path[next]);
+        current = next;
+    }
+    path = std::move(shortened);
 }
 
 void InterpolatePath(std::vector<Eigen::VectorXd> &path,

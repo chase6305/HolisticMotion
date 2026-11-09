@@ -16,9 +16,10 @@ collision-checked polyline:
 It needs no robot assets or optional solver. The plot flag requires Matplotlib.
 Use `--profile trapezoidal` to compare timing profiles. The example deliberately
 uses zero blend tolerance because smoothing a checked polyline requires another
-collision check. A deterministic farthest-visible shortcut pass rechecks every
-candidate edge with the same margin and typically reduces 17 planner points to
-5 execution waypoints, avoiding unnecessary stops at tree expansion points.
+collision check. Native simplification reserves part of its existing attempt
+budget for checked vertex shortcuts, avoiding unnecessary stops at tree expansion
+points. The example's additional farthest-visible pass uses the same margin and
+may leave an already compact path unchanged.
 
 For a caller-provided URDF, run the named-joint pipeline:
 

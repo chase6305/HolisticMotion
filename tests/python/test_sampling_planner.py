@@ -504,3 +504,71 @@ def test_shortcut_preserves_exact_endpoints_with_small_metric_weights():
             1, int(np.ceil(np.max(np.abs(second - first)) / options.edge_resolution))
         )
         assert all(_outside_wall(q) for q in np.linspace(first, second, segments + 1))
+
+
+@pytest.mark.parametrize("periodic", [False, True])
+def test_shortcut_compacts_vertices_without_losing_checked_motion(periodic):
+    lower, upper = [-1.0, -1.0, -np.pi], [1.0, 1.0, np.pi]
+    # A margin larger than the validation spacing lets the independent denser
+    # check assert clearance from the physical wall, not continuous validity of
+    # an arbitrary discretely checked obstacle boundary.
+    planner = hm.SamplingPlanner(
+        lower,
+        upper,
+        lambda q: not (-0.23 <= q[0] <= 0.23 and -0.78 <= q[1] <= 0.78),
+    )
+    planner.set_joint_weights([1.0, 1.0, 0.01])
+    if periodic:
+        planner.set_continuous_joints([2])
+    start, goal = [-0.8, 0.0, 3.0], [0.8, 0.0, -3.0]
+    options = _options()
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    original = planner.plan(start, goal, options)
+    options.simplify_path = True
+    options.shortcut_attempts = 1000
+    compact = planner.plan(start, goal, options)
+    assert original.success and compact.success
+    assert len(compact.path) < len(original.path)
+    np.testing.assert_array_equal(compact.path[0], start)
+    np.testing.assert_array_equal(compact.path[-1], goal)
+    assert compact.statistics.final_path_length <= original.statistics.final_path_length
+    # Verify new edges on a denser, independently constructed grid, including
+    # shortest-arc interpolation of the optional periodic coordinate.
+    for first, second in zip(compact.path[:-1], compact.path[1:]):
+        delta = second - first
+        if periodic:
+            delta[2] = np.arctan2(np.sin(delta[2]), np.cos(delta[2]))
+        count = max(1, int(np.ceil(np.max(np.abs(delta)) / 0.005)))
+        assert all(
+            _outside_wall(first + fraction * delta)
+            for fraction in np.linspace(0, 1, count + 1)
+        )
+
+
+def test_vertex_shortcut_timeout_keeps_the_previously_validated_path():
+    checked = 0
+    original_checks = None
+
+    def valid(state):
+        nonlocal checked
+        checked += 1
+        if original_checks is not None and checked > original_checks:
+            time.sleep(2.05)
+        return _outside_wall(state)
+
+    planner = hm.SamplingPlanner([-1.0, -1.0], [1.0, 1.0], valid)
+    options = _options()
+    options.timeout_seconds = 2.0
+    options.simplify_path = False
+    original = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert original.success
+    original_checks, checked = checked, 0
+    options.simplify_path = True
+    # A one-attempt budget goes entirely to the vertex pass, keeping the same
+    # deterministic search and expiring in its first new edge check.
+    options.shortcut_attempts = 1
+    result = planner.plan([-0.8, 0.0], [0.8, 0.0], options)
+    assert result.success
+    assert checked == original_checks + 1
+    np.testing.assert_array_equal(result.path, original.path)
