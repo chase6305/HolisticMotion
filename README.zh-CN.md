@@ -60,7 +60,7 @@ times, positions, velocities, accelerations = trajectory.sample_uniform(200)
 
 ## 文档与示例
 
-- [运动学与核心概念](docs/zh_CN/concepts.md)
+- [运动学与核心概念](docs/zh_CN/concepts.md) · [跨模块坐标契约](docs/zh_CN/coordinate_contracts.md)
 - [运动规划](docs/zh_CN/planning.md) · [轨迹生成](docs/zh_CN/trajectory.md)
 - [NVIDIA cuRobo v2 集成](docs/zh_CN/curobo_v2_fast.md)
 - [碰撞查询与球体拟合](docs/zh_CN/collision.md)

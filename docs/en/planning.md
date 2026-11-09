@@ -65,6 +65,21 @@ sample sequence. Motion validation still applies to every new connection.
 
 ## Python example
 
+With `simplify_path=True`, `shortcut_attempts` is shared between two phases:
+half (rounded down) samples random points along edges to improve geometry; the
+remainder checks farthest future vertices to remove redundant waypoint stops.
+Every accepted vertex shortcut passes the same motion validator and a weighted
+length check. Exhausting the shared deadline retains the already validated path;
+an unfinished vertex pass is discarded. A zero attempt budget leaves the search
+path unchanged. This changes fixed-seed simplified paths relative to earlier
+versions and balances geometric shortening with the cost of stopping at each
+waypoint during piecewise timing; it does not optimize execution time directly.
+
+The caller-asset `examples/python/planning/named_plan_and_retime.py` example
+combines named collision planning, path optimization and geometry-preserving
+TOPPRA timing. See {doc}`coordinate_contracts` for its full-model context and
+periodic-joint contracts.
+
 `JointSpace` is an immutable snapshot of scalar limits, joint weights, periodic
 coordinates and optional joint names in vector order. Both planning and path
 optimization accept it, so the post-processing stage can retain the search

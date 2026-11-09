@@ -24,5 +24,6 @@ def test_classic_plan_and_retime_example(profile):
     )
     counts = re.search(r"path: (\d+) points/.+ -> (\d+) points/", result.stdout)
     assert counts is not None
-    assert int(counts.group(2)) < int(counts.group(1))
+    # Native simplification may already remove every redundant vertex.
+    assert 2 < int(counts.group(2)) <= int(counts.group(1))
     assert f"timing: {profile}" in result.stdout

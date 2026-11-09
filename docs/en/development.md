@@ -29,6 +29,32 @@ parallelism remains controlled by the selected Conan profiles.
 
 ## C++ diagnostics and benchmarks
 
+### End-to-end motion measurements
+
+```bash
+./scripts/run.sh python3 benchmarks/motion_pipeline_benchmark.py \
+  --seeds 0 1 2 3 4 5 6 7 8 9 --repeats 3 \
+  --profiles double_s trapezoidal toppra --json /tmp/motion-pipeline.json
+```
+
+This asset-free point-robot workload routes around a fixed wall, optimizes the
+path, retimes it, samples owned arrays and verifies endpoints, bounds and sampled
+derivative limits. An independent slab-intersection check verifies every final
+polyline edge against the physical wall. Native profiles use zero blending;
+TOPPRA times two-point edges separately to preserve that geometry.
+
+Setup and one warmup per algorithm/profile are outside timing. Each raw request
+records its seed, repeat, stage wall times, validation counts and failure stage.
+Summaries report success rate and successful-request median/p95 latency, retaining
+failed rows. Fixed seeds do not remove timeout- or machine-dependent variation.
+RRT* variants deliberately use their improvement budget. Sample counts and timing
+profiles differ, so compare revisions with identical CLI arguments rather than
+interpreting cross-profile times as equal-work kernel speedups. TOPPRA bounds
+velocity/acceleration here; it has no jerk constraint. Timing results carry no
+CI performance threshold or general robot collision-throughput claim.
+
+### Native diagnostics
+
 Place explicit class-template instantiations after their member definitions.
 Instantiating earlier can omit constructor and method symbols on Clang even
 when GCC emits them. The optional Clang 14 core job builds its own Conan

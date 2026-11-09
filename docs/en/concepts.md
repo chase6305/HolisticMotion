@@ -121,6 +121,9 @@ and Jacobians are checked against finite differences.
 
 ## Joint names and coordinate mappings
 
+For a cross-module coordinate table and a complete named planning/timing example,
+see {doc}`coordinate_contracts`.
+
 A configuration `q` has length `nq`; velocities, displacement increments and
 distance gradients have length `nv`. Native `Robot` stores one scalar per
 independent joint, with `nq = nv = model_dof`. Pinocchio stores continuous joints

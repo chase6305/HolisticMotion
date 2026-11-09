@@ -21,6 +21,7 @@ HolisticMotion 将模型准备、只读数值查询和请求局部搜索状态�
 | Python 核心扩展 | 原生值转换、求解器与规划 API | C++ 核心和 pybind11 |
 | Python 碰撞扩展 | 碰撞类型及碰撞规划工厂 | C++ 核心与碰撞库；首次使用碰撞功能时加载 |
 | Python 工具包 | 重定向、数组轨迹算法及可选可视化适配 | 按功能加载依赖；toolkit-only 安装可以不包含原生库 |
+| 可选 NVIDIA 规划器 | 通过 `CuroboPlanner` 使用 cuRobo v2 RRT、优化与 TimeOpt | 构造时加载 cuRobo/Torch/Warp/CUDA；独立于原生碰撞组件 |
 
 `RobotModel` 加载模型数据，不选择运动链或构造 IK；`Robot` 组合该模型与选中的
 默认运动链及求解器。碰撞库不链接核心库。碰撞规划工厂位于 Python 碰撞扩展中，
@@ -107,6 +108,22 @@ C++ 函数对象仍负责其捕获的不透明 Python 引用。
 
 `JointSpace` 现在持有共享不可变实现，C++ 对象布局已经变化。使用旧布局编译的
 应用和扩展模块必须与 SDK 一起重建；公开方法保持原有坐标与所有权语义。
+
+## 算法和后端选择
+
+| 入口 | 实现 | 执行边界 |
+|---|---|---|
+| 原生 FK/IK、SRS/FEP 与采样规划 | HolisticMotion C++ 算法 | CPU；可选原生 CUDA 构建加速受支持的 FEP 批处理 |
+| `PinocchioRetargetingSolver` | 基于 Python Pinocchio 的本地阻尼最小二乘 IK | 每 worker 独立的有状态 CPU 会话 |
+| `PinkRetargetingSolver` | 本地有界 Pink 风格任务优化器 | 不依赖上游 Pink 或 qpsolvers 运行时 |
+| `CuroboRetargetingSolver` | 对 Pink 风格优化器进行本地多初值调度 | 不使用 NVIDIA cuRobo、Torch、Warp 或 CUDA 运行时 |
+| `CuroboPlanner` | NVIDIA cuRobo v2 规划、优化与 TimeOpt | 独立可选 GPU 运行时；同一进程内跨实例的后端调用串行化 |
+| `ToppraTrajectory` | 本地 NumPy 路径重定时 | 不导入外部 TOPPRA 包 |
+| `TorchToppraTrajectory` | 本地可选 Torch 路径重定时 | 可微范围遵循受支持的 autograd 操作，见 {doc}`trajectory` |
+
+原生 `--cuda` 与 NVIDIA 规划器的 CUDA 环境分别配置，普通工具包导入不会初始化
+两者的设备后端。已验证的上游版本与 GPU 所有权规则见 {doc}`curobo_v2_fast`，
+坐标填充与坐标系转换见 {doc}`coordinate_contracts`。
 
 ## 扩展评审
 

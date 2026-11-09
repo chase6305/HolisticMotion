@@ -52,6 +52,17 @@ RRT* 与 Informed RRT* 再次采样到已有最近邻状态时，会复用该节
 
 ## Python 示例
 
+`simplify_path=True` 时，`shortcut_attempts` 在两个阶段之间共享：向下取整的一半
+用于随机选择边上位置、改进几何路径，其余预算检查可直连的最远后续路点，减少
+逐段停稳时的冗余停顿。每条新连接都经过同一运动校验和加权长度检查。共享截止
+时间耗尽时保留已验证路径，尚未完成的路点压缩阶段整体丢弃；预算为零时保留搜索
+路径。相对于旧版本，这会改变固定种子下的简化结果，在几何缩短与逐路点停顿代价
+之间折中，并不直接优化执行时间。
+
+`examples/python/planning/named_plan_and_retime.py` 使用调用方资源，组合命名碰撞
+规划、路径优化和保留折线几何的 TOPPRA 重定时。完整模型上下文及周期关节契约
+见 {doc}`coordinate_contracts`。
+
 ```python
 collision = hm.CollisionModel(urdf_path, [str(urdf_path.parent)])
 joint_names = left_arm_joints + right_arm_joints

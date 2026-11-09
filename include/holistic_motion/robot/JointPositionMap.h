@@ -29,6 +29,9 @@ struct JointCoordinate {
 /// borrows metadata. An instance can be shared between workers without sharing
 /// model workspaces. Multi-DOF blocks (e.g. a free flyer) may remain in the
 /// reference configuration but cannot be selected as scalar joint positions.
+/// Selected joints retain caller order. Conversion checks dimensions and finite
+/// values, and extraction checks selected continuous pairs. Full reference
+/// manifold validity, joint limits and collision remain the model's responsibility.
 class JointPositionMap {
   public:
     JointPositionMap(int nq, int nv, std::vector<JointCoordinate> joints)

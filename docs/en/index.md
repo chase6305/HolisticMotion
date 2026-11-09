@@ -16,6 +16,7 @@ implicitly.
 
 installation
 concepts
+coordinate_contracts
 collision
 planning
 trajectory

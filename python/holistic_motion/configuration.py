@@ -35,6 +35,9 @@ class JointPositionMap:
     ``nq=2, nv=1`` encodes a continuous angle as cosine then sine. Multi-DOF
     joints cannot be selected, but their reference coordinates are preserved.
     Calls own their output arrays and can run concurrently on the same mapping.
+    Selected joints follow the supplied name order, independently of model or
+    chain order. Only selected continuous pairs are checked on extraction;
+    validate the complete reference with its model before planning.
     """
 
     nq: int

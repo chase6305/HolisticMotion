@@ -13,6 +13,7 @@ HolisticMotion 提供可复用的 C++17 机器人基础能力和 Python 绑定�
 
 installation
 concepts
+coordinate_contracts
 collision
 planning
 trajectory

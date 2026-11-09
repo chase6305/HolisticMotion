@@ -24,6 +24,7 @@ All three C++ components also provide direct consumer entry points.
 | Core Python extension | Native value conversion, solver and planning APIs | C++ core and pybind11 |
 | Collision Python extension | Collision types and collision-aware planning factories | C++ core and collision libraries; loaded on first collision use |
 | Python toolkits | Retargeting, array trajectory algorithms and optional visualization adapters | Feature-specific dependencies loaded when needed; a toolkit-only installation can omit native libraries |
+| Optional NVIDIA planner | cuRobo v2 RRT, optimization and TimeOpt through `CuroboPlanner` | Loads cuRobo/Torch/Warp/CUDA on construction; independent of the native collision component |
 
 `RobotModel` loads model data without selecting a chain or constructing IK.
 `Robot` combines that model with the selected default chain and solver.
@@ -138,6 +139,24 @@ consumers after changing these boundaries.
 changed, so applications and extension modules compiled against the earlier
 layout must be rebuilt together with the SDK. The public methods retain their
 coordinate and ownership semantics.
+
+## Algorithm and backend selection
+
+| Entry point | Implementation | Execution boundary |
+|---|---|---|
+| Native FK/IK, SRS/FEP and sampling planners | HolisticMotion C++ algorithms | CPU; optional native CUDA build accelerates supported FEP batch operations |
+| `PinocchioRetargetingSolver` | Local damped least-squares IK using Python Pinocchio | Stateful CPU session per worker |
+| `PinkRetargetingSolver` | Local bounded Pink-style task optimizer | No upstream Pink or qpsolvers runtime |
+| `CuroboRetargetingSolver` | Local multi-seed scheduling of the Pink-style optimizer | No NVIDIA cuRobo, Torch, Warp or CUDA runtime |
+| `CuroboPlanner` | NVIDIA cuRobo v2 planner, optimization and TimeOpt | Separate optional GPU runtime; backend calls serialize across instances within a process |
+| `ToppraTrajectory` | Local NumPy path timing | Does not import the external TOPPRA package |
+| `TorchToppraTrajectory` | Local optional Torch path timing | Differentiability follows supported autograd operations; see {doc}`trajectory` |
+
+Native `--cuda` and the NVIDIA planner's CUDA environment are configured
+independently. Ordinary toolkit import does not initialize either device backend.
+Use {doc}`curobo_v2_fast` for the qualified upstream revision and GPU ownership
+rules. Coordinate packing and frame conversion are covered in
+{doc}`coordinate_contracts`.
 
 ## Reviewing an extension
 

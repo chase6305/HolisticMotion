@@ -16,9 +16,29 @@ collision-checked polyline:
 It needs no robot assets or optional solver. The plot flag requires Matplotlib.
 Use `--profile trapezoidal` to compare timing profiles. The example deliberately
 uses zero blend tolerance because smoothing a checked polyline requires another
-collision check. A deterministic farthest-visible shortcut pass rechecks every
-candidate edge with the same margin and typically reduces 17 planner points to
-5 execution waypoints, avoiding unnecessary stops at tree expansion points.
+collision check. Native simplification reserves part of its existing attempt
+budget for checked vertex shortcuts, avoiding unnecessary stops at tree expansion
+points. The example's additional farthest-visible pass uses the same margin and
+may leave an already compact path unchanged.
+
+For a caller-provided URDF, run the named-joint pipeline:
+
+```bash
+./scripts/run.sh python3 examples/python/planning/named_plan_and_retime.py \
+  --urdf /absolute/path/robot.urdf \
+  --joint-names left_shoulder left_elbow \
+  --start 0.1 -0.2 --goal 0.3 -0.4 \
+  --max-velocity 0.8 0.8 --max-acceleration 1.5 1.5 \
+  --output /tmp/named-motion.npz
+```
+
+Replace names and limits with your model data. Optional `--reference` is a full
+collision-model configuration, preserving unselected branches and floating-base
+coordinates. Planning and optimization use named scalar positions; the result's
+periodic topology is unwrapped before each polyline edge is timed with TOPPRA.
+The example stops at corners, verifies samples, and exports both scalar positions
+and full configurations. See the [coordinate guide](../docs/en/coordinate_contracts.md)
+for units, frames, continuous joints and the limits of discrete checking.
 
 The classic upper-body sequence aligns the torso first, then solves one or both
 arms from the aligned configuration. Supply every asset and robot-specific name

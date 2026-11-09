@@ -35,6 +35,8 @@ struct PlanningOptions {
   double goal_bias{0.05};
   double edge_resolution{0.02};
   bool simplify_path{true};
+  // Shared budget: random edge-point shortcuts, then checked vertex shortcuts
+  // that reduce redundant stops for piecewise trajectory timing.
   std::size_t shortcut_attempts{100};
   bool interpolate_path{false};
   // Target count when densifying; preserve original corners. If the new

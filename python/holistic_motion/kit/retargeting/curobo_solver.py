@@ -23,9 +23,10 @@ from .pinocchio_solver import RetargetingResult, RetargetingTarget
 class CuroboRetargetingSolver(PinkRetargetingSolver):
     """Deterministic multi-seed, bounded nonlinear retargeting solver.
 
-    Each seed is refined with the inherited adaptive damped optimizer.  The
-    best converged result is returned, or the finite result with the smallest
-    normalized task error when none of the seeds converges.
+    Each seed is refined with the inherited Pink-style optimizer. Converged
+    results rank first, then the weighted objective and residual diagnostics
+    break ties. This local implementation does not invoke NVIDIA cuRobo;
+    use ``holistic_motion.kit.curobo_planner.CuroboPlanner`` for that backend.
     """
 
     def __init__(
