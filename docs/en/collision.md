@@ -161,6 +161,14 @@ gradient arithmetic also raises `OverflowError` rather than returning NaN or Inf
 An unrepresentably large positive clearance does not hide a finite minimum and
 is excluded by finite distance filters. A minimum query still raises when its
 final distance is unrepresentable, including for a batch row.
+Minimum queries visit active pairs in order, but conservative radius and squared
+center-distance bounds avoid full distance evaluation when a pair cannot improve
+the current minimum. Outward rounding protects near-ties; exact ties retain the
+first active pair. Scalar, gradient and batch queries share the same selector.
+Eligible pairs with exceptional squared lengths retain the extended-precision
+evaluation. Bounds are local to each query, so changing configurations or pair
+groups does not reuse a stale minimum. The worst-case traversal remains linear
+in the number of active pairs; no spatial index or approximation is introduced.
 Batch queries reuse consecutive exactly equal configurations within that call;
 distinct small movements are evaluated separately, and no cache survives the call.
 `q` and each `q_path` row are complete normalized `nq` configurations. Named

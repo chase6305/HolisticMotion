@@ -124,6 +124,25 @@ timings and an output checksum. Public input validation remains in each timed
 call; model convenience calls additionally check the complete manifold. This
 measures complete coordinate conversion, not collision or FK throughput.
 
+Compare complete sphere-distance queries across coherent native SDK installs:
+
+```bash
+python benchmarks/sphere_collision_benchmark.py \
+  --package baseline=/path/to/baseline/install \
+  --package current=/path/to/current/install \
+  --queries 1000 --repeats 9 --json /tmp/sphere-queries.json
+```
+
+The interpreter must match both SDKs. Comparison mode alternates fresh processes,
+keeping native cohorts separate, and rejects differing output checksums. Parsing,
+model construction, reference checks and warmup are outside timing; timings
+include native input validation, bindings and owned outputs. Batch latency is
+reported per input state and checked against scalar distances. JSON retains raw
+timing samples. `--radius-ratio 1000` tests one large sphere among small spheres;
+`--extra-fixed-frames 512` adds irrelevant frames. World-sphere, filtered-distance
+and boolean-collision rows provide control measurements. These synthetic results
+have no CI timing threshold or universal speedup guarantee.
+
 `benchmarks/runtime_import_benchmark.py` compares fresh-process package imports
 and the first collision-type access. It alternates package order and reports
 median times plus raw samples. On Linux it also records resident memory and
