@@ -53,30 +53,44 @@ double ExtendedSignedDistance(const Eigen::Vector3d &first,
     return signed_distance;
 }
 
-double SignedDistance(const Eigen::Vector3d &first,
-                      const Eigen::Vector3d &second, double first_radius,
-                      double second_radius, Eigen::Vector3d *normal = nullptr,
+double SignedDistance(const Eigen::Vector3d &first, const Eigen::Vector3d &second,
+                      double first_radius, double second_radius,
+                      double squared_distance, Eigen::Vector3d *normal = nullptr,
                       bool allow_positive_overflow = false) {
-    const Eigen::Vector3d delta = second - first;
-    const double squared_distance = delta.squaredNorm();
     if (std::isnormal(squared_distance)) {
         const double distance = std::sqrt(squared_distance);
         if (normal)
-            *normal = delta / distance;
+            *normal = (second - first) / distance;
         const double signed_distance = distance - first_radius - second_radius;
         if (std::isfinite(signed_distance))
             return signed_distance;
     }
-    return ExtendedSignedDistance(first, second, first_radius, second_radius,
-                                  normal, allow_positive_overflow);
+    return ExtendedSignedDistance(first, second, first_radius, second_radius, normal,
+                                  allow_positive_overflow);
+}
+
+double SquaredCenterBound(double best_distance, double maximum_radius) {
+    const double infinity = std::numeric_limits<double>::infinity();
+    // Reverse the two rounded radius subtractions and the rounded sqrt with
+    // outward steps. Using the largest radius covers every active pair. A
+    // plain (best + 2*radius)^2 can round inward and discard a better pair.
+    double bound = std::nextafter(best_distance + maximum_radius, infinity);
+    bound = std::nextafter(bound, infinity);
+    bound = std::nextafter(bound + maximum_radius, infinity);
+    bound = std::nextafter(bound, infinity);
+    if (!(bound > 0.0) || !std::isfinite(bound))
+        return infinity;
+    const double squared_bound = std::nextafter(bound * bound, infinity);
+    // Exceptional ranges keep the original extended-precision distance path.
+    return std::isnormal(squared_bound) ? squared_bound : infinity;
 }
 
 } // namespace
 
 class SphereCollisionModel::Impl {
   public:
-    Impl(const std::string &urdf_path,
-         std::vector<CollisionSphere> input_spheres, bool exclude_same_link)
+    Impl(const std::string &urdf_path, std::vector<CollisionSphere> input_spheres,
+         bool exclude_same_link)
         : spheres(std::move(input_spheres)) {
         if (urdf_path.empty())
             throw std::invalid_argument("URDF path must not be empty");
@@ -191,9 +205,9 @@ class SphereCollisionModel::Impl {
         result.pair_index = pair_index;
         result.first = first;
         result.second = second;
-        result.distance =
-            SignedDistance(first_center, second_center, spheres[first].radius,
-                           spheres[second].radius, &result.normal);
+        result.distance = SignedDistance(
+            first_center, second_center, spheres[first].radius, spheres[second].radius,
+            (second_center - first_center).squaredNorm(), &result.normal);
         result.first_center = first_center;
         result.second_center = second_center;
         return result;
@@ -204,32 +218,60 @@ class SphereCollisionModel::Impl {
         // Positive overflow cannot win a finite minimum or pass a finite
         // clearance filter. Keep it as an internal sentinel until the query
         // knows whether an unrepresentable result would actually be returned.
+        const Eigen::Vector3d first_center =
+            world_spheres.row(static_cast<Eigen::Index>(first)).head<3>();
+        const Eigen::Vector3d second_center =
+            world_spheres.row(static_cast<Eigen::Index>(second)).head<3>();
         return SignedDistance(
-            world_spheres.row(static_cast<Eigen::Index>(first)).head<3>(),
-            world_spheres.row(static_cast<Eigen::Index>(second)).head<3>(),
-            spheres[first].radius, spheres[second].radius, nullptr, true);
+            first_center, second_center, spheres[first].radius, spheres[second].radius,
+            (second_center - first_center).squaredNorm(), nullptr, true);
     }
 
     double MinimumDistanceValue() const {
-        double best = std::numeric_limits<double>::infinity();
-        for (std::size_t i = 0; i < pairs.size(); ++i)
-            best = std::min(best, DistanceValue(i));
+        const double best = FindMinimum().second;
         if (!std::isfinite(best))
             throw std::overflow_error("sphere distance is not finite");
         return best;
     }
 
-    std::size_t MinimumDistanceIndex() const {
+    std::pair<std::size_t, double> FindMinimum() const {
         std::size_t best_index = 0;
         double best_distance = DistanceValue(0);
+        double squared_bound = SquaredCenterBound(best_distance, maximum_radius);
         for (std::size_t i = 1; i < pairs.size(); ++i) {
-            const double distance = DistanceValue(i);
+            const auto [first, second] = pairs[i];
+            // Twice a floating-point radius is exact unless it overflows.
+            // This lower bound also handles a loose global center bound when
+            // one large sphere dominates a cloud of small spheres. Equality
+            // cannot replace the earlier pair, so deterministic ties are safe.
+            if (best_distance < 0.0) {
+                const double first_radius =
+                    world_spheres(static_cast<Eigen::Index>(first), 3);
+                const double second_radius =
+                    world_spheres(static_cast<Eigen::Index>(second), 3);
+                if (-2.0 * std::max(first_radius, second_radius) >= best_distance)
+                    continue;
+            }
+            const Eigen::Vector3d first_center =
+                world_spheres.row(static_cast<Eigen::Index>(first)).head<3>();
+            const Eigen::Vector3d second_center =
+                world_spheres.row(static_cast<Eigen::Index>(second)).head<3>();
+            const double squared_distance =
+                (second_center - first_center).squaredNorm();
+            if (squared_distance > squared_bound && std::isfinite(squared_distance))
+                continue;
+            const double distance =
+                SignedDistance(first_center, second_center,
+                               world_spheres(static_cast<Eigen::Index>(first), 3),
+                               world_spheres(static_cast<Eigen::Index>(second), 3),
+                               squared_distance, nullptr, true);
             if (distance < best_distance) {
                 best_distance = distance;
                 best_index = i;
+                squared_bound = SquaredCenterBound(best_distance, maximum_radius);
             }
         }
-        return best_index;
+        return {best_index, best_distance};
     }
 
     template <bool CheckRange>
@@ -435,7 +477,7 @@ SphereCollisionModel::MinimumDistance(const Eigen::VectorXd &configuration) {
         throw std::runtime_error(
             "sphere collision model has no active collision pairs");
     impl_->Update(configuration);
-    return impl_->Distance(impl_->MinimumDistanceIndex());
+    return impl_->Distance(impl_->FindMinimum().first);
 }
 
 Eigen::VectorXd SphereCollisionModel::MinimumDistanceGradient(
@@ -449,7 +491,7 @@ SphereDistanceGradientResult SphereCollisionModel::MinimumDistanceWithGradient(
         throw std::runtime_error(
             "sphere collision model has no active collision pairs");
     impl_->Update(configuration);
-    const std::size_t best_index = impl_->MinimumDistanceIndex();
+    const std::size_t best_index = impl_->FindMinimum().first;
     SphereDistanceResult best = impl_->Distance(best_index);
     const auto [first, second] = impl_->pairs[best_index];
     SphereDistanceGradientResult result;

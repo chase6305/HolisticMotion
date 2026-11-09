@@ -103,6 +103,22 @@ PYTHONPATH=python:build/cmake python benchmarks/joint_mapping_benchmark.py \
 交替测量后的耗时中位数和输出校验和。各接口的输入校验仍计入单次调用，模型便捷
 接口还会检查完整流形约束。该基准测量完整坐标转换，不代表碰撞或 FK 吞吐量。
 
+可在两套各自一致的原生 SDK 安装之间比较完整球体距离查询：
+
+```bash
+python benchmarks/sphere_collision_benchmark.py \
+  --package baseline=/path/to/baseline/install \
+  --package current=/path/to/current/install \
+  --queries 1000 --repeats 9 --json /tmp/sphere-queries.json
+```
+
+解释器须匹配两个 SDK。比较模式交替启动独立进程，隔离原生构建，并拒绝不同的
+输出校验和。解析、模型构造、参考结果检查和预热不计时；测量保留原生输入校验、
+绑定转换及独立输出。批量查询按输入状态报告耗时，并与标量距离核对。JSON 保留
+原始耗时样本。`--radius-ratio 1000` 测试小球集合中的一个大球，
+`--extra-fixed-frames 512` 添加无关坐标系。世界球体、过滤距离和布尔碰撞查询作为
+控制测量。这些合成结果不设 CI 性能门槛，也不保证所有场景都获得相同加速。
+
 `benchmarks/runtime_import_benchmark.py` 在新解释器进程中比较包导入及首次访问碰撞
 类型的耗时，交替测量各安装目录，输出中位数和原始样本。Linux 还记录核心导入后
 的常驻内存和已映射的 Pinocchio/Coal 动态库：
