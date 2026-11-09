@@ -459,6 +459,10 @@ stage so the result can be inspected before planning.
   manifold-aware seed perturbations, best-result selection, and optional early
   exit on the first converged seed.
 
+These are local CPU implementations. `CuroboRetargetingSolver` does not invoke
+NVIDIA cuRobo; the optional GPU planning adapter is `CuroboPlanner`, described
+in {doc}`curobo_v2_fast` and the {doc}`architecture` backend table.
+
 The cuRobo-style solver accepts the same frames, joint groups, tasks, modes,
 and targets as `PinkRetargetingSolver`:
 

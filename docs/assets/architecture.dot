@@ -19,6 +19,7 @@ digraph HolisticMotion {
     cuda [label="CUDA", fillcolor="#f4f6f8"];
     native_collision [label="Conan Pinocchio / Coal", fillcolor="#f4f6f8"];
     python_deps [label="Feature dependencies\nNumPy / Torch / Python Pinocchio / Viser", fillcolor="#f4f6f8"];
+    nvidia_planner [label="Optional NVIDIA cuRobo v2 planner\nTorch / Warp / CUDA / TimeOpt", fillcolor="#f4f6f8"];
 
     facade -> core_py [label="native mode"];
     facade -> collision_py [label="first collision use", style=dashed];
@@ -27,6 +28,7 @@ digraph HolisticMotion {
     collision_py -> core_cpp;
     collision_py -> collision_cpp;
     toolkit -> python_deps [label="by feature", style=dashed];
+    toolkit -> nvidia_planner [label="planner construction", style=dashed];
     core_cpp -> model_cpp [label="public"];
     core_cpp -> formatting [label="public"];
     core_cpp -> logging [label="private"];

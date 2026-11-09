@@ -382,6 +382,10 @@ IK 路点，并非经过碰撞检查、可直接执行的路径。每个阶段�
 - `CuroboRetargetingSolver` 增加确定性多 seed 优化、流形上的 seed 扰动、
   最优结果选择，以及首个 seed 收敛后的可选提前退出。
 
+以上均为本地 CPU 实现，`CuroboRetargetingSolver` 不调用 NVIDIA cuRobo。
+可选 GPU 规划适配器为 `CuroboPlanner`，见 {doc}`curobo_v2_fast` 与
+{doc}`architecture` 中的后端对照表。
+
 cuRobo 风格求解器与 `PinkRetargetingSolver` 使用相同的 frame、关节组、任务、
 模式和目标接口：
 

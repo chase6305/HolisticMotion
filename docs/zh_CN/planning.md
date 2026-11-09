@@ -52,6 +52,10 @@ RRT* 与 Informed RRT* 再次采样到已有最近邻状态时，会复用该节
 
 ## Python 示例
 
+`examples/python/planning/named_plan_and_retime.py` 使用调用方资源，组合命名碰撞
+规划、路径优化和保留折线几何的 TOPPRA 重定时。完整模型上下文及周期关节契约
+见 {doc}`coordinate_contracts`。
+
 ```python
 collision = hm.CollisionModel(urdf_path, [str(urdf_path.parent)])
 joint_names = left_arm_joints + right_arm_joints

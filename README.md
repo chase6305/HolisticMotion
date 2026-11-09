@@ -63,7 +63,7 @@ installation and runtime requirements.
 
 ## Documentation and examples
 
-- [Kinematics and core concepts](docs/en/concepts.md)
+- [Kinematics and core concepts](docs/en/concepts.md) · [Coordinate contracts](docs/en/coordinate_contracts.md)
 - [Planning](docs/en/planning.md) · [Trajectories](docs/en/trajectory.md)
 - [NVIDIA cuRobo v2 integration](docs/en/curobo_v2_fast.md)
 - [Collision and sphere fitting](docs/en/collision.md)

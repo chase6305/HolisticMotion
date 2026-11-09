@@ -91,6 +91,8 @@ Python Pinocchio 在同一进程运行。
 
 ## 关节名称与坐标映射
 
+跨模块坐标对照表与完整命名规划/重定时示例见 {doc}`coordinate_contracts`。
+
 完整配置 `q` 的长度为 `nq`，速度、位移增量和距离梯度的长度为 `nv`。
 原生 `Robot` 的完整标量模型采用 `nq = nv = model_dof`，连续关节保存角度；
 Pinocchio 碰撞和重定向模型的连续关节采用 `[cos(theta), sin(theta)]`，

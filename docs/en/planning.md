@@ -65,6 +65,11 @@ sample sequence. Motion validation still applies to every new connection.
 
 ## Python example
 
+The caller-asset `examples/python/planning/named_plan_and_retime.py` example
+combines named collision planning, path optimization and geometry-preserving
+TOPPRA timing. See {doc}`coordinate_contracts` for its full-model context and
+periodic-joint contracts.
+
 `JointSpace` is an immutable snapshot of scalar limits, joint weights, periodic
 coordinates and optional joint names in vector order. Both planning and path
 optimization accept it, so the post-processing stage can retain the search
