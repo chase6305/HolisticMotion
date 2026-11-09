@@ -99,7 +99,9 @@ requires multiplying by the current `world_T_base` from the full model.
 
 Across `+pi/-pi`, unwrapping retains the shortest planned arc. Lifted angles may
 leave the representative `[-pi, pi]` interval; this is expected for periodic
-joints. Bounded joints keep their original coordinates. If hardware needs
+joints. The lifted endpoint need not equal the goal's representative angle;
+compare its sine/cosine or packed configuration (for example, `+pi` and `-pi`
+are equivalent). Bounded joints keep their original coordinates. If hardware needs
 multiple revolutions or absolute winding limits, use an application-defined
 bounded scalar space instead of inferring winding from principal angles.
 

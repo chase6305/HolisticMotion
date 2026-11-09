@@ -52,12 +52,13 @@ def branched_model(tmp_path):
 
 @pytest.mark.parametrize("names", [("slide", "turn"), ("turn", "slide")])
 @pytest.mark.parametrize("direction", [-1, 1])
+@pytest.mark.parametrize("angle", [3.0, np.pi])
 def test_named_pipeline_keeps_floating_base_branch_and_short_periodic_arc(
-    branched_model, tmp_path, names, direction
+    branched_model, tmp_path, names, direction, angle
 ):
     urdf, model, reference = branched_model
-    start = {"slide": 0.1, "turn": direction * 3.0}
-    goal = {"slide": 0.3, "turn": -direction * 3.0}
+    start = {"slide": 0.1, "turn": direction * angle}
+    goal = {"slide": 0.3, "turn": -direction * angle}
     output = tmp_path / "trajectory.npz"
     completed = subprocess.run(
         [
@@ -110,9 +111,17 @@ def test_named_pipeline_keeps_floating_base_branch_and_short_periodic_arc(
         assert abs(arrays["position"][-1, turn] - arrays["position"][0, turn]) < 0.3
         for row in (0, -1):
             expected = start if row == 0 else goal
+            actual = mapping.joint_positions(configuration[row])
             np.testing.assert_allclose(
-                mapping.joint_positions(configuration[row]),
-                [expected[name] for name in names],
+                actual[names.index("slide")],
+                expected["slide"],
+                atol=1e-12,
+            )
+            # +pi and -pi describe the same physical endpoint; principal-angle
+            # extraction cannot be compared as an ordinary bounded scalar.
+            np.testing.assert_allclose(
+                [np.cos(actual[turn]), np.sin(actual[turn])],
+                [np.cos(expected["turn"]), np.sin(expected["turn"])],
                 atol=1e-12,
             )
         for q in configuration:
