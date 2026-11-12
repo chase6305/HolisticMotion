@@ -395,8 +395,7 @@ void InterpolatePath(std::vector<Eigen::VectorXd> &path,
     path = std::move(output);
 }
 
-std::vector<Eigen::VectorXd>
-TakePath(Tree &tree, std::size_t index) {
+std::vector<Eigen::VectorXd> TakePath(Tree &tree, std::size_t index) {
     // Search is finished; transfer the selected states out of the local tree.
     std::vector<Eigen::VectorXd> result;
     while (true) {
@@ -409,9 +408,9 @@ TakePath(Tree &tree, std::size_t index) {
     return result;
 }
 
-std::vector<Eigen::VectorXd>
-ConnectPaths(Tree &first, std::size_t first_index, Tree &second, std::size_t second_index,
-             const PlanningContext &context) {
+std::vector<Eigen::VectorXd> ConnectPaths(Tree &first, std::size_t first_index, Tree &second,
+                                          std::size_t second_index,
+                                          const PlanningContext &context) {
     auto first_path = TakePath(first, first_index);
     auto second_path = TakePath(second, second_index);
     if (!first.rooted_at_start) {
@@ -428,9 +427,10 @@ ConnectPaths(Tree &first, std::size_t first_index, Tree &second, std::size_t sec
     return first_path;
 }
 
-std::vector<Eigen::VectorXd>
-PlanRRTConnect(const Eigen::VectorXd &start, const Eigen::VectorXd &goal, PlanningContext &context,
-               const PlanningOptions &options, PlanningStatistics &statistics) {
+std::vector<Eigen::VectorXd> PlanRRTConnect(const Eigen::VectorXd &start,
+                                            const Eigen::VectorXd &goal, PlanningContext &context,
+                                            const PlanningOptions &options,
+                                            PlanningStatistics &statistics) {
     Tree first{{Node{start, 0, 0.0, {}}}, true, {}};
     Tree second{{Node{goal, 0, 0.0, {}}}, false, {}};
     std::uniform_real_distribution<double> unit(0.0, 1.0);
@@ -462,9 +462,9 @@ PlanRRTConnect(const Eigen::VectorXd &start, const Eigen::VectorXd &goal, Planni
     return {};
 }
 
-std::vector<Eigen::VectorXd>
-PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal, PlanningContext &context,
-            const PlanningOptions &options, PlanningStatistics &statistics, bool informed) {
+std::vector<Eigen::VectorXd> PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
+                                         PlanningContext &context, const PlanningOptions &options,
+                                         PlanningStatistics &statistics, bool informed) {
     Tree tree{{Node{start, 0, 0.0, {}}}, true, {}};
     // Keep the neighborhood schedule based on admitted samples, including
     // repeated states that need not be stored. Removing duplicate goal nodes

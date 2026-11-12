@@ -46,21 +46,17 @@ void BindSamplingPlanning(pybind11::module_ &module) {
              py::arg("lower_limits"), py::arg("upper_limits"),
              py::arg("joint_names") = std::vector<std::string>{})
         .def_property_readonly("dof", &JointSpace::GetDOF)
-        .def_property_readonly("lower_limits",
-                               [](const JointSpace &space) {
-                                   return Eigen::VectorXd(space.GetLowerLimits());
-                               })
-        .def_property_readonly("upper_limits",
-                               [](const JointSpace &space) {
-                                   return Eigen::VectorXd(space.GetUpperLimits());
-                               })
-        .def_property_readonly("joint_weights",
-                               [](const JointSpace &space) {
-                                   return Eigen::VectorXd(space.GetJointWeights());
-                               })
+        .def_property_readonly(
+            "lower_limits",
+            [](const JointSpace &space) { return Eigen::VectorXd(space.GetLowerLimits()); })
+        .def_property_readonly(
+            "upper_limits",
+            [](const JointSpace &space) { return Eigen::VectorXd(space.GetUpperLimits()); })
+        .def_property_readonly(
+            "joint_weights",
+            [](const JointSpace &space) { return Eigen::VectorXd(space.GetJointWeights()); })
         .def_property_readonly("joint_names", &JointSpace::GetJointNames)
-        .def_property_readonly("continuous_joint_indices",
-                               &JointSpace::GetContinuousJoints)
+        .def_property_readonly("continuous_joint_indices", &JointSpace::GetContinuousJoints)
         .def(
             "with_joint_weights",
             [](const JointSpace &space, const py::object &weights) {
