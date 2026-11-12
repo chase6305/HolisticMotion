@@ -649,7 +649,7 @@ class TorchToppraTrajectory:
             raise ValueError("TOPPRA supports CPU and CUDA devices")
         self._single = waypoints.ndim == 2
         self._dtype, self._device = waypoints.dtype, waypoints.device
-        points = waypoints.to(dtype=torch.float64).clone()
+        points = waypoints.to(dtype=torch.float64, copy=True)
         self._points = points.unsqueeze(0) if self._single else points
         self._batch, count, self.dof = self._points.shape
         velocity = self._limits(max_velocity, "max_velocity")
@@ -735,6 +735,7 @@ class TorchToppraTrajectory:
         _check(torch.diff(self._grid, dim=1) > 0, "path grid is not representable")
         _, first, second = self._evaluate(self._grid, position=False)
         a, b, speed_scale = self._constraints(first, second)
+        del first, second
         _check(
             torch.isfinite(a) & torch.isfinite(b),
             "path speed constraints must be finite",
