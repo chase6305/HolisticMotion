@@ -657,7 +657,7 @@ class TorchToppraTrajectory:
         start = self._boundary(start_path_velocity)
         end = self._boundary(end_path_velocity)
         checks = (
-            (torch.isfinite(waypoints), "waypoints must be finite"),
+            (torch.isfinite(self._points), "waypoints must be finite"),
             (
                 torch.isfinite(velocity) & (velocity > 0),
                 "max_velocity must be finite and strictly positive",

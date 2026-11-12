@@ -1,4 +1,4 @@
-"""Construction-only motion buffers do not remain owned by trajectories."""
+"""Trajectory construction owns inputs and releases temporary motion buffers."""
 
 import gc
 import weakref
@@ -60,6 +60,29 @@ def test_numpy_grid_positions_are_released_before_constraint_construction(
     assert sum(size for _, size in positions) == grid_size * 3 * 8
     sampled, *_ = trajectory.sample([0.0, trajectory.duration])
     np.testing.assert_allclose(sampled, trajectory.waypoints, atol=1e-15)
+
+
+@pytest.mark.parametrize("limit_name", ["max_velocity", "max_acceleration"])
+def test_torch_validates_owned_waypoints_after_converting_limits(limit_name):
+    torch = pytest.importorskip("torch")
+    from holistic_motion.trajectory import TorchToppraTrajectory
+
+    points = torch.tensor([[0.0], [1.0]], dtype=torch.float64)
+    expected = points.clone()
+
+    class MutatingLimit(list):
+        @property
+        def dtype(self):
+            points.fill_(float("nan"))
+            return torch.float64
+
+    limits = {"max_velocity": [1.0], "max_acceleration": [2.0]}
+    limits[limit_name] = MutatingLimit([1.0])
+    trajectory = TorchToppraTrajectory(points, **limits, grid_size=17)
+    assert torch.isnan(points).all()
+    duration = trajectory.duration
+    sampled, *_ = trajectory.sample(torch.stack((torch.zeros_like(duration), duration)))
+    torch.testing.assert_close(sampled, expected, rtol=0.0, atol=1e-15)
 
 
 def test_torch_grid_derivatives_are_released_before_timing_solve(monkeypatch):
