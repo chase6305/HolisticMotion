@@ -58,9 +58,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                                [](const JointSpace &space) {
                                    return Eigen::VectorXd(space.GetJointWeights());
                                })
-        .def_property_readonly(
-            "joint_names",
-            [](const JointSpace &space) { return space.GetJointNames(); })
+        .def_property_readonly("joint_names", &JointSpace::GetJointNames)
         .def_property_readonly("continuous_joint_indices",
                                &JointSpace::GetContinuousJoints)
         .def(
