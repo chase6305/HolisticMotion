@@ -228,15 +228,10 @@ class SRSContinuousTracker:
             or np.any(self._lower > self._upper)
         ):
             raise ValueError("solver returned invalid seven-axis joint limits")
-        self._max_velocity = self._limit_vector(
-            self.options.max_velocity, "max_velocity"
+        self._max_velocity = np.broadcast_to(self.options.max_velocity, (self._dof,))
+        self._max_acceleration = np.broadcast_to(
+            self.options.max_acceleration, (self._dof,)
         )
-        self._max_acceleration = self._limit_vector(
-            self.options.max_acceleration, "max_acceleration"
-        )
-        self._pending_branch: tuple[int, int, int] | None = None
-        self._pending_count = 0
-        self._frame_index = 0
         self.reset(initial_joints)
 
     @property
@@ -284,7 +279,7 @@ class SRSContinuousTracker:
         self._velocity = velocity
         self._configuration = configuration
         self._redundancy = redundancy
-        self._pending_branch = None
+        self._pending_branch: tuple[int, int, int] | None = None
         self._pending_count = 0
         self._frame_index = 0
 
@@ -431,13 +426,10 @@ class SRSContinuousTracker:
                 )
             except ValueError:
                 pass
-            near_singularity = (
-                self._minimum_singular_value(self._joints)
-                <= self.options.singular_value_threshold
-            )
             refresh = (
                 not candidates
-                or near_singularity
+                or self._minimum_singular_value(self._joints)
+                <= self.options.singular_value_threshold
                 or self._frame_index % self.options.candidate_refresh_interval == 0
                 or any(
                     self._configuration_of(item) != self._configuration
@@ -534,16 +526,20 @@ class SRSContinuousTracker:
 
     def _score(self, joints, velocity, acceleration, predicted, branch, dt) -> float:
         options = self.options
-        limit_distance = np.minimum(joints - self._lower, self._upper - joints)
-        finite = np.isfinite(limit_distance)
-        limit_penalty = (1.0 / np.maximum(limit_distance[finite], 1e-6) ** 2).sum()
-        return float(
-            options.position_weight * ((joints - predicted) ** 2).sum()
-            + options.velocity_weight * ((velocity * dt) ** 2).sum()
-            + options.acceleration_weight * ((acceleration * dt * dt) ** 2).sum()
-            + options.branch_switch_penalty * (branch != self._configuration)
-            + options.joint_limit_weight * limit_penalty
-        )
+        score = 0.0
+        if options.position_weight:
+            score += options.position_weight * ((joints - predicted) ** 2).sum()
+        if options.velocity_weight:
+            score += options.velocity_weight * ((velocity * dt) ** 2).sum()
+        if options.acceleration_weight:
+            score += options.acceleration_weight * ((acceleration * dt * dt) ** 2).sum()
+        score += options.branch_switch_penalty * (branch != self._configuration)
+        if options.joint_limit_weight:
+            limit_distance = np.minimum(joints - self._lower, self._upper - joints)
+            finite = np.isfinite(limit_distance)
+            limit_penalty = (1.0 / np.maximum(limit_distance[finite], 1e-6) ** 2).sum()
+            score += options.joint_limit_weight * limit_penalty
+        return float(score)
 
     def _unwrap(self, candidate: np.ndarray, reference: np.ndarray) -> np.ndarray:
         values = np.asarray(candidate, dtype=float)
@@ -598,18 +594,6 @@ class SRSContinuousTracker:
         ):
             raise ValueError("solver returned an invalid configuration")
         return tuple(int(value) for value in raw_branch), redundancy
-
-    def _limit_vector(self, value: Limit, name: str) -> np.ndarray:
-        result = np.asarray(value, dtype=float)
-        if result.ndim == 0:
-            result = np.full(self._dof, float(result))
-        if (
-            result.shape != (self._dof,)
-            or np.any(np.isnan(result))
-            or np.any(result <= 0.0)
-        ):
-            raise ValueError(f"{name} must be positive with one or seven values")
-        return result
 
     @staticmethod
     def _pose_error(actual: np.ndarray, target: np.ndarray) -> tuple[float, float]:

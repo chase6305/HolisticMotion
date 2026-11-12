@@ -74,10 +74,10 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
             solutions.ik_joints.empty()) {
             return false;
         }
-        const auto &next = solutions.ik_joints.front();
+        auto &next = solutions.ik_joints.front();
         if ((next.array() == current.array()).all())
             return false;
-        planned_path.push_back(next);
+        planned_path.push_back(std::move(next));
     }
     path = std::move(planned_path);
     return true;

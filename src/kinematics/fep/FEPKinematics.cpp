@@ -116,7 +116,7 @@ bool FEPKinematics::SolveSeed(const SE3d &target, Eigen::VectorXd seed,
         result.ik_joints.empty()) {
         return false;
     }
-    solution = result.ik_joints.front();
+    solution = std::move(result.ik_joints.front());
     if (solution.size() != 7 || !solution.allFinite())
         return false;
 
@@ -135,7 +135,7 @@ bool FEPKinematics::SolveSeed(const SE3d &target, Eigen::VectorXd seed,
         Eigen::VectorXd refined_seed = solution;
         if (refinement.GetIK(target, refined, refined_seed, refined_distances) &&
             !refined.ik_joints.empty()) {
-            solution = refined.ik_joints.front();
+            solution = std::move(refined.ik_joints.front());
         }
     }
     return solution.size() == 7 && solution.allFinite() &&
@@ -182,12 +182,12 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     fep_internal::CoordinatePeriods periods;
     for (std::size_t joint = 0; joint < periods.size(); ++joint)
         periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
-    auto append = [&](const Eigen::VectorXd &candidate) {
+    auto append = [&](Eigen::VectorXd &candidate) {
         if (std::none_of(solutions.begin(), solutions.end(),
                          [&](const Eigen::VectorXd &existing) {
                              return SameSolution(existing, candidate, periods);
                          })) {
-            solutions.push_back(candidate);
+            solutions.push_back(std::move(candidate));
         }
     };
     Eigen::VectorXd candidate;
@@ -233,7 +233,7 @@ bool FEPKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
                 const double cost = WrappedDistance(candidate, seed, periods);
                 if (cost < best_cost) {
                     best_cost = cost;
-                    best = candidate;
+                    best = std::move(candidate);
                 }
             }
             if (best.size() == 7)

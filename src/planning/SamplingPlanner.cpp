@@ -5,10 +5,8 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
-#include <numeric>
 #include <queue>
 #include <random>
-#include <stdexcept>
 #include <utility>
 
 #include "JointSpaceIndex.h"
@@ -208,19 +206,6 @@ class PlanningContext {
         return target_reached ? ExtendStatus::REACHED : ExtendStatus::ADVANCED;
     }
 
-    std::vector<Eigen::VectorXd> Trace(const Tree &tree,
-                                       std::size_t index) const {
-        std::vector<Eigen::VectorXd> result;
-        while (true) {
-            result.push_back(tree.nodes[index].state);
-            if (index == tree.nodes[index].parent)
-                break;
-            index = tree.nodes[index].parent;
-        }
-        std::reverse(result.begin(), result.end());
-        return result;
-    }
-
     std::mt19937_64 &Generator() { return generator_; }
 
   private:
@@ -410,11 +395,24 @@ void InterpolatePath(std::vector<Eigen::VectorXd> &path,
     path = std::move(output);
 }
 
-std::vector<Eigen::VectorXd>
-ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
-             std::size_t second_index, const PlanningContext &context) {
-    auto first_path = context.Trace(first, first_index);
-    auto second_path = context.Trace(second, second_index);
+std::vector<Eigen::VectorXd> TakePath(Tree &tree, std::size_t index) {
+    // Search is finished; transfer the selected states out of the local tree.
+    std::vector<Eigen::VectorXd> result;
+    while (true) {
+        result.push_back(std::move(tree.nodes[index].state));
+        if (index == tree.nodes[index].parent)
+            break;
+        index = tree.nodes[index].parent;
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
+std::vector<Eigen::VectorXd> ConnectPaths(Tree &first, std::size_t first_index, Tree &second,
+                                          std::size_t second_index,
+                                          const PlanningContext &context) {
+    auto first_path = TakePath(first, first_index);
+    auto second_path = TakePath(second, second_index);
     if (!first.rooted_at_start) {
         std::swap(first_path, second_path);
     }
@@ -429,16 +427,14 @@ ConnectPaths(const Tree &first, std::size_t first_index, const Tree &second,
     return first_path;
 }
 
-std::vector<Eigen::VectorXd>
-PlanRRTConnect(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
-               PlanningContext &context, const PlanningOptions &options,
-               PlanningStatistics &statistics,
-               const std::chrono::steady_clock::time_point &deadline) {
+std::vector<Eigen::VectorXd> PlanRRTConnect(const Eigen::VectorXd &start,
+                                            const Eigen::VectorXd &goal, PlanningContext &context,
+                                            const PlanningOptions &options,
+                                            PlanningStatistics &statistics) {
     Tree first{{Node{start, 0, 0.0, {}}}, true, {}};
     Tree second{{Node{goal, 0, 0.0, {}}}, false, {}};
     std::uniform_real_distribution<double> unit(0.0, 1.0);
-    for (; statistics.iterations < options.max_iterations &&
-           std::chrono::steady_clock::now() < deadline;
+    for (; statistics.iterations < options.max_iterations && !context.TimedOut();
          ++statistics.iterations) {
         Eigen::VectorXd sample = unit(context.Generator()) < options.goal_bias
                                      ? second.nodes.front().state
@@ -454,8 +450,7 @@ PlanRRTConnect(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         do {
             status = context.Extend(second, first.nodes[first_index].state,
                                     second_index);
-        } while (status == ExtendStatus::ADVANCED &&
-                 std::chrono::steady_clock::now() < deadline);
+        } while (status == ExtendStatus::ADVANCED && !context.TimedOut());
         if (status == ExtendStatus::REACHED) {
             statistics.tree_nodes = first.nodes.size() + second.nodes.size();
             return ConnectPaths(first, first_index, second, second_index,
@@ -467,12 +462,9 @@ PlanRRTConnect(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
     return {};
 }
 
-std::vector<Eigen::VectorXd>
-PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
-            PlanningContext &context, const PlanningOptions &options,
-            PlanningStatistics &statistics,
-            const std::chrono::steady_clock::time_point &deadline,
-            bool informed) {
+std::vector<Eigen::VectorXd> PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
+                                         PlanningContext &context, const PlanningOptions &options,
+                                         PlanningStatistics &statistics, bool informed) {
     Tree tree{{Node{start, 0, 0.0, {}}}, true, {}};
     // Keep the neighborhood schedule based on admitted samples, including
     // repeated states that need not be stored. Removing duplicate goal nodes
@@ -502,8 +494,7 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         tree.nodes[parent].children.push_back(index);
         update_descendant_costs(index, delta);
     };
-    for (; statistics.iterations < options.max_iterations &&
-           std::chrono::steady_clock::now() < deadline;
+    for (; statistics.iterations < options.max_iterations && !context.TimedOut();
          ++statistics.iterations) {
         Eigen::VectorXd sample;
         if (unit(context.Generator()) < options.goal_bias) {
@@ -529,10 +520,8 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
                     break;
                 }
             } while (informed && std::isfinite(best_cost) &&
-                     context.Distance(start, sample) +
-                             context.Distance(sample, goal) >
-                         best_cost &&
-                     std::chrono::steady_clock::now() < deadline);
+                     context.Distance(start, sample) + context.Distance(sample, goal) > best_cost &&
+                     !context.TimedOut());
         }
         const std::size_t nearest = context.Nearest(tree, sample);
         Eigen::VectorXd candidate =
@@ -604,9 +593,8 @@ PlanRRTStar(const Eigen::VectorXd &start, const Eigen::VectorXd &goal,
         }
     }
     statistics.tree_nodes = tree.nodes.size();
-    return best_goal == std::numeric_limits<std::size_t>::max()
-               ? std::vector<Eigen::VectorXd>{}
-               : context.Trace(tree, best_goal);
+    return best_goal == std::numeric_limits<std::size_t>::max() ? std::vector<Eigen::VectorXd>{}
+                                                                : TakePath(tree, best_goal);
 }
 
 } // namespace
@@ -731,20 +719,17 @@ PlanningResult SamplingPlanner::Plan(const Eigen::VectorXd &requested_start,
         return finish(PlanningStatus::TIMEOUT, "planning time limit reached");
     switch (options.algorithm) {
     case SamplingAlgorithm::RRT_CONNECT:
-        result.path = PlanRRTConnect(start, goal, context, options,
-                                     result.statistics, deadline);
+        result.path = PlanRRTConnect(start, goal, context, options, result.statistics);
         break;
     case SamplingAlgorithm::RRT_STAR:
-        result.path = PlanRRTStar(start, goal, context, options,
-                                  result.statistics, deadline, false);
+        result.path = PlanRRTStar(start, goal, context, options, result.statistics, false);
         break;
     case SamplingAlgorithm::INFORMED_RRT_STAR:
-        result.path = PlanRRTStar(start, goal, context, options,
-                                  result.statistics, deadline, true);
+        result.path = PlanRRTStar(start, goal, context, options, result.statistics, true);
         break;
     }
     if (result.path.empty()) {
-        const bool timed_out = std::chrono::steady_clock::now() >= deadline;
+        const bool timed_out = context.TimedOut();
         return finish(
             timed_out ? PlanningStatus::TIMEOUT : PlanningStatus::NO_SOLUTION,
             timed_out ? "planning time limit reached" : "no path found");

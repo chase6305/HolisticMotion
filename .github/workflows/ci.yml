@@ -36,7 +36,9 @@ jobs:
           HOLISTICMOTION_PURE_PYTHON: "1"
           PYTHONPATH: python
         run: |
-          python -m pytest tests/python/test_toppra_torch*.py tests/python/test_toppra.py tests/python/test_toppra_scaling.py -q
+          python -m pytest tests/python/test_toppra_torch*.py \
+            tests/python/test_toppra.py tests/python/test_toppra_scaling.py \
+            tests/python/test_toppra_state_lifetime.py -q
           python -m pytest tests/python/test_import.py -k 'pure_python or numpy_trajectory' -q
           python -m pytest tests/python/test_curobo_planner.py -q
 

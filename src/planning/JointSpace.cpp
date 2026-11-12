@@ -1,7 +1,6 @@
 #include "holistic_motion/planning/JointSpace.h"
 
 #include <algorithm>
-#include <functional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -40,29 +39,9 @@ JointSpace::JointSpace(Eigen::VectorXd lower_limits, Eigen::VectorXd upper_limit
             static_cast<std::size_t>(data->lower_limits.size()))
             throw std::invalid_argument(
                 "joint names must match the planning dimension");
-        bool valid = !data->joint_names.front().empty();
-        // Strictly increasing names are unique; inspect the first conflict before sorting.
-        if (valid) {
-            const auto conflict = std::adjacent_find(
-                data->joint_names.begin(), data->joint_names.end(), std::greater_equal<>());
-            if (conflict != data->joint_names.end()) {
-                // Search the increasing prefix before allocating scratch storage.
-                const auto &following = *(conflict + 1);
-                valid = !following.empty() &&
-                        (following < data->joint_names.front() ||
-                         !std::binary_search(data->joint_names.begin(), conflict + 1, following));
-                if (valid) {
-                    std::vector<std::string_view> names;
-                    names.reserve(data->joint_names.size());
-                    for (const auto &name : data->joint_names)
-                        names.push_back(name);
-                    std::sort(names.begin(), names.end());
-                    valid = !names.front().empty() &&
-                            std::adjacent_find(names.begin(), names.end()) == names.end();
-                }
-            }
-        }
-        if (!valid)
+        std::vector<std::string_view> names(data->joint_names.begin(), data->joint_names.end());
+        std::sort(names.begin(), names.end());
+        if (names.front().empty() || std::adjacent_find(names.begin(), names.end()) != names.end())
             throw std::invalid_argument("joint names must be nonempty and unique");
     }
     data->continuous.assign(static_cast<std::size_t>(data->lower_limits.size()), false);

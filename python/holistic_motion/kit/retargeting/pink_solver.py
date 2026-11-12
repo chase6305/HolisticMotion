@@ -664,7 +664,7 @@ class PinkRetargetingSolver(_RetargetingSession):
             and active.size
             and (center_enabled or support_enabled or zmp_required)
         )
-        if build_system and (frame_jacobians_required or center_jacobian_required):
+        if frame_jacobians_required or center_jacobian_required:
             # Build the model-wide joint Jacobians once, then extract every
             # active frame below. This matters for dual-arm and full-body
             # modes, where computeFrameJacobian would repeat the traversal for
@@ -778,7 +778,7 @@ class PinkRetargetingSolver(_RetargetingSession):
         current_center = None
         center_jacobian = None
         if center_enabled or support_enabled or zmp_required:
-            if build_system and center_jacobian_required:
+            if center_jacobian_required:
                 center_jacobian = np.asarray(
                     self.pin.jacobianCenterOfMass(self.model, self.data, False),
                     dtype=float,
@@ -815,12 +815,11 @@ class PinkRetargetingSolver(_RetargetingSession):
             weighted_error_squared += error_squared
             task_objective += 0.5 * self.center_of_mass_task.gain * error_squared
             if build_system:
-                if np.max(center_weights) > 0.0:
-                    weighted_center_jacobian = center_weights[:, None] * center_jacobian
-                    hessian += weighted_center_jacobian.T @ weighted_center_jacobian
-                    gradient += weighted_center_jacobian.T @ (
-                        self.center_of_mass_task.gain * weighted_center_error
-                    )
+                weighted_center_jacobian = center_weights[:, None] * center_jacobian
+                hessian += weighted_center_jacobian.T @ weighted_center_jacobian
+                gradient += weighted_center_jacobian.T @ (
+                    self.center_of_mass_task.gain * weighted_center_error
+                )
                 if self.center_of_mass_task.lm_damping:
                     hessian.flat[:: active.size + 1] += (
                         self.center_of_mass_task.lm_damping
@@ -857,12 +856,11 @@ class PinkRetargetingSolver(_RetargetingSession):
                 weighted_error_squared += error_squared
                 task_objective += 0.5 * task.gain * error_squared
                 if build_system:
-                    if np.max(task.cost) > 0.0:
-                        weighted_zmp_jacobian = task.cost[:, None] * zmp_jacobian
-                        hessian += weighted_zmp_jacobian.T @ weighted_zmp_jacobian
-                        gradient += weighted_zmp_jacobian.T @ (
-                            task.gain * weighted_zmp_error
-                        )
+                    weighted_zmp_jacobian = task.cost[:, None] * zmp_jacobian
+                    hessian += weighted_zmp_jacobian.T @ weighted_zmp_jacobian
+                    gradient += weighted_zmp_jacobian.T @ (
+                        task.gain * weighted_zmp_error
+                    )
                     if task.lm_damping:
                         hessian.flat[:: active.size + 1] += (
                             task.lm_damping * task.gain**2 * error_squared
@@ -891,7 +889,7 @@ class PinkRetargetingSolver(_RetargetingSession):
             error_squared = float(weighted_violations @ weighted_violations)
             weighted_error_squared += error_squared
             task_objective += 0.5 * task.gain * error_squared
-            if build_system and task.cost > 0.0 and np.any(violations > 0.0):
+            if build_system and np.any(violations > 0.0):
                 active_edges = violations > 0.0
                 support_jacobian = (
                     task.cost * task.normals[active_edges] @ support_point_jacobian

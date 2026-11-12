@@ -371,6 +371,10 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     const auto &continuous = space.GetContinuousMask();
     const auto started = std::chrono::steady_clock::now();
     auto finish = [&](PathOptimizationStatus status, std::string message) {
+        if (!result.feasible || status == PathOptimizationStatus::INVALID_PATH) {
+            result.path.clear();
+            result.feasible = false;
+        }
         result.status = status;
         result.message = std::move(message);
         result.statistics.optimization_time_ms =
@@ -410,31 +414,26 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         if (state.size() != lower_limits.size() || !state.allFinite() ||
             (state.array() < lower_limits.array()).any() ||
             (state.array() > upper_limits.array()).any()) {
-            result.path.clear();
             return finish(PathOptimizationStatus::INVALID_PATH,
                           "path contains an invalid state");
         }
     }
     const bool start_valid = context.IsStateValid(result.path.front());
     if (context.TimedOut()) {
-        result.path.clear();
         return finish(PathOptimizationStatus::TIMEOUT,
                       "time limit reached while validating the input path");
     }
     if (!start_valid) {
-        result.path.clear();
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "path start state is invalid");
     }
     for (std::size_t i = 1; i < result.path.size(); ++i) {
         if (!context.IsMotionValid(result.path[i - 1], result.path[i])) {
             if (context.TimedOut()) {
-                result.path.clear();
                 return finish(
                     PathOptimizationStatus::TIMEOUT,
                     "time limit reached while validating the input path");
             }
-            result.path.clear();
             return finish(PathOptimizationStatus::INVALID_PATH,
                           "input path contains an invalid edge");
         }
@@ -442,8 +441,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     result.feasible = true;
     result.statistics.initial_path_length = context.PathLength(result.path);
     if (!std::isfinite(result.statistics.initial_path_length)) {
-        result.path.clear();
-        result.feasible = false;
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "path objective is not finite");
     }
@@ -451,8 +448,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         result.statistics.initial_objective =
             options.length_weight * result.statistics.initial_path_length;
         if (!std::isfinite(result.statistics.initial_objective)) {
-            result.path.clear();
-            result.feasible = false;
             return finish(PathOptimizationStatus::INVALID_PATH,
                           "path objective is not finite");
         }
@@ -466,8 +461,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     double total_state_cost = 0.0;
     if (options.state_cost_weight > 0.0) {
         if (!state_cost) {
-            result.path.clear();
-            result.feasible = false;
             return finish(PathOptimizationStatus::INVALID_PATH,
                           "state_cost_weight requires a state cost callback");
         }
@@ -494,8 +487,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
         WeightedStateCostSum(state_costs, options.state_cost_weight,
                              total_state_cost);
     if (!std::isfinite(result.statistics.initial_objective)) {
-        result.path.clear();
-        result.feasible = false;
         return finish(PathOptimizationStatus::INVALID_PATH,
                       "path objective is not finite");
     }
@@ -504,10 +495,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     Eigen::VectorXd gradient(lower_limits.size());
     Eigen::VectorXd direction(lower_limits.size());
     Eigen::VectorXd candidate(lower_limits.size());
-    bool any_update = false;
     for (std::size_t sweep = 0; sweep < options.max_iterations; ++sweep) {
         ++result.statistics.iterations;
-        bool iteration_update = false;
+        const std::size_t previous_updates = result.statistics.accepted_updates;
         const std::size_t interior_count = result.path.size() - 2;
         const bool reverse_sweep = sweep % 2 == 1;
         for (std::size_t offset = 0; offset < interior_count; ++offset) {
@@ -537,7 +527,6 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                 geometry.LocalObjective() +
                 options.state_cost_weight * current_state_cost;
             double step = options.step_size;
-            bool accepted = false;
             for (std::size_t search = 0; search < options.line_search_steps;
                  ++search, step *= options.line_search_decay) {
                 ++result.statistics.line_search_evaluations;
@@ -574,19 +563,14 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                     result.path[i].swap(candidate);
                     if (options.state_cost_weight > 0.0)
                         state_costs[i] = candidate_state_cost;
-                    accepted = true;
+                    ++result.statistics.accepted_updates;
                     break;
                 }
                 if (context.TimedOut())
                     break;
             }
-            if (!accepted)
-                continue;
-            ++result.statistics.accepted_updates;
-            iteration_update = true;
-            any_update = true;
         }
-        if (context.TimedOut() || !iteration_update)
+        if (context.TimedOut() || result.statistics.accepted_updates == previous_updates)
             break;
     }
     result.statistics.final_objective =
@@ -598,10 +582,9 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     if (context.TimedOut())
         return finish(PathOptimizationStatus::TIMEOUT,
                       "time limit reached; returning the best feasible path");
-    return finish(any_update ? PathOptimizationStatus::OPTIMIZED
-                             : PathOptimizationStatus::UNCHANGED,
-                  any_update ? "path optimized"
-                             : "path already locally optimal");
+    const bool optimized = result.statistics.accepted_updates > 0;
+    return finish(optimized ? PathOptimizationStatus::OPTIMIZED : PathOptimizationStatus::UNCHANGED,
+                  optimized ? "path optimized" : "path already locally optimal");
 }
 
 } // namespace holistic_motion::robotics::planning

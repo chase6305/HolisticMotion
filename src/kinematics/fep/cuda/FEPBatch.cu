@@ -58,7 +58,7 @@ __global__ void ForwardKernel(const double *joints, int count, const double *ori
     Identity(transform);
     for (int joint = 0; joint < 7; ++joint) {
         Multiply(transform, origins + joint * 16, transform);
-        Rotation(axes + joint * 4, joints[pose * 7 + joint], motion);
+        Rotation(axes + joint * 4, joints[static_cast<std::size_t>(joint) * count + pose], motion);
         Multiply(transform, motion, transform);
     }
     Multiply(transform, origins + 7 * 16, transform);

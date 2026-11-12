@@ -39,11 +39,13 @@ bool TrajectoryBase<LieGroup>::SetMinimumDuration(double duration) {
     }
     const double current_duration = GetDuration();
     if (duration > current_duration) {
-        const double requested_scale =
-                duration / trajectory_pspline_->GetLastTimeStamp();
-        if (!std::isfinite(requested_scale) ||
-            !std::isfinite(trajectory_pspline_->GetLastTimeStamp() *
-                           requested_scale)) return false;
+        const double base_duration = trajectory_pspline_->GetLastTimeStamp();
+        double requested_scale = duration / base_duration;
+        if (base_duration * requested_scale < duration)
+            requested_scale =
+                std::nextafter(requested_scale, std::numeric_limits<double>::infinity());
+        if (!std::isfinite(requested_scale) || !std::isfinite(base_duration * requested_scale))
+            return false;
         time_scale_ = requested_scale;
     }
     return true;
@@ -595,33 +597,28 @@ bool TrajectoryBase<LieGroup>::GetLimitFromConstraintProfile(
         Eigen::VectorXd& velocity_limits,
         Eigen::VectorXd& acceleration_limits,
         Eigen::VectorXd& jerk_limits) {
-    if (nullptr != constraints) {
-        if (constraints->IsValid()) {
-            velocity_limits = constraints->GetMaxVelocityConstraints();
-            acceleration_limits = constraints->GetMaxAccelerationConstraints();
-            jerk_limits = constraints->GetMaxJerkConstraints();
-            this->dof_ = velocity_limits.size();
-            if (!path_ || path_->GetWaypoints().size() < 2 ||
-                static_cast<Eigen::Index>(
-                        (path_->GetWaypoints()[1] - path_->GetWaypoints()[0])
-                                .size()) != velocity_limits.size()) {
-                holistic_motion::utility::LogWarning(
-                        "Trajectory constraint dimension does not match path");
-                return false;
-            }
-            max_velocity_ = velocity_limits;
-            max_acceleration_ = acceleration_limits;
-            max_jerk_ = jerk_limits;
-        } else {
-            holistic_motion::utility::LogWarning("Trajectory constraints is invalid!");
-            return false;
-        }
-    } else {
+    if (!constraints) {
         holistic_motion::utility::LogWarning(
                 "Trajectory constraints need to be set and passed in!");
         return false;
     }
-
+    if (!constraints->IsValid()) {
+        holistic_motion::utility::LogWarning("Trajectory constraints is invalid!");
+        return false;
+    }
+    velocity_limits = constraints->GetMaxVelocityConstraints();
+    acceleration_limits = constraints->GetMaxAccelerationConstraints();
+    jerk_limits = constraints->GetMaxJerkConstraints();
+    this->dof_ = velocity_limits.size();
+    if (!path_ || path_->GetWaypoints().size() < 2 ||
+        static_cast<Eigen::Index>((path_->GetWaypoints()[1] - path_->GetWaypoints()[0]).size()) !=
+            velocity_limits.size()) {
+        holistic_motion::utility::LogWarning("Trajectory constraint dimension does not match path");
+        return false;
+    }
+    max_velocity_ = velocity_limits;
+    max_acceleration_ = acceleration_limits;
+    max_jerk_ = jerk_limits;
     return true;
 }
 

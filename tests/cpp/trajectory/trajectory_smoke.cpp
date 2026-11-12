@@ -296,6 +296,19 @@ int main() {
         std::abs(joint_trajectory.GetDuration() - 2.0 * duration) > 1e-9) {
         return 8;
     }
+    std::vector<JointGroup> line(2);
+    for (auto &waypoint : line)
+        waypoint.Coeffs().setZero();
+    line[1].Coeffs()[0] = 1.0;
+    auto line_path = std::make_shared<PathBezierCurve<JointGroup>>(line, 5, false, 0.0);
+    TrajectoryDoubleS<JointGroup> rounded_duration(line_path, joint_constraints);
+    constexpr double requested_duration = 3.41356934138081;
+    if (!rounded_duration.IsValid() || !rounded_duration.SetMinimumDuration(requested_duration) ||
+        rounded_duration.GetDuration() < requested_duration ||
+        rounded_duration.GetDuration() >
+            std::nextafter(requested_duration, std::numeric_limits<double>::infinity())) {
+        return 8;
+    }
     TrajectoryTrapezoidal<JointGroup> trapezium_trajectory(
             joint_path, joint_constraints);
     if (!trapezium_trajectory.IsValid() ||
