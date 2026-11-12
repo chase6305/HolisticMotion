@@ -5,6 +5,30 @@ import numpy as np
 import pytest
 
 
+@pytest.mark.parametrize("dof", [1, 7, 32])
+@pytest.mark.parametrize("during_construction", [False, True])
+def test_minimum_duration_rounds_up_to_the_requested_lower_bound(
+    dof, during_construction
+):
+    points = np.zeros((2, dof))
+    points[1, 0] = 1.0
+    limits = np.ones(dof)
+    requested = 3.41356934138081
+    trajectory = hm.RnTrajectory(
+        points,
+        limits,
+        limits,
+        limits,
+        minimum_duration=requested if during_construction else 0.0,
+    )
+    if not during_construction:
+        trajectory.set_minimum_duration(requested)
+    assert requested <= trajectory.duration <= np.nextafter(requested, np.inf)
+    duration = trajectory.duration
+    trajectory.set_minimum_duration(requested)
+    assert trajectory.duration == duration
+
+
 @pytest.fixture(
     params=[(2, "double_s"), (7, "double_s"), (2, "trapezoidal"), (7, "trapezoidal")]
 )
