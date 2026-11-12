@@ -25,8 +25,7 @@ inline double CoordinateAngle(double joint, const JointNode &node) {
 inline bool SameCoordinateRotation(double first, double second, const JointNode &node) {
     const double first_angle = CoordinateAngle(first, node);
     const double second_angle = CoordinateAngle(second, node);
-    return std::isfinite(first_angle) && std::isfinite(second_angle) &&
-           SameAnglePhase(first_angle, second_angle);
+    return SameAnglePhase(first_angle, second_angle);
 }
 
 inline double PeriodicAnchor(double joint, const JointNode &node, double period) {

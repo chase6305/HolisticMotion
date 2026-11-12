@@ -161,13 +161,10 @@ class JointSpaceIndex {
                          const Eigen::VectorXd &query,
                          const JointSpaceMetric &metric, std::size_t &best,
                          double &best_distance) {
-        const double distance = metric.SquaredDistance(state_at(index), query);
-        if (distance < best_distance ||
-            (distance == best_distance &&
-             (std::isnormal(distance)
-                  ? index < best
-                  : metric.IsCloser(state_at(index), state_at(best), query,
-                                    distance, best_distance, index < best)))) {
+        const auto &candidate = state_at(index);
+        const double distance = metric.SquaredDistance(candidate, query);
+        if (metric.IsCloser(candidate, state_at(best), query, distance, best_distance,
+                            index < best)) {
             best_distance = distance;
             best = index;
         }
