@@ -101,7 +101,6 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
         best_rank = None
         best_index = 0
         best_velocity = None
-        evaluated = 0
         total_collision_evaluations = 0
         total_collision_gradient_evaluations = 0
         initial_state = self._snapshot_solve_state()
@@ -122,7 +121,6 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
                     collision_cost_cache=collision_cost_cache,
                     collision_gradient_cache=collision_gradient_cache,
                 )
-                evaluated += 1
                 total_collision_evaluations += result.collision_evaluations
                 total_collision_gradient_evaluations += (
                     result.collision_gradient_evaluations
@@ -144,7 +142,7 @@ class CuroboRetargetingSolver(PinkRetargetingSolver):
             self._last_q = best.configuration.copy()
             self._last_velocity = best_velocity
             self.last_seed_index = best_index
-            self.last_num_seeds_evaluated = evaluated
+            self.last_num_seeds_evaluated = index + 1
             return final
         except BaseException:
             self._restore_solve_state(initial_state)
