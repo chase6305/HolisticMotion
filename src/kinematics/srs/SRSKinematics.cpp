@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include <Eigen/SVD>
 
@@ -306,7 +307,7 @@ bool RefineToStrictPose(const SRSKinematics &solver, const SE3d &target,
         std::vector<double> distances;
         if (refinement.GetIK(target, refined, candidate, distances) &&
             !refined.ik_joints.empty()) {
-            candidate = refined.ik_joints.front();
+            candidate = std::move(refined.ik_joints.front());
             return HasStrictPose(solver, target, candidate);
         }
     }
@@ -396,7 +397,7 @@ bool SRSKinematics::SolveConfiguration(const SE3d &target,
         result.ik_joints.empty()) {
         return false;
     }
-    solution = result.ik_joints.front();
+    solution = std::move(result.ik_joints.front());
     const auto solved_configuration = GetConfiguration(solution);
     return solved_configuration.shoulder == Direction(configuration.shoulder) &&
            solved_configuration.elbow == Direction(configuration.elbow) &&
@@ -567,13 +568,13 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         return false;
     }
 
-    auto add = [&](const Eigen::VectorXd &candidate) {
+    auto add = [&](Eigen::VectorXd &candidate) {
         const bool duplicate =
             std::any_of(solutions.begin(), solutions.end(), [&](const auto &existing) {
                 return WrappedDistanceSquared(existing, candidate, joint_nodes_) < 1e-8;
             });
         if (!duplicate)
-            solutions.push_back(candidate);
+            solutions.push_back(std::move(candidate));
     };
     auto solve_seed = [&](Eigen::VectorXd candidate_seed) {
         IkRtn result;
