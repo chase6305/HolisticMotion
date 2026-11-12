@@ -153,6 +153,12 @@ def test_corrected_temporal_objective_matches_its_gradient(tmp_path, mimic, cont
         vectors, reference[solver._optimizer.idx_pin2fixed], reference[solver._target]
     )
     assert value - upstream(x, np.empty(0)) == pytest.approx(0.3 * 0.04**2)
+    reference.fill(-0.5)
+    repeated_gradient = np.empty_like(gradient)
+    with getattr(torch, context)():
+        repeated_value = objective(x, repeated_gradient)
+    assert repeated_value == value
+    np.testing.assert_array_equal(repeated_gradient, gradient)
 
 
 @pytest.mark.parametrize("mimic", [False, True])
@@ -313,6 +319,9 @@ def test_objective_failure_restores_torch_context(tmp_path, monkeypatch, context
 
 def test_mimic_limits_restrict_the_source_without_upstream_padding(tmp_path):
     solver = make_solver(tmp_path, mimic=True, vector_tolerance=0.21)
+    np.testing.assert_array_equal(
+        solver._limits[solver.joint_names.index("z_drive")], [0.0, 0.4]
+    )
     np.testing.assert_allclose(solver._optimizer.opt.get_lower_bounds(), [0.1])
     np.testing.assert_allclose(solver._optimizer.opt.get_upper_bounds(), [0.3])
     result = solver.solve([[0, 0, 0], [0.5, 0, 0], [-0.1, 0, 0]])

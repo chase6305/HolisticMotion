@@ -40,15 +40,14 @@ def test_builtin_arm_and_whole_body_modes():
 
 
 def test_custom_mode_cycle_and_validation():
-    manager = RetargetingModeManager(
-        {
-            RetargetingMode.LEFT_ARM: RetargetingModeSpec(("tool",), ("manipulator",)),
-            RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
-                ("tool", "base"), ("whole_body",)
-            ),
-        },
-        initial_mode="left_arm",
-    )
+    modes = {
+        RetargetingMode.LEFT_ARM: RetargetingModeSpec(("tool",), ("manipulator",)),
+        RetargetingMode.WHOLE_BODY: RetargetingModeSpec(
+            ("tool", "base"), ("whole_body",)
+        ),
+    }
+    manager = RetargetingModeManager(modes, initial_mode="left_arm")
+    modes.clear()
     assert manager.cycle().targets == ("tool", "base")
     assert manager.mode is RetargetingMode.WHOLE_BODY
     assert manager.cycle().targets == ("tool",)

@@ -140,7 +140,7 @@ class RetargetingModeManager:
 
     @property
     def mode_specs(self) -> Mapping[RetargetingMode, RetargetingModeSpec]:
-        return MappingProxyType(self._modes.copy())
+        return MappingProxyType(self._modes)
 
     def set_mode(self, mode: Union[RetargetingMode, str]) -> RetargetingModeSpec:
         self._mode = self._coerce(mode)
