@@ -545,7 +545,8 @@ class ToppraResult:
             raise TypeError("duration must be real")
         if not np.isfinite(self.duration) or self.duration < 0.0:
             raise ValueError("TOPPRA result duration must be finite and non-negative")
-        if np.any(np.diff(self.gridpoints) <= 0.0):
+        grid_intervals = np.diff(self.gridpoints)
+        if np.any(grid_intervals <= 0.0):
             raise ValueError("TOPPRA result gridpoints must increase strictly")
         if np.any(self.path_speeds < 0.0):
             raise ValueError("TOPPRA result path speeds must be non-negative")
@@ -557,7 +558,7 @@ class ToppraResult:
             raise ValueError("TOPPRA result duration must match its final time")
         with np.errstate(over="ignore", invalid="ignore"):
             speed_squared = self.path_speeds**2
-            change = 2.0 * np.diff(self.gridpoints) * self.path_accelerations
+            change = 2.0 * grid_intervals * self.path_accelerations
         if not np.isfinite(speed_squared).all() or not np.isfinite(change).all():
             raise ValueError("TOPPRA result path dynamics must be finite")
         # Near a stop, x[i] and 2*ds*u cancel. Judge the residual against all
@@ -570,7 +571,7 @@ class ToppraResult:
         distances = (
             0.5 * (self.path_speeds[:-1] + self.path_speeds[1:]) * np.diff(self.times)
         )
-        if not np.allclose(np.diff(self.gridpoints), distances, rtol=1e-8, atol=1e-12):
+        if not np.allclose(grid_intervals, distances, rtol=1e-8, atol=1e-12):
             raise ValueError("TOPPRA result timing is inconsistent with path speeds")
 
 
