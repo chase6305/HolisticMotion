@@ -52,17 +52,10 @@ bool FEPKinematics::ForwardBatch(
 #ifdef HOLISTICMOTION_HAS_CUDA
     if (resolved == FEPBackend::CUDA && joints.rows() > 0 &&
         joints.rows() <= (std::numeric_limits<int>::max)()) {
-        std::vector<double> packed_joints(
-                static_cast<std::size_t>(joints.rows()) * 7);
         std::array<double, 8 * 16> origins{};
         std::array<double, 7 * 4> packed_axes{};
         std::array<double, 16> tcp{};
-        std::vector<double> output(
-                static_cast<std::size_t>(joints.rows()) * 16);
-        for (Eigen::Index row = 0; row < joints.rows(); ++row)
-            for (int joint = 0; joint < 7; ++joint)
-                packed_joints[static_cast<std::size_t>(row) * 7 + joint] =
-                        joints(row, joint);
+        std::vector<double> output(static_cast<std::size_t>(joints.rows()) * 16);
         for (int node = 0; node < 8; ++node) {
             const auto matrix = joint_nodes_[node].origin_pose.GetTransform();
             for (int row = 0; row < 4; ++row)
@@ -78,9 +71,9 @@ bool FEPKinematics::ForwardBatch(
         for (int row = 0; row < 4; ++row)
             for (int col = 0; col < 4; ++col)
                 tcp[row * 4 + col] = tcp_matrix(row, col);
-        if (fep_internal::ForwardBatchCUDA(
-                    packed_joints.data(), static_cast<int>(joints.rows()),
-                    origins.data(), packed_axes.data(), tcp.data(), output.data())) {
+        if (fep_internal::ForwardBatchCUDA(joints.data(), static_cast<int>(joints.rows()),
+                                           origins.data(), packed_axes.data(), tcp.data(),
+                                           output.data())) {
             poses.resize(static_cast<std::size_t>(joints.rows()));
             bool finite_poses = true;
             for (Eigen::Index pose = 0; pose < joints.rows(); ++pose) {
