@@ -20,11 +20,8 @@ void BindCoordinates(pybind11::module_ &module) {
     py::class_<JointPositionMap>(module, "JointPositionMap")
         .def_property_readonly("nq", &JointPositionMap::GetConfigurationSize)
         .def_property_readonly("nv", &JointPositionMap::GetVelocitySize)
-        .def_property_readonly("joints",
-                               [](const JointPositionMap &self) {
-                                   return std::vector<JointCoordinate>(
-                                       self.GetJoints());
-                               })
+        .def_property_readonly("joints", &JointPositionMap::GetJoints,
+                               py::return_value_policy::copy)
         .def(
             "configuration_with_joint_positions",
             [](const JointPositionMap &self, const py::object &reference,

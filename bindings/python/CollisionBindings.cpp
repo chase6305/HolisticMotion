@@ -205,15 +205,9 @@ void BindCollision(pybind11::module_ &module) {
       .def_property_readonly("sphere_count", &SphereCollisionModel::GetSphereCount)
       .def_property_readonly("pair_count", &SphereCollisionModel::GetCollisionPairCount)
       .def_property_readonly("pair_revision", &SphereCollisionModel::GetCollisionPairRevision)
-      .def_property_readonly("spheres",
-                             [](const SphereCollisionModel &model) {
-                                 // The Python sphere type is mutable. Return
-                                 // independent values rather than references
-                                 // into the model's immutable geometry and FK
-                                 // caches.
-                                 return std::vector<CollisionSphere>(
-                                     model.GetSpheres());
-                             })
+      // Mutable Python spheres must remain independent of model geometry.
+      .def_property_readonly("spheres", &SphereCollisionModel::GetSpheres,
+                             py::return_value_policy::copy)
       .def_property_readonly("collision_pairs", &SphereCollisionModel::GetCollisionPairs)
       .def("set_collision_groups", &SphereCollisionModel::SetCollisionGroups,
            pybind11::arg("groups"), pybind11::arg("group_pairs"))

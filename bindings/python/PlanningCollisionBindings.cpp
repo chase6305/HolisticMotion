@@ -276,11 +276,7 @@ void BindPlanningCollision(pybind11::module_ &module) {
                 (clearance > 0.0 && clearance < security_margin))
                 throw std::invalid_argument(
                     "clearance must be finite and at least security_margin");
-            if (context_configuration.size() !=
-                    collision_model.GetConfigurationSize() ||
-                !context_configuration.allFinite())
-                throw std::invalid_argument("context_configuration must be finite "
-                                            "and match collision model nq");
+            ValidateContext(context_configuration, collision_model.GetConfigurationSize());
             Eigen::VectorXd lower = collision_model.GetJointLowerLimits(joint_names);
             Eigen::VectorXd upper = collision_model.GetJointUpperLimits(joint_names);
             const auto selection = PrepareJointContext(
@@ -451,12 +447,7 @@ void BindPlanningCollision(pybind11::module_ &module) {
                 throw std::invalid_argument(
                     "security_margin must be finite and non-negative");
             }
-            if (context_configuration.size() !=
-                    collision_model.GetConfigurationSize() ||
-                !context_configuration.allFinite()) {
-                throw std::invalid_argument("context_configuration must be finite "
-                                            "and match collision model nq");
-            }
+            ValidateContext(context_configuration, collision_model.GetConfigurationSize());
             Eigen::VectorXd lower = collision_model.GetJointLowerLimits(joint_names);
             Eigen::VectorXd upper = collision_model.GetJointUpperLimits(joint_names);
             const auto selection = PrepareJointContext(
