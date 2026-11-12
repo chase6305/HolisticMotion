@@ -426,13 +426,10 @@ class SRSContinuousTracker:
                 )
             except ValueError:
                 pass
-            near_singularity = (
-                self._minimum_singular_value(self._joints)
-                <= self.options.singular_value_threshold
-            )
             refresh = (
                 not candidates
-                or near_singularity
+                or self._minimum_singular_value(self._joints)
+                <= self.options.singular_value_threshold
                 or self._frame_index % self.options.candidate_refresh_interval == 0
                 or any(
                     self._configuration_of(item) != self._configuration
