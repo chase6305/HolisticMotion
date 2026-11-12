@@ -163,3 +163,22 @@ def test_tracker_time_step_accepts_real_scalars(stationary_tracker, dt):
     assert stationary_tracker.frame_index == 1
     np.testing.assert_array_equal(result.joints, np.zeros(7))
     np.testing.assert_array_equal(result.velocity, np.zeros(7))
+
+
+def test_disabled_costs_keep_finite_motion(stationary_tracker, monkeypatch):
+    solver = stationary_tracker.solver
+    monkeypatch.setattr(solver, "solve", lambda *_args: [np.ones(7)])
+    options = type(stationary_tracker.options)(
+        position_weight=0.0, acceleration_weight=0.0
+    )
+    tracker = type(stationary_tracker)(solver, np.zeros(7), options)
+    with np.errstate(over="raise", invalid="raise"):
+        tracker.solve(np.eye(4), dt=1.0)
+        # Prediction and scaled acceleration squares overflow, although the
+        # accepted motion is finite and both of those costs are disabled.
+        result = tracker.solve(np.eye(4), dt=1e308)
+    np.testing.assert_array_equal(result.joints, np.ones(7))
+    np.testing.assert_array_equal(result.velocity, np.zeros(7))
+    np.testing.assert_allclose(result.acceleration, -1e-308, rtol=1e-15, atol=0)
+    assert result.candidate_count == 1
+    assert tracker.frame_index == 2
