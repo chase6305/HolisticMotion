@@ -217,6 +217,7 @@ bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::Ve
     }
 
     // Recover each wrist branch before solving its planar arm.
+    Eigen::VectorXd joints;
     for (size_t i = 0; i < 2; ++i) {
         const double c1 = std::cos(angle1[i]);
         const double s1 = std::sin(angle1[i]);
@@ -350,10 +351,9 @@ bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::Ve
                     "joint:\n[{:10.8f},{:10.8f},{:10.8f},{:10.8f},{:10."
                     "8f},{:10.8f}]",
                     angle1[i], angle2, angle3, angle4, angle5, angle6);
-                if (std::isfinite(angle1[i]) && std::isfinite(angle2) &&
-                    std::isfinite(angle3) && std::isfinite(angle4) &&
-                    std::isfinite(angle5) && std::isfinite(angle6)) {
-                    Eigen::VectorXd joints(6);
+                if (std::isfinite(angle1[i]) && std::isfinite(angle2) && std::isfinite(angle3) &&
+                    std::isfinite(angle4) && std::isfinite(angle5) && std::isfinite(angle6)) {
+                    joints.resize(6);
                     joints << (angle1[i] + this->params_.offsets[0]) *
                                   this->params_.rotation_directions[0],
                         (angle2 + this->params_.offsets[1]) *

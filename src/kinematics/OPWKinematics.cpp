@@ -68,13 +68,12 @@ bool OPWKinematics::GetFK(const Eigen::VectorXd &target_joint,
     if (!std::isfinite(k))
         k = std::hypot(this->params_.a2, this->params_.c3);
 
-    double c_x1 = this->params_.c2 * std::sin(q[1]) +
-                  k * std::sin(q[1] + q[2] + pis_3) + this->params_.a1;
+    double c_x1 = this->params_.c2 * s[1] + k * std::sin(q[1] + q[2] + pis_3) + this->params_.a1;
     double c_y1 = this->params_.b;
-    double c_z1 = this->params_.c2 * std::cos(q[1]) + k * std::cos(q[1] + q[2] + pis_3);
+    double c_z1 = this->params_.c2 * c[1] + k * std::cos(q[1] + q[2] + pis_3);
 
-    double c_x0 = c_x1 * std::cos(q[0]) - c_y1 * std::sin(q[0]);
-    double c_y0 = c_x1 * std::sin(q[0]) + c_y1 * std::cos(q[0]);
+    double c_x0 = c_x1 * c[0] - c_y1 * s[0];
+    double c_y0 = c_x1 * s[0] + c_y1 * c[0];
     double c_z0 = c_z1 + this->params_.c1;
 
     Eigen::Matrix3d R_c_oe, R_ob_c, R_ob_oe;

@@ -248,7 +248,7 @@ def fit_urdf_collision_spheres(
     )
     if selected is None:
         selected = tuple(meshes)
-    unknown = sorted(set(selected) - set(meshes))
+    unknown = sorted(link for link in selected if link not in meshes)
     if unknown:
         raise ValueError("links have no collision geometry: " + ", ".join(unknown))
     return {

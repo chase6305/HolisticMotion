@@ -300,7 +300,7 @@ class DexHandRetargetingSolver:
             raise ValueError("hand joints require finite ordered position limits")
         self._target = self._optimizer.idx_pin2target
         self._mimic_names = set()
-        target_limits = self._limits[self._target].copy()
+        target_limits = self._limits[self._target]
         sources, mimics, multipliers, offsets = [], [], [], []
         for name, source, multiplier, offset in mimic_parameters:
             if source not in names or name not in self.joint_names or name in names:
@@ -404,7 +404,7 @@ class DexHandRetargetingSolver:
     def _objective(self, vectors, reference):
         import torch
 
-        previous = reference[self._target].copy()
+        previous = reference[self._target]
         # Targets captured by the native callback must be ordinary tensors even
         # when the caller runs a perception model in inference mode.
         with torch.inference_mode(False), torch.no_grad():

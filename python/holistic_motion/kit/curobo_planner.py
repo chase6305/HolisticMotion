@@ -331,8 +331,10 @@ class CuroboPlanner:
             raise TypeError("scene must be a local path, dictionary or cuRobo Scene")
         scene = self._copy_scene(scene)
         obstacles = list(scene)
-        typed = [obstacle for kind in supported for obstacle in getattr(scene, kind)]
-        if {id(value) for value in obstacles} != {id(value) for value in typed}:
+        typed_ids = {
+            id(obstacle) for kind in supported for obstacle in getattr(scene, kind)
+        }
+        if {id(value) for value in obstacles} != typed_ids:
             raise ValueError("Scene objects must match its typed obstacle lists")
         names = set()
         for obstacle in obstacles:

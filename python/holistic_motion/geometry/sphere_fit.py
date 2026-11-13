@@ -471,8 +471,6 @@ def fit_spheres(
                 break
         if count == options.max_spheres:
             break
-    if not count:
-        raise RuntimeError("sphere selection produced no candidates")
 
     centers = selected_centers[:count]
     selected_radii = selected_radii[:count]

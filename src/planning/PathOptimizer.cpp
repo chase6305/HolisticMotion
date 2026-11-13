@@ -409,8 +409,7 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
     OptimizationContext context(lower_limits, upper_limits, weights, continuous,
                                 validator, state_cost, state_cost_gradient, options,
                                 result.statistics, deadline);
-    result.path = path;
-    for (const auto &state : result.path) {
+    for (const auto &state : path) {
         if (state.size() != lower_limits.size() || !state.allFinite() ||
             (state.array() < lower_limits.array()).any() ||
             (state.array() > upper_limits.array()).any()) {
@@ -418,6 +417,8 @@ PathOptimizer::Optimize(const std::vector<Eigen::VectorXd> &path,
                           "path contains an invalid state");
         }
     }
+    // Snapshot before callbacks can change the caller's path.
+    result.path = path;
     const bool start_valid = context.IsStateValid(result.path.front());
     if (context.TimedOut()) {
         return finish(PathOptimizationStatus::TIMEOUT,

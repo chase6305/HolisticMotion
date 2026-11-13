@@ -131,6 +131,31 @@ int main() {
         !independent_path.path.back().isApprox(goal, 0.0))
         return 9;
 
+    // Reject malformed endpoints before invoking any user validator.
+    std::size_t validation_calls = 0;
+    PathOptimizer validating_input(lower, upper, [&](const Eigen::VectorXd &) {
+        ++validation_calls;
+        return true;
+    });
+    const std::vector<Eigen::VectorXd> invalid_states{
+        Eigen::VectorXd::Zero(2),
+        Eigen::VectorXd::Constant(1, std::numeric_limits<double>::quiet_NaN()),
+        Eigen::VectorXd::Constant(1, std::numeric_limits<double>::infinity()),
+        Eigen::VectorXd::Constant(1, upper[0] + 1.0)};
+    for (const auto &invalid_state : invalid_states) {
+        for (bool invalid_start : {false, true}) {
+            std::vector<Eigen::VectorXd> invalid_path{start, goal};
+            invalid_path[invalid_start ? 0 : 1] = invalid_state;
+            const auto invalid_result = validating_input.Optimize(invalid_path);
+            if (validation_calls != 0 || invalid_result.statistics.collision_checks != 0 ||
+                invalid_result.status != PathOptimizationStatus::INVALID_PATH ||
+                invalid_result.feasible || !invalid_result.path.empty() ||
+                invalid_result.message != "path contains an invalid state" ||
+                !invalid_result.joint_space || invalid_result.joint_space->GetDOF() != 1)
+                return 12;
+        }
+    }
+
     // A nested request from an interior sample must not overwrite the outer
     // request's interpolation difference or the sample passed to its callback.
     bool nested = false, nested_success = false, sample_preserved = true;
