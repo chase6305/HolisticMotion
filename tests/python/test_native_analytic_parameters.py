@@ -84,6 +84,29 @@ def test_failed_array_materialization_preserves_parameter(family, error_type):
 
 
 @pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_failed_object_transform_conversion_preserves_parameter(family, error_type):
+    value, _ = parameters(family)
+    previous = value.base_transform.copy()
+    failure = error_type("object transform conversion failed")
+
+    class FailingFloat:
+        def __float__(self):
+            raise failure
+
+    transform = previous.astype(object)
+    transform[0, 0] = FailingFloat()
+    with pytest.raises(error_type) as caught:
+        value.base_transform = transform
+    assert caught.value is failure
+    np.testing.assert_array_equal(value.base_transform, previous)
+    value.base_transform = previous
+    np.testing.assert_array_equal(value.base_transform, previous)
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
 @pytest.mark.parametrize("name", ["base_transform", "tool_transform"])
 @pytest.mark.parametrize("defect", ["complex", "last_row", "rotation"])
 def test_invalid_parameter_transform_preserves_state(family, name, defect):

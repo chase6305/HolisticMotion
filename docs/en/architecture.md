@@ -105,9 +105,9 @@ dictionaries retain entry references before scalar conversion.
 Trajectory constructors capture numeric inputs in argument order before later
 conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
 conversion path.
-Input array materialization preserves interrupts, allocation errors, and other
-unexpected Python exceptions. Ordinary type and shape failures keep the binding's
-validation messages.
+Array materialization and object-array conversion into Eigen storage preserve
+interrupts, allocation errors, and other unexpected Python exceptions. Ordinary
+type and shape failures use the binding's validation messages.
 
 The common `solve_ik` and legacy `inverse`, `inverse_user`, and `solve_all` entry
 points release the GIL when the solver declares concurrent query support.

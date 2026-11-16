@@ -155,6 +155,26 @@ def test_native_fk_preserves_array_materialization_failure(solver_data, error_ty
     np.testing.assert_array_equal(solver.forward(joints), expected)
 
 
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_native_fk_preserves_object_element_conversion_failure(solver_data, error_type):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+    failure = error_type("object element conversion failed")
+
+    class FailingFloat:
+        def __float__(self):
+            raise failure
+
+    values = joints.astype(object)
+    values[0] = FailingFloat()
+    with pytest.raises(error_type) as caught:
+        solver.forward(values)
+    assert caught.value is failure
+    np.testing.assert_array_equal(solver.forward(joints), expected)
+
+
 def test_native_kinematics_rejects_complex_lists(solver_data):
     solver, joints = solver_data
     target = solver.forward(joints)

@@ -88,6 +88,23 @@ Matrix CheckedRealEigen(const py::handle &value, const char *name) {
         }
     }
     RequireRealInput(checked, name);
+    if constexpr (py::detail::is_eigen_dense_plain<Matrix>::value) {
+        const auto array = py::reinterpret_borrow<py::array>(checked);
+        if (array.dtype().kind() == 'O' && array.ndim() >= 1 && array.ndim() <= 2 &&
+            py::detail::EigenProps<Matrix>::conformable(array)) {
+            // Match Eigen's storage order while preserving object-conversion errors.
+            constexpr int order = Matrix::IsRowMajor ? py::array::c_style : py::array::f_style;
+            using TypedArray = py::array_t<typename Matrix::Scalar, order | py::array::forcecast>;
+            try {
+                array_owner = TypedArray(array);
+            } catch (const py::error_already_set &error) {
+                if (error.matches(PyExc_TypeError) || error.matches(PyExc_ValueError))
+                    throw py::type_error(std::string(name) + " has an invalid array shape or type");
+                throw;
+            }
+            checked = array_owner;
+        }
+    }
     try {
         return py::cast<Matrix>(checked);
     } catch (const py::cast_error &) {
