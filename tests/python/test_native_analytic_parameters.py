@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -104,6 +106,29 @@ def test_failed_object_transform_conversion_preserves_parameter(family, error_ty
     np.testing.assert_array_equal(value.base_transform, previous)
     value.base_transform = previous
     np.testing.assert_array_equal(value.base_transform, previous)
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize("name", ["a2", "offsets"])
+def test_parameter_captures_object_entries_before_validation(family, name):
+    value, _ = parameters(family)
+    expected = np.asarray(0.5) if name == "a2" else np.arange(6) * 0.1
+    source = expected.astype(object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            source.flat[0] = np.complex128(0.9 + 1j)
+            return np.asarray(0.5, dtype=dtype)
+
+        def __float__(self):
+            return 0.5
+
+    source.flat[-1] = ReplacingScalar()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        setattr(value, name, source)
+    np.testing.assert_array_equal(getattr(value, name), expected)
+    assert not emitted
 
 
 @pytest.mark.parametrize("family", ["ur", "opw"])

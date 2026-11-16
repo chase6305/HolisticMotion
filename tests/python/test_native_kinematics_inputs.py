@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -173,6 +175,27 @@ def test_native_fk_preserves_object_element_conversion_failure(solver_data, erro
         solver.forward(values)
     assert caught.value is failure
     np.testing.assert_array_equal(solver.forward(joints), expected)
+
+
+def test_native_fk_captures_object_entries_before_validation(solver_data):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+    values = joints.astype(object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            values[0] = np.complex128(joints[0] + 0.4 + 1j)
+            return np.asarray(joints[-1], dtype=dtype)
+
+        def __float__(self):
+            return float(joints[-1])
+
+    values[-1] = ReplacingScalar()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        actual = solver.forward(values)
+    np.testing.assert_array_equal(actual, expected)
+    assert not emitted
 
 
 def test_native_kinematics_rejects_complex_lists(solver_data):

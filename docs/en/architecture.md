@@ -94,7 +94,8 @@ lifetimes.
 ## Python execution boundary
 
 Eigen inputs are normalized and checked for real-valued data before copying into
-C++ storage.
+C++ storage. Plain object arrays retain entry references before validation hooks
+run. Referenced Python objects are not cloned.
 Waypoint sequences retain their row objects before individual conversions, so a
 row's `__array__` cannot remove later waypoints by clearing the caller's list.
 Plain numeric NumPy matrices retain their bulk validation path.

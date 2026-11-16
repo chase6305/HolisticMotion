@@ -87,6 +87,14 @@ Matrix CheckedRealEigen(const py::handle &value, const char *name) {
             checked = array_owner;
         }
     }
+    // Capture entry references before validation can run Python hooks.
+    if (Py_TYPE(checked.ptr()) == py::detail::npy_api::get().PyArray_Type_) {
+        const auto array = py::reinterpret_borrow<py::array>(checked);
+        if (array.dtype().kind() == 'O') {
+            array_owner = array.attr("copy")(py::arg("order") = "K");
+            checked = array_owner;
+        }
+    }
     RequireRealInput(checked, name);
     if constexpr (py::detail::is_eigen_dense_plain<Matrix>::value) {
         const auto array = py::reinterpret_borrow<py::array>(checked);

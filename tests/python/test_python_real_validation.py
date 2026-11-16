@@ -1,11 +1,17 @@
 """Real-valued Python APIs inspect nested object arrays before conversion."""
 
+import warnings
 from decimal import Decimal
 from math import cos, sin
 
 import numpy as np
 import pytest
-from holistic_motion._validation import real_array, require_real, validated_transform
+from holistic_motion._validation import (
+    finite_scalar,
+    real_array,
+    require_real,
+    validated_transform,
+)
 from holistic_motion.geometry import SphereSpec
 from holistic_motion.kit.retargeting.tasks import FrameTask, PostureTask
 from holistic_motion.trajectory import ToppraTrajectory
@@ -78,7 +84,53 @@ def test_real_validation_traverses_shared_containers_once():
         outer = np.empty(2, dtype=object)
         outer[:] = [value, value]
         value = outer
-    assert require_real(value, name="shared") is value
+    result = require_real(value, name="shared")
+    assert result.dtype.kind == "O"
+    assert result[0] is value[0] and result[1] is value[1]
+
+
+@pytest.mark.parametrize("representation", ["array", "producer"])
+def test_real_array_captures_object_entries_before_validation(representation):
+    values = np.array([0.25, 0.5], dtype=object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            values[0] = np.complex128(0.9 + 1j)
+            return np.asarray(0.5, dtype=dtype)
+
+        def __float__(self):
+            return 0.5
+
+    class Producer:
+        def __array__(self, dtype=None, copy=None):
+            return np.asarray(values, dtype=dtype)
+
+    values[-1] = ReplacingScalar()
+    source = values if representation == "array" else Producer()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        actual = real_array(source, name="values")
+    np.testing.assert_array_equal(actual, [0.25, 0.5])
+    assert not emitted
+
+
+def test_finite_scalar_captures_object_entries_before_validation():
+    value = np.empty((), dtype=object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            value[()] = np.complex128(0.9 + 1j)
+            return np.asarray(0.5, dtype=dtype)
+
+        def __float__(self):
+            return 0.5
+
+    value[()] = ReplacingScalar()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        actual = finite_scalar(value, "value")
+    assert actual == 0.5
+    assert not emitted
 
 
 @pytest.mark.parametrize("readonly", [False, True])
