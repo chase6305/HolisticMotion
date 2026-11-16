@@ -60,6 +60,30 @@ def test_complex_parameter_array_preserves_state(family, name):
 
 
 @pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_failed_array_materialization_preserves_parameter(family, error_type):
+    value, _ = parameters(family)
+    previous = value.a2
+    failure = error_type("parameter array materialization failed")
+
+    class FailingScalar:
+        def __array__(self, dtype=None, copy=None):
+            raise failure
+
+        def __float__(self):
+            return 0.25
+
+    with pytest.raises(error_type) as caught:
+        value.a2 = FailingScalar()
+    assert caught.value is failure
+    assert value.a2 == previous
+    value.a2 = 0.3
+    assert value.a2 == 0.3
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
 @pytest.mark.parametrize("name", ["base_transform", "tool_transform"])
 @pytest.mark.parametrize("defect", ["complex", "last_row", "rotation"])
 def test_invalid_parameter_transform_preserves_state(family, name, defect):

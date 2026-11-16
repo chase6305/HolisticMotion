@@ -9,6 +9,20 @@
 namespace holistic_motion::python {
 namespace py = pybind11;
 
+inline py::array TryMaterializeArray(const py::handle &value) {
+    auto &api = py::detail::npy_api::get();
+    auto array = py::reinterpret_steal<py::array>(api.PyArray_FromAny_(
+        value.ptr(), nullptr, 0, 0, py::detail::npy_api::NPY_ARRAY_ENSUREARRAY_, nullptr));
+    if (!array) {
+        // Ordinary type/shape errors keep the caller's validation message.
+        // Other Python exceptions retain their original identity.
+        if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_ValueError))
+            throw py::error_already_set();
+        PyErr_Clear();
+    }
+    return array;
+}
+
 inline void RequireRealInput(const py::handle &value, const char *name,
                              unsigned depth = 0) {
     if (PyFloat_Check(value.ptr()) || PyLong_Check(value.ptr()))
@@ -26,9 +40,8 @@ inline void RequireRealInput(const py::handle &value, const char *name,
         }
         return;
     }
-    auto array = py::isinstance<py::array>(value)
-                     ? py::reinterpret_borrow<py::array>(value)
-                     : py::array::ensure(value);
+    auto array = py::isinstance<py::array>(value) ? py::reinterpret_borrow<py::array>(value)
+                                                  : TryMaterializeArray(value);
     if (!array) {
         throw py::type_error(std::string(name) +
                              " must contain real numeric values");
@@ -67,7 +80,7 @@ Matrix CheckedRealEigen(const py::handle &value, const char *name) {
         // Normalize producers and subclasses once, then check the same array
         // Eigen will read. Ordinary NumPy arrays need no conversion or copy.
         if (Py_TYPE(checked.ptr()) != py::detail::npy_api::get().PyArray_Type_) {
-            array_owner = py::array::ensure(value);
+            array_owner = TryMaterializeArray(value);
             if (!array_owner) {
                 throw py::type_error(std::string(name) + " has an invalid array shape or type");
             }

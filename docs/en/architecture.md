@@ -98,6 +98,9 @@ C++ storage.
 Waypoint sequences retain their row objects before individual conversions, so a
 row's `__array__` cannot remove later waypoints by clearing the caller's list.
 Plain numeric NumPy matrices retain their bulk validation path.
+Input array materialization preserves interrupts, allocation errors, and other
+unexpected Python exceptions. Ordinary type and shape failures keep the binding's
+validation messages.
 
 The common `solve_ik` and legacy `inverse`, `inverse_user`, and `solve_all` entry
 points release the GIL when the solver declares concurrent query support.

@@ -435,6 +435,37 @@ def test_planning_released_callback_exception_recovers(stage):
     assert query().success
 
 
+@pytest.mark.parametrize("stage", ["cost", "cost_gradient"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_planning_callback_array_failure_recovers_gil(stage, error_type):
+    import holistic_motion as hm
+
+    failure = error_type("callback array materialization failed")
+
+    class FailingResult:
+        def __array__(self, dtype=None, copy=None):
+            raise failure
+
+        def __float__(self):
+            return 0.25
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_state_cost(lambda state: float(state @ state))
+    setter = getattr(optimizer, "set_state_" + stage)
+    setter(lambda state: FailingResult())
+    options = hm.PathOptimizationOptions()
+    options.state_cost_weight = 1.0
+    path = [[-0.8], [0.1], [0.8]]
+    with pytest.raises(error_type) as caught:
+        optimizer.optimize(path, options, release_gil=True)
+    assert caught.value is failure
+    setter(None)
+    options.state_cost_weight = 0.0
+    assert optimizer.optimize(path, options, release_gil=True).success
+
+
 @pytest.mark.parametrize("kind", ["validator", "cost", "cost_gradient"])
 def test_planning_callback_snapshot_releases_python_references(kind):
     import gc
