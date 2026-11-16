@@ -270,12 +270,13 @@ class SRSContinuousTracker:
             raise ValueError("initial_joints must contain seven finite values")
         if np.any(values < self._lower) or np.any(values > self._upper):
             raise ValueError("initial_joints violate joint limits")
+        values = values.copy()
         native = self.solver.configuration(values.copy())
         configuration, redundancy = self._validated_configuration(native)
 
         # Allocate the new history before replacing the accepted state.
         velocity = np.zeros(self._dof)
-        self._joints = values.copy()
+        self._joints = values
         self._velocity = velocity
         self._configuration = configuration
         self._redundancy = redundancy
