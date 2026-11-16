@@ -275,6 +275,109 @@ def test_native_and_python_mapping_agree_for_continuous_joint(urdf, backend):
             factory(["missing"])
 
 
+@pytest.mark.parametrize(
+    "backend,entry",
+    [
+        ("robot", "native"),
+        ("robot", "python"),
+        ("mesh", "native"),
+        ("mesh", "model"),
+        ("mesh", "python"),
+        ("sphere", "native"),
+        ("sphere", "model"),
+        ("sphere", "python"),
+    ],
+)
+def test_coordinate_update_captures_reference_before_position_conversion(
+    urdf, backend, entry
+):
+    import holistic_motion as hm
+
+    if not hasattr(hm, "Robot"):
+        pytest.skip("native extension is disabled")
+    if backend != "robot" and not hasattr(hm, "CollisionModel"):
+        pytest.skip("native collision support is disabled")
+    if backend == "robot":
+        model = hm.Robot(str(urdf))
+        reference = np.full(model.nq, 0.6)
+    else:
+        model = (
+            hm.CollisionModel(str(urdf))
+            if backend == "mesh"
+            else hm.SphereCollisionModel(
+                str(urdf), [hm.CollisionSphere("tool", "tool", [0, 0, 0], 0.1)]
+            )
+        )
+        reference = model.configuration_from_joint_positions({"other_slide": 0.6})
+    names = ["slide", "turn"]
+    mapping = (
+        JointPositionMap.from_model(model, names)
+        if entry == "python"
+        else model.create_joint_position_map(names)
+    )
+
+    def query(positions):
+        if entry == "model":
+            return model.configuration_with_joint_positions(reference, names, positions)
+        return mapping.configuration_with_joint_positions(reference, positions)
+
+    expected = query([0.4, 1.2])
+    calls = []
+
+    class Positions:
+        def __array__(self, dtype=None, copy=None):
+            reference.fill(np.nan)
+            calls.append(True)
+            return np.array([0.4, 1.2], dtype=dtype)
+
+    actual = query(Positions())
+    assert calls == [True]
+    assert np.isnan(reference).all()
+    np.testing.assert_array_equal(actual, expected)
+    assert not np.shares_memory(actual, reference)
+
+
+@pytest.mark.parametrize("backend", ["mesh", "sphere"])
+@pytest.mark.parametrize("edit", ["clear", "replace"])
+def test_joint_dictionary_captures_entries_before_scalar_conversion(
+    urdf, backend, edit
+):
+    import holistic_motion as hm
+
+    if not hasattr(hm, "CollisionModel"):
+        pytest.skip("native collision support is disabled")
+    model = (
+        hm.CollisionModel(str(urdf))
+        if backend == "mesh"
+        else hm.SphereCollisionModel(
+            str(urdf), [hm.CollisionSphere("tool", "tool", [0, 0, 0], 0.1)]
+        )
+    )
+    names = ["slide", "other_slide"]
+    expected = model.configuration_from_joint_positions({names[0]: 0.25, names[1]: 0.6})
+    positions = {}
+    calls = []
+
+    class Position:
+        def __float__(self):
+            if edit == "clear":
+                positions.clear()
+            else:
+                positions[names[1]] = 0.9
+            calls.append(True)
+            return 0.25
+
+    position = Position()
+    positions.update({names[0]: position, names[1]: 0.6})
+    actual = model.configuration_from_joint_positions(positions)
+    assert calls == [True]
+    np.testing.assert_array_equal(actual, expected)
+    if edit == "clear":
+        assert positions == {}
+    else:
+        assert positions[names[1]] == 0.9
+
+
 def test_robot_chain_names_embed_into_full_scalar_model(urdf):
     import holistic_motion as hm
 

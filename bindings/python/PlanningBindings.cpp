@@ -6,6 +6,7 @@
 #include <cmath>
 #include <memory>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include <pybind11/eigen.h>
@@ -17,6 +18,14 @@
 namespace holistic_motion::python {
 
 namespace {
+
+robotics::planning::JointSpace CheckedJointSpace(const py::handle &lower, const py::handle &upper,
+                                                 std::vector<std::string> names = {}) {
+    auto lower_limits = CheckedRealEigen<Eigen::VectorXd>(lower, "lower_limits");
+    auto upper_limits = CheckedRealEigen<Eigen::VectorXd>(upper, "upper_limits");
+    return robotics::planning::JointSpace(std::move(lower_limits), std::move(upper_limits),
+                                          std::move(names));
+}
 
 std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
     // Plain numeric matrices need only their existing bulk check. Object
@@ -69,10 +78,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
     py::class_<JointSpace>(module, "JointSpace")
         .def(py::init([](const py::object &lower, const py::object &upper,
                          std::vector<std::string> names) {
-                 return JointSpace(
-                     CheckedRealEigen<Eigen::VectorXd>(lower, "lower_limits"),
-                     CheckedRealEigen<Eigen::VectorXd>(upper, "upper_limits"),
-                     std::move(names));
+                 return CheckedJointSpace(lower, upper, std::move(names));
              }),
              py::arg("lower_limits"), py::arg("upper_limits"),
              py::arg("joint_names") = std::vector<std::string>{})
@@ -211,13 +217,11 @@ void BindSamplingPlanning(pybind11::module_ &module) {
              }),
              py::arg("joint_space"), py::arg("state_validator") = py::none())
         .def_property_readonly("joint_space", &PathOptimizer::GetJointSpace)
-        .def(py::init([](const py::object &lower, const py::object &upper,
-                         const py::object &validator) {
-                 return PathOptimizer(
-                     CheckedRealEigen<Eigen::VectorXd>(lower, "lower_limits"),
-                     CheckedRealEigen<Eigen::VectorXd>(upper, "upper_limits"),
-                     PlanningValidator(validator));
-             }),
+        .def(py::init(
+                 [](const py::object &lower, const py::object &upper, const py::object &validator) {
+                     auto space = CheckedJointSpace(lower, upper);
+                     return PathOptimizer(std::move(space), PlanningValidator(validator));
+                 }),
              py::arg("lower_limits"), py::arg("upper_limits"),
              py::arg("state_validator") = py::none())
         .def(
@@ -357,13 +361,11 @@ void BindSamplingPlanning(pybind11::module_ &module) {
              }),
              py::arg("joint_space"), py::arg("state_validator") = py::none())
         .def_property_readonly("joint_space", &SamplingPlanner::GetJointSpace)
-        .def(py::init([](const py::object &lower, const py::object &upper,
-                         const py::object &validator) {
-                 return SamplingPlanner(
-                     CheckedRealEigen<Eigen::VectorXd>(lower, "lower_limits"),
-                     CheckedRealEigen<Eigen::VectorXd>(upper, "upper_limits"),
-                     PlanningValidator(validator));
-             }),
+        .def(py::init(
+                 [](const py::object &lower, const py::object &upper, const py::object &validator) {
+                     auto space = CheckedJointSpace(lower, upper);
+                     return SamplingPlanner(std::move(space), PlanningValidator(validator));
+                 }),
              py::arg("lower_limits"), py::arg("upper_limits"),
              py::arg("state_validator") = py::none())
         .def(
@@ -388,9 +390,8 @@ void BindSamplingPlanning(pybind11::module_ &module) {
             py::arg("indices"))
         .def(
             "plan",
-            [](const SamplingPlanner &self, const py::object &start,
-               const py::object &goal, const PlanningOptions &options,
-               bool release_gil) {
+            [](const SamplingPlanner &self, const py::object &start, const py::object &goal,
+               const PlanningOptions &options, bool release_gil) {
                 const auto start_state =
                     CheckedRealEigen<Eigen::VectorXd>(start, "start");
                 const auto goal_state = CheckedRealEigen<Eigen::VectorXd>(goal, "goal");

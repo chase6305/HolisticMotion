@@ -98,6 +98,10 @@ C++ storage.
 Waypoint sequences retain their row objects before individual conversions, so a
 row's `__array__` cannot remove later waypoints by clearing the caller's list.
 Plain numeric NumPy matrices retain their bulk validation path.
+Planning constructors share limit preparation. Coordinate updates capture the
+reference vector before converting replacement positions, and collision queries
+capture their state before later numeric conversions. Named joint-position
+dictionaries retain entry references before scalar conversion.
 Trajectory constructors capture numeric inputs in argument order before later
 conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
 conversion path.

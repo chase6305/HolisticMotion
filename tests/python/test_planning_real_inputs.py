@@ -27,6 +27,27 @@ def test_planning_rejects_complex_limits(factory, bad, argument):
     assert not emitted
 
 
+@pytest.mark.parametrize(
+    "factory", [hm.JointSpace, hm.SamplingPlanner, hm.PathOptimizer]
+)
+def test_planning_captures_lower_limits_before_upper_conversion(factory):
+    lower = np.array([-1.0])
+    calls = []
+
+    class Upper:
+        def __array__(self, dtype=None, copy=None):
+            lower.fill(np.nan)
+            calls.append(True)
+            return np.array([1.0], dtype=dtype)
+
+    value = factory(lower, Upper())
+    space = value if factory is hm.JointSpace else value.joint_space
+    assert calls == [True]
+    assert np.isnan(lower).all()
+    np.testing.assert_array_equal(space.lower_limits, [-1.0])
+    np.testing.assert_array_equal(space.upper_limits, [1.0])
+
+
 @pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
 @pytest.mark.parametrize("bad", COMPLEX_VECTORS)
 def test_planning_rejects_complex_weights(factory, bad):

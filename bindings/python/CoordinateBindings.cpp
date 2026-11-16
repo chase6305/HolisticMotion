@@ -26,10 +26,10 @@ void BindCoordinates(pybind11::module_ &module) {
             "configuration_with_joint_positions",
             [](const JointPositionMap &self, const py::object &reference,
                const py::object &positions) {
-                return self.ConfigurationWithJointPositions(
-                    CheckedRealEigen<Eigen::VectorXd>(reference, "reference"),
-                    CheckedRealEigen<Eigen::VectorXd>(positions,
-                                                      "joint_positions"));
+                const auto configuration =
+                    CheckedRealEigen<Eigen::VectorXd>(reference, "reference");
+                const auto values = CheckedRealEigen<Eigen::VectorXd>(positions, "joint_positions");
+                return self.ConfigurationWithJointPositions(configuration, values);
             },
             py::arg("reference"), py::arg("joint_positions"))
         .def(

@@ -4,8 +4,10 @@ import holistic_motion as hm
 import numpy as np
 import pytest
 from test_planning_real_inputs import collision_models as _collision_models
+from test_sphere_collision import sphere_model as _sphere_model
 
 collision_models = _collision_models
+sphere_model = _sphere_model
 
 pytestmark = pytest.mark.skipif(
     not hasattr(hm, "SphereCollisionModel"),
@@ -68,6 +70,56 @@ def test_collision_margin_query_rejects_complex_inputs(collision_models, argumen
     )
     with pytest.raises(TypeError, match="real"):
         model.is_within_distance(**args)
+
+
+@pytest.mark.parametrize("method", ["mesh_margin", "sphere_margin", "sphere_distances"])
+def test_collision_query_captures_configuration_before_scalar_conversion(
+    collision_models, sphere_model, method
+):
+    _, mesh = collision_models
+    configuration = np.array([0.1])
+    calls = []
+    scalar = 2.0 if method == "sphere_distances" else 0.05
+    query = {
+        "mesh_margin": mesh.is_within_distance,
+        "sphere_margin": sphere_model.in_collision,
+        "sphere_distances": sphere_model.distances,
+    }[method]
+    expected = query(configuration, scalar)
+
+    class Scalar:
+        def __float__(self):
+            configuration.fill(np.nan)
+            calls.append(True)
+            return scalar
+
+    actual = query(configuration, Scalar())
+    assert calls == [True]
+    assert np.isnan(configuration).all()
+    if method == "sphere_distances":
+        assert [(item.pair_index, item.distance) for item in actual] == [
+            (item.pair_index, item.distance) for item in expected
+        ]
+    else:
+        assert actual == expected
+
+
+def test_obstacle_captures_size_before_pose_conversion(collision_models):
+    _, model = collision_models
+    size = np.array([0.1, 0.2, 0.3])
+    calls = []
+
+    class Pose:
+        def __array__(self, dtype=None, copy=None):
+            size.fill(np.nan)
+            calls.append(True)
+            return np.eye(4, dtype=dtype)
+
+    count = model.geometry_count
+    model.add_box_obstacle("owned_box", size, Pose())
+    assert calls == [True]
+    assert np.isnan(size).all()
+    assert model.geometry_count == count + 1
 
 
 @pytest.mark.parametrize("argument", ["center", "radius"])
