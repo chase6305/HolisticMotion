@@ -288,9 +288,10 @@ class OptimizationContext {
             return false;
         if (!validator_)
             return true;
-        const Eigen::VectorXd difference = detail::Difference(from, to, continuous_);
+        auto &difference = motion_difference_;
+        DifferenceInto(from, to, difference);
         const std::size_t segments = SegmentCount(difference);
-        Eigen::VectorXd sample;
+        auto &sample = motion_sample_;
         for (std::size_t i = 1; i < segments; ++i) {
             if (TimedOut())
                 return false;
@@ -321,6 +322,8 @@ class OptimizationContext {
     PathOptimizationStatistics &statistics_;
     std::chrono::steady_clock::time_point deadline_;
     Eigen::VectorXd cost_gradient_, positive_sample_, negative_sample_;
+    // Nested callbacks create independent contexts and keep these samples intact.
+    Eigen::VectorXd motion_difference_, motion_sample_;
 };
 
 } // namespace

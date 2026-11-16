@@ -152,10 +152,8 @@ class PlanningContext {
         for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
             const double distance =
                 metric_.SquaredDistance(tree.nodes[i].state, state);
-            if (distance < best_distance ||
-                (distance == best_distance && !std::isnormal(distance) &&
-                 metric_.IsCloser(tree.nodes[i].state, tree.nodes[best].state,
-                                  state, distance, best_distance))) {
+            if (metric_.IsCloser(tree.nodes[i].state, tree.nodes[best].state, state, distance,
+                                 best_distance)) {
                 best_distance = distance;
                 best = i;
             }
