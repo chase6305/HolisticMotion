@@ -183,12 +183,13 @@ def test_seven_axis_logging_exception_restores_gil(tmp_path, family, query_name)
 def test_common_ik_allows_python_progress_during_native_work(tmp_path, query_name):
     path = tmp_path / "long_chain.urdf"
     _write_chain(path, 128)
-    # A large interpreter switch interval excludes a handoff between the
-    # Python call and the observation after it. The input matrices are tiny;
-    # the other thread must progress while native IK owns the long computation.
+    # A large interpreter switch interval excludes a handoff in Python code.
+    # Retry native work within a short deadline so a fast query does not require
+    # the operating system to schedule the peer during that single call.
     command = """
 import sys
 from threading import Event, Thread
+from time import monotonic
 import numpy as np
 import holistic_motion as hm
 solver = hm.Robot(sys.argv[1]).kinematics
@@ -220,7 +221,9 @@ previous = sys.getswitchinterval()
 sys.setswitchinterval(10.0)
 try:
     go.set()
-    query()
+    deadline = monotonic() + 1.0
+    while not progress and monotonic() < deadline:
+        query()
     observed = bool(progress)
 finally:
     sys.setswitchinterval(previous)
