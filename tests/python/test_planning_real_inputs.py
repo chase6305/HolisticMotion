@@ -51,6 +51,75 @@ def test_optimizer_rejects_complex_waypoints(bad):
         optimizer.optimize([[0.0], bad, [1.0]])
 
 
+@pytest.fixture(params=["optimize", "unwrap_path"])
+def path_query(request):
+    if request.param == "unwrap_path":
+        return hm.JointSpace([0.0], [1.0]).unwrap_path
+    optimizer = hm.PathOptimizer([0.0], [1.0])
+    options = hm.PathOptimizationOptions()
+    options.smoothness_weight = 0.0
+
+    def optimize(path):
+        result = optimizer.optimize(path, options)
+        assert result.success
+        return result.path
+
+    return optimize
+
+
+@pytest.mark.parametrize("later_dtype", [float, complex])
+def test_path_query_uses_each_validated_waypoint_conversion(path_query, later_dtype):
+    class ChangingWaypoint:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            values = [0.5] if self.calls == 1 else np.array([0.75], dtype=later_dtype)
+            return np.array(values, dtype=dtype)
+
+    waypoint = ChangingWaypoint()
+    actual = path_query([[0.0], waypoint, [1.0]])
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+    assert waypoint.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["list_subclass", "array_subclass"])
+def test_path_query_validates_the_waypoint_array_representation(path_query, kind):
+    if kind == "list_subclass":
+
+        class ComplexWaypoint(list):
+            def __array__(self, dtype=None, copy=None):
+                return np.array([0.5 + 1j], dtype=dtype)
+
+        waypoint = ComplexWaypoint([0.5])
+    else:
+
+        class HiddenComplexWaypoint(np.ndarray):
+            @property
+            def flat(self):
+                return iter(())
+
+        waypoint = np.array([np.complex128(0.5 + 1j)], dtype=object).view(
+            HiddenComplexWaypoint
+        )
+    with pytest.raises(TypeError, match="real"):
+        path_query([[0.0], waypoint, [1.0]])
+
+
+def test_path_query_keeps_waypoints_when_conversion_clears_caller_list(path_query):
+    source = []
+
+    class ClearingWaypoint:
+        def __array__(self, dtype=None, copy=None):
+            source.clear()
+            return np.array([0.0], dtype=dtype)
+
+    source.extend([ClearingWaypoint(), [0.5], [1.0]])
+    actual = path_query(source)
+    assert source == []
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+
+
 @pytest.mark.parametrize(
     "options_type,field",
     [

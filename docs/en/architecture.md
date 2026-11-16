@@ -83,7 +83,7 @@ still creates its own full configuration. Caller edits after factory creation
 cannot change the prepared context. Collision and distance-cache workspaces
 retain their per-worker ownership.
 
-Planning copies request inputs and callbacks before calling user code. A
+Planning copies request inputs and callbacks before invoking registered callbacks. A
 callback may replace the owner's configuration for a subsequent request without
 changing the active request's objective or coordinate contract. Captured objects
 are not cloned: sharing a callback that captures a collision model still shares
@@ -92,6 +92,12 @@ snapshot. See {doc}`planning` for periodic coordinate handling and callback
 lifetimes.
 
 ## Python execution boundary
+
+Eigen inputs are normalized and checked for real-valued data before copying into
+C++ storage.
+Waypoint sequences retain their row objects before individual conversions, so a
+row's `__array__` cannot remove later waypoints by clearing the caller's list.
+Plain numeric NumPy matrices retain their bulk validation path.
 
 The common `solve_ik` and legacy `inverse`, `inverse_user`, and `solve_all` entry
 points release the GIL when the solver declares concurrent query support.

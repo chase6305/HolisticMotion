@@ -6,6 +6,7 @@
 #include <cmath>
 #include <memory>
 #include <set>
+#include <vector>
 
 #include <pybind11/eigen.h>
 #include <pybind11/functional.h>
@@ -14,6 +15,36 @@
 #include "holistic_motion/planning/PathOptimizer.h"
 #include "holistic_motion/planning/SamplingPlanner.h"
 namespace holistic_motion::python {
+
+namespace {
+
+std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
+    // Plain numeric matrices need only their existing bulk check. Object
+    // paths and subclasses must validate the values each row exposes.
+    if (py::isinstance<py::array>(input)) {
+        const auto kind = py::reinterpret_borrow<py::array>(input).dtype().kind();
+        if (kind == 'c' ||
+            (Py_TYPE(input.ptr()) == py::detail::npy_api::get().PyArray_Type_ && kind != 'O'))
+            return CheckedRealEigen<std::vector<Eigen::VectorXd>>(input, "path");
+    }
+    std::vector<py::object> states;
+    try {
+        // Snapshot the sequence before a row's conversion can edit it.
+        states = py::cast<std::vector<py::object>>(input);
+    } catch (const py::cast_error &) {
+        RequireRealInput(input, "path");
+        throw py::type_error("path has an invalid array shape or type");
+    }
+    if (states.empty())
+        RequireRealInput(input, "path");
+    std::vector<Eigen::VectorXd> result;
+    result.reserve(states.size());
+    for (const auto &state : states)
+        result.push_back(CheckedRealEigen<Eigen::VectorXd>(state, "path"));
+    return result;
+}
+
+} // namespace
 
 void BindSamplingPlanning(pybind11::module_ &module) {
     namespace py = pybind11;
@@ -74,8 +105,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
         .def(
             "unwrap_path",
             [](const JointSpace &space, const py::object &path) {
-                return space.UnwrapPath(
-                    CheckedRealEigen<std::vector<Eigen::VectorXd>>(path, "path"));
+                return space.UnwrapPath(CheckedJointPath(path));
             },
             py::arg("path"));
 
@@ -238,8 +268,7 @@ void BindSamplingPlanning(pybind11::module_ &module) {
             "optimize",
             [](const PathOptimizer &self, const py::object &path,
                const PathOptimizationOptions &options, bool release_gil) {
-                const auto states =
-                    CheckedRealEigen<std::vector<Eigen::VectorXd>>(path, "path");
+                const auto states = CheckedJointPath(path);
                 if (!release_gil)
                     return self.Optimize(states, options);
                 const PathOptimizer request = self;
@@ -247,8 +276,8 @@ void BindSamplingPlanning(pybind11::module_ &module) {
                 py::gil_scoped_release release;
                 return request.Optimize(states, request_options);
             },
-            py::arg("path"), py::arg("options") = PathOptimizationOptions{},
-            py::kw_only(), py::arg("release_gil") = false);
+            py::arg("path"), py::arg("options") = PathOptimizationOptions{}, py::kw_only(),
+            py::arg("release_gil") = false);
 
     py::enum_<SamplingAlgorithm>(module, "SamplingAlgorithm")
         .value("RRT_CONNECT", SamplingAlgorithm::RRT_CONNECT)
