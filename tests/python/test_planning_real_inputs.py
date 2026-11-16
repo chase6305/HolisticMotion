@@ -141,6 +141,81 @@ def test_path_query_keeps_waypoints_when_conversion_clears_caller_list(path_quer
     np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
 
 
+@pytest.mark.parametrize("kind", ["sequence", "list_subclass", "array_subclass"])
+def test_path_query_reads_reused_custom_sequence_rows_before_advancing(
+    path_query, kind
+):
+    class ReusedRows:
+        def __init__(self):
+            self.row = np.empty(1)
+
+        def __len__(self):
+            return 3
+
+        def __getitem__(self, index):
+            if not 0 <= index < 3:
+                raise IndexError(index)
+            self.row[0] = index / 2
+            return self.row
+
+    def reused_iterator(self):
+        row = np.empty(1)
+        for index in range(len(self)):
+            row[0] = index / 2
+            yield row
+
+    row_buffer = np.empty(1)
+
+    def reused_item(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        row_buffer[0] = index / 2
+        return row_buffer
+
+    class ReusedList(list):
+        __iter__ = reused_iterator
+        __getitem__ = reused_item
+
+    class ReusedArray(np.ndarray):
+        __iter__ = reused_iterator
+        __getitem__ = reused_item
+
+    rows = (
+        ReusedRows()
+        if kind == "sequence"
+        else ReusedList([None] * 3)
+        if kind == "list_subclass"
+        else np.zeros((3, 1)).view(ReusedArray)
+    )
+    np.testing.assert_array_equal(path_query(rows), [[0.0], [0.5], [1.0]])
+
+
+def test_path_query_keeps_standard_caster_sequence_iteration_policy(path_query):
+    class Values:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __len__(self):
+            return 6
+
+        def __getitem__(self, index):
+            if not 0 <= index < 6:
+                raise IndexError(index)
+            value = index / 10
+            return [value] if self.rows else str(value)
+
+        def __iter__(self):
+            for index in range(6):
+                value = 0.9 - index / 10
+                yield [value] if self.rows else str(value)
+
+    reference = hm.JointSpace([0.0] * 6, [1.0] * 6, Values(rows=False))
+    expected = np.asarray([float(name) for name in reference.joint_names]).reshape(
+        -1, 1
+    )
+    np.testing.assert_array_equal(path_query(Values(rows=True)), expected)
+
+
 @pytest.mark.parametrize(
     "options_type,field",
     [

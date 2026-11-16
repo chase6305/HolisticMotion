@@ -96,8 +96,10 @@ lifetimes.
 Eigen inputs are normalized and checked for real-valued data before copying into
 C++ storage. Plain object arrays retain entry references before validation hooks
 run. Referenced Python objects are not cloned.
-Waypoint sequences retain their row objects before individual conversions, so a
-row's `__array__` cannot remove later waypoints by clearing the caller's list.
+Built-in waypoint containers retain row objects before individual conversions,
+so a row's `__array__` cannot remove later waypoints by clearing the caller's
+list. Custom sequences convert each row before advancing, preserving reusable
+row buffers. Other iterables keep the existing pybind11 conversion policy.
 Plain numeric NumPy matrices retain their bulk validation path.
 Planning constructors share limit preparation. Coordinate updates capture the
 reference vector before converting replacement positions, and collision queries

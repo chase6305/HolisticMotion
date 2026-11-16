@@ -36,6 +36,24 @@ std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
             (Py_TYPE(input.ptr()) == py::detail::npy_api::get().PyArray_Type_ && kind != 'O'))
             return CheckedRealEigen<std::vector<Eigen::VectorXd>>(input, "path");
     }
+    // Custom sequences may reuse a mutable row buffer as they advance.
+    if (py::isinstance<py::sequence>(input) && !PyList_CheckExact(input.ptr()) &&
+        !PyTuple_CheckExact(input.ptr()) && !PyUnicode_Check(input.ptr()) &&
+        !PyBytes_Check(input.ptr()) &&
+        Py_TYPE(input.ptr()) != py::detail::npy_api::get().PyArray_Type_) {
+        std::vector<Eigen::VectorXd> result;
+        result.reserve(py::len(input));
+#if PYBIND11_VERSION_MAJOR >= 3
+        const auto rows = py::reinterpret_borrow<py::iterable>(input);
+#else
+        const auto rows = py::reinterpret_borrow<py::sequence>(input);
+#endif
+        for (auto state : rows)
+            result.push_back(CheckedRealEigen<Eigen::VectorXd>(state, "path"));
+        if (result.empty())
+            RequireRealInput(input, "path");
+        return result;
+    }
     std::vector<py::object> states;
     try {
         // Snapshot the sequence before a row's conversion can edit it.
