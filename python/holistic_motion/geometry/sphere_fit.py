@@ -220,10 +220,11 @@ class SphereSpec:
         center = real_array(self.center, name="sphere center")
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             raise ValueError("sphere center must contain three finite values")
+        center = tuple(float(x) for x in center)
         radius = _finite_float(self.radius, "sphere radius")
         if radius <= 0.0:
             raise ValueError("sphere radius must be finite and positive")
-        object.__setattr__(self, "center", tuple(float(x) for x in center))
+        object.__setattr__(self, "center", center)
         object.__setattr__(self, "radius", radius)
 
 

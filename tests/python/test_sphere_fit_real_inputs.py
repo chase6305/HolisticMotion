@@ -67,6 +67,26 @@ def test_sphere_geometry_keeps_real_object_arrays_and_strided_samples():
     assert result.metrics.sampled_coverage == 1.0
 
 
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "readonly"])
+def test_sphere_center_snapshot_precedes_radius_conversion(layout):
+    storage = np.arange(6.0)
+    center = storage[:3] if layout == "contiguous" else storage[::2]
+    if layout == "readonly":
+        center.setflags(write=False)
+    expected = tuple(center)
+
+    class MutatingRadius(float):
+        def __float__(self):
+            storage[:] = np.nan
+            return 0.1
+
+    sphere = SphereSpec(center, MutatingRadius(0.1))
+    assert np.isnan(storage).all()
+    assert sphere.center == expected
+    assert sphere.radius == 0.1
+    assert center.flags.writeable == (layout != "readonly")
+
+
 @pytest.mark.parametrize("entry", ["extents", "pitch", "voxels"])
 def test_trimesh_adapter_rejects_complex_inputs_before_conversion(monkeypatch, entry):
     extents = np.ones(3)
