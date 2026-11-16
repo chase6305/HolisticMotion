@@ -15,6 +15,19 @@
 namespace holistic_motion::python {
 using namespace robotics;
 
+namespace {
+
+template <class Query>
+auto WithReadOnlyKinematics(const KinematicsBase &solver, const Query &query) {
+    // Custom solvers must opt in to concurrent queries without the GIL.
+    if (!solver.GetCapabilities().supports_concurrent_queries)
+        return query();
+    py::gil_scoped_release release;
+    return query();
+}
+
+} // namespace
+
 void BindKinematics(py::module_ &module) {
     py::enum_<KinematicsFamily>(module, "KinematicsFamily")
         .value("CUSTOM", KinematicsFamily::CUSTOM)
@@ -83,13 +96,8 @@ void BindKinematics(py::module_ &module) {
                     report.selection = selection;
                     return report;
                 }
-                // Legacy custom solvers inherit conservative capabilities and
-                // may rely on the calling interpreter. Opt in only when the
-                // solver declares concurrent read-only query support.
-                if (!self.GetCapabilities().supports_concurrent_queries)
-                    return self.SolveIK(SE3d(target), seed, selection);
-                py::gil_scoped_release release;
-                return self.SolveIK(SE3d(target), seed, selection);
+                return WithReadOnlyKinematics(
+                    self, [&] { return self.SolveIK(SE3d(target), seed, selection); });
             },
             py::arg("target"), py::arg("seed"),
             py::arg("selection") = IKSelection::NEAREST)
@@ -118,7 +126,9 @@ void BindKinematics(py::module_ &module) {
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 std::vector<double> distances;
-                if (!self.GetIK(SE3d(target), solutions, seed, distances)) {
+                const bool success = WithReadOnlyKinematics(
+                    self, [&] { return self.GetIK(SE3d(target), solutions, seed, distances); });
+                if (!success) {
                     return std::vector<Eigen::VectorXd>{};
                 }
                 return std::move(solutions.ik_joints);
@@ -136,9 +146,10 @@ void BindKinematics(py::module_ &module) {
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
-                if (!self.GetNearestIK(SE3d(target), solutions, seed,
-                                       distance) ||
-                    solutions.ik_joints.empty()) {
+                const bool success = WithReadOnlyKinematics(self, [&] {
+                    return self.GetNearestIK(SE3d(target), solutions, seed, distance);
+                });
+                if (!success || solutions.ik_joints.empty()) {
                     throw py::value_error("analytic inverse kinematics failed");
                 }
                 return std::move(solutions.ik_joints.front());
@@ -366,9 +377,10 @@ void BindKinematics(py::module_ &module) {
                 RequireRigidTransform(target, "target");
                 IkRtn solutions;
                 double distance = 0.0;
-                if (!self.GetNearestIK(SE3d(target), solutions, seed,
-                                       distance) ||
-                    solutions.ik_joints.empty()) {
+                const bool success = WithReadOnlyKinematics(self, [&] {
+                    return self.GetNearestIK(SE3d(target), solutions, seed, distance);
+                });
+                if (!success || solutions.ik_joints.empty()) {
                     throw py::value_error(
                         "inverse kinematics did not converge");
                 }
@@ -388,9 +400,10 @@ void BindKinematics(py::module_ &module) {
                 IkRtn solutions;
                 double distance = 0.0;
                 const SE3d base_target = self.RemoveUserFrame(SE3d(target));
-                if (!self.GetNearestIK(base_target, solutions, seed,
-                                       distance) ||
-                    solutions.ik_joints.empty()) {
+                const bool success = WithReadOnlyKinematics(self, [&] {
+                    return self.GetNearestIK(base_target, solutions, seed, distance);
+                });
+                if (!success || solutions.ik_joints.empty()) {
                     throw py::value_error(
                         "inverse kinematics did not converge");
                 }

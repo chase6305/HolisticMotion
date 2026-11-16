@@ -93,9 +93,12 @@ lifetimes.
 
 ## Python execution boundary
 
-Read-only built-in IK, SRS null-space projection/planning and batch operations
-release the GIL after copying inputs; result conversion reacquires it. Unknown custom solvers keep the conservative
-calling contract unless they explicitly advertise compatible concurrent queries.
+The common `solve_ik` and legacy `inverse`, `inverse_user`, and `solve_all` entry
+points release the GIL when the solver declares concurrent query support.
+Inputs are copied before that release, and result conversion reacquires it.
+SRS null-space projection/planning and batch operations also release the GIL
+after copying inputs. Unknown custom solvers keep the conservative calling
+contract unless they explicitly advertise compatible concurrent queries.
 The capability is a promise by the implementation, including its use of Python
 APIs, captured state and output ownership.
 
