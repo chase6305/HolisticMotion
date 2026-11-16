@@ -15,7 +15,7 @@ from numbers import Integral
 
 import numpy as np
 
-from .._validation import real_array
+from .._validation import finite_scalar, real_array
 
 _MAX_PATH_SPEED = np.sqrt(np.finfo(float).max)
 _MIN_INVERSE_CAP = 1.0 / float(np.finfo(float).max)
@@ -541,10 +541,10 @@ class ToppraResult:
             or self.path_accelerations.size != count - 1
         ):
             raise ValueError("TOPPRA result arrays have inconsistent lengths")
-        if np.iscomplexobj(self.duration):
-            raise TypeError("duration must be real")
-        if not np.isfinite(self.duration) or self.duration < 0.0:
+        duration = finite_scalar(self.duration, "TOPPRA result duration")
+        if duration < 0.0:
             raise ValueError("TOPPRA result duration must be finite and non-negative")
+        object.__setattr__(self, "duration", duration)
         grid_intervals = np.diff(self.gridpoints)
         if np.any(grid_intervals <= 0.0):
             raise ValueError("TOPPRA result gridpoints must increase strictly")
@@ -610,14 +610,9 @@ class ToppraTrajectory:
         )
         self.max_velocity.setflags(write=False)
         self.max_acceleration.setflags(write=False)
-        if np.iscomplexobj(start_path_velocity) or np.iscomplexobj(end_path_velocity):
-            raise TypeError("boundary path velocities must be real")
-        if not (
-            np.isfinite(start_path_velocity)
-            and start_path_velocity >= 0.0
-            and np.isfinite(end_path_velocity)
-            and end_path_velocity >= 0.0
-        ):
+        start_path_velocity = finite_scalar(start_path_velocity, "start_path_velocity")
+        end_path_velocity = finite_scalar(end_path_velocity, "end_path_velocity")
+        if start_path_velocity < 0.0 or end_path_velocity < 0.0:
             raise ValueError("boundary path velocities must be finite and non-negative")
 
         with np.errstate(over="ignore", under="ignore", invalid="ignore"):
@@ -714,9 +709,7 @@ class ToppraTrajectory:
         self._range_safe_velocity_caps = None
         self._solver_velocity = self.max_velocity
         self._solver_acceleration = self.max_acceleration
-        self._result = self._compute(
-            float(start_path_velocity), float(end_path_velocity)
-        )
+        self._result = self._compute(start_path_velocity, end_path_velocity)
         coordinate_scale = self._path_model._coefficient_scale
         if coordinate_scale is not None:
             factors = []
