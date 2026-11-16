@@ -7,18 +7,17 @@ using namespace trajectory_detail;
 void BindTrajectories(py::module_ &module) {
     py::class_<TrajectoryConstraints, std::shared_ptr<TrajectoryConstraints>>(
         module, "TrajectoryConstraints")
-        .def(
-            py::init([](const py::object &velocity,
-                        const py::object &acceleration,
-                        const py::object &jerk) {
-                return std::make_shared<TrajectoryConstraints>(
-                    CheckedRealEigen<Eigen::VectorXd>(velocity, "max_velocity"),
-                    CheckedRealEigen<Eigen::VectorXd>(acceleration,
-                                                      "max_acceleration"),
-                    CheckedRealEigen<Eigen::VectorXd>(jerk, "max_jerk"));
-            }),
-            py::arg("max_velocity"), py::arg("max_acceleration"),
-            py::arg("max_jerk"))
+        .def(py::init([](const py::object &velocity, const py::object &acceleration,
+                         const py::object &jerk) {
+                 const auto max_velocity =
+                     CheckedRealEigen<Eigen::VectorXd>(velocity, "max_velocity");
+                 const auto max_acceleration =
+                     CheckedRealEigen<Eigen::VectorXd>(acceleration, "max_acceleration");
+                 const auto max_jerk = CheckedRealEigen<Eigen::VectorXd>(jerk, "max_jerk");
+                 return std::make_shared<TrajectoryConstraints>(max_velocity, max_acceleration,
+                                                                max_jerk);
+             }),
+             py::arg("max_velocity"), py::arg("max_acceleration"), py::arg("max_jerk"))
         .def_property_readonly("valid", &TrajectoryConstraints::IsValid);
 
     const auto report_keys = std::make_shared<const ReportKeys>();

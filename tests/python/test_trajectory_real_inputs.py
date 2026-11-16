@@ -77,6 +77,84 @@ def test_native_trajectory_preserves_real_input_forms(factory_name, representati
 
 
 @pytest.mark.parametrize(
+    "factory_name,dof",
+    [
+        ("JointTrajectory1", 1),
+        ("JointTrajectory3", 3),
+        ("JointTrajectory32", 32),
+        ("JointTrajectory", 3),
+        ("RnTrajectory", 3),
+        ("BaseTrajectory", 3),
+    ],
+)
+@pytest.mark.parametrize("later_input", ["max_acceleration", "minimum_duration"])
+def test_joint_trajectory_snapshots_inputs_before_later_conversion(
+    factory_name, dof, later_input
+):
+    import holistic_motion as hm
+
+    points = np.array([np.zeros(dof), np.full(dof, 0.2)])
+    expected_points = points.copy()
+    velocity = np.ones(dof)
+    calls = []
+
+    def mutate():
+        points.fill(np.nan)
+        velocity.fill(0.0)
+        calls.append(True)
+
+    class Acceleration:
+        def __array__(self, dtype=None, copy=None):
+            mutate()
+            return np.ones(dof, dtype=dtype)
+
+    class Duration:
+        def __float__(self):
+            mutate()
+            return 0.0
+
+    inputs = {"max_acceleration": np.ones(dof), "minimum_duration": 0.0}
+    inputs[later_input] = (
+        Acceleration() if later_input == "max_acceleration" else Duration()
+    )
+    trajectory = getattr(hm, factory_name)(
+        points, velocity, max_jerk=np.ones(dof), **inputs
+    )
+    assert calls == [True]
+    np.testing.assert_array_equal(trajectory.waypoints, expected_points)
+    np.testing.assert_array_equal(trajectory.max_velocity, np.ones(dof))
+    np.testing.assert_allclose(
+        trajectory.position(trajectory.duration), expected_points[-1], atol=1e-7
+    )
+
+
+@pytest.mark.parametrize("later_input", ["max_acceleration", "max_jerk"])
+def test_trajectory_constraints_snapshot_limits_before_later_conversion(later_input):
+    import holistic_motion as hm
+
+    velocity, acceleration = np.ones(3), np.ones(3)
+    calls = []
+
+    class Limit:
+        def __array__(self, dtype=None, copy=None):
+            velocity.fill(0.0)
+            if later_input == "max_jerk":
+                acceleration.fill(0.0)
+            calls.append(True)
+            return np.ones(3, dtype=dtype)
+
+    inputs = {
+        "max_velocity": velocity,
+        "max_acceleration": acceleration,
+        "max_jerk": np.ones(3),
+    }
+    inputs[later_input] = Limit()
+    constraints = hm.TrajectoryConstraints(**inputs)
+    assert calls == [True]
+    assert constraints.valid
+
+
+@pytest.mark.parametrize(
     "field", ["start", "end", "max_velocity", "max_acceleration", "max_jerk"]
 )
 @pytest.mark.parametrize("representation", ["array", "list", "object"])
@@ -117,3 +195,41 @@ def test_cartesian_trajectory_preserves_real_input_forms(representation):
     trajectory = hm.CartesianLineTrajectory(*inputs)
     np.testing.assert_allclose(trajectory.position(0), start, atol=1e-7)
     np.testing.assert_allclose(trajectory.position(trajectory.duration), end, atol=1e-7)
+
+
+@pytest.mark.parametrize("later_input", ["end", "minimum_duration"])
+def test_cartesian_trajectory_snapshots_poses_before_later_conversion(later_input):
+    import holistic_motion as hm
+
+    start, end = np.eye(4), np.eye(4)
+    end[0, 3] = 0.2
+    expected_start, expected_end = start.copy(), end.copy()
+    calls = []
+
+    class End:
+        def __array__(self, dtype=None, copy=None):
+            start.fill(np.nan)
+            calls.append(True)
+            return np.array(end, dtype=dtype)
+
+    class Duration:
+        def __float__(self):
+            start.fill(np.nan)
+            end.fill(np.nan)
+            calls.append(True)
+            return 0.0
+
+    inputs = {"end": end, "minimum_duration": 0.0}
+    inputs[later_input] = End() if later_input == "end" else Duration()
+    trajectory = hm.CartesianLineTrajectory(
+        start,
+        max_velocity=np.ones(6),
+        max_acceleration=np.ones(6),
+        max_jerk=np.ones(6),
+        **inputs,
+    )
+    assert calls == [True]
+    np.testing.assert_allclose(trajectory.position(0.0), expected_start, atol=1e-7)
+    np.testing.assert_allclose(
+        trajectory.position(trajectory.duration), expected_end, atol=1e-7
+    )

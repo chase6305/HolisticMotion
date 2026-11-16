@@ -136,40 +136,34 @@ void BindCartesianTrajectory(
     py::module_ &module, const std::shared_ptr<const ReportKeys> &report_keys) {
     py::class_<CartesianLineTrajectory>(module, "CartesianLineTrajectory")
         .def(py::init([](const py::object &start, const py::object &end,
-                         const py::object &max_velocity,
-                         const py::object &max_acceleration,
-                         const py::object &max_jerk,
-                         const py::object &minimum_duration,
+                         const py::object &max_velocity, const py::object &max_acceleration,
+                         const py::object &max_jerk, const py::object &minimum_duration,
                          const std::string &profile) {
+                 const auto start_pose = CheckedRealEigen<Eigen::Matrix4d>(start, "start");
+                 const auto end_pose = CheckedRealEigen<Eigen::Matrix4d>(end, "end");
+                 const auto velocity =
+                     CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity");
+                 const auto acceleration =
+                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration, "max_acceleration");
+                 const auto jerk = CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk");
+                 const double duration =
+                     CheckedRealEigen<double>(minimum_duration, "minimum_duration");
                  return std::make_unique<CartesianLineTrajectory>(
-                     CheckedRealEigen<Eigen::Matrix4d>(start, "start"),
-                     CheckedRealEigen<Eigen::Matrix4d>(end, "end"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
-                                                       "max_velocity"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
-                                                       "max_acceleration"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-                     CheckedRealEigen<double>(minimum_duration,
-                                              "minimum_duration"),
-                     profile);
+                     start_pose, end_pose, velocity, acceleration, jerk, duration, profile);
              }),
-             py::arg("start"), py::arg("end"), py::arg("max_velocity"),
-             py::arg("max_acceleration"), py::arg("max_jerk"),
-             py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
+             py::arg("start"), py::arg("end"), py::arg("max_velocity"), py::arg("max_acceleration"),
+             py::arg("max_jerk"), py::arg("minimum_duration") = 0.0,
+             py::arg("profile") = "double_s")
         .def_property_readonly("duration", &CartesianLineTrajectory::Duration)
         .def_property_readonly("profile", &CartesianLineTrajectory::Profile)
-        .def("position",
-             WithRealScalar(&CartesianLineTrajectory::Position, "time"),
+        .def("position", WithRealScalar(&CartesianLineTrajectory::Position, "time"),
              py::arg("time"))
-        .def("state", WithRealScalar(&CartesianLineTrajectory::State, "time"),
-             py::arg("time"))
-        .def("sample_uniform",
-             WithRealScalar(&CartesianLineTrajectory::SampleUniform, "samples"),
+        .def("state", WithRealScalar(&CartesianLineTrajectory::State, "time"), py::arg("time"))
+        .def("sample_uniform", WithRealScalar(&CartesianLineTrajectory::SampleUniform, "samples"),
              py::arg("samples") = 1001)
         .def(
             "constraint_report",
-            [report_keys](const CartesianLineTrajectory &trajectory,
-                          const py::object &samples) {
+            [report_keys](const CartesianLineTrajectory &trajectory, const py::object &samples) {
                 return trajectory.ConstraintReport(
                     CheckedRealEigen<std::size_t>(samples, "samples"),
                     *report_keys);
