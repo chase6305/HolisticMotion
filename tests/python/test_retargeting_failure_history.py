@@ -2,11 +2,15 @@
 
 import numpy as np
 import pytest
-from holistic_motion.kit.retargeting import PinocchioRetargetingSolver
+from holistic_motion.kit.retargeting import (
+    CuroboRetargetingSolver,
+    PinkRetargetingSolver,
+    PinocchioRetargetingSolver,
+)
 from optional_dependencies import python_pinocchio_or_skip
 
 
-def make_solver(tmp_path, *, movable=True):
+def make_solver(tmp_path, *, movable=True, solver_type=PinocchioRetargetingSolver):
     python_pinocchio_or_skip()
     urdf = tmp_path / "history.urdf"
     urdf.write_text("""<robot name="history">
@@ -15,7 +19,7 @@ def make_solver(tmp_path, *, movable=True):
         <parent link="base"/><child link="tool"/><axis xyz="1 0 0"/>
         <limit lower="-1" upper="1" velocity="1" effort="1"/>
       </joint></robot>""")
-    solver = PinocchioRetargetingSolver(
+    solver = solver_type(
         urdf,
         {"left_hand": "tool"},
         {"left_arm": ["slide"] if movable else []},
@@ -51,12 +55,19 @@ def test_large_finite_residual_returns_diagnostics_and_updates_warm_start(
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, MemoryError])
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
 def test_aborted_result_construction_preserves_warm_start(
-    tmp_path, monkeypatch, error_type
+    tmp_path, monkeypatch, error_type, solver_type
 ):
-    from holistic_motion.kit.retargeting import pinocchio_solver
+    from holistic_motion.kit.retargeting import pink_solver, pinocchio_solver
 
-    solver = make_solver(tmp_path)
+    solver = make_solver(tmp_path, solver_type=solver_type)
+    result_module = (
+        pinocchio_solver if solver_type is PinocchioRetargetingSolver else pink_solver
+    )
     previous = solver._last_q.copy()
     candidates = []
 
@@ -65,7 +76,7 @@ def test_aborted_result_construction_preserves_warm_start(
         raise error_type("result publication aborted")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pinocchio_solver, "RetargetingResult", abort)
+        patch.setattr(result_module, "RetargetingResult", abort)
         with pytest.raises(error_type, match="result publication aborted"):
             solver.solve(target(0.8), seed=[0.5])
     assert len(candidates) == 1
@@ -74,6 +85,23 @@ def test_aborted_result_construction_preserves_warm_start(
     recovered = solver.solve(target(previous[0]))
     assert recovered.success
     np.testing.assert_array_equal(recovered.configuration, previous)
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+def test_seed_result_and_warm_start_are_independent(tmp_path, solver_type):
+    solver = make_solver(tmp_path, solver_type=solver_type)
+    seed = np.array([0.5])
+    result = solver.solve(target(0.8), seed=seed)
+    accepted = result.configuration.copy()
+    assert not np.shares_memory(result.configuration, solver._last_q)
+    assert not np.shares_memory(seed, solver._last_q)
+    seed[:] = -0.9
+    np.testing.assert_array_equal(solver._last_q, accepted)
+    solver.reset([-0.2])
+    np.testing.assert_array_equal(result.configuration, accepted)
 
 
 def test_returned_budget_exhaustion_still_updates_warm_start(tmp_path):

@@ -6,6 +6,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <utility>
+
 #include "holistic_motion/kinematics/NumericalKinematics.h"
 #include "holistic_motion/kinematics/OPWKinematics.h"
 #include "holistic_motion/kinematics/URKinematics.h"
@@ -119,7 +121,7 @@ void BindKinematics(py::module_ &module) {
                 if (!self.GetIK(SE3d(target), solutions, seed, distances)) {
                     return std::vector<Eigen::VectorXd>{};
                 }
-                return solutions.ik_joints;
+                return std::move(solutions.ik_joints);
             },
             py::arg("target"), py::arg("seed"))
         .def(
@@ -139,7 +141,7 @@ void BindKinematics(py::module_ &module) {
                     solutions.ik_joints.empty()) {
                     throw py::value_error("analytic inverse kinematics failed");
                 }
-                return solutions.ik_joints.front();
+                return std::move(solutions.ik_joints.front());
             },
             py::arg("target"), py::arg("seed"));
 
@@ -370,7 +372,7 @@ void BindKinematics(py::module_ &module) {
                     throw py::value_error(
                         "inverse kinematics did not converge");
                 }
-                return solutions.ik_joints.front();
+                return std::move(solutions.ik_joints.front());
             },
             py::arg("target"), py::arg("seed"))
         .def(
@@ -392,7 +394,7 @@ void BindKinematics(py::module_ &module) {
                     throw py::value_error(
                         "inverse kinematics did not converge");
                 }
-                return solutions.ik_joints.front();
+                return std::move(solutions.ik_joints.front());
             },
             py::arg("target"), py::arg("seed"))
         .def(

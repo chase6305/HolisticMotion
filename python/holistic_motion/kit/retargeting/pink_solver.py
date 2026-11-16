@@ -565,8 +565,7 @@ class PinkRetargetingSolver(_RetargetingSession):
         success = self._converged(state)
         if success:
             termination_reason = "converged"
-        self._last_q = q.copy()
-        return RetargetingResult(
+        result = RetargetingResult(
             configuration=q,
             success=success,
             iterations=iteration,
@@ -587,6 +586,8 @@ class PinkRetargetingSolver(_RetargetingSession):
             support_polygon_violation=state["support_polygon_violation"],
             zmp_residual=state["zmp_residual"],
         )
+        self._last_q = q
+        return result
 
     def _mode_limits(self) -> tuple[np.ndarray, np.ndarray]:
         active = self._mode_plan().active_velocity_indices

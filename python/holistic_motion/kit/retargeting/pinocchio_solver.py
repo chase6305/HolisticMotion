@@ -627,7 +627,7 @@ class PinocchioRetargetingSolver(_RetargetingSession):
             mode=self.mode,
             objective=objective,
         )
-        self._last_q = result.configuration.copy()
+        self._last_q = q
         return result
 
     def _solve_workspace(self, plan: _RetargetingModePlan) -> _PinocchioSolveWorkspace:
