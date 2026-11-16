@@ -144,6 +144,10 @@ ANSI escapes. A failing logging sink cannot replace that primary algorithm error
 Other callback failures propagate. Logging configuration does not alter solver
 return values, convergence diagnostics, or execution control.
 
+Native sink replacement and reset release retired callback captures after
+unlocking the logger configuration. Their cleanup may query logger settings;
+a dispatch already in progress retains its callback copy.
+
 Native-to-Python dispatch suppresses nested native records on the same thread
 while a record is being created, filtered, formatted, or handled. This prevents
 recursive logging when one of those callbacks calls native code. Other threads

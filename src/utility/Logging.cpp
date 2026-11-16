@@ -153,9 +153,14 @@ void Logger::VDebug(const char *file, int line, const char *function,
 void Logger::SetPrintFunction(std::function<void(const std::string &)> print_fcn) {
     if (!print_fcn)
         throw std::invalid_argument("print function must not be empty");
-    std::lock_guard<std::mutex> guard(impl_->mutex);
-    impl_->print_fcn = std::move(print_fcn);
-    impl_->record_fcn = {};
+    // Captured resources may query the logger while being destroyed.
+    // Retire both callbacks after releasing the configuration mutex.
+    std::function<void(const LogRecord &)> previous_record;
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        impl_->print_fcn.swap(print_fcn);
+        impl_->record_fcn.swap(previous_record);
+    }
 }
 
 const std::function<void(const std::string &)> Logger::GetPrintFunction() {
@@ -168,13 +173,18 @@ void Logger::ResetPrintFunction() { SetPrintFunction(PrintToConsole); }
 void Logger::SetRecordFunction(std::function<void(const LogRecord &)> record_fcn) {
     if (!record_fcn)
         throw std::invalid_argument("record function must not be empty");
-    std::lock_guard<std::mutex> guard(impl_->mutex);
-    impl_->record_fcn = std::move(record_fcn);
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        impl_->record_fcn.swap(record_fcn);
+    }
 }
 
 void Logger::ResetRecordFunction() {
-    std::lock_guard<std::mutex> guard(impl_->mutex);
-    impl_->record_fcn = {};
+    std::function<void(const LogRecord &)> previous;
+    {
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        impl_->record_fcn.swap(previous);
+    }
 }
 
 void Logger::SetVerbosityLevel(VerbosityLevel level) {

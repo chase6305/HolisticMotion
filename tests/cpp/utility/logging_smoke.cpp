@@ -30,6 +30,44 @@ std::string Read(const std::filesystem::path &path) {
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
+struct ReentrantCapture {
+    explicit ReentrantCapture(int &retired) : retired(retired) {}
+    ~ReentrantCapture() {
+        (void)Logger::GetInstance().GetPrintFunction();
+        ++retired;
+    }
+    int &retired;
+};
+
+void CheckCallbackRetirement(Logger &logger) {
+    for (bool reset : {false, true}) {
+        int print_retired = 0, record_retired = 0;
+        auto print_owner = std::make_shared<ReentrantCapture>(print_retired);
+        auto record_owner = std::make_shared<ReentrantCapture>(record_retired);
+        logger.SetPrintFunction([print_owner](const std::string &) { (void)print_owner; });
+        logger.SetRecordFunction([record_owner](const LogRecord &) { (void)record_owner; });
+        print_owner.reset();
+        record_owner.reset();
+        if (reset)
+            logger.ResetPrintFunction();
+        else
+            logger.SetPrintFunction([](const std::string &) {});
+        Require(print_retired == 1 && record_retired == 1,
+                "print replacement did not retire both captured resources");
+    }
+    for (bool reset : {false, true}) {
+        int retired = 0;
+        auto owner = std::make_shared<ReentrantCapture>(retired);
+        logger.SetRecordFunction([owner](const LogRecord &) { (void)owner; });
+        owner.reset();
+        if (reset)
+            logger.ResetRecordFunction();
+        else
+            logger.SetRecordFunction([](const LogRecord &) {});
+        Require(retired == 1, "record replacement did not retire captured resources");
+    }
+}
+
 void CheckKinematicsDiagnostics(Logger &logger) {
     using namespace holistic_motion::robotics;
     std::vector<LogRecord> records;
@@ -199,6 +237,7 @@ int main() {
                     b.find('\x1b') == std::string::npos,
                 "file metadata or encoding");
         spdlog::drop("HOLISTIC_MOTION");
+        CheckCallbackRetirement(logger);
         logger.ResetRecordFunction();
         logger.SetVerbosityLevel(VerbosityLevel::Warning);
         std::filesystem::remove_all(directory);
