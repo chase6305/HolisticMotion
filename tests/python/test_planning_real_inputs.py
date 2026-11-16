@@ -309,6 +309,49 @@ def test_named_collision_factories_preserve_real_configuration_support(
     assert result.success
 
 
+@pytest.mark.parametrize("model_kind", ["mesh", "sphere"])
+@pytest.mark.parametrize(
+    "factory,argument",
+    [
+        (hm.SamplingPlanner, "security_margin"),
+        (hm.PathOptimizer, "security_margin"),
+        (hm.PathOptimizer, "clearance"),
+    ],
+)
+def test_named_collision_factory_snapshots_context_before_scalar_conversion(
+    collision_models, model_kind, factory, argument
+):
+    sphere, mesh = collision_models
+    context = np.array([0.25])
+    calls = []
+
+    class MutatingScalar:
+        def __float__(self):
+            context.fill(np.nan)
+            calls.append(True)
+            return 0.0
+
+    create = getattr(
+        factory,
+        "from_collision_joints"
+        if model_kind == "mesh"
+        else "from_sphere_collision_joints",
+    )
+    planner = create(
+        mesh if model_kind == "mesh" else sphere,
+        ["left_slide"],
+        context,
+        **{argument: MutatingScalar()},
+    )
+    assert calls == [True]
+    assert np.isnan(context).all()
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[0.0], [0.1]])
+    else:
+        result = planner.plan([0.0], [0.1])
+    assert result.success
+
+
 def test_full_collision_factory_preserves_default_context(collision_models):
     _, collision = collision_models
     planner = hm.SamplingPlanner.from_collision_model([-1.0], [1.0], collision)
