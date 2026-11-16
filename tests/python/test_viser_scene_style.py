@@ -102,6 +102,28 @@ def test_configure_scene_accepts_explicit_grid_scale():
     assert grid["section_size"] == pytest.approx(1.25)
 
 
+@pytest.mark.parametrize("callback", ["cell_size", "renderer"])
+def test_configure_scene_snapshots_center_before_callbacks(callback):
+    center = np.array([1.0, 2.0])
+
+    class MutatingCellSize(float):
+        def __float__(self):
+            center.fill(np.nan)
+            return float.__float__(self)
+
+    class MutatingScene(ModernScene):
+        def configure_default_lights(self, **kwargs):
+            center.fill(np.nan)
+            self.calls.append(("configure_default_lights", (), kwargs))
+
+    scene = MutatingScene() if callback == "renderer" else ModernScene()
+    cell_size = MutatingCellSize(0.25) if callback == "cell_size" else 0.25
+    configure_scene(scene, ground_center_xy=center, grid_cell_size=cell_size)
+    assert np.isnan(center).all()
+    grid = next(kwargs for name, _args, kwargs in scene.calls if name == "add_grid")
+    assert grid["position"] == (1.0, 2.0, 0.0)
+
+
 def test_configure_scene_handles_smallest_positive_ground_extent():
     scene = ModernScene()
     configure_scene(scene, ground_width=float.fromhex("0x0.0000000000001p-1022"))
@@ -146,6 +168,26 @@ def test_configure_scene_from_bounds_centers_and_clears_floor():
         [[10.0, 20.0, -1.0], [12.0, 21.0, 3.0]],
         margin=0.25,
     )
+    grid = next(kwargs for name, _args, kwargs in scene.calls if name == "add_grid")
+    assert grid["width"] == pytest.approx(4.0)
+    assert grid["height"] == pytest.approx(3.0)
+    assert grid["position"] == pytest.approx((11.0, 20.5, -1.08))
+
+
+@pytest.mark.parametrize("option", ["minimum_ground_size", "margin"])
+def test_configure_scene_snapshots_bounds_before_scalar_conversion(option):
+    bounds = np.array([[10.0, 20.0, -1.0], [12.0, 21.0, 3.0]])
+
+    class MutatingScalar(float):
+        def __float__(self):
+            bounds.fill(np.nan)
+            return float.__float__(self)
+
+    options = {"minimum_ground_size": 1.0, "margin": 0.25}
+    options[option] = MutatingScalar(options[option])
+    scene = ModernScene()
+    configure_scene_from_bounds(scene, bounds, **options)
+    assert np.isnan(bounds).all()
     grid = next(kwargs for name, _args, kwargs in scene.calls if name == "add_grid")
     assert grid["width"] == pytest.approx(4.0)
     assert grid["height"] == pytest.approx(3.0)
