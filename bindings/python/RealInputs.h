@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string>
-#include <utility>
 
 #include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
@@ -62,9 +61,22 @@ inline void RequireRealInput(const py::handle &value, const char *name,
 
 template <typename Matrix>
 Matrix CheckedRealEigen(const py::handle &value, const char *name) {
-    RequireRealInput(value, name);
+    py::object array_owner;
+    py::handle checked = value;
+    if constexpr (py::detail::is_eigen_dense_plain<Matrix>::value) {
+        // Normalize producers and subclasses once, then check the same array
+        // Eigen will read. Ordinary NumPy arrays need no conversion or copy.
+        if (Py_TYPE(checked.ptr()) != py::detail::npy_api::get().PyArray_Type_) {
+            array_owner = py::array::ensure(value);
+            if (!array_owner) {
+                throw py::type_error(std::string(name) + " has an invalid array shape or type");
+            }
+            checked = array_owner;
+        }
+    }
+    RequireRealInput(checked, name);
     try {
-        return py::cast<Matrix>(value);
+        return py::cast<Matrix>(checked);
     } catch (const py::cast_error &) {
         throw py::type_error(std::string(name) +
                              " has an invalid array shape or type");
@@ -79,14 +91,7 @@ auto ReadParameter(Value Class::*member) {
 template <typename Class, typename Value>
 auto WriteRealParameter(Value Class::*member, const char *name) {
     return [member, name](Class &self, const py::object &input) {
-        RequireRealInput(input, name);
-        try {
-            Value value = py::cast<Value>(input);
-            self.*member = std::move(value);
-        } catch (const py::cast_error &) {
-            throw py::type_error(std::string(name) +
-                                 " has an unsupported type or shape");
-        }
+        self.*member = CheckedRealEigen<Value>(input, name);
     };
 }
 

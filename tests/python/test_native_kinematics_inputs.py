@@ -96,6 +96,47 @@ def test_native_kinematics_preserves_real_object_inputs(solver_data):
     np.testing.assert_allclose(solver.forward(recovered), target, atol=1e-7)
 
 
+@pytest.mark.parametrize("later_dtype", [float, complex])
+def test_native_fk_uses_the_validated_array_conversion(solver_data, later_dtype):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+
+    class ChangingArray:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            values = joints if self.calls == 1 else (joints + 0.1).astype(later_dtype)
+            return np.array(values, dtype=dtype)
+
+    values = ChangingArray()
+    np.testing.assert_allclose(solver.forward(values), expected, atol=1e-12)
+    assert values.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["list_subclass", "array_subclass"])
+def test_native_fk_validates_the_array_representation(solver_data, kind):
+    solver, joints = solver_data
+    if kind == "list_subclass":
+
+        class ComplexList(list):
+            def __array__(self, dtype=None, copy=None):
+                return np.array(joints + 1j, dtype=dtype)
+
+        values = ComplexList(joints.tolist())
+    else:
+
+        class HiddenComplexArray(np.ndarray):
+            @property
+            def flat(self):
+                return iter(())
+
+        values = joints.astype(object).view(HiddenComplexArray)
+        values[0] = np.complex128(joints[0] + 1j)
+    with pytest.raises(TypeError, match="real"):
+        solver.forward(values)
+
+
 def test_native_kinematics_rejects_complex_lists(solver_data):
     solver, joints = solver_data
     target = solver.forward(joints)

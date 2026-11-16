@@ -96,6 +96,26 @@ def test_collision_sphere_rejected_assignment_preserves_previous_value(argument)
     np.testing.assert_array_equal(getattr(sphere, argument), previous)
 
 
+@pytest.mark.parametrize("entry", ["constructor", "assignment"])
+def test_sphere_center_uses_validated_array_conversion(entry):
+    class ChangingCenter:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            center = [0.25, 0.0, 0.0] if self.calls == 1 else [1.0, 2.0, 3.0]
+            return np.array(center, dtype=dtype)
+
+    center = ChangingCenter()
+    if entry == "constructor":
+        sphere = hm.CollisionSphere("sphere", "left", center, 0.1)
+    else:
+        sphere = hm.CollisionSphere("sphere", "left", [0.0] * 3, 0.1)
+        sphere.center = center
+    np.testing.assert_array_equal(sphere.center, [0.25, 0.0, 0.0])
+    assert center.calls == 1
+
+
 @pytest.mark.parametrize("argument", ["size", "pose"])
 def test_obstacle_rejects_complex_geometry_without_adding_it(
     collision_models, argument
