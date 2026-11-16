@@ -1,4 +1,5 @@
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
+#include "../FrameValidation.h"
 #include "../JointPeriod.h"
 #include "../SeedAlias.h"
 #include "SRSKinematicsInternal.h"
@@ -44,16 +45,6 @@ int AngleDirection(double angle) {
         return Direction(angle);
     // Branch labels describe a physical angle, independent of its turn count.
     return Direction(std::atan2(std::sin(angle), std::cos(angle)));
-}
-
-bool IsRigidTransform(const Eigen::Matrix4d &transform) {
-    if (!transform.allFinite() ||
-        !transform.row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9))
-        return false;
-    const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
-    return (rotation.transpose() * rotation)
-               .isApprox(Eigen::Matrix3d::Identity(), 1e-7) &&
-           std::abs(rotation.determinant() - 1.0) <= 1e-7;
 }
 
 Eigen::Matrix3d RotationX(double angle) {
@@ -564,7 +555,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     }
     solutions.clear();
     if (!IsCompatible() || seed.size() != 7 || !seed.allFinite() ||
-        !IsRigidTransform(target.GetTransform())) {
+        !detail::IsRigidTransform(target.GetTransform())) {
         return false;
     }
 
@@ -653,7 +644,7 @@ SRSSolveReport SRSKinematics::SolveDetailed(const SE3d &target,
                               method == SRSSolveMethod::ALL_CONFIGURATIONS ||
                               method == SRSSolveMethod::NEAREST_REDUNDANCY;
     if (!valid_method || seed.size() != 7 || !seed.allFinite() ||
-        !IsRigidTransform(target.GetTransform())) {
+        !detail::IsRigidTransform(target.GetTransform())) {
         report.status = SRSSolveStatus::INVALID_INPUT;
         return report;
     }

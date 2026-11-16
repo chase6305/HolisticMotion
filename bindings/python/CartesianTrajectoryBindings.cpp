@@ -1,3 +1,4 @@
+#include "BindingTransforms.h"
 #include "TrajectoryBindingHelpers.h"
 
 namespace holistic_motion::python::trajectory_detail {
@@ -11,8 +12,8 @@ class CartesianLineTrajectory {
                             const Eigen::VectorXd &max_jerk,
                             double minimum_duration,
                             const std::string &profile) {
-        ValidateTransform(start, "start");
-        ValidateTransform(end, "end");
+        RequireRigidTransform(start, "start");
+        RequireRigidTransform(end, "end");
         if (max_velocity.size() != 6 || max_acceleration.size() != 6 ||
             max_jerk.size() != 6) {
             throw std::invalid_argument(
@@ -126,20 +127,6 @@ class CartesianLineTrajectory {
         if (!std::isfinite(time))
             throw std::invalid_argument("trajectory time must be finite");
     }
-    static void ValidateTransform(const Eigen::Matrix4d &transform,
-                                  const char *name) {
-        const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
-        if (!transform.allFinite() ||
-            !transform.row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0),
-                                       1e-9) ||
-            !(rotation.transpose() * rotation)
-                 .isApprox(Eigen::Matrix3d::Identity(), 1e-7) ||
-            std::abs(rotation.determinant() - 1.0) > 1e-7) {
-            throw std::invalid_argument(std::string(name) +
-                                        " must be a finite rigid transform");
-        }
-    }
-
     std::shared_ptr<PathBezierCurve<SE3d>> path_;
     std::shared_ptr<TrajectoryBase<SE3d>> trajectory_;
     std::string profile_;
