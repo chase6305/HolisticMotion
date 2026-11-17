@@ -231,6 +231,14 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
     if (path.size() < 3 || attempts == 0)
         return;
     std::vector<double> cumulative;
+    const auto refresh_lengths = [&] {
+        if (!cumulative.empty())
+            return;
+        cumulative.resize(path.size());
+        cumulative[0] = 0.0;
+        for (std::size_t i = 1; i < path.size(); ++i)
+            cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
+    };
     // Continuous shortcuts improve geometry but introduce new vertices. Reserve
     // part of the same attempt budget to remove redundant stops before timing.
     const std::size_t random_attempts = attempts / 2;
@@ -238,12 +246,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
          ++attempt) {
         if (context.TimedOut())
             return;
-        cumulative.resize(path.size());
-        cumulative[0] = 0.0;
-        for (std::size_t i = 1; i < path.size(); ++i) {
-            cumulative[i] =
-                cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
-        }
+        refresh_lengths();
         if (!(cumulative.back() > 0.0) || !std::isfinite(cumulative.back()))
             return;
 
@@ -302,14 +305,12 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         for (std::size_t i = second_segment + 1; i < path.size(); ++i)
             append(path[i]);
         path = std::move(shortened);
+        cumulative.clear();
     }
 
     if (path.size() < 3 || context.TimedOut())
         return;
-    cumulative.resize(path.size());
-    cumulative[0] = 0.0;
-    for (std::size_t i = 1; i < path.size(); ++i)
-        cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
+    refresh_lengths();
     if (!std::isfinite(cumulative.back()))
         return;
 
