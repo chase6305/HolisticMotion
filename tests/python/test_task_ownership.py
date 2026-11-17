@@ -168,3 +168,30 @@ def test_joint_costs_read_custom_mapping_values_before_advancing():
         "first": 2.0,
         "second": 3.0,
     }
+
+
+def test_joint_costs_do_not_compare_names_while_capturing_entries():
+    comparisons = []
+    armed = False
+
+    class Name(str):
+        def __hash__(self):
+            return 0
+
+        def __eq__(self, other):
+            if armed:
+                comparisons.append(True)
+                if len(comparisons) > 1:
+                    raise RuntimeError("unexpected repeated name comparison")
+            return str.__eq__(self, other)
+
+    names = [Name(str(index)) for index in range(16)]
+    source = {name: float(index) for index, name in enumerate(names)}
+    for name in names[:-2]:
+        del source[name]
+    armed = True
+
+    task = PostureTask(joint_costs=source)
+    assert comparisons == [True]
+    assert list(map(str, task.joint_costs)) == ["14", "15"]
+    assert list(task.joint_costs.values()) == [14.0, 15.0]

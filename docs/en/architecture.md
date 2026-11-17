@@ -91,7 +91,7 @@ that model's mutable workspace. Result objects retain the request's `JointSpace`
 snapshot. See {doc}`planning` for periodic coordinate handling and callback
 lifetimes.
 
-Sampling reuses one uniform-sample vector per search and the difference vector
+Sampling reuses one uniform sample vector per search and the difference vector
 for each interpolation result. Shortcut cumulative lengths are reused while the
 path is unchanged, with deadline checks kept before each attempt.
 

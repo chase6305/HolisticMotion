@@ -20,7 +20,7 @@ def _joint_costs(value, name: str) -> Mapping[str, float]:
         raise TypeError(f"{name} must be a mapping of joint names to costs")
     result = {}
     # Capture built-in entries before numeric hooks; custom mappings stay incremental.
-    items = value.copy().items() if type(value) is dict else value.items()
+    items = tuple(value.items()) if type(value) is dict else value.items()
     for joint, cost in items:
         if not isinstance(joint, str) or not joint:
             raise ValueError(f"{name} must use non-empty joint names")
