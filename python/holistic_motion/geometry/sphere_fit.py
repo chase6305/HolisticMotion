@@ -34,7 +34,9 @@ def _validated_sphere_links(links) -> dict[str, tuple[SphereSpec, ...]]:
     if not isinstance(links, Mapping) or not links:
         raise ValueError("links must be a non-empty mapping")
     normalized = {}
-    for link, spheres in links.items():
+    # Custom mappings may reuse a sphere list on each lookup.
+    items = tuple(links.items()) if type(links) is dict else links.items()
+    for link, spheres in items:
         if not isinstance(link, str) or not link:
             raise ValueError("each link requires a non-empty string name")
         try:
@@ -329,7 +331,7 @@ def evaluate_sphere_fit(
 
     These metrics do not prove continuous triangle-mesh coverage.
     """
-    points = _points(sample_points, "sample_points")
+    points = _points(sample_points, "sample_points").copy()
     spheres = _validated_spheres(spheres)
     if (
         not isinstance(chunk_size, Integral)
@@ -394,7 +396,7 @@ def fit_spheres(
     broad phase but is not a proof that the continuous mesh is covered.
     """
     options = _validated_options(options)
-    interior = _points(interior_points, "interior_points")
+    interior = _points(interior_points, "interior_points").copy()
     surface = _points(surface_points, "surface_points")
     stable_distances = _requires_stable_distances(interior, surface)
     radii = _minimum_distances(

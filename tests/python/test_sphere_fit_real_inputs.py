@@ -87,6 +87,46 @@ def test_sphere_center_snapshot_precedes_radius_conversion(layout):
     assert center.flags.writeable == (layout != "readonly")
 
 
+@pytest.mark.parametrize("replacement", [np.nan, 99.0])
+def test_interior_snapshot_precedes_surface_conversion(replacement):
+    interior = np.zeros((1, 3))
+    surface = np.concatenate((np.eye(3), -np.eye(3)))
+    options = SphereFitOptions(min_radius=0.1)
+    expected = fit_spheres(interior.copy(), surface, options)
+
+    class MutatingSurface:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            interior[:] = replacement
+            return np.asarray(surface, dtype=dtype)
+
+    source = MutatingSurface()
+    actual = fit_spheres(interior, source, options)
+    assert source.calls == 1
+    np.testing.assert_array_equal(interior, np.full((1, 3), replacement))
+    assert actual == expected
+
+
+@pytest.mark.parametrize("replacement", [np.nan, 0.0])
+def test_evaluation_snapshot_precedes_sphere_iteration(replacement):
+    points = np.array([[2.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    sphere = SphereSpec((0.0, 0.0, 0.0), 1.0)
+    expected = evaluate_sphere_fit(points.copy(), [sphere])
+    calls = []
+
+    def spheres():
+        calls.append(True)
+        points[:] = replacement
+        yield sphere
+
+    actual = evaluate_sphere_fit(points, spheres())
+    assert calls == [True]
+    np.testing.assert_array_equal(points, np.full((2, 3), replacement))
+    assert actual == expected
+
+
 @pytest.mark.parametrize("entry", ["extents", "pitch", "voxels"])
 def test_trimesh_adapter_rejects_complex_inputs_before_conversion(monkeypatch, entry):
     extents = np.ones(3)
