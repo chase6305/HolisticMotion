@@ -28,6 +28,8 @@ robotics::planning::JointSpace CheckedJointSpace(const py::handle &lower, const 
 }
 
 std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
+    py::object array_owner;
+    py::handle checked = input;
     // Plain numeric matrices need only their existing bulk check. Object
     // paths and subclasses must validate the values each row exposes.
     if (py::isinstance<py::array>(input)) {
@@ -35,6 +37,12 @@ std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
         if (kind == 'c' ||
             (Py_TYPE(input.ptr()) == py::detail::npy_api::get().PyArray_Type_ && kind != 'O'))
             return CheckedRealEigen<std::vector<Eigen::VectorXd>>(input, "path");
+        if (Py_TYPE(input.ptr()) == py::detail::npy_api::get().PyArray_Type_) {
+            // Row views must see captured entries even if a scalar hook edits the parent matrix.
+            array_owner =
+                py::reinterpret_borrow<py::array>(input).attr("copy")(py::arg("order") = "K");
+            checked = array_owner;
+        }
     }
     // Custom sequences may reuse a mutable row buffer as they advance.
     if (py::isinstance<py::sequence>(input) && !PyList_CheckExact(input.ptr()) &&
@@ -57,13 +65,13 @@ std::vector<Eigen::VectorXd> CheckedJointPath(const py::handle &input) {
     std::vector<py::object> states;
     try {
         // Snapshot the sequence before a row's conversion can edit it.
-        states = py::cast<std::vector<py::object>>(input);
+        states = py::cast<std::vector<py::object>>(checked);
     } catch (const py::cast_error &) {
-        RequireRealInput(input, "path");
+        RequireRealInput(checked, "path");
         throw py::type_error("path has an invalid array shape or type");
     }
     if (states.empty())
-        RequireRealInput(input, "path");
+        RequireRealInput(checked, "path");
     std::vector<Eigen::VectorXd> result;
     result.reserve(states.size());
     for (const auto &state : states)

@@ -141,6 +141,47 @@ def test_path_query_keeps_waypoints_when_conversion_clears_caller_list(path_quer
     np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
 
 
+@pytest.mark.parametrize("hook", ["array", "float"])
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "readonly"])
+def test_path_query_captures_object_matrix_entries_before_scalar_hooks(
+    path_query, hook, layout
+):
+    if layout == "strided":
+        storage = np.zeros((6, 2), dtype=object)
+        source = storage[::2, ::2]
+        later_row = 2
+    else:
+        storage = np.zeros((3, 1), dtype=object)
+        source = storage.view()
+        later_row = 1
+    source[:, 0] = [0.0, 0.5, 1.0]
+    calls = []
+
+    def mutate():
+        storage[later_row, 0] = 1j
+        calls.append(hook)
+
+    class MutatingScalar:
+        def __array__(self, dtype=None, copy=None):
+            if hook == "array":
+                mutate()
+            return np.array(0.0, dtype=dtype)
+
+        def __float__(self):
+            if hook == "float":
+                mutate()
+            return 0.0
+
+    source[0, 0] = MutatingScalar()
+    if layout == "readonly":
+        source.setflags(write=False)
+    actual = path_query(source)
+    assert calls == [hook]
+    assert source[1, 0] == 1j
+    assert source.flags.writeable == (layout != "readonly")
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+
+
 @pytest.mark.parametrize("kind", ["sequence", "list_subclass", "array_subclass"])
 def test_path_query_reads_reused_custom_sequence_rows_before_advancing(
     path_query, kind
