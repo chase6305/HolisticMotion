@@ -91,6 +91,10 @@ that model's mutable workspace. Result objects retain the request's `JointSpace`
 snapshot. See {doc}`planning` for periodic coordinate handling and callback
 lifetimes.
 
+Sampling reuses one uniform-sample vector per search and the difference vector
+for each interpolation result. Shortcut cumulative lengths are reused while the
+path is unchanged, with deadline checks kept before each attempt.
+
 ## Python execution boundary
 
 Eigen inputs are normalized and checked for real-valued data before copying into
@@ -105,6 +109,8 @@ Planning constructors share limit preparation. Coordinate updates capture the
 reference vector before converting replacement positions, and collision queries
 capture their state before later numeric conversions. Named joint-position
 dictionaries retain entry references before scalar conversion.
+Posture task construction captures entries of plain joint cost dictionaries before
+numeric conversion. Custom mappings convert each value as it is read.
 Trajectory constructors capture numeric inputs in argument order before later
 conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
 conversion path.
