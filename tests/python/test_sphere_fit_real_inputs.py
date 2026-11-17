@@ -13,6 +13,7 @@ from holistic_motion.geometry import (
     fit_spheres,
     fit_trimesh,
 )
+from optional_dependencies import tracemalloc_or_skip
 
 
 @pytest.mark.parametrize("imaginary", [0.0, 1.0])
@@ -125,6 +126,23 @@ def test_evaluation_snapshot_precedes_sphere_iteration(replacement):
     assert calls == [True]
     np.testing.assert_array_equal(points, np.full((2, 3), replacement))
     assert actual == expected
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_evaluation_workspace_stays_bounded_for_real_sample_dtypes(dtype):
+    tracemalloc = tracemalloc_or_skip()
+    points = np.zeros((100_000, 3), dtype=dtype)
+    spheres = [SphereSpec((0.0, 0.0, 0.0), 1.0)]
+    tracemalloc.start()
+    try:
+        result = evaluate_sphere_fit(points, spheres)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result.sampled_coverage == 1.0
+    assert result.maximum_uncovered_distance == 0.0
+    # An owned float64 sample array fits; two complete copies exceed this budget.
+    assert peak < 3 * 1024 * 1024
 
 
 @pytest.mark.parametrize("entry", ["extents", "pitch", "voxels"])

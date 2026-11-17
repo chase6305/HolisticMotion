@@ -71,11 +71,11 @@ def _validated_options(options) -> SphereFitOptions:
     return options
 
 
-def _points(value, name: str, *, allow_empty: bool = False) -> np.ndarray:
-    points = real_array(value, name=name)
+def _points(value, name: str, *, copy: bool = False) -> np.ndarray:
+    points = real_array(value, name=name, copy=copy)
     if points.ndim != 2 or points.shape[1:] != (3,):
         raise ValueError(f"{name} must have shape (N, 3)")
-    if not allow_empty and len(points) == 0:
+    if len(points) == 0:
         raise ValueError(f"{name} must not be empty")
     if not np.all(np.isfinite(points)):
         raise ValueError(f"{name} must contain finite values")
@@ -331,7 +331,7 @@ def evaluate_sphere_fit(
 
     These metrics do not prove continuous triangle-mesh coverage.
     """
-    points = _points(sample_points, "sample_points").copy()
+    points = _points(sample_points, "sample_points", copy=True)
     spheres = _validated_spheres(spheres)
     if (
         not isinstance(chunk_size, Integral)
@@ -396,7 +396,7 @@ def fit_spheres(
     broad phase but is not a proof that the continuous mesh is covered.
     """
     options = _validated_options(options)
-    interior = _points(interior_points, "interior_points").copy()
+    interior = _points(interior_points, "interior_points", copy=True)
     surface = _points(surface_points, "surface_points")
     stable_distances = _requires_stable_distances(interior, surface)
     radii = _minimum_distances(
