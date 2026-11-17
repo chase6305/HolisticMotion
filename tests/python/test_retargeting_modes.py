@@ -1,6 +1,10 @@
+from collections.abc import Mapping
+
 import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import (
+    CuroboRetargetingSolver,
+    PinkRetargetingSolver,
     PinocchioRetargetingSolver,
     RetargetingMode,
     RetargetingModeManager,
@@ -412,3 +416,67 @@ def test_pinocchio_solver_reports_unreachable_fixed_model_without_crashing(tmp_p
     assert not result.success
     assert result.iterations == 1
     assert result.residual == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_frame_map_is_captured_before_joint_group_conversion(
+    tmp_path, solver_type, action
+):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    frames = {"left_hand": "base"}
+    calls = []
+
+    class JointNames:
+        def __iter__(self):
+            calls.append(True)
+            if action == "clear":
+                frames.clear()
+            else:
+                frames["left_hand"] = "missing"
+            return iter(())
+
+    solver = solver_type(urdf, frames, {"left_arm": JointNames()})
+
+    assert calls == [True]
+    assert solver.frames == {"left_hand": "base"}
+    solver.prepare("left_arm")
+    if action == "clear":
+        assert not frames
+    else:
+        assert frames == {"left_hand": "missing"}
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+def test_frame_map_is_read_once_before_validation(tmp_path, solver_type):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    calls = []
+
+    class Frames(Mapping):
+        def __iter__(self):
+            return iter(("left_hand",))
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, name):
+            if name != "left_hand":
+                raise KeyError(name)
+            calls.append(name)
+            return "base" if len(calls) == 1 else "missing"
+
+    solver = solver_type(urdf, Frames(), {"left_arm": []})
+
+    assert calls == ["left_hand"]
+    assert solver.frames == {"left_hand": "base"}
+    solver.prepare("left_arm")

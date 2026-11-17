@@ -246,6 +246,7 @@ class _RetargetingSession:
             raise ValueError("max_iterations must be positive")
         if not isinstance(frames, Mapping):
             raise TypeError("frames must be a mapping")
+        frames = dict(frames)
         if any(
             not isinstance(name, str)
             or not name
@@ -278,7 +279,7 @@ class _RetargetingSession:
 
         self.model = self.pin.buildModelFromXML(normalized_urdf_xml(self.urdf_path))
         self.data = self.model.createData()
-        self.frames = MappingProxyType(dict(frames))
+        self.frames = MappingProxyType(frames)
         self.joint_groups = MappingProxyType(normalized_groups)
         self.mode_manager = mode_manager or RetargetingModeManager()
         self.damping = float(damping)

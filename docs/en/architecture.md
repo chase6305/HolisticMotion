@@ -63,6 +63,8 @@ than inheriting one another's algorithms. Each creates its own numerical
 workspaces; Curobo reuses Pink's optimizer and adds multi-seed scheduling.
 Pink reuses frame error arrays within each task evaluation; separate evaluations
 own their scratch storage.
+Sessions capture and validate frame mappings once before converting joint-group
+sequences, so later conversion cannot replace the prepared frame selection.
 
 SRS preparation runs when the model changes, rather than repeating canonical
 geometry discovery inside each solve. Scalar built-in FK traverses directly to
