@@ -698,6 +698,8 @@ class PinkRetargetingSolver(_RetargetingSession):
         target_residuals = {} if compute_metrics else None
         position_convergence_residual = 0.0
         orientation_convergence_residual = 0.0
+        error = np.empty(6)
+        weighted_error = np.empty(6)
         for name in self._mode_plan().targets:
             task = self.frame_tasks[name]
             desired = desired_poses[name]
@@ -707,7 +709,6 @@ class PinkRetargetingSolver(_RetargetingSession):
             # translational part of log6 includes rotation-dependent coupling,
             # so masking its angular components does not disable orientation.
             # Both errors use current-frame axes, matching the LOCAL Jacobian.
-            error = np.empty(6)
             error[:3] = relative.translation
             error[3:] = self.pin.log3(relative.rotation)
             if compute_metrics:
@@ -727,7 +728,7 @@ class PinkRetargetingSolver(_RetargetingSession):
                     else float(np.linalg.norm(error[3:][task.orientation_cost > 0.0])),
                 )
             weights = frame_weights[name]
-            weighted_error = weights * error
+            np.multiply(weights, error, out=weighted_error)
             error_squared = float(weighted_error @ weighted_error)
             weighted_error_squared += error_squared
             task_objective += 0.5 * task.gain * error_squared
