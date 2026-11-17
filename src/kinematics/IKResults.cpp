@@ -113,7 +113,7 @@ bool IkRtn::SortMinMovement(const Eigen::VectorXd &target_joints, std::vector<do
         std::any_of(dist.begin(), dist.end(), [](double value) { return !std::isfinite(value); }))
         return fail();
 
-    if (ik_joints.size() > 1) {
+    if (ik_joints.size() > 1 && !std::is_sorted(dist.begin(), dist.end())) {
         std::vector<std::size_t> indices(ik_joints.size());
         std::iota(indices.begin(), indices.end(), 0);
         std::sort(indices.begin(), indices.end(), [&dist](std::size_t first, std::size_t second) {
