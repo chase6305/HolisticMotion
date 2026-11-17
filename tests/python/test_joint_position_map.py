@@ -132,6 +132,29 @@ def test_model_adapter_rejects_ambiguous_names_outside_the_selected_chain():
         JointPositionMap.from_model(model, ["selected"])
 
 
+@pytest.mark.parametrize("replacement", [0, 3])
+def test_model_dimensions_are_captured_before_joint_name_iteration(replacement):
+    model = SimpleNamespace(
+        nq=1,
+        nv=1,
+        joint_coordinates=[JointCoordinate("slide", 0, 1, 0, 1)],
+    )
+    calls = []
+
+    def names():
+        calls.append(True)
+        model.nq = model.nv = replacement
+        yield "slide"
+
+    mapping = JointPositionMap.from_model(model, names())
+    assert calls == [True]
+    assert (model.nq, model.nv) == (replacement, replacement)
+    assert mapping == JointPositionMap(1, 1, model.joint_coordinates)
+    np.testing.assert_array_equal(
+        mapping.configuration_with_joint_positions([0.0], [0.5]), [0.5]
+    )
+
+
 @pytest.mark.parametrize("count", [1, 2, 7])
 def test_mapping_preserves_subnormal_phases_with_strict_numpy_errors(count):
     mapping = JointPositionMap(
