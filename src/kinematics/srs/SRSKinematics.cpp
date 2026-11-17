@@ -236,13 +236,12 @@ bool WrapToJointLimits(double value, const JointNode &node, double reference,
 }
 
 double WeightedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
-                               const std::vector<JointNode> &nodes) {
+                               const std::array<double, 7> &periods) {
     // The elbow redundancy itself should not dominate branch selection.
     static const std::array<double, 7> weights{2.0, 2.0, 2.0, 0.0, 1.0, 1.0, 1.0};
     double result = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        const double delta =
-            std::remainder(lhs[i] - rhs[i], detail::CoordinatePeriod(nodes[i]));
+        const double delta = std::remainder(lhs[i] - rhs[i], periods[static_cast<std::size_t>(i)]);
         result += weights[static_cast<std::size_t>(i)] * delta * delta;
     }
     return result;
@@ -626,11 +625,15 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         }
     }
 
-    std::sort(solutions.begin(), solutions.end(),
-              [&](const auto &lhs, const auto &rhs) {
-                  return WeightedDistanceSquared(lhs, seed, joint_nodes_) <
-                         WeightedDistanceSquared(rhs, seed, joint_nodes_);
-              });
+    if (solutions.size() > 1) {
+        std::array<double, 7> periods;
+        for (std::size_t joint = 0; joint < periods.size(); ++joint)
+            periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
+        std::sort(solutions.begin(), solutions.end(), [&](const auto &lhs, const auto &rhs) {
+            return WeightedDistanceSquared(lhs, seed, periods) <
+                   WeightedDistanceSquared(rhs, seed, periods);
+        });
+    }
     return !solutions.empty();
 }
 

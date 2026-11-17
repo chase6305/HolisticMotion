@@ -52,7 +52,12 @@ bool IkRtn::RemoveRepeatedIK(const double &eps) {
             }
             return false;
         };
-        std::sort(ik_joints.begin(), ik_joints.end(), lexicographic);
+        // Equal coordinates retain the existing sort's choice of signed zero.
+        if (std::adjacent_find(ik_joints.begin(), ik_joints.end(),
+                               [&](const auto &first, const auto &second) {
+                                   return !lexicographic(first, second);
+                               }) != ik_joints.end())
+            std::sort(ik_joints.begin(), ik_joints.end(), lexicographic);
         if (tolerance == 0.0) {
             ik_joints.erase(
                 std::unique(ik_joints.begin(), ik_joints.end(),
