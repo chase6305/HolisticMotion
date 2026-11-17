@@ -190,11 +190,15 @@ class SupportPolygonTask:
             )
         normals = np.column_stack((-directions[:, 1], directions[:, 0]))
         relative = relative / np.max(np.abs(relative))
-        all_edge_distances = np.einsum(
-            "evi,ei->ev", relative[None, :, :] - relative[:, None, :], normals
-        )
-        if np.any(all_edge_distances < -1e-12):
-            raise ValueError("support polygon must be strictly convex and ordered")
+        # Check vertex blocks to bound temporary storage for large polygons.
+        for start in range(0, len(relative), 128):
+            edge_distances = np.einsum(
+                "evi,ei->ev",
+                relative[None, start : start + 128, :] - relative[:, None, :],
+                normals,
+            )
+            if np.any(edge_distances < -1e-12):
+                raise ValueError("support polygon must be strictly convex and ordered")
         with np.errstate(over="ignore", invalid="ignore"):
             offsets = np.sum(normals * vertices, axis=1)
         if not np.isfinite(offsets).all():
