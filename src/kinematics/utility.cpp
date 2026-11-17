@@ -114,23 +114,19 @@ std::string _report(const AgileDiana7Parameters &params) {
 }
 
 std::string _report(const IkRtn &report) {
+    const auto solution_count = report.ik_joints.size();
     std::string res;
     res += "\t IkRtn: \n";
     res += fmt::format("\t - success: {0} \n"
                        "\t - ik number: {1}\n"
                        "\t - ik joints:\n"
                        "\t   [\n",
-                       report.success, report.ik_number);
-    for (int i = 0; i < report.ik_number; ++i) {
-        if (i == (report.ik_number - 1))
-            res +=
-                fmt::format("\t\t[{0}]\n", fmt::join(report.ik_joints[i], ","));
-        else {
-            res += fmt::format("\t\t[{0}],\n",
-                               fmt::join(report.ik_joints[i], ","));
-        }
+                       report.success, solution_count);
+    for (std::size_t i = 0; i < solution_count; ++i) {
+        res += fmt::format("\t\t[{}]{}\n", fmt::join(report.ik_joints[i], ","),
+                           i + 1 == solution_count ? "" : ",");
     }
-    res += fmt::format("\t   ]");
+    res += "\t   ]";
     return res;
 }
 
@@ -322,7 +318,6 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
     std::vector<Eigen::VectorXd> filtered;
     std::vector<std::vector<double>> choices;
     std::vector<std::size_t> indices;
-    Eigen::VectorXd candidate;
     for (auto &solution : ik_joints) {
         if (solution.size() != dof || !solution.allFinite())
             continue;
@@ -351,7 +346,6 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
         if (choices.empty()) {
             choices.resize(dof);
             indices.resize(dof);
-            candidate.resize(dof);
         }
         bool feasible = true;
         for (int joint = 0; joint < dof; ++joint) {
@@ -391,12 +385,14 @@ bool IkRtn::GetLimitsIK(const std::vector<JointNode>& joint_nodes,
             combinations *= values.size();
         }
         if (combinations > remaining) return fail();  // Also covers zero DOF.
-        filtered.reserve(filtered.size() + combinations);
+        const auto first = filtered.size();
+        filtered.resize(first + combinations);
         std::fill(indices.begin(), indices.end(), 0);
         for (std::size_t row = 0; row < combinations; ++row) {
+            auto &candidate = filtered[first + row];
+            candidate.resize(dof);
             for (int joint = 0; joint < dof; ++joint)
                 candidate[joint] = choices[joint][indices[joint]];
-            filtered.push_back(candidate);
             // Mixed-radix counting avoids recursion and intermediate products.
             for (int joint = dof; joint-- > 0;) {
                 if (++indices[joint] < choices[joint].size()) break;

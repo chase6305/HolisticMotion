@@ -173,6 +173,9 @@ replaces console dispatch while leaving explicitly enabled file output independe
 `ResetRecordFunction()` restores the previous text sink; `SetPrintFunction()`
 selects a text sink and clears structured dispatch.
 
+The C++ `_report(IkRtn)` helper formats the stored solutions and their actual
+count without changing the result, even when the public `ik_number` cache is stale.
+
 Configuration is synchronized; callbacks run outside the configuration lock.
 Custom C++ callbacks must support concurrent calls. File output uses a private rotating spdlog logger (10 MiB,
 one backup) and does not register or modify application spdlog loggers. Enabling

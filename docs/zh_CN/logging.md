@@ -151,6 +151,9 @@ C++ 单例不会持有 Python 对象，桥接在 `atexit` 时断开；应用仍�
 `ResetRecordFunction()` 恢复此前文本 sink；`SetPrintFunction()` 选择文本
 sink 并清除结构化回调。
 
+C++ 的 `_report(IkRtn)` 根据实际存储的解和数量生成报告；即使公开的
+`ik_number` 缓存已过期，也不会修改结果对象。
+
 配置受同步保护，回调在配置锁外调用；自定义 C++ 回调需支持并发调用。
 文件使用独立的 spdlog 轮转 logger
 （10 MiB、一个备份），不注册或修改应用的 spdlog logger。重复启用不增加

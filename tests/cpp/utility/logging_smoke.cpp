@@ -97,6 +97,17 @@ void CheckKinematicsDiagnostics(Logger &logger) {
                 "\t IkRtn: \n\t - success: true \n\t - ik number: 1\n"
                 "\t - ik joints:\n\t   [\n\t\t[1,-2]\n\t   ]",
             "IK result report");
+    result.PushBack(Eigen::Vector2d(3.0, 4.0));
+    const auto expected_report = _report(result);
+    for (int cached_count : {-1, 0, 1, 3, std::numeric_limits<int>::max()}) {
+        result.ik_number = cached_count;
+        Require(_report(result) == expected_report, "IK report must use actual solution storage");
+        Require(result.ik_number == cached_count, "IK report must not change cached metadata");
+    }
+    result.ik_joints.clear();
+    Require(_report(result) == "\t IkRtn: \n\t - success: true \n\t - ik number: 0\n"
+                               "\t - ik joints:\n\t   [\n\t   ]",
+            "empty IK report with stale metadata");
 
     records.clear();
     JointFilterManager filter(2);
