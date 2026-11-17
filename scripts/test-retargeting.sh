@@ -23,7 +23,7 @@ exec "${PYTHON_EXECUTABLE}" -m pytest \
     tests/python/test_anisotropic_frame_jacobian.py \
     tests/python/test_support_polygon_geometry.py \
     tests/python/test_lazy_retargeting_seeds.py \
-    tests/python/test_task_gains.py \
+    tests/python/test_task_*.py \
     tests/python/test_disabled_balance_tasks.py \
     tests/python/test_upper_body_retargeting.py \
     tests/python/test_curobo_retargeting.py \

@@ -19,7 +19,9 @@ def _joint_costs(value, name: str) -> Mapping[str, float]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping of joint names to costs")
     result = {}
-    for joint, cost in value.items():
+    # Capture built-in entries before numeric hooks; custom mappings stay incremental.
+    items = value.copy().items() if type(value) is dict else value.items()
+    for joint, cost in items:
         if not isinstance(joint, str) or not joint:
             raise ValueError(f"{name} must use non-empty joint names")
         cost = _finite_scalar(cost, name)
