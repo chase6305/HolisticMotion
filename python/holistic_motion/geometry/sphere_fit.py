@@ -544,7 +544,7 @@ def fit_trimesh(
         raise ValueError("pitch must be finite and positive")
 
     voxels = mesh.voxelized(pitch).fill()
-    interior = real_array(voxels.points, name="voxel points")
+    interior = real_array(voxels.points, name="voxel points", copy=True)
     if len(interior) == 0:
         raise ValueError("mesh voxelization produced no interior samples")
     # Use the module-level sampler because it exposes an explicit seed across

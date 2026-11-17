@@ -1,4 +1,4 @@
-"""Sphere fitting must reject complex geometry before float conversion."""
+"""Real geometry, input ownership, and bounded sphere-fit conversion."""
 
 import sys
 from types import SimpleNamespace
@@ -143,6 +143,34 @@ def test_evaluation_workspace_stays_bounded_for_real_sample_dtypes(dtype):
     assert result.maximum_uncovered_distance == 0.0
     # An owned float64 sample array fits; two complete copies exceed this budget.
     assert peak < 3 * 1024 * 1024
+
+
+@pytest.mark.parametrize("replacement", [np.nan, 99.0])
+def test_trimesh_adapter_captures_voxels_before_surface_sampling(
+    monkeypatch, replacement
+):
+    interior = np.zeros((1, 3))
+    surface = np.concatenate((np.eye(3), -np.eye(3)))
+    expected = fit_spheres(interior.copy(), surface)
+    voxels = SimpleNamespace(points=interior)
+    voxels.fill = lambda: voxels
+    mesh = SimpleNamespace(extents=np.ones(3), voxelized=lambda _pitch: voxels)
+    calls = []
+
+    def sample_surface(_mesh, count, *, seed):
+        calls.append((count, seed))
+        interior[:] = replacement
+        return surface, None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "trimesh",
+        SimpleNamespace(sample=SimpleNamespace(sample_surface=sample_surface)),
+    )
+    actual = fit_trimesh(mesh, pitch=0.1, surface_samples=6, random_seed=7)
+    assert calls == [(6, 7)]
+    np.testing.assert_array_equal(interior, np.full((1, 3), replacement))
+    assert actual == expected
 
 
 @pytest.mark.parametrize("entry", ["extents", "pitch", "voxels"])
