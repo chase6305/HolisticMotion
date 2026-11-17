@@ -9,6 +9,7 @@ from holistic_motion.kit.retargeting import (
     RetargetingMode,
     RetargetingModeManager,
     RetargetingModeSpec,
+    RetargetingResult,
     RetargetingTarget,
 )
 from optional_dependencies import python_pinocchio_or_skip
@@ -480,3 +481,63 @@ def test_frame_map_is_read_once_before_validation(tmp_path, solver_type):
     assert calls == ["left_hand"]
     assert solver.frames == {"left_hand": "base"}
     solver.prepare("left_arm")
+
+
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_result_captures_residual_entries_before_scalar_conversion(action):
+    source = {}
+    calls = []
+
+    class Residual:
+        def __float__(self):
+            calls.append(True)
+            if action == "clear":
+                source.clear()
+            else:
+                source["head"] = (-1.0, -1.0)
+            return 1.0
+
+    source.update(left_hand=(Residual(), 2.0), head=(3.0, 4.0))
+    result = RetargetingResult(
+        [0.0],
+        True,
+        1,
+        0.0,
+        0.0,
+        RetargetingMode.LEFT_ARM,
+        target_residuals=source,
+    )
+
+    assert calls == [True]
+    assert list(result.target_residuals) == ["left_hand", "head"]
+    assert result.target_residuals == {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}
+    with pytest.raises(TypeError):
+        result.target_residuals["left_hand"] = (5.0, 6.0)
+
+
+def test_result_reads_custom_residual_mapping_before_advancing():
+    class Residuals(Mapping):
+        def __init__(self):
+            self.pair = [0.0, 0.0]
+
+        def __iter__(self):
+            return iter(("left_hand", "head"))
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, name):
+            self.pair[:] = {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}[name]
+            return self.pair
+
+    result = RetargetingResult(
+        [0.0],
+        True,
+        1,
+        0.0,
+        0.0,
+        RetargetingMode.LEFT_ARM,
+        target_residuals=Residuals(),
+    )
+
+    assert result.target_residuals == {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}

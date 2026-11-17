@@ -120,10 +120,14 @@ class RetargetingResult:
             raise TypeError("result mode must be RetargetingMode")
         if not isinstance(self.success, (bool, np.bool_)):
             raise TypeError("result success must be boolean")
-        if not isinstance(self.target_residuals, Mapping):
+        target_residuals = self.target_residuals
+        if not isinstance(target_residuals, Mapping):
             raise TypeError("target_residuals must be a mapping")
         residuals = {}
-        for name, value in self.target_residuals.items():
+        items = target_residuals.items()
+        if type(target_residuals) is dict:
+            items = tuple(items)
+        for name, value in items:
             if not isinstance(name, str) or not name:
                 raise ValueError("target residual names must be non-empty strings")
             try:
