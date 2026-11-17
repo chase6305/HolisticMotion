@@ -183,14 +183,15 @@ def test_path_query_reads_reused_custom_sequence_rows_before_advancing(
     rows = (
         ReusedRows()
         if kind == "sequence"
-        else ReusedList([None] * 3)
+        else ReusedList([[0.0], [0.5], [1.0]])
         if kind == "list_subclass"
         else np.zeros((3, 1)).view(ReusedArray)
     )
     np.testing.assert_array_equal(path_query(rows), [[0.0], [0.5], [1.0]])
 
 
-def test_path_query_keeps_standard_caster_sequence_iteration_policy(path_query):
+@pytest.mark.parametrize("kind", ["sequence", "list_subclass"])
+def test_path_query_keeps_standard_caster_sequence_iteration_policy(path_query, kind):
     class Values:
         def __init__(self, rows):
             self.rows = rows
@@ -209,11 +210,20 @@ def test_path_query_keeps_standard_caster_sequence_iteration_policy(path_query):
                 value = 0.9 - index / 10
                 yield [value] if self.rows else str(value)
 
-    reference = hm.JointSpace([0.0] * 6, [1.0] * 6, Values(rows=False))
+    class ValueList(Values, list):
+        def __init__(self, rows):
+            Values.__init__(self, rows)
+            list.__init__(
+                self,
+                ([0.65 - i / 10] if rows else str(0.65 - i / 10) for i in range(6)),
+            )
+
+    values = Values if kind == "sequence" else ValueList
+    reference = hm.JointSpace([0.0] * 6, [1.0] * 6, values(rows=False))
     expected = np.asarray([float(name) for name in reference.joint_names]).reshape(
         -1, 1
     )
-    np.testing.assert_array_equal(path_query(Values(rows=True)), expected)
+    np.testing.assert_array_equal(path_query(values(rows=True)), expected)
 
 
 @pytest.mark.parametrize(
