@@ -483,6 +483,44 @@ def test_frame_map_is_read_once_before_validation(tmp_path, solver_type):
     solver.prepare("left_arm")
 
 
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_solver_uses_the_target_value_it_validates(tmp_path, solver_type, wrapped):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    solver = solver_type(urdf, {"left_hand": "base"}, {"left_arm": []})
+    solver.prepare("left_arm")
+    pose = np.eye(4)
+    first = RetargetingTarget(pose) if wrapped else pose
+    replacement = pose.copy()
+    replacement[0, 3] = 1.0
+
+    class Targets(Mapping):
+        reads = 0
+
+        def __iter__(self):
+            return iter(("left_hand",))
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, name):
+            if name != "left_hand":
+                raise KeyError(name)
+            self.reads += 1
+            return first if self.reads == 1 else replacement
+
+    result = solver.solve(Targets())
+
+    assert result.success
+    assert result.residual == 0.0
+    assert result.configuration.shape == (0,)
+
+
 @pytest.mark.parametrize("action", ["clear", "replace"])
 def test_result_captures_residual_entries_before_scalar_conversion(action):
     source = {}
