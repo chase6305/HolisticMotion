@@ -1,12 +1,34 @@
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <new>
 #include <vector>
 
 #include <Eigen/SVD>
 
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
 #include "holistic_motion/planning/NullSpacePlanner.h"
+
+namespace allocation_audit {
+thread_local bool active = false;
+constexpr std::size_t maximum_request = 1024 * 1024;
+void *Allocate(std::size_t size) {
+    if (active && size > maximum_request)
+        throw std::bad_alloc();
+    if (auto *value = std::malloc(std::max<std::size_t>(size, 1)))
+        return value;
+    throw std::bad_alloc();
+}
+} // namespace allocation_audit
+void *operator new(std::size_t size) { return allocation_audit::Allocate(size); }
+void *operator new[](std::size_t size) { return allocation_audit::Allocate(size); }
+void operator delete(void *value) noexcept { std::free(value); }
+void operator delete[](void *value) noexcept { std::free(value); }
+void operator delete(void *value, std::size_t) noexcept { std::free(value); }
+void operator delete[](void *value, std::size_t) noexcept { std::free(value); }
 
 using namespace holistic_motion::robotics;
 
@@ -32,6 +54,10 @@ int main() {
     std::vector<Eigen::VectorXd> normal_path, scaled_path;
     if (!planner.Plan(nominal, direction, 2, 0.01, normal_path))
         return 6;
+    std::vector<Eigen::VectorXd> long_path;
+    if (!planner.Plan(nominal, direction, 33, 0.001, long_path) || long_path.size() != 34 ||
+        !long_path.front().isApprox(nominal, 0.0))
+        return 22;
     for (bool alias_start : {false, true}) {
         for (bool alias_direction : {false, true}) {
             std::vector<Eigen::VectorXd> reused{nominal, direction};
@@ -53,10 +79,24 @@ int main() {
             if (!normal_path[i].isApprox(scaled_path[i], 1e-11))
                 return 7;
     }
-    if (planner.Plan(nominal, direction, 2, 1e-300, scaled_path) ||
-        !scaled_path.empty()) {
+    if (planner.Plan(nominal, direction, 2, 1e-300, scaled_path) || !scaled_path.empty()) {
         std::cerr << "null-space planner accepted an unrepresentable step\n";
         return 11;
+    }
+    // Reject huge test allocations before malloc; never request tens of GiB.
+    allocation_audit::active = true;
+    bool large_budget_failed_normally = false;
+    try {
+        large_budget_failed_normally =
+            !planner.Plan(nominal, direction, std::numeric_limits<int>::max(), 1e-300,
+                          scaled_path) &&
+            scaled_path.empty();
+    } catch (const std::bad_alloc &) {
+    }
+    allocation_audit::active = false;
+    if (!large_budget_failed_normally) {
+        std::cerr << "null-space planner reserved an impossible step budget before failure\n";
+        return 21;
     }
     Eigen::VectorXd outside = nominal;
     outside[0] += 2.0 * std::acos(-1.0);

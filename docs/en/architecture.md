@@ -76,6 +76,8 @@ SRS null-space projection uses a fixed-size Jacobian and SVD workspace on the
 stack; it retains no per-solver mutable cache. `GetAllFK()`
 retains its full-frame contract, including virtual dispatch for custom numerical
 subclasses.
+Null-space path storage grows with accepted steps, so a large step budget does
+not reserve the entire path before the first attempt.
 
 `CollisionModel::Clone()` / Python `clone()` creates a deep in-memory snapshot
 of the current geometry, obstacles and pair selection, with fresh FK and
