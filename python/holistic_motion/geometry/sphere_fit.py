@@ -353,13 +353,18 @@ def _evaluate_point_sets(
         stable_points = (
             _requires_stable_distances(points, centers) if stable is None else stable
         )
-        for start in range(0, len(points), chunk_size):
-            chunk = points[start : start + chunk_size]
-            gaps = _minimum_distances(
-                chunk, centers, chunk_size, radii, stable=stable_points
-            )
+        gap_buffer = np.empty(min(len(points), chunk_size))
+        for _, offset, distances in _distance_tiles(
+            points, centers, chunk_size, stable=stable_points, radii=radii
+        ):
+            gaps = gap_buffer[: len(distances)]
+            if offset == 0:
+                gaps.fill(np.inf)
+            np.minimum(gaps, np.min(distances, axis=1), out=gaps)
+            if offset + distances.shape[1] != len(centers):
+                continue
             np.maximum(gaps, 0.0, out=gaps)
-            new_count = count + len(chunk)
+            new_count = count + len(gaps)
             # Combine block means without retaining all gaps or summing a
             # potentially very large number of distances at once.
             maximum = float(np.max(gaps))
@@ -371,7 +376,7 @@ def _evaluate_point_sets(
                 block_mean = float(np.mean(gaps / maximum)) * maximum
             else:
                 block_mean = float(np.mean(gaps))
-            mean_gap += (block_mean - mean_gap) * (len(chunk) / new_count)
+            mean_gap += (block_mean - mean_gap) * (len(gaps) / new_count)
             count = new_count
             covered += int(np.count_nonzero(gaps <= 1e-12))
             maximum_gap = max(maximum_gap, maximum)
