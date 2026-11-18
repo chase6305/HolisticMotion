@@ -67,9 +67,11 @@ Sessions capture and validate frame mappings once before converting joint-group
 sequences, so later conversion cannot replace the prepared frame selection.
 
 SRS preparation runs when the model changes, rather than repeating canonical
-geometry discovery inside each solve. Scalar built-in FK traverses directly to
-the terminal pose without allocating the complete frame sequence. Built-in
-Jacobian queries use the same traversal and fill the caller's matrix directly.
+geometry discovery inside each solve. Candidate comparisons and ranking share
+joint periods prepared within that query; duplicate checks also reuse axis norms.
+Scalar built-in FK traverses directly to the terminal pose without allocating the
+complete frame sequence. Built-in Jacobian queries use the same traversal and
+fill the caller's matrix directly.
 SRS null-space projection uses a fixed-size Jacobian and SVD workspace on the
 stack; it retains no per-solver mutable cache. `GetAllFK()`
 retains its full-frame contract, including virtual dispatch for custom numerical
@@ -115,6 +117,8 @@ capture their state before later numeric conversions. Named joint-position
 dictionaries retain entry references before scalar conversion.
 Posture task construction captures entries of plain joint cost dictionaries before
 numeric conversion. Custom mappings convert each value as it is read.
+Retargeting captures selected entries of plain target dictionaries before pose
+conversion. Custom target mappings consume each pose before the next lookup.
 Trajectory constructors capture numeric inputs in argument order before later
 conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
 conversion path.
