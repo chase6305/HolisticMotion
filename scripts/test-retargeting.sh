@@ -18,17 +18,13 @@ exec "${PYTHON_EXECUTABLE}" -m pytest \
     tests/python/test_frame_task_errors.py \
     tests/python/test_immobile_retargeting.py \
     tests/python/test_fixed_collision_coordinates.py \
-    tests/python/test_retargeting_modes.py \
+    tests/python/test_retargeting_*.py \
     tests/python/test_collision_gradient.py \
     tests/python/test_anisotropic_frame_jacobian.py \
     tests/python/test_support_polygon_geometry.py \
-    tests/python/test_retargeting_failure_history.py \
     tests/python/test_lazy_retargeting_seeds.py \
-    tests/python/test_task_gains.py \
+    tests/python/test_task_*.py \
     tests/python/test_disabled_balance_tasks.py \
-    tests/python/test_retargeting_step_scale.py \
-    tests/python/test_retargeting_qp_scaling.py \
-    tests/python/test_retargeting_box_qp.py \
     tests/python/test_upper_body_retargeting.py \
     tests/python/test_curobo_retargeting.py \
     tests/python/test_classic_torso_first_example.py \

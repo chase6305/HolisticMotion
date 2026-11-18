@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -94,6 +96,106 @@ def test_native_kinematics_preserves_real_object_inputs(solver_data):
     np.testing.assert_allclose(solver.forward(joints.astype(object)), target)
     recovered = solver.inverse(target.astype(object), joints.astype(object))
     np.testing.assert_allclose(solver.forward(recovered), target, atol=1e-7)
+
+
+@pytest.mark.parametrize("later_dtype", [float, complex])
+def test_native_fk_uses_the_validated_array_conversion(solver_data, later_dtype):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+
+    class ChangingArray:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            values = joints if self.calls == 1 else (joints + 0.1).astype(later_dtype)
+            return np.array(values, dtype=dtype)
+
+    values = ChangingArray()
+    np.testing.assert_allclose(solver.forward(values), expected, atol=1e-12)
+    assert values.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["list_subclass", "array_subclass"])
+def test_native_fk_validates_the_array_representation(solver_data, kind):
+    solver, joints = solver_data
+    if kind == "list_subclass":
+
+        class ComplexList(list):
+            def __array__(self, dtype=None, copy=None):
+                return np.array(joints + 1j, dtype=dtype)
+
+        values = ComplexList(joints.tolist())
+    else:
+
+        class HiddenComplexArray(np.ndarray):
+            @property
+            def flat(self):
+                return iter(())
+
+        values = joints.astype(object).view(HiddenComplexArray)
+        values[0] = np.complex128(joints[0] + 1j)
+    with pytest.raises(TypeError, match="real"):
+        solver.forward(values)
+
+
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_native_fk_preserves_array_materialization_failure(solver_data, error_type):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+    failure = error_type("array materialization failed")
+
+    class FailingArray:
+        def __array__(self, dtype=None, copy=None):
+            raise failure
+
+    with pytest.raises(error_type) as caught:
+        solver.forward(FailingArray())
+    assert caught.value is failure
+    np.testing.assert_array_equal(solver.forward(joints), expected)
+
+
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_native_fk_preserves_object_element_conversion_failure(solver_data, error_type):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+    failure = error_type("object element conversion failed")
+
+    class FailingFloat:
+        def __float__(self):
+            raise failure
+
+    values = joints.astype(object)
+    values[0] = FailingFloat()
+    with pytest.raises(error_type) as caught:
+        solver.forward(values)
+    assert caught.value is failure
+    np.testing.assert_array_equal(solver.forward(joints), expected)
+
+
+def test_native_fk_captures_object_entries_before_validation(solver_data):
+    solver, joints = solver_data
+    expected = solver.forward(joints)
+    values = joints.astype(object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            values[0] = np.complex128(joints[0] + 0.4 + 1j)
+            return np.asarray(joints[-1], dtype=dtype)
+
+        def __float__(self):
+            return float(joints[-1])
+
+    values[-1] = ReplacingScalar()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        actual = solver.forward(values)
+    np.testing.assert_array_equal(actual, expected)
+    assert not emitted
 
 
 def test_native_kinematics_rejects_complex_lists(solver_data):

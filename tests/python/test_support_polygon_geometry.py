@@ -10,7 +10,7 @@ from holistic_motion.kit.retargeting import (
     RetargetingModeManager,
     SupportPolygonTask,
 )
-from optional_dependencies import python_pinocchio_or_skip
+from optional_dependencies import python_pinocchio_or_skip, tracemalloc_or_skip
 
 
 @pytest.mark.parametrize("dtype", [np.complex64, np.complex128, object])
@@ -46,6 +46,46 @@ def test_crossed_support_polygon_rejected_at_any_scale(scale):
         pytest.raises(ValueError),
     ):
         SupportPolygonTask(vertices[[0, 2, 4, 1, 3]])
+
+
+@pytest.mark.parametrize("clockwise", [False, True])
+@pytest.mark.parametrize("crossed", [False, True])
+def test_many_vertex_support_polygons_retain_convexity_checks(clockwise, crossed):
+    count = 257
+    angles = np.linspace(0, 2 * np.pi, count, endpoint=False)
+    vertices = np.column_stack((2 * np.cos(angles), np.sin(angles))) + [3.0, -2.0]
+    if crossed:
+        vertices = vertices[(2 * np.arange(count)) % count]
+    if clockwise:
+        vertices = vertices[::-1]
+    original = vertices.copy()
+    if crossed:
+        with pytest.raises(ValueError, match="strictly convex"):
+            SupportPolygonTask(vertices)
+    else:
+        task = SupportPolygonTask(vertices)
+        np.testing.assert_array_equal(
+            task.vertices, vertices[::-1] if clockwise else vertices
+        )
+        np.testing.assert_allclose(np.linalg.norm(task.normals, axis=1), 1.0)
+        assert np.all(task.normals @ np.array([3.0, -2.0]) - task.offsets > 0.0)
+    np.testing.assert_array_equal(vertices, original)
+
+
+def test_support_polygon_validation_workspace_stays_bounded():
+    tracemalloc = tracemalloc_or_skip()
+    count = 2048
+    angles = np.linspace(0, 2 * np.pi, count, endpoint=False)
+    vertices = np.column_stack((np.cos(angles), np.sin(angles)))
+    tracemalloc.start()
+    try:
+        task = SupportPolygonTask(vertices)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert task.vertices.shape == (count, 2)
+    # One complete pairwise distance matrix alone exceeds this budget.
+    assert peak < 16 * 1024 * 1024
 
 
 def test_unrepresentable_polygon_span_rejected_without_floating_error():

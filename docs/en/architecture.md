@@ -61,6 +61,10 @@ Pinocchio.
 DLS and Pink solvers share model, mode and warm-start session operations rather
 than inheriting one another's algorithms. Each creates its own numerical
 workspaces; Curobo reuses Pink's optimizer and adds multi-seed scheduling.
+Pink reuses frame error arrays within each task evaluation; separate evaluations
+own their scratch storage.
+Sessions capture and validate frame mappings once before converting joint-group
+sequences, so later conversion cannot replace the prepared frame selection.
 
 SRS preparation runs when the model changes, rather than repeating canonical
 geometry discovery inside each solve. Scalar built-in FK traverses directly to
@@ -83,7 +87,7 @@ still creates its own full configuration. Caller edits after factory creation
 cannot change the prepared context. Collision and distance-cache workspaces
 retain their per-worker ownership.
 
-Planning copies request inputs and callbacks before calling user code. A
+Planning copies request inputs and callbacks before invoking registered callbacks. A
 callback may replace the owner's configuration for a subsequent request without
 changing the active request's objective or coordinate contract. Captured objects
 are not cloned: sharing a callback that captures a collision model still shares
@@ -91,11 +95,39 @@ that model's mutable workspace. Result objects retain the request's `JointSpace`
 snapshot. See {doc}`planning` for periodic coordinate handling and callback
 lifetimes.
 
+Sampling reuses one uniform sample vector per search and the difference vector
+for each interpolation result. Shortcut cumulative lengths are reused while the
+path is unchanged, with deadline checks kept before each attempt.
+
 ## Python execution boundary
 
-Read-only built-in IK, SRS null-space projection/planning and batch operations
-release the GIL after copying inputs; result conversion reacquires it. Unknown custom solvers keep the conservative
-calling contract unless they explicitly advertise compatible concurrent queries.
+Eigen inputs are normalized and checked for real-valued data before copying into
+C++ storage. Plain object arrays retain entry references before validation hooks
+run. Referenced Python objects are not cloned.
+Built-in waypoint containers retain row objects before individual conversions,
+so a row's `__array__` cannot remove later waypoints by clearing the caller's
+list. Custom sequences convert each row before advancing, preserving reusable
+row buffers. Other iterables keep the existing pybind11 conversion policy.
+Plain numeric NumPy matrices retain their bulk validation path.
+Planning constructors share limit preparation. Coordinate updates capture the
+reference vector before converting replacement positions, and collision queries
+capture their state before later numeric conversions. Named joint-position
+dictionaries retain entry references before scalar conversion.
+Posture task construction captures entries of plain joint cost dictionaries before
+numeric conversion. Custom mappings convert each value as it is read.
+Trajectory constructors capture numeric inputs in argument order before later
+conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
+conversion path.
+Array materialization and object-array conversion into Eigen storage preserve
+interrupts, allocation errors, and other unexpected Python exceptions. Ordinary
+type and shape failures use the binding's validation messages.
+
+The common `solve_ik` and legacy `inverse`, `inverse_user`, and `solve_all` entry
+points release the GIL when the solver declares concurrent query support.
+Inputs are copied before that release, and result conversion reacquires it.
+SRS null-space projection/planning and batch operations also release the GIL
+after copying inputs. Unknown custom solvers keep the conservative calling
+contract unless they explicitly advertise compatible concurrent queries.
 The capability is a promise by the implementation, including its use of Python
 APIs, captured state and output ownership.
 

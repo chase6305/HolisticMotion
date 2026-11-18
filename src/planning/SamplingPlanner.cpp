@@ -52,11 +52,6 @@ class PlanningContext {
         return std::chrono::steady_clock::now() >= deadline_;
     }
 
-    Eigen::VectorXd Difference(const Eigen::VectorXd &from,
-                               const Eigen::VectorXd &to) const {
-        return detail::Difference(from, to, continuous_);
-    }
-
     Eigen::VectorXd Normalize(Eigen::VectorXd state) const {
         return detail::Normalize(std::move(state), lower_, upper_, continuous_);
     }
@@ -72,7 +67,9 @@ class PlanningContext {
 
     Eigen::VectorXd Interpolate(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
                                 double ratio) const {
-        return Normalize(from + ratio * Difference(from, to));
+        Eigen::VectorXd state = detail::Difference(from, to, continuous_);
+        state = from + ratio * state;
+        return Normalize(std::move(state));
     }
 
     Eigen::VectorXd Steer(const Eigen::VectorXd &from, const Eigen::VectorXd &to,
@@ -86,15 +83,14 @@ class PlanningContext {
         return Interpolate(from, to, options_.extension_range / distance);
     }
 
-    Eigen::VectorXd SampleUniform() {
+    void SampleUniform(Eigen::VectorXd &sample) {
         ++statistics_.sampled_states;
-        Eigen::VectorXd sample(lower_.size());
+        sample.resize(lower_.size());
         for (Eigen::Index i = 0; i < sample.size(); ++i) {
             std::uniform_real_distribution<double> distribution(lower_[i],
                                                                 upper_[i]);
             sample[i] = distribution(generator_);
         }
-        return sample;
     }
 
     bool IsStateValid(const Eigen::VectorXd &state) {
@@ -152,10 +148,8 @@ class PlanningContext {
         for (std::size_t i = 0; i < tree.nodes.size(); ++i) {
             const double distance =
                 metric_.SquaredDistance(tree.nodes[i].state, state);
-            if (distance < best_distance ||
-                (distance == best_distance && !std::isnormal(distance) &&
-                 metric_.IsCloser(tree.nodes[i].state, tree.nodes[best].state,
-                                  state, distance, best_distance))) {
+            if (metric_.IsCloser(tree.nodes[i].state, tree.nodes[best].state, state, distance,
+                                 best_distance)) {
                 best_distance = distance;
                 best = i;
             }
@@ -237,6 +231,14 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
     if (path.size() < 3 || attempts == 0)
         return;
     std::vector<double> cumulative;
+    const auto refresh_lengths = [&] {
+        if (!cumulative.empty())
+            return;
+        cumulative.resize(path.size());
+        cumulative[0] = 0.0;
+        for (std::size_t i = 1; i < path.size(); ++i)
+            cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
+    };
     // Continuous shortcuts improve geometry but introduce new vertices. Reserve
     // part of the same attempt budget to remove redundant stops before timing.
     const std::size_t random_attempts = attempts / 2;
@@ -244,12 +246,7 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
          ++attempt) {
         if (context.TimedOut())
             return;
-        cumulative.resize(path.size());
-        cumulative[0] = 0.0;
-        for (std::size_t i = 1; i < path.size(); ++i) {
-            cumulative[i] =
-                cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
-        }
+        refresh_lengths();
         if (!(cumulative.back() > 0.0) || !std::isfinite(cumulative.back()))
             return;
 
@@ -308,14 +305,12 @@ void Shortcut(std::vector<Eigen::VectorXd> &path, PlanningContext &context,
         for (std::size_t i = second_segment + 1; i < path.size(); ++i)
             append(path[i]);
         path = std::move(shortened);
+        cumulative.clear();
     }
 
     if (path.size() < 3 || context.TimedOut())
         return;
-    cumulative.resize(path.size());
-    cumulative[0] = 0.0;
-    for (std::size_t i = 1; i < path.size(); ++i)
-        cumulative[i] = cumulative[i - 1] + context.Distance(path[i - 1], path[i]);
+    refresh_lengths();
     if (!std::isfinite(cumulative.back()))
         return;
 
@@ -434,11 +429,13 @@ std::vector<Eigen::VectorXd> PlanRRTConnect(const Eigen::VectorXd &start,
     Tree first{{Node{start, 0, 0.0, {}}}, true, {}};
     Tree second{{Node{goal, 0, 0.0, {}}}, false, {}};
     std::uniform_real_distribution<double> unit(0.0, 1.0);
+    Eigen::VectorXd sample;
     for (; statistics.iterations < options.max_iterations && !context.TimedOut();
          ++statistics.iterations) {
-        Eigen::VectorXd sample = unit(context.Generator()) < options.goal_bias
-                                     ? second.nodes.front().state
-                                     : context.SampleUniform();
+        if (unit(context.Generator()) < options.goal_bias)
+            sample = second.nodes.front().state;
+        else
+            context.SampleUniform(sample);
         std::size_t first_index = 0;
         if (context.Extend(first, sample, first_index) ==
             ExtendStatus::TRAPPED) {
@@ -494,9 +491,9 @@ std::vector<Eigen::VectorXd> PlanRRTStar(const Eigen::VectorXd &start, const Eig
         tree.nodes[parent].children.push_back(index);
         update_descendant_costs(index, delta);
     };
+    Eigen::VectorXd sample;
     for (; statistics.iterations < options.max_iterations && !context.TimedOut();
          ++statistics.iterations) {
-        Eigen::VectorXd sample;
         if (unit(context.Generator()) < options.goal_bias) {
             sample = goal;
         } else {
@@ -506,7 +503,7 @@ std::vector<Eigen::VectorXd> PlanRRTStar(const Eigen::VectorXd &start, const Eig
             constexpr std::size_t kMaximumInformedAttempts = 128;
             std::size_t attempts = 0;
             do {
-                sample = context.SampleUniform();
+                context.SampleUniform(sample);
                 ++attempts;
                 if (informed && std::isfinite(best_cost) &&
                     attempts == kMaximumInformedAttempts &&

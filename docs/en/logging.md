@@ -144,6 +144,10 @@ ANSI escapes. A failing logging sink cannot replace that primary algorithm error
 Other callback failures propagate. Logging configuration does not alter solver
 return values, convergence diagnostics, or execution control.
 
+Native sink replacement and reset release retired callback captures after
+unlocking the logger configuration. Their cleanup may query logger settings;
+a dispatch already in progress retains its callback copy.
+
 Native-to-Python dispatch suppresses nested native records on the same thread
 while a record is being created, filtered, formatted, or handled. This prevents
 recursive logging when one of those callbacks calls native code. Other threads
@@ -168,6 +172,9 @@ ANSI colors. `SetRecordFunction()` accepts structured `LogRecord` values and
 replaces console dispatch while leaving explicitly enabled file output independent.
 `ResetRecordFunction()` restores the previous text sink; `SetPrintFunction()`
 selects a text sink and clears structured dispatch.
+
+The C++ `_report(IkRtn)` helper formats the stored solutions and their actual
+count without changing the result, even when the public `ik_number` cache is stale.
 
 Configuration is synchronized; callbacks run outside the configuration lock.
 Custom C++ callbacks must support concurrent calls. File output uses a private rotating spdlog logger (10 MiB,

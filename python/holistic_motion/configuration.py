@@ -134,12 +134,13 @@ class JointPositionMap:
             if joint.name in by_name:
                 raise ValueError(f"duplicate model joint name: {joint.name}")
             by_name[joint.name] = joint
+        nq, nv = model.nq, model.nv
         selected = []
         for name in joint_names:
             if not isinstance(name, str) or name not in by_name:
                 raise ValueError(f"unknown model joint: {name!r}")
             selected.append(by_name[name])
-        return cls(model.nq, model.nv, selected)
+        return cls(nq, nv, selected)
 
     @staticmethod
     def _vector(value, size, name):

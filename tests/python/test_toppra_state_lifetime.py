@@ -5,7 +5,7 @@ import weakref
 
 import numpy as np
 import pytest
-from holistic_motion.trajectory import ToppraTrajectory
+from holistic_motion.trajectory import ToppraResult, ToppraTrajectory
 from holistic_motion.trajectory.toppra import _NaturalCubicPath
 
 
@@ -26,6 +26,40 @@ def test_numpy_waypoints_are_owned_before_converting_limits(limit_name):
     np.testing.assert_array_equal(trajectory.waypoints, expected)
     sampled, *_ = trajectory.sample([0.0, trajectory.duration])
     np.testing.assert_allclose(sampled, expected, atol=1e-15)
+
+
+@pytest.mark.parametrize("boundary", ["start_path_velocity", "end_path_velocity"])
+def test_numpy_boundary_speed_is_owned_before_converting_grid(boundary):
+    speed = np.array(0.2)
+    options = {"start_path_velocity": 0.2, "end_path_velocity": 0.2}
+    grid = np.linspace(0.0, 1.0, 17)
+    reference = ToppraTrajectory(
+        [[0.0], [1.0]], [1.0], [2.0], gridpoints=grid, **options
+    )
+
+    class MutatingGrid:
+        def __array__(self, dtype=None, copy=None):
+            speed[...] = 0.8
+            return np.array(grid, dtype=dtype)
+
+    options[boundary] = speed
+    trajectory = ToppraTrajectory(
+        [[0.0], [1.0]], [1.0], [2.0], gridpoints=MutatingGrid(), **options
+    )
+    assert speed == 0.8
+    np.testing.assert_array_equal(
+        trajectory.result.path_speeds, reference.result.path_speeds
+    )
+    np.testing.assert_array_equal(trajectory.result.times, reference.result.times)
+
+
+def test_numpy_result_duration_is_an_owned_scalar():
+    duration = np.array(1.0)
+    result = ToppraResult([0.0, 1.0], [1.0, 1.0], [0.0], [0.0, 1.0], duration)
+    duration[...] = np.nan
+    assert isinstance(result.duration, float)
+    assert result.duration == 1.0
+    assert result.duration == result.times[-1]
 
 
 @pytest.mark.parametrize("grid_size", [64, 2048])

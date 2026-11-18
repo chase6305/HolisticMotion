@@ -332,6 +332,33 @@ def test_reset_keeps_caller_coordinates_out_of_backend_scratch(
 
 
 @pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
+@pytest.mark.parametrize("entry", ["constructor", "reset"])
+def test_reset_snapshots_coordinates_before_backend_calls(
+    tracker_type, entry, output_solver, monkeypatch
+):
+    if entry == "reset":
+        tracker = tracker_type(output_solver, np.zeros(7))
+    initial = np.full(7, 0.25)
+
+    def configuration(joints):
+        initial[:] = np.nan
+        return SimpleNamespace(
+            shoulder=1, elbow=1, wrist=1, redundancy=float(joints[0])
+        )
+
+    monkeypatch.setattr(output_solver, "configuration", configuration)
+    if entry == "constructor":
+        tracker = tracker_type(output_solver, initial)
+    else:
+        tracker.reset(initial)
+    assert np.isnan(initial).all()
+    np.testing.assert_array_equal(tracker.joints, np.full(7, 0.25))
+    assert tracker.redundancy == 0.25
+    np.testing.assert_array_equal(tracker.velocity, np.zeros(7))
+    assert tracker.frame_index == 0
+
+
+@pytest.mark.parametrize("tracker_type", [SRSContinuousTracker, FEPContinuousTracker])
 @pytest.mark.parametrize("attribute", ["_velocity", "_frame_index"])
 @pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit, MemoryError])
 def test_interrupted_history_update_keeps_previous_frame(

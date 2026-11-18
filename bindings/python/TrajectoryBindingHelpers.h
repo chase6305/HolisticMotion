@@ -106,20 +106,20 @@ inline void ValidateUniformSampleCount(std::size_t samples,
 }
 
 template <typename Factory> auto CheckedTrajectoryFactory(Factory factory) {
-    return [factory](
-               const py::object &waypoints, const py::object &max_velocity,
-               const py::object &max_acceleration, const py::object &max_jerk,
-               const py::object &blend_tolerance,
-               const py::object &minimum_duration, const std::string &profile) {
-        return factory(
-            CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
-            CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity"),
-            CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
-                                              "max_acceleration"),
-            CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-            CheckedRealEigen<double>(blend_tolerance, "blend_tolerance"),
-            CheckedRealEigen<double>(minimum_duration, "minimum_duration"),
-            profile);
+    return [factory](const py::object &waypoints, const py::object &max_velocity,
+                     const py::object &max_acceleration, const py::object &max_jerk,
+                     const py::object &blend_tolerance, const py::object &minimum_duration,
+                     const std::string &profile) {
+        // Capture inputs in argument order before later conversion hooks can
+        // edit arrays already supplied by the caller.
+        const auto points = CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints");
+        const auto velocity = CheckedRealEigen<Eigen::VectorXd>(max_velocity, "max_velocity");
+        const auto acceleration =
+            CheckedRealEigen<Eigen::VectorXd>(max_acceleration, "max_acceleration");
+        const auto jerk = CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk");
+        const double blend = CheckedRealEigen<double>(blend_tolerance, "blend_tolerance");
+        const double duration = CheckedRealEigen<double>(minimum_duration, "minimum_duration");
+        return factory(points, velocity, acceleration, jerk, blend, duration, profile);
     };
 }
 

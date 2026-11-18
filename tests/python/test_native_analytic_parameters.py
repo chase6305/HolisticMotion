@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -57,6 +59,76 @@ def test_complex_parameter_array_preserves_state(family, name):
     with pytest.raises(TypeError, match="real"):
         setattr(value, name, np.full(6, np.complex128(1 + 1j), dtype=object))
     assert list(getattr(value, name)) == previous
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_failed_array_materialization_preserves_parameter(family, error_type):
+    value, _ = parameters(family)
+    previous = value.a2
+    failure = error_type("parameter array materialization failed")
+
+    class FailingScalar:
+        def __array__(self, dtype=None, copy=None):
+            raise failure
+
+        def __float__(self):
+            return 0.25
+
+    with pytest.raises(error_type) as caught:
+        value.a2 = FailingScalar()
+    assert caught.value is failure
+    assert value.a2 == previous
+    value.a2 = 0.3
+    assert value.a2 == 0.3
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_failed_object_transform_conversion_preserves_parameter(family, error_type):
+    value, _ = parameters(family)
+    previous = value.base_transform.copy()
+    failure = error_type("object transform conversion failed")
+
+    class FailingFloat:
+        def __float__(self):
+            raise failure
+
+    transform = previous.astype(object)
+    transform[0, 0] = FailingFloat()
+    with pytest.raises(error_type) as caught:
+        value.base_transform = transform
+    assert caught.value is failure
+    np.testing.assert_array_equal(value.base_transform, previous)
+    value.base_transform = previous
+    np.testing.assert_array_equal(value.base_transform, previous)
+
+
+@pytest.mark.parametrize("family", ["ur", "opw"])
+@pytest.mark.parametrize("name", ["a2", "offsets"])
+def test_parameter_captures_object_entries_before_validation(family, name):
+    value, _ = parameters(family)
+    expected = np.asarray(0.5) if name == "a2" else np.arange(6) * 0.1
+    source = expected.astype(object)
+
+    class ReplacingScalar:
+        def __array__(self, dtype=None, copy=None):
+            source.flat[0] = np.complex128(0.9 + 1j)
+            return np.asarray(0.5, dtype=dtype)
+
+        def __float__(self):
+            return 0.5
+
+    source.flat[-1] = ReplacingScalar()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        setattr(value, name, source)
+    np.testing.assert_array_equal(getattr(value, name), expected)
+    assert not emitted
 
 
 @pytest.mark.parametrize("family", ["ur", "opw"])

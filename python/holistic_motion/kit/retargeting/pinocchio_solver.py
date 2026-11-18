@@ -120,10 +120,14 @@ class RetargetingResult:
             raise TypeError("result mode must be RetargetingMode")
         if not isinstance(self.success, (bool, np.bool_)):
             raise TypeError("result success must be boolean")
-        if not isinstance(self.target_residuals, Mapping):
+        target_residuals = self.target_residuals
+        if not isinstance(target_residuals, Mapping):
             raise TypeError("target_residuals must be a mapping")
         residuals = {}
-        for name, value in self.target_residuals.items():
+        items = target_residuals.items()
+        if type(target_residuals) is dict:
+            items = tuple(items)
+        for name, value in items:
             if not isinstance(name, str) or not name:
                 raise ValueError("target residual names must be non-empty strings")
             try:
@@ -246,6 +250,7 @@ class _RetargetingSession:
             raise ValueError("max_iterations must be positive")
         if not isinstance(frames, Mapping):
             raise TypeError("frames must be a mapping")
+        frames = dict(frames)
         if any(
             not isinstance(name, str)
             or not name
@@ -278,7 +283,7 @@ class _RetargetingSession:
 
         self.model = self.pin.buildModelFromXML(normalized_urdf_xml(self.urdf_path))
         self.data = self.model.createData()
-        self.frames = MappingProxyType(dict(frames))
+        self.frames = MappingProxyType(frames)
         self.joint_groups = MappingProxyType(normalized_groups)
         self.mode_manager = mode_manager or RetargetingModeManager()
         self.damping = float(damping)
@@ -415,12 +420,14 @@ class _RetargetingSession:
             raise TypeError("targets must be a mapping")
         self.mode_manager.validate_targets(targets)
         plan = self._mode_plan()
-        normalized = {
-            name: targets[name]
-            if isinstance(targets[name], RetargetingTarget)
-            else RetargetingTarget(targets[name])
-            for name in plan.targets
-        }
+        normalized = {}
+        for name in plan.targets:
+            target = targets[name]
+            normalized[name] = (
+                target
+                if isinstance(target, RetargetingTarget)
+                else RetargetingTarget(target)
+            )
         return normalized
 
     def _mode_plan(self) -> _RetargetingModePlan:
@@ -627,7 +634,7 @@ class PinocchioRetargetingSolver(_RetargetingSession):
             mode=self.mode,
             objective=objective,
         )
-        self._last_q = result.configuration.copy()
+        self._last_q = q
         return result
 
     def _solve_workspace(self, plan: _RetargetingModePlan) -> _PinocchioSolveWorkspace:

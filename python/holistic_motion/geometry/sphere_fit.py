@@ -34,7 +34,9 @@ def _validated_sphere_links(links) -> dict[str, tuple[SphereSpec, ...]]:
     if not isinstance(links, Mapping) or not links:
         raise ValueError("links must be a non-empty mapping")
     normalized = {}
-    for link, spheres in links.items():
+    # Custom mappings may reuse a sphere list on each lookup.
+    items = tuple(links.items()) if type(links) is dict else links.items()
+    for link, spheres in items:
         if not isinstance(link, str) or not link:
             raise ValueError("each link requires a non-empty string name")
         try:
@@ -69,11 +71,11 @@ def _validated_options(options) -> SphereFitOptions:
     return options
 
 
-def _points(value, name: str, *, allow_empty: bool = False) -> np.ndarray:
-    points = real_array(value, name=name)
+def _points(value, name: str, *, copy: bool = False) -> np.ndarray:
+    points = real_array(value, name=name, copy=copy)
     if points.ndim != 2 or points.shape[1:] != (3,):
         raise ValueError(f"{name} must have shape (N, 3)")
-    if not allow_empty and len(points) == 0:
+    if len(points) == 0:
         raise ValueError(f"{name} must not be empty")
     if not np.all(np.isfinite(points)):
         raise ValueError(f"{name} must contain finite values")
@@ -220,10 +222,11 @@ class SphereSpec:
         center = real_array(self.center, name="sphere center")
         if center.shape != (3,) or not np.all(np.isfinite(center)):
             raise ValueError("sphere center must contain three finite values")
+        center = tuple(float(x) for x in center)
         radius = _finite_float(self.radius, "sphere radius")
         if radius <= 0.0:
             raise ValueError("sphere radius must be finite and positive")
-        object.__setattr__(self, "center", tuple(float(x) for x in center))
+        object.__setattr__(self, "center", center)
         object.__setattr__(self, "radius", radius)
 
 
@@ -328,7 +331,7 @@ def evaluate_sphere_fit(
 
     These metrics do not prove continuous triangle-mesh coverage.
     """
-    points = _points(sample_points, "sample_points")
+    points = _points(sample_points, "sample_points", copy=True)
     spheres = _validated_spheres(spheres)
     if (
         not isinstance(chunk_size, Integral)
@@ -393,7 +396,7 @@ def fit_spheres(
     broad phase but is not a proof that the continuous mesh is covered.
     """
     options = _validated_options(options)
-    interior = _points(interior_points, "interior_points")
+    interior = _points(interior_points, "interior_points", copy=True)
     surface = _points(surface_points, "surface_points")
     stable_distances = _requires_stable_distances(interior, surface)
     radii = _minimum_distances(
@@ -541,7 +544,7 @@ def fit_trimesh(
         raise ValueError("pitch must be finite and positive")
 
     voxels = mesh.voxelized(pitch).fill()
-    interior = real_array(voxels.points, name="voxel points")
+    interior = real_array(voxels.points, name="voxel points", copy=True)
     if len(interior) == 0:
         raise ValueError("mesh voxelization produced no interior samples")
     # Use the module-level sampler because it exposes an explicit seed across

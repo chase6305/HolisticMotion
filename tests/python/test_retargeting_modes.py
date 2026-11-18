@@ -1,10 +1,15 @@
+from collections.abc import Mapping
+
 import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import (
+    CuroboRetargetingSolver,
+    PinkRetargetingSolver,
     PinocchioRetargetingSolver,
     RetargetingMode,
     RetargetingModeManager,
     RetargetingModeSpec,
+    RetargetingResult,
     RetargetingTarget,
 )
 from optional_dependencies import python_pinocchio_or_skip
@@ -412,3 +417,165 @@ def test_pinocchio_solver_reports_unreachable_fixed_model_without_crashing(tmp_p
     assert not result.success
     assert result.iterations == 1
     assert result.residual == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_frame_map_is_captured_before_joint_group_conversion(
+    tmp_path, solver_type, action
+):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    frames = {"left_hand": "base"}
+    calls = []
+
+    class JointNames:
+        def __iter__(self):
+            calls.append(True)
+            if action == "clear":
+                frames.clear()
+            else:
+                frames["left_hand"] = "missing"
+            return iter(())
+
+    solver = solver_type(urdf, frames, {"left_arm": JointNames()})
+
+    assert calls == [True]
+    assert solver.frames == {"left_hand": "base"}
+    solver.prepare("left_arm")
+    if action == "clear":
+        assert not frames
+    else:
+        assert frames == {"left_hand": "missing"}
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+def test_frame_map_is_read_once_before_validation(tmp_path, solver_type):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    calls = []
+
+    class Frames(Mapping):
+        def __iter__(self):
+            return iter(("left_hand",))
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, name):
+            if name != "left_hand":
+                raise KeyError(name)
+            calls.append(name)
+            return "base" if len(calls) == 1 else "missing"
+
+    solver = solver_type(urdf, Frames(), {"left_arm": []})
+
+    assert calls == ["left_hand"]
+    assert solver.frames == {"left_hand": "base"}
+    solver.prepare("left_arm")
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_solver_uses_the_target_value_it_validates(tmp_path, solver_type, wrapped):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    solver = solver_type(urdf, {"left_hand": "base"}, {"left_arm": []})
+    solver.prepare("left_arm")
+    pose = np.eye(4)
+    first = RetargetingTarget(pose) if wrapped else pose
+    replacement = pose.copy()
+    replacement[0, 3] = 1.0
+
+    class Targets(Mapping):
+        reads = 0
+
+        def __iter__(self):
+            return iter(("left_hand",))
+
+        def __len__(self):
+            return 1
+
+        def __getitem__(self, name):
+            if name != "left_hand":
+                raise KeyError(name)
+            self.reads += 1
+            return first if self.reads == 1 else replacement
+
+    result = solver.solve(Targets())
+
+    assert result.success
+    assert result.residual == 0.0
+    assert result.configuration.shape == (0,)
+
+
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_result_captures_residual_entries_before_scalar_conversion(action):
+    source = {}
+    calls = []
+
+    class Residual:
+        def __float__(self):
+            calls.append(True)
+            if action == "clear":
+                source.clear()
+            else:
+                source["head"] = (-1.0, -1.0)
+            return 1.0
+
+    source.update(left_hand=(Residual(), 2.0), head=(3.0, 4.0))
+    result = RetargetingResult(
+        [0.0],
+        True,
+        1,
+        0.0,
+        0.0,
+        RetargetingMode.LEFT_ARM,
+        target_residuals=source,
+    )
+
+    assert calls == [True]
+    assert list(result.target_residuals) == ["left_hand", "head"]
+    assert result.target_residuals == {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}
+    with pytest.raises(TypeError):
+        result.target_residuals["left_hand"] = (5.0, 6.0)
+
+
+def test_result_reads_custom_residual_mapping_before_advancing():
+    class Residuals(Mapping):
+        def __init__(self):
+            self.pair = [0.0, 0.0]
+
+        def __iter__(self):
+            return iter(("left_hand", "head"))
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, name):
+            self.pair[:] = {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}[name]
+            return self.pair
+
+    result = RetargetingResult(
+        [0.0],
+        True,
+        1,
+        0.0,
+        0.0,
+        RetargetingMode.LEFT_ARM,
+        target_residuals=Residuals(),
+    )
+
+    assert result.target_residuals == {"left_hand": (1.0, 2.0), "head": (3.0, 4.0)}

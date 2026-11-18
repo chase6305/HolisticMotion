@@ -192,6 +192,7 @@ bool NumericalKinematics::SolveIKImpl(const SE3d &target_pose, IkRtn &ik_solutio
         ik_solutions.GetLimitsIK(this->joint_nodes_);
 
     const auto &reference = nearest_reference ? *nearest_reference : joint_seed;
+    dist.reserve(ik_solutions.ik_joints.size());
     for (int solution = 0; solution < ik_solutions.ik_number; ++solution) {
         double weighted_distance = 0.0;
         for (int joint = 0; joint < this->dof_; ++joint) {

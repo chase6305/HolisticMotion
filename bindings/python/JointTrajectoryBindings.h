@@ -237,60 +237,37 @@ void BindJointTrajectory(py::module_ &module, const char *name,
     py::class_<JointTrajectory<N>>(module, name,
                                    "Fifth-order Bezier joint path with "
                                    "selectable Double-S or trapezoidal timing.")
-        .def(py::init([](const py::object &waypoints,
-                         const py::object &max_velocity,
-                         const py::object &max_acceleration,
-                         const py::object &max_jerk,
-                         const py::object &blend_tolerance,
-                         const py::object &minimum_duration,
-                         const std::string &profile) {
-                 return std::make_unique<JointTrajectory<N>>(
-                     CheckedRealEigen<Eigen::MatrixXd>(waypoints, "waypoints"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_velocity,
-                                                       "max_velocity"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_acceleration,
-                                                       "max_acceleration"),
-                     CheckedRealEigen<Eigen::VectorXd>(max_jerk, "max_jerk"),
-                     CheckedRealEigen<double>(blend_tolerance,
-                                              "blend_tolerance"),
-                     CheckedRealEigen<double>(minimum_duration,
-                                              "minimum_duration"),
-                     profile);
-             }),
-             py::arg("waypoints"), py::arg("max_velocity"),
-             py::arg("max_acceleration"), py::arg("max_jerk"),
-             py::arg("blend_tolerance") = 0.0,
+        .def(py::init(CheckedTrajectoryFactory([](const auto &...inputs) {
+                 return std::make_unique<JointTrajectory<N>>(inputs...);
+             })),
+             py::arg("waypoints"), py::arg("max_velocity"), py::arg("max_acceleration"),
+             py::arg("max_jerk"), py::arg("blend_tolerance") = 0.0,
              py::arg("minimum_duration") = 0.0, py::arg("profile") = "double_s")
         .def_property_readonly("duration", &JointTrajectory<N>::Duration)
         .def_property_readonly("dof", &JointTrajectory<N>::Dof)
         .def_property_readonly("time_scale", &JointTrajectory<N>::TimeScale)
-        .def_property_readonly("blend_tolerance",
-                               &JointTrajectory<N>::BlendTolerance)
+        .def_property_readonly("blend_tolerance", &JointTrajectory<N>::BlendTolerance)
         .def_property_readonly("profile", &JointTrajectory<N>::Profile)
         .def_property_readonly("breakpoints", &JointTrajectory<N>::Breakpoints)
         .def_property_readonly("max_velocity", &JointTrajectory<N>::MaxVelocity)
-        .def_property_readonly("max_acceleration",
-                               &JointTrajectory<N>::MaxAcceleration)
+        .def_property_readonly("max_acceleration", &JointTrajectory<N>::MaxAcceleration)
         .def_property_readonly("max_jerk", &JointTrajectory<N>::MaxJerk)
         .def_property_readonly("path_length", &JointTrajectory<N>::PathLength)
         .def_property_readonly("waypoints", &JointTrajectory<N>::Waypoints)
-        .def("position", WithRealScalar(&JointTrajectory<N>::Position, "time"),
-             py::arg("time"),
+        .def("position", WithRealScalar(&JointTrajectory<N>::Position, "time"), py::arg("time"),
              "Evaluate joint position; finite times are clamped to the "
              "trajectory.")
-        .def("velocity", WithRealScalar(&JointTrajectory<N>::Velocity, "time"),
-             py::arg("time"), "Evaluate joint velocity at a finite time.")
-        .def("acceleration",
-             WithRealScalar(&JointTrajectory<N>::Acceleration, "time"),
+        .def("velocity", WithRealScalar(&JointTrajectory<N>::Velocity, "time"), py::arg("time"),
+             "Evaluate joint velocity at a finite time.")
+        .def("acceleration", WithRealScalar(&JointTrajectory<N>::Acceleration, "time"),
              py::arg("time"), "Evaluate joint acceleration at a finite time.")
-        .def("jerk", WithRealScalar(&JointTrajectory<N>::Jerk, "time"),
-             py::arg("time"), "Evaluate joint jerk at a finite time.")
-        .def(
-            "set_minimum_duration",
-            WithRealScalar(&JointTrajectory<N>::SetMinimumDuration, "duration"),
-            py::arg("duration"),
-            "Slow the trajectory to at least duration seconds; never speeds "
-            "it up.")
+        .def("jerk", WithRealScalar(&JointTrajectory<N>::Jerk, "time"), py::arg("time"),
+             "Evaluate joint jerk at a finite time.")
+        .def("set_minimum_duration",
+             WithRealScalar(&JointTrajectory<N>::SetMinimumDuration, "duration"),
+             py::arg("duration"),
+             "Slow the trajectory to at least duration seconds; never speeds "
+             "it up.")
         .def(
             "sample",
             [](const JointTrajectory<N> &trajectory, const py::object &times) {
@@ -300,18 +277,15 @@ void BindJointTrajectory(py::module_ &module, const char *name,
             py::arg("times"),
             "Return position, velocity, acceleration, and jerk matrices for "
             "1-D times.")
-        .def("sample_uniform",
-             WithRealScalar(&JointTrajectory<N>::SampleUniform, "samples"),
+        .def("sample_uniform", WithRealScalar(&JointTrajectory<N>::SampleUniform, "samples"),
              py::arg("samples") = 1001,
              "Uniformly sample the inclusive [0, duration] interval and "
              "return time plus four state matrices.")
-        .def("state", WithRealScalar(&JointTrajectory<N>::State, "time"),
-             py::arg("time"),
+        .def("state", WithRealScalar(&JointTrajectory<N>::State, "time"), py::arg("time"),
              "Return position, velocity, acceleration, and jerk at one time.")
         .def(
             "constraint_report",
-            [report_keys](const JointTrajectory<N> &trajectory,
-                          const py::object &samples) {
+            [report_keys](const JointTrajectory<N> &trajectory, const py::object &samples) {
                 return trajectory.ConstraintReport(
                     CheckedRealEigen<std::size_t>(samples, "samples"),
                     *report_keys);

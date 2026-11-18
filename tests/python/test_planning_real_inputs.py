@@ -27,6 +27,27 @@ def test_planning_rejects_complex_limits(factory, bad, argument):
     assert not emitted
 
 
+@pytest.mark.parametrize(
+    "factory", [hm.JointSpace, hm.SamplingPlanner, hm.PathOptimizer]
+)
+def test_planning_captures_lower_limits_before_upper_conversion(factory):
+    lower = np.array([-1.0])
+    calls = []
+
+    class Upper:
+        def __array__(self, dtype=None, copy=None):
+            lower.fill(np.nan)
+            calls.append(True)
+            return np.array([1.0], dtype=dtype)
+
+    value = factory(lower, Upper())
+    space = value if factory is hm.JointSpace else value.joint_space
+    assert calls == [True]
+    assert np.isnan(lower).all()
+    np.testing.assert_array_equal(space.lower_limits, [-1.0])
+    np.testing.assert_array_equal(space.upper_limits, [1.0])
+
+
 @pytest.mark.parametrize("factory", [hm.SamplingPlanner, hm.PathOptimizer])
 @pytest.mark.parametrize("bad", COMPLEX_VECTORS)
 def test_planning_rejects_complex_weights(factory, bad):
@@ -49,6 +70,201 @@ def test_optimizer_rejects_complex_waypoints(bad):
     optimizer = hm.PathOptimizer([0.0], [1.0])
     with pytest.raises(TypeError, match="real"):
         optimizer.optimize([[0.0], bad, [1.0]])
+
+
+@pytest.fixture(params=["optimize", "unwrap_path"])
+def path_query(request):
+    if request.param == "unwrap_path":
+        return hm.JointSpace([0.0], [1.0]).unwrap_path
+    optimizer = hm.PathOptimizer([0.0], [1.0])
+    options = hm.PathOptimizationOptions()
+    options.smoothness_weight = 0.0
+
+    def optimize(path):
+        result = optimizer.optimize(path, options)
+        assert result.success
+        return result.path
+
+    return optimize
+
+
+@pytest.mark.parametrize("later_dtype", [float, complex])
+def test_path_query_uses_each_validated_waypoint_conversion(path_query, later_dtype):
+    class ChangingWaypoint:
+        calls = 0
+
+        def __array__(self, dtype=None, copy=None):
+            self.calls += 1
+            values = [0.5] if self.calls == 1 else np.array([0.75], dtype=later_dtype)
+            return np.array(values, dtype=dtype)
+
+    waypoint = ChangingWaypoint()
+    actual = path_query([[0.0], waypoint, [1.0]])
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+    assert waypoint.calls == 1
+
+
+@pytest.mark.parametrize("kind", ["list_subclass", "array_subclass"])
+def test_path_query_validates_the_waypoint_array_representation(path_query, kind):
+    if kind == "list_subclass":
+
+        class ComplexWaypoint(list):
+            def __array__(self, dtype=None, copy=None):
+                return np.array([0.5 + 1j], dtype=dtype)
+
+        waypoint = ComplexWaypoint([0.5])
+    else:
+
+        class HiddenComplexWaypoint(np.ndarray):
+            @property
+            def flat(self):
+                return iter(())
+
+        waypoint = np.array([np.complex128(0.5 + 1j)], dtype=object).view(
+            HiddenComplexWaypoint
+        )
+    with pytest.raises(TypeError, match="real"):
+        path_query([[0.0], waypoint, [1.0]])
+
+
+def test_path_query_keeps_waypoints_when_conversion_clears_caller_list(path_query):
+    source = []
+
+    class ClearingWaypoint:
+        def __array__(self, dtype=None, copy=None):
+            source.clear()
+            return np.array([0.0], dtype=dtype)
+
+    source.extend([ClearingWaypoint(), [0.5], [1.0]])
+    actual = path_query(source)
+    assert source == []
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+
+
+@pytest.mark.parametrize("hook", ["array", "float"])
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "readonly"])
+def test_path_query_captures_object_matrix_entries_before_scalar_hooks(
+    path_query, hook, layout
+):
+    if layout == "strided":
+        storage = np.zeros((6, 2), dtype=object)
+        source = storage[::2, ::2]
+        later_row = 2
+    else:
+        storage = np.zeros((3, 1), dtype=object)
+        source = storage.view()
+        later_row = 1
+    source[:, 0] = [0.0, 0.5, 1.0]
+    calls = []
+
+    def mutate():
+        storage[later_row, 0] = 1j
+        calls.append(hook)
+
+    class MutatingScalar:
+        def __array__(self, dtype=None, copy=None):
+            if hook == "array":
+                mutate()
+            return np.array(0.0, dtype=dtype)
+
+        def __float__(self):
+            if hook == "float":
+                mutate()
+            return 0.0
+
+    source[0, 0] = MutatingScalar()
+    if layout == "readonly":
+        source.setflags(write=False)
+    actual = path_query(source)
+    assert calls == [hook]
+    assert source[1, 0] == 1j
+    assert source.flags.writeable == (layout != "readonly")
+    np.testing.assert_array_equal(actual, [[0.0], [0.5], [1.0]])
+
+
+@pytest.mark.parametrize("kind", ["sequence", "list_subclass", "array_subclass"])
+def test_path_query_reads_reused_custom_sequence_rows_before_advancing(
+    path_query, kind
+):
+    class ReusedRows:
+        def __init__(self):
+            self.row = np.empty(1)
+
+        def __len__(self):
+            return 3
+
+        def __getitem__(self, index):
+            if not 0 <= index < 3:
+                raise IndexError(index)
+            self.row[0] = index / 2
+            return self.row
+
+    def reused_iterator(self):
+        row = np.empty(1)
+        for index in range(len(self)):
+            row[0] = index / 2
+            yield row
+
+    row_buffer = np.empty(1)
+
+    def reused_item(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        row_buffer[0] = index / 2
+        return row_buffer
+
+    class ReusedList(list):
+        __iter__ = reused_iterator
+        __getitem__ = reused_item
+
+    class ReusedArray(np.ndarray):
+        __iter__ = reused_iterator
+        __getitem__ = reused_item
+
+    rows = (
+        ReusedRows()
+        if kind == "sequence"
+        else ReusedList([[0.0], [0.5], [1.0]])
+        if kind == "list_subclass"
+        else np.zeros((3, 1)).view(ReusedArray)
+    )
+    np.testing.assert_array_equal(path_query(rows), [[0.0], [0.5], [1.0]])
+
+
+@pytest.mark.parametrize("kind", ["sequence", "list_subclass"])
+def test_path_query_keeps_standard_caster_sequence_iteration_policy(path_query, kind):
+    class Values:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __len__(self):
+            return 6
+
+        def __getitem__(self, index):
+            if not 0 <= index < 6:
+                raise IndexError(index)
+            value = index / 10
+            return [value] if self.rows else str(value)
+
+        def __iter__(self):
+            for index in range(6):
+                value = 0.9 - index / 10
+                yield [value] if self.rows else str(value)
+
+    class ValueList(Values, list):
+        def __init__(self, rows):
+            Values.__init__(self, rows)
+            list.__init__(
+                self,
+                ([0.65 - i / 10] if rows else str(0.65 - i / 10) for i in range(6)),
+            )
+
+    values = Values if kind == "sequence" else ValueList
+    reference = hm.JointSpace([0.0] * 6, [1.0] * 6, values(rows=False))
+    expected = np.asarray([float(name) for name in reference.joint_names]).reshape(
+        -1, 1
+    )
+    np.testing.assert_array_equal(path_query(values(rows=True)), expected)
 
 
 @pytest.mark.parametrize(
@@ -233,6 +449,49 @@ def test_named_collision_factories_preserve_real_configuration_support(
 ):
     _, collision = collision_models
     planner = factory.from_collision_joints(collision, ["left_slide"], np.array([0.0]))
+    if factory is hm.PathOptimizer:
+        result = planner.optimize([[0.0], [0.1]])
+    else:
+        result = planner.plan([0.0], [0.1])
+    assert result.success
+
+
+@pytest.mark.parametrize("model_kind", ["mesh", "sphere"])
+@pytest.mark.parametrize(
+    "factory,argument",
+    [
+        (hm.SamplingPlanner, "security_margin"),
+        (hm.PathOptimizer, "security_margin"),
+        (hm.PathOptimizer, "clearance"),
+    ],
+)
+def test_named_collision_factory_snapshots_context_before_scalar_conversion(
+    collision_models, model_kind, factory, argument
+):
+    sphere, mesh = collision_models
+    context = np.array([0.25])
+    calls = []
+
+    class MutatingScalar:
+        def __float__(self):
+            context.fill(np.nan)
+            calls.append(True)
+            return 0.0
+
+    create = getattr(
+        factory,
+        "from_collision_joints"
+        if model_kind == "mesh"
+        else "from_sphere_collision_joints",
+    )
+    planner = create(
+        mesh if model_kind == "mesh" else sphere,
+        ["left_slide"],
+        context,
+        **{argument: MutatingScalar()},
+    )
+    assert calls == [True]
+    assert np.isnan(context).all()
     if factory is hm.PathOptimizer:
         result = planner.optimize([[0.0], [0.1]])
     else:

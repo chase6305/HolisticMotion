@@ -472,34 +472,32 @@ void BindPlanningCollision(pybind11::module_ &module) {
         py::arg("context_configuration"), py::arg("security_margin") = 0.0);
     planner.def_static(
         "from_sphere_collision_joints",
-        [](robotics::collision::SphereCollisionModel &model,
-           const std::vector<std::string> &names, const py::object &context,
-           const py::object &margin) {
+        [](robotics::collision::SphereCollisionModel &model, const std::vector<std::string> &names,
+           const py::object &context, const py::object &margin) {
+            const auto context_configuration =
+                CheckedRealEigen<Eigen::VectorXd>(context, "context_configuration");
+            const double security_margin = CheckedRealEigen<double>(margin, "security_margin");
             return RetainPlanningResource(
-                MakeSphereJointPlanner(
-                    model, names,
-                    CheckedRealEigen<Eigen::VectorXd>(context, "context_configuration"),
-                    CheckedRealEigen<double>(margin, "security_margin")),
+                MakeSphereJointPlanner(model, names, context_configuration, security_margin),
                 py::cast(&model, py::return_value_policy::reference));
         },
-        py::arg("collision_model"), py::arg("joint_names"),
-        py::arg("context_configuration"), py::arg("security_margin") = 0.0);
+        py::arg("collision_model"), py::arg("joint_names"), py::arg("context_configuration"),
+        py::arg("security_margin") = 0.0);
     optimizer.def_static(
         "from_sphere_collision_joints",
-        [](robotics::collision::SphereCollisionModel &model,
-           const std::vector<std::string> &names, const py::object &context,
-           const py::object &margin, const py::object &clearance) {
+        [](robotics::collision::SphereCollisionModel &model, const std::vector<std::string> &names,
+           const py::object &context, const py::object &margin, const py::object &clearance) {
+            const auto context_configuration =
+                CheckedRealEigen<Eigen::VectorXd>(context, "context_configuration");
+            const double security_margin = CheckedRealEigen<double>(margin, "security_margin");
+            const double clearance_distance = CheckedRealEigen<double>(clearance, "clearance");
             return RetainPlanningResource(
-                MakeSphereJointOptimizer(
-                    model, names,
-                    CheckedRealEigen<Eigen::VectorXd>(context, "context_configuration"),
-                    CheckedRealEigen<double>(margin, "security_margin"),
-                    CheckedRealEigen<double>(clearance, "clearance")),
+                MakeSphereJointOptimizer(model, names, context_configuration, security_margin,
+                                         clearance_distance),
                 py::cast(&model, py::return_value_policy::reference));
         },
-        py::arg("collision_model"), py::arg("joint_names"),
-        py::arg("context_configuration"), py::arg("security_margin") = 0.0,
-        py::arg("clearance") = 0.0);
+        py::arg("collision_model"), py::arg("joint_names"), py::arg("context_configuration"),
+        py::arg("security_margin") = 0.0, py::arg("clearance") = 0.0);
 #else
     (void)module;
 #endif

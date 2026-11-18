@@ -1,4 +1,5 @@
 #include "holistic_motion/kinematics/srs/SRSKinematics.h"
+#include "../FrameValidation.h"
 #include "../JointPeriod.h"
 #include "../SeedAlias.h"
 #include "SRSKinematicsInternal.h"
@@ -44,16 +45,6 @@ int AngleDirection(double angle) {
         return Direction(angle);
     // Branch labels describe a physical angle, independent of its turn count.
     return Direction(std::atan2(std::sin(angle), std::cos(angle)));
-}
-
-bool IsRigidTransform(const Eigen::Matrix4d &transform) {
-    if (!transform.allFinite() ||
-        !transform.row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0), 1e-9))
-        return false;
-    const Eigen::Matrix3d rotation = transform.topLeftCorner<3, 3>();
-    return (rotation.transpose() * rotation)
-               .isApprox(Eigen::Matrix3d::Identity(), 1e-7) &&
-           std::abs(rotation.determinant() - 1.0) <= 1e-7;
 }
 
 Eigen::Matrix3d RotationX(double angle) {
@@ -245,13 +236,12 @@ bool WrapToJointLimits(double value, const JointNode &node, double reference,
 }
 
 double WeightedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
-                               const std::vector<JointNode> &nodes) {
+                               const std::array<double, 7> &periods) {
     // The elbow redundancy itself should not dominate branch selection.
     static const std::array<double, 7> weights{2.0, 2.0, 2.0, 0.0, 1.0, 1.0, 1.0};
     double result = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        const double delta =
-            std::remainder(lhs[i] - rhs[i], detail::CoordinatePeriod(nodes[i]));
+        const double delta = std::remainder(lhs[i] - rhs[i], periods[static_cast<std::size_t>(i)]);
         result += weights[static_cast<std::size_t>(i)] * delta * delta;
     }
     return result;
@@ -564,7 +554,7 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     }
     solutions.clear();
     if (!IsCompatible() || seed.size() != 7 || !seed.allFinite() ||
-        !IsRigidTransform(target.GetTransform())) {
+        !detail::IsRigidTransform(target.GetTransform())) {
         return false;
     }
 
@@ -635,11 +625,15 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         }
     }
 
-    std::sort(solutions.begin(), solutions.end(),
-              [&](const auto &lhs, const auto &rhs) {
-                  return WeightedDistanceSquared(lhs, seed, joint_nodes_) <
-                         WeightedDistanceSquared(rhs, seed, joint_nodes_);
-              });
+    if (solutions.size() > 1) {
+        std::array<double, 7> periods;
+        for (std::size_t joint = 0; joint < periods.size(); ++joint)
+            periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
+        std::sort(solutions.begin(), solutions.end(), [&](const auto &lhs, const auto &rhs) {
+            return WeightedDistanceSquared(lhs, seed, periods) <
+                   WeightedDistanceSquared(rhs, seed, periods);
+        });
+    }
     return !solutions.empty();
 }
 
@@ -653,7 +647,7 @@ SRSSolveReport SRSKinematics::SolveDetailed(const SE3d &target,
                               method == SRSSolveMethod::ALL_CONFIGURATIONS ||
                               method == SRSSolveMethod::NEAREST_REDUNDANCY;
     if (!valid_method || seed.size() != 7 || !seed.allFinite() ||
-        !IsRigidTransform(target.GetTransform())) {
+        !detail::IsRigidTransform(target.GetTransform())) {
         report.status = SRSSolveStatus::INVALID_INPUT;
         return report;
     }

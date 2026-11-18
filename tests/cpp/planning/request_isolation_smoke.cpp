@@ -190,5 +190,40 @@ int main() {
     for (std::size_t index = 3; index < outer_samples.size(); ++index)
         if (std::abs(outer_samples[index] - (-0.8 + 0.1 * (index - 2))) > 1e-12)
             return 11;
+
+    nested = false;
+    nested_success = false;
+    sample_preserved = true;
+    outer_samples.clear();
+    std::unique_ptr<PathOptimizer> reentrant_optimizer;
+    reentrant_optimizer =
+        std::make_unique<PathOptimizer>(lower, upper, [&](const Eigen::VectorXd &state) {
+            if (nested)
+                return true;
+            const double position = state[0];
+            if (!nested_success && std::abs(position + 0.7) < 1e-12) {
+                nested = true;
+                PathOptimizationOptions inner_options;
+                inner_options.edge_resolution = 0.2;
+                const auto inner_result = reentrant_optimizer->Optimize(
+                    {Eigen::VectorXd::Constant(1, -0.3), Eigen::VectorXd::Constant(1, 0.4)},
+                    inner_options);
+                nested_success = inner_result.Success();
+                nested = false;
+                sample_preserved = state[0] == position;
+            }
+            outer_samples.push_back(state[0]);
+            return true;
+        });
+    PathOptimizationOptions isolated_optimization;
+    isolated_optimization.edge_resolution = 0.1;
+    const auto reentrant_optimized = reentrant_optimizer->Optimize(path, isolated_optimization);
+    if (!reentrant_optimized.Success() || !nested_success || !sample_preserved ||
+        outer_samples.size() != 17 ||
+        reentrant_optimized.statistics.collision_checks != outer_samples.size())
+        return 13;
+    for (std::size_t index = 0; index < outer_samples.size(); ++index)
+        if (std::abs(outer_samples[index] - (-0.8 + 0.1 * index)) > 1e-12)
+            return 14;
     return 0;
 }

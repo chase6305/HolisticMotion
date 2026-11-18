@@ -177,22 +177,37 @@ def test_seven_axis_logging_exception_restores_gil(tmp_path, family, query_name)
         assert len(result) > 0
 
 
-def test_common_ik_allows_python_progress_during_native_work(tmp_path):
+@pytest.mark.parametrize(
+    "query_name", ["solve_ik", "inverse", "inverse_user", "solve_all"]
+)
+def test_common_ik_allows_python_progress_during_native_work(tmp_path, query_name):
     path = tmp_path / "long_chain.urdf"
     _write_chain(path, 128)
-    # A large interpreter switch interval excludes a handoff between the
-    # Python call and the observation after it. The input matrices are tiny;
-    # the other thread must progress while native IK owns the long computation.
+    # A large interpreter switch interval excludes a handoff in Python code.
+    # Retry native work within a short deadline so a fast query does not require
+    # the operating system to schedule the peer during that single call.
     command = """
 import sys
 from threading import Event, Thread
+from time import monotonic
 import numpy as np
 import holistic_motion as hm
 solver = hm.Robot(sys.argv[1]).kinematics
+query_name = sys.argv[2]
 seed = np.full(128, 0.1)
 target = solver.forward(seed)
 target[:3, 3] += 100.0
-solver.solve_ik(target, seed)
+def query():
+    try:
+        result = getattr(solver, query_name)(target, seed)
+    except ValueError:
+        assert query_name in ("inverse", "inverse_user")
+    else:
+        if query_name == "solve_ik":
+            assert result.status == hm.IKSolveStatus.NO_SOLUTION
+        else:
+            assert query_name == "solve_all" and result == []
+query()
 ready, go = Event(), Event()
 progress = []
 def peer():
@@ -206,18 +221,19 @@ previous = sys.getswitchinterval()
 sys.setswitchinterval(10.0)
 try:
     go.set()
-    report = solver.solve_ik(target, seed)
+    deadline = monotonic() + 1.0
+    while not progress and monotonic() < deadline:
+        query()
     observed = bool(progress)
 finally:
     sys.setswitchinterval(previous)
     go.set()
     worker.join(5)
 assert not worker.is_alive()
-assert report.status == hm.IKSolveStatus.NO_SOLUTION
 assert observed, 'native IK blocked Python progress'
 """
     result = subprocess.run(
-        [sys.executable, "-c", command, str(path)],
+        [sys.executable, "-c", command, str(path), query_name],
         env=os.environ.copy(),
         capture_output=True,
         text=True,
@@ -227,7 +243,10 @@ assert observed, 'native IK blocked Python progress'
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_ik_logging_callback_exception_recovers_the_gil(tmp_path):
+@pytest.mark.parametrize(
+    "query_name", ["solve_ik", "inverse", "inverse_user", "solve_all"]
+)
+def test_ik_logging_callback_exception_recovers_the_gil(tmp_path, query_name):
     import holistic_motion as hm
 
     path = tmp_path / "logging.urdf"
@@ -248,11 +267,15 @@ def test_ik_logging_callback_exception_recovers_the_gil(tmp_path):
     try:
         hm.setup_logging("DEBUG", [FailingHandler()])
         with pytest.raises(QueryLogError) as caught:
-            solver.solve_ik(target, seed)
+            getattr(solver, query_name)(target, seed)
         assert caught.value is failure
     finally:
         hm.reset_logging()
-    assert solver.solve_ik(target, seed).success
+    result = getattr(solver, query_name)(target, seed)
+    if query_name == "solve_ik":
+        assert result.success
+    else:
+        assert len(result) > 0
 
 
 @pytest.mark.parametrize("kind", ["sampling", "optimization"])
@@ -410,6 +433,37 @@ def test_planning_released_callback_exception_recovers(stage):
     if stage != "sampling":
         options.state_cost_weight = 0.0
     assert query().success
+
+
+@pytest.mark.parametrize("stage", ["cost", "cost_gradient"])
+@pytest.mark.parametrize(
+    "error_type", [KeyboardInterrupt, SystemExit, MemoryError, RuntimeError]
+)
+def test_planning_callback_array_failure_recovers_gil(stage, error_type):
+    import holistic_motion as hm
+
+    failure = error_type("callback array materialization failed")
+
+    class FailingResult:
+        def __array__(self, dtype=None, copy=None):
+            raise failure
+
+        def __float__(self):
+            return 0.25
+
+    optimizer = hm.PathOptimizer([-1.0], [1.0])
+    optimizer.set_state_cost(lambda state: float(state @ state))
+    setter = getattr(optimizer, "set_state_" + stage)
+    setter(lambda state: FailingResult())
+    options = hm.PathOptimizationOptions()
+    options.state_cost_weight = 1.0
+    path = [[-0.8], [0.1], [0.8]]
+    with pytest.raises(error_type) as caught:
+        optimizer.optimize(path, options, release_gil=True)
+    assert caught.value is failure
+    setter(None)
+    options.state_cost_weight = 0.0
+    assert optimizer.optimize(path, options, release_gil=True).success
 
 
 @pytest.mark.parametrize("kind", ["validator", "cost", "cost_gradient"])

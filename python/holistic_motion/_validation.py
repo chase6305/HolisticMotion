@@ -25,6 +25,7 @@ def require_real(value, *, name: str):
     if np.iscomplexobj(array):
         raise TypeError(f"{name} must be real")
     if array.dtype.kind == "O":
+        array = array.copy(order="K")
         _require_real_objects(array, name)
     return array
 

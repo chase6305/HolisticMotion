@@ -30,6 +30,44 @@ std::string Read(const std::filesystem::path &path) {
     return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
+struct ReentrantCapture {
+    explicit ReentrantCapture(int &retired) : retired(retired) {}
+    ~ReentrantCapture() {
+        (void)Logger::GetInstance().GetPrintFunction();
+        ++retired;
+    }
+    int &retired;
+};
+
+void CheckCallbackRetirement(Logger &logger) {
+    for (bool reset : {false, true}) {
+        int print_retired = 0, record_retired = 0;
+        auto print_owner = std::make_shared<ReentrantCapture>(print_retired);
+        auto record_owner = std::make_shared<ReentrantCapture>(record_retired);
+        logger.SetPrintFunction([print_owner](const std::string &) { (void)print_owner; });
+        logger.SetRecordFunction([record_owner](const LogRecord &) { (void)record_owner; });
+        print_owner.reset();
+        record_owner.reset();
+        if (reset)
+            logger.ResetPrintFunction();
+        else
+            logger.SetPrintFunction([](const std::string &) {});
+        Require(print_retired == 1 && record_retired == 1,
+                "print replacement did not retire both captured resources");
+    }
+    for (bool reset : {false, true}) {
+        int retired = 0;
+        auto owner = std::make_shared<ReentrantCapture>(retired);
+        logger.SetRecordFunction([owner](const LogRecord &) { (void)owner; });
+        owner.reset();
+        if (reset)
+            logger.ResetRecordFunction();
+        else
+            logger.SetRecordFunction([](const LogRecord &) {});
+        Require(retired == 1, "record replacement did not retire captured resources");
+    }
+}
+
 void CheckKinematicsDiagnostics(Logger &logger) {
     using namespace holistic_motion::robotics;
     std::vector<LogRecord> records;
@@ -59,6 +97,17 @@ void CheckKinematicsDiagnostics(Logger &logger) {
                 "\t IkRtn: \n\t - success: true \n\t - ik number: 1\n"
                 "\t - ik joints:\n\t   [\n\t\t[1,-2]\n\t   ]",
             "IK result report");
+    result.PushBack(Eigen::Vector2d(3.0, 4.0));
+    const auto expected_report = _report(result);
+    for (int cached_count : {-1, 0, 1, 3, std::numeric_limits<int>::max()}) {
+        result.ik_number = cached_count;
+        Require(_report(result) == expected_report, "IK report must use actual solution storage");
+        Require(result.ik_number == cached_count, "IK report must not change cached metadata");
+    }
+    result.ik_joints.clear();
+    Require(_report(result) == "\t IkRtn: \n\t - success: true \n\t - ik number: 0\n"
+                               "\t - ik joints:\n\t   [\n\t   ]",
+            "empty IK report with stale metadata");
 
     records.clear();
     JointFilterManager filter(2);
@@ -199,6 +248,7 @@ int main() {
                     b.find('\x1b') == std::string::npos,
                 "file metadata or encoding");
         spdlog::drop("HOLISTIC_MOTION");
+        CheckCallbackRetirement(logger);
         logger.ResetRecordFunction();
         logger.SetVerbosityLevel(VerbosityLevel::Warning);
         std::filesystem::remove_all(directory);

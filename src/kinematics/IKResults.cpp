@@ -52,7 +52,12 @@ bool IkRtn::RemoveRepeatedIK(const double &eps) {
             }
             return false;
         };
-        std::sort(ik_joints.begin(), ik_joints.end(), lexicographic);
+        // Equal coordinates retain the existing sort's choice of signed zero.
+        if (std::adjacent_find(ik_joints.begin(), ik_joints.end(),
+                               [&](const auto &first, const auto &second) {
+                                   return !lexicographic(first, second);
+                               }) != ik_joints.end())
+            std::sort(ik_joints.begin(), ik_joints.end(), lexicographic);
         if (tolerance == 0.0) {
             ik_joints.erase(
                 std::unique(ik_joints.begin(), ik_joints.end(),
@@ -113,7 +118,7 @@ bool IkRtn::SortMinMovement(const Eigen::VectorXd &target_joints, std::vector<do
         std::any_of(dist.begin(), dist.end(), [](double value) { return !std::isfinite(value); }))
         return fail();
 
-    if (ik_joints.size() > 1) {
+    if (ik_joints.size() > 1 && !std::is_sorted(dist.begin(), dist.end())) {
         std::vector<std::size_t> indices(ik_joints.size());
         std::iota(indices.begin(), indices.end(), 0);
         std::sort(indices.begin(), indices.end(), [&dist](std::size_t first, std::size_t second) {

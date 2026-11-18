@@ -1,10 +1,13 @@
-"""Retargeting tasks keep immutable snapshots of caller-owned arrays."""
+"""Retargeting tasks keep snapshots of caller-owned numeric values."""
+
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
 from holistic_motion.kit.retargeting import (
     CenterOfMassTask,
     FrameTask,
+    PostureTask,
     SupportPolygonTask,
     ZmpTask,
 )
@@ -111,3 +114,84 @@ def test_geometry_snapshot_precedes_scalar_conversion(clockwise):
     np.testing.assert_array_equal(vertices, 99.0)
     np.testing.assert_array_equal(task.vertices, expected)
     np.testing.assert_array_equal(task.offsets, -1.0)
+
+
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_joint_costs_capture_plain_dictionary_before_converting_values(action):
+    source = {}
+    calls = []
+
+    class MutatingCost:
+        def __float__(self):
+            calls.append(True)
+            if action == "clear":
+                source.clear()
+            else:
+                source["second"] = -1.0
+            return 2.0
+
+    source.update(first=MutatingCost(), second=3.0)
+    task = PostureTask(joint_costs=source)
+    assert calls == [True]
+    assert list(task.joint_costs) == ["first", "second"]
+    assert task.joint_costs == {"first": 2.0, "second": 3.0}
+    if action == "clear":
+        assert not source
+    else:
+        assert source["second"] == -1.0
+    with pytest.raises(TypeError):
+        task.joint_costs["first"] = 5.0
+
+
+def test_joint_costs_read_custom_mapping_values_before_advancing():
+    class Cost:
+        value = 0.0
+
+        def __float__(self):
+            return self.value
+
+    class ReusedCosts(Mapping):
+        def __init__(self):
+            self.cost = Cost()
+
+        def __iter__(self):
+            return iter(("first", "second"))
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, name):
+            self.cost.value = {"first": 2.0, "second": 3.0}[name]
+            return self.cost
+
+    assert PostureTask(joint_costs=ReusedCosts()).joint_costs == {
+        "first": 2.0,
+        "second": 3.0,
+    }
+
+
+def test_joint_costs_do_not_compare_names_while_capturing_entries():
+    comparisons = []
+    armed = False
+
+    class Name(str):
+        def __hash__(self):
+            return 0
+
+        def __eq__(self, other):
+            if armed:
+                comparisons.append(True)
+                if len(comparisons) > 1:
+                    raise RuntimeError("unexpected repeated name comparison")
+            return str.__eq__(self, other)
+
+    names = [Name(str(index)) for index in range(16)]
+    source = {name: float(index) for index, name in enumerate(names)}
+    for name in names[:-2]:
+        del source[name]
+    armed = True
+
+    task = PostureTask(joint_costs=source)
+    assert comparisons == [True]
+    assert list(map(str, task.joint_costs)) == ["14", "15"]
+    assert list(task.joint_costs.values()) == [14.0, 15.0]

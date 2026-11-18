@@ -98,6 +98,7 @@ def configure_scene(
     center = real_array(ground_center_xy, name="ground_center_xy").reshape(-1)
     if center.shape != (2,) or not np.isfinite(center).all():
         raise ValueError("ground_center_xy must contain two finite values")
+    position = (float(center[0]), float(center[1]), z)
     cell_size = (
         _nice_grid_step(max(width, height))
         if grid_cell_size is None
@@ -169,7 +170,7 @@ def configure_scene(
         "shadow_opacity": 0.32,
         "plane_color": (154, 164, 180),
         "plane_opacity": 0.68,
-        "position": (float(center[0]), float(center[1]), z),
+        "position": position,
     }
     try:
         return scene.add_grid("/environment/ground", **grid_options)
@@ -198,7 +199,7 @@ def configure_scene_from_bounds(
 ):
     """Configure a scene with a floor centered just below finite 3-D bounds."""
 
-    values = real_array(bounds, name="bounds")
+    values = real_array(bounds, name="bounds", copy=True)
     if values.shape != (2, 3) or not np.isfinite(values).all():
         raise ValueError("bounds must be a finite array with shape (2, 3)")
     with np.errstate(over="ignore", invalid="ignore"):
