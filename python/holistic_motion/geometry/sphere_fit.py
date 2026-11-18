@@ -380,6 +380,8 @@ def _evaluate_point_sets(
             count = new_count
             covered += int(np.count_nonzero(gaps <= 1e-12))
             maximum_gap = max(maximum_gap, maximum)
+            # Release the last tile before allocating the next point set.
+            del distances
     return SphereFitMetrics(
         sampled_coverage=covered / count,
         mean_uncovered_distance=mean_gap,
@@ -508,6 +510,8 @@ def fit_spheres(
                 assignments[closer] = offset + indices[closer]
                 if offset + distances.shape[1] == len(centers):
                     np.maximum.at(maximum_assigned, assignments, nearest)
+                    # Release the last tile before allocating the next point set.
+                    del distances
         selected_radii = np.maximum(selected_radii, maximum_assigned)
         mode = "sampled_coverage"
     selected_radii += options.padding
