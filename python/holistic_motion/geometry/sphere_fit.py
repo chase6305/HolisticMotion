@@ -480,23 +480,29 @@ def fit_spheres(
     mode = "inscribed"
     if options.sampled_coverage:
         maximum_assigned = np.zeros(len(centers), dtype=float)
+        sample_capacity = min(options.chunk_size, max(len(interior), len(surface)))
+        nearest_buffer = np.empty(sample_capacity)
+        assignment_buffer = np.empty(sample_capacity, dtype=np.intp)
+        rows = np.arange(sample_capacity)
         for points in (interior, surface):
-            for start in range(0, len(points), options.chunk_size):
-                samples = points[start : start + options.chunk_size]
-                nearest = np.full(len(samples), np.inf)
-                assignments = np.zeros(len(samples), dtype=np.intp)
-                rows = np.arange(len(samples))
-                for _, offset, distances in _distance_tiles(
-                    samples, centers, options.chunk_size, stable=stable_distances
-                ):
-                    indices = np.argmin(distances, axis=1)
-                    candidates = distances[rows, indices]
-                    # Strict comparison keeps the first center on equal
-                    # distances, including ties across reference blocks.
-                    closer = candidates < nearest
-                    nearest[closer] = candidates[closer]
-                    assignments[closer] = offset + indices[closer]
-                np.maximum.at(maximum_assigned, assignments, nearest)
+            for _, offset, distances in _distance_tiles(
+                points, centers, options.chunk_size, stable=stable_distances
+            ):
+                sample_count = len(distances)
+                nearest = nearest_buffer[:sample_count]
+                assignments = assignment_buffer[:sample_count]
+                if offset == 0:
+                    nearest.fill(np.inf)
+                    assignments.fill(0)
+                indices = np.argmin(distances, axis=1)
+                candidates = distances[rows[:sample_count], indices]
+                # Strict comparison keeps the first center on equal
+                # distances, including ties across reference blocks.
+                closer = candidates < nearest
+                nearest[closer] = candidates[closer]
+                assignments[closer] = offset + indices[closer]
+                if offset + distances.shape[1] == len(centers):
+                    np.maximum.at(maximum_assigned, assignments, nearest)
         selected_radii = np.maximum(selected_radii, maximum_assigned)
         mode = "sampled_coverage"
     selected_radii += options.padding
