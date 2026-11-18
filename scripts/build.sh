@@ -102,6 +102,10 @@ cd "${REPOSITORY_DIR}"
 if [[ -z "${JOBS}" ]]; then
     JOBS="$("${PYTHON_EXECUTABLE}" -I -S "${REPOSITORY_DIR}/scripts/build_parallelism.py")"
 fi
+# Conan parses leading-zero values as strings rather than integers.
+while [[ "${JOBS}" == 0* ]]; do
+    JOBS="${JOBS#0}"
+done
 echo "      Parallel jobs=${JOBS} (override with JOBS)"
 
 if ! conan profile show -pr:h "${CONAN_PROFILE_HOST}" \

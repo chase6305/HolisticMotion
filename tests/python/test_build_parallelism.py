@@ -276,9 +276,9 @@ def fake_build(tmp_path):
     return repository, environment
 
 
-@pytest.mark.parametrize("explicit", [None, "7"])
+@pytest.mark.parametrize("explicit,expected", [(None, "3"), ("7", "7"), ("0002", "2")])
 def test_build_script_keeps_explicit_jobs_and_only_probes_for_auto(
-    fake_build, explicit
+    fake_build, explicit, expected
 ):
     repository, environment = fake_build
     if explicit is not None:
@@ -293,11 +293,11 @@ def test_build_script_keeps_explicit_jobs_and_only_probes_for_auto(
     )
     assert result.returncode == 42, result.stdout + result.stderr
     arguments = json.loads(Path(environment["HM_BUILD_ARGUMENTS"]).read_text())
-    assert arguments[arguments.index("--parallel") + 1] == (explicit or "3")
+    assert int(arguments[arguments.index("--parallel") + 1]) == int(expected)
     conan_arguments = json.loads(Path(environment["HM_CONAN_ARGUMENTS"]).read_text())
     assert "-c:a" in conan_arguments
     assert conan_arguments[conan_arguments.index("-c:a") + 1] == (
-        "tools.build:jobs=" + (explicit or "3")
+        "tools.build:jobs=" + expected
     )
     assert Path(environment["HM_JOBS_MARKER"]).exists() == (explicit is None)
 
