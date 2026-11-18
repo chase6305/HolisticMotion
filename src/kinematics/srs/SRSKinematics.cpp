@@ -248,14 +248,14 @@ double WeightedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd
 }
 
 double WrappedDistanceSquared(const Eigen::VectorXd &lhs, const Eigen::VectorXd &rhs,
-                              const std::array<double, 7> &periods,
-                              const std::array<double, 7> &axis_norms) {
+                              const std::vector<JointNode> &nodes) {
     if (lhs.size() != rhs.size())
         return std::numeric_limits<double>::infinity();
     double result = 0.0;
     for (Eigen::Index i = 0; i < lhs.size(); ++i) {
-        const double delta = std::remainder(lhs[i] - rhs[i], periods[static_cast<std::size_t>(i)]) *
-                             axis_norms[static_cast<std::size_t>(i)];
+        const double delta =
+            std::remainder(lhs[i] - rhs[i], detail::CoordinatePeriod(nodes[i])) *
+            detail::JointAxisNorm(nodes[i].axis);
         result += delta * delta;
     }
     return result;
@@ -558,20 +558,10 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
         return false;
     }
 
-    std::array<double, 7> periods{};
-    std::array<double, 7> axis_norms{};
-    bool comparison_data_ready = false;
     auto add = [&](Eigen::VectorXd &candidate) {
-        if (!solutions.empty() && !comparison_data_ready) {
-            for (std::size_t joint = 0; joint < periods.size(); ++joint) {
-                periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
-                axis_norms[joint] = detail::JointAxisNorm(joint_nodes_[joint].axis);
-            }
-            comparison_data_ready = true;
-        }
         const bool duplicate =
             std::any_of(solutions.begin(), solutions.end(), [&](const auto &existing) {
-                return WrappedDistanceSquared(existing, candidate, periods, axis_norms) < 1e-8;
+                return WrappedDistanceSquared(existing, candidate, joint_nodes_) < 1e-8;
             });
         if (!duplicate)
             solutions.push_back(std::move(candidate));
@@ -636,6 +626,9 @@ bool SRSKinematics::Solve(const SE3d &target, const Eigen::VectorXd &seed,
     }
 
     if (solutions.size() > 1) {
+        std::array<double, 7> periods;
+        for (std::size_t joint = 0; joint < periods.size(); ++joint)
+            periods[joint] = detail::CoordinatePeriod(joint_nodes_[joint]);
         std::sort(solutions.begin(), solutions.end(), [&](const auto &lhs, const auto &rhs) {
             return WeightedDistanceSquared(lhs, seed, periods) <
                    WeightedDistanceSquared(rhs, seed, periods);
