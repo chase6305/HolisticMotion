@@ -420,6 +420,8 @@ class _RetargetingSession:
             raise TypeError("targets must be a mapping")
         self.mode_manager.validate_targets(targets)
         plan = self._mode_plan()
+        if type(targets) is dict:
+            targets = {name: targets[name] for name in plan.targets}
         normalized = {}
         for name in plan.targets:
             target = targets[name]

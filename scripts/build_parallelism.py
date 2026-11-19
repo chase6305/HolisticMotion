@@ -1,4 +1,4 @@
-"""Recommend native compile jobs from visible CPU and memory headroom.
+"""Recommend at most two compile jobs from visible CPU and memory headroom.
 
 The two-GiB estimate includes headroom over measured release translation units.
 This is a startup estimate; explicit JOBS remains the build script override.
@@ -82,7 +82,7 @@ def _mounted_groups(proc_root, groups):
 
 
 def choose_jobs(cpus, memory_bytes=None):
-    jobs = max(1, cpus)
+    jobs = min(2, max(1, cpus))
     if memory_bytes is not None:
         jobs = min(jobs, max(1, memory_bytes // MEMORY_PER_JOB))
     return jobs

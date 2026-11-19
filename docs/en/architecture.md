@@ -74,6 +74,8 @@ SRS null-space projection uses a fixed-size Jacobian and SVD workspace on the
 stack; it retains no per-solver mutable cache. `GetAllFK()`
 retains its full-frame contract, including virtual dispatch for custom numerical
 subclasses.
+Null-space path storage grows with accepted steps, so a large step budget does
+not reserve the entire path before the first attempt.
 
 `CollisionModel::Clone()` / Python `clone()` creates a deep in-memory snapshot
 of the current geometry, obstacles and pair selection, with fresh FK and
@@ -115,6 +117,8 @@ capture their state before later numeric conversions. Named joint-position
 dictionaries retain entry references before scalar conversion.
 Posture task construction captures entries of plain joint cost dictionaries before
 numeric conversion. Custom mappings convert each value as it is read.
+Retargeting captures selected entries of plain target dictionaries before pose
+conversion. Custom target mappings consume each pose before the next lookup.
 Trajectory constructors capture numeric inputs in argument order before later
 conversion hooks run. Fixed-dimension and dynamic joint trajectories share this
 conversion path.

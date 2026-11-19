@@ -521,6 +521,87 @@ def test_solver_uses_the_target_value_it_validates(tmp_path, solver_type, wrappe
     assert result.configuration.shape == (0,)
 
 
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+@pytest.mark.parametrize("action", ["clear", "replace"])
+def test_solver_captures_selected_targets_before_pose_conversion(
+    tmp_path, solver_type, action
+):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    solver = solver_type(
+        urdf,
+        {"left_hand": "base", "right_hand": "base"},
+        {"left_arm": [], "right_arm": []},
+    )
+    solver.prepare("dual_arm")
+    source = {}
+    calls = []
+
+    class FirstPose:
+        def __array__(self, dtype=None, copy=None):
+            calls.append(True)
+            if action == "clear":
+                source.clear()
+            else:
+                replacement = np.eye(4)
+                replacement[0, 3] = 1.0
+                source["right_hand"] = replacement
+            return np.eye(4, dtype=dtype)
+
+    source.update(left_hand=FirstPose(), right_hand=np.eye(4))
+    result = solver.solve(source)
+
+    assert calls == [True]
+    assert result.success
+    assert result.residual == 0.0
+    if action == "clear":
+        assert source == {}
+    else:
+        assert source["right_hand"][0, 3] == 1.0
+
+
+@pytest.mark.parametrize(
+    "solver_type",
+    [PinocchioRetargetingSolver, PinkRetargetingSolver, CuroboRetargetingSolver],
+)
+def test_solver_consumes_reused_target_pose_before_next_mapping_lookup(
+    tmp_path, solver_type
+):
+    python_pinocchio_or_skip()
+    urdf = tmp_path / "fixed.urdf"
+    urdf.write_text('<robot name="fixed"><link name="base"/></robot>')
+    solver = solver_type(
+        urdf,
+        {"left_hand": "base", "right_hand": "base"},
+        {"left_arm": [], "right_arm": []},
+    )
+    solver.prepare("dual_arm")
+
+    class Targets(Mapping):
+        pose = np.eye(4)
+
+        def __iter__(self):
+            return iter(("left_hand", "right_hand"))
+
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, name):
+            if name not in ("left_hand", "right_hand"):
+                raise KeyError(name)
+            self.pose[0, 3] = 0.0 if name == "left_hand" else 1.0
+            return self.pose
+
+    result = solver.solve(Targets())
+
+    assert not result.success
+    assert result.residual == 1.0
+
+
 @pytest.mark.parametrize("action", ["clear", "replace"])
 def test_result_captures_residual_entries_before_scalar_conversion(action):
     source = {}

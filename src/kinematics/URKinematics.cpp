@@ -393,6 +393,7 @@ bool URKinematics::GetIK(const SE3d &target_pose, IkRtn &ik_solutions, Eigen::Ve
     ik_solutions.LimitRobotConfig(this->joint_nodes_, this->robot_config_);
 
     dist.clear();
+    dist.reserve(ik_solutions.ik_joints.size());
     for (int i = 0; i < ik_solutions.ik_number; ++i) {
         double temp_dist = 0.0;
         for (int j = 0; j < this->dof_; ++j) {

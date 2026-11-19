@@ -353,13 +353,18 @@ def _evaluate_point_sets(
         stable_points = (
             _requires_stable_distances(points, centers) if stable is None else stable
         )
-        for start in range(0, len(points), chunk_size):
-            chunk = points[start : start + chunk_size]
-            gaps = _minimum_distances(
-                chunk, centers, chunk_size, radii, stable=stable_points
-            )
+        gap_buffer = np.empty(min(len(points), chunk_size))
+        for _, offset, distances in _distance_tiles(
+            points, centers, chunk_size, stable=stable_points, radii=radii
+        ):
+            gaps = gap_buffer[: len(distances)]
+            if offset == 0:
+                gaps.fill(np.inf)
+            np.minimum(gaps, np.min(distances, axis=1), out=gaps)
+            if offset + distances.shape[1] != len(centers):
+                continue
             np.maximum(gaps, 0.0, out=gaps)
-            new_count = count + len(chunk)
+            new_count = count + len(gaps)
             # Combine block means without retaining all gaps or summing a
             # potentially very large number of distances at once.
             maximum = float(np.max(gaps))
@@ -371,10 +376,12 @@ def _evaluate_point_sets(
                 block_mean = float(np.mean(gaps / maximum)) * maximum
             else:
                 block_mean = float(np.mean(gaps))
-            mean_gap += (block_mean - mean_gap) * (len(chunk) / new_count)
+            mean_gap += (block_mean - mean_gap) * (len(gaps) / new_count)
             count = new_count
             covered += int(np.count_nonzero(gaps <= 1e-12))
             maximum_gap = max(maximum_gap, maximum)
+            # Release the last tile before allocating the next point set.
+            del distances
     return SphereFitMetrics(
         sampled_coverage=covered / count,
         mean_uncovered_distance=mean_gap,
@@ -480,23 +487,31 @@ def fit_spheres(
     mode = "inscribed"
     if options.sampled_coverage:
         maximum_assigned = np.zeros(len(centers), dtype=float)
+        sample_capacity = min(options.chunk_size, max(len(interior), len(surface)))
+        nearest_buffer = np.empty(sample_capacity)
+        assignment_buffer = np.empty(sample_capacity, dtype=np.intp)
+        rows = np.arange(sample_capacity)
         for points in (interior, surface):
-            for start in range(0, len(points), options.chunk_size):
-                samples = points[start : start + options.chunk_size]
-                nearest = np.full(len(samples), np.inf)
-                assignments = np.zeros(len(samples), dtype=np.intp)
-                rows = np.arange(len(samples))
-                for _, offset, distances in _distance_tiles(
-                    samples, centers, options.chunk_size, stable=stable_distances
-                ):
-                    indices = np.argmin(distances, axis=1)
-                    candidates = distances[rows, indices]
-                    # Strict comparison keeps the first center on equal
-                    # distances, including ties across reference blocks.
-                    closer = candidates < nearest
-                    nearest[closer] = candidates[closer]
-                    assignments[closer] = offset + indices[closer]
-                np.maximum.at(maximum_assigned, assignments, nearest)
+            for _, offset, distances in _distance_tiles(
+                points, centers, options.chunk_size, stable=stable_distances
+            ):
+                sample_count = len(distances)
+                nearest = nearest_buffer[:sample_count]
+                assignments = assignment_buffer[:sample_count]
+                if offset == 0:
+                    nearest.fill(np.inf)
+                    assignments.fill(0)
+                indices = np.argmin(distances, axis=1)
+                candidates = distances[rows[:sample_count], indices]
+                # Strict comparison keeps the first center on equal
+                # distances, including ties across reference blocks.
+                closer = candidates < nearest
+                nearest[closer] = candidates[closer]
+                assignments[closer] = offset + indices[closer]
+                if offset + distances.shape[1] == len(centers):
+                    np.maximum.at(maximum_assigned, assignments, nearest)
+                    # Release the last tile before allocating the next point set.
+                    del distances
         selected_radii = np.maximum(selected_radii, maximum_assigned)
         mode = "sampled_coverage"
     selected_radii += options.padding

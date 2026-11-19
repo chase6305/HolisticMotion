@@ -24,15 +24,15 @@ GIB = 1024**3
 @pytest.mark.parametrize(
     "cpus,memory,expected",
     [
-        (32, 10 * GIB, 5),
-        (4, 64 * GIB, 4),
+        (32, 10 * GIB, 2),
+        (4, 64 * GIB, 2),
         (8, 0, 1),
         (8, GIB, 1),
-        (8, None, 8),
+        (8, None, 2),
         (0, None, 1),
     ],
 )
-def test_resource_budget_never_returns_zero_or_exceeds_known_limits(
+def test_resource_budget_caps_default_jobs_and_respects_lower_limits(
     cpus, memory, expected
 ):
     assert parallelism.choose_jobs(cpus, memory) == expected
@@ -106,21 +106,24 @@ def test_host_available_memory_is_also_a_bound(resource_files):
     assert parallelism.recommended_jobs(proc, groups) == 1
 
 
-def test_missing_or_malformed_files_keep_cpu_affinity_fallback(resource_files):
+def test_missing_or_malformed_files_keep_cpu_affinity_fallback(
+    resource_files, monkeypatch
+):
     proc, groups, write = resource_files
+    monkeypatch.setattr(parallelism.os, "sched_getaffinity", lambda _: {3})
     (proc / "meminfo").write_text("MemAvailable: unknown kB\n")
     write("user/build", "cpu.max", "max 100000")
     write("user/build", "memory.max", "max")
-    assert parallelism.recommended_jobs(proc, groups) == 16
+    assert parallelism.recommended_jobs(proc, groups) == 1
     write("user/build", "cpu.max", "invalid")
     write("user/build", "memory.max", "-1")
-    assert parallelism.recommended_jobs(proc, groups) == 16
+    assert parallelism.recommended_jobs(proc, groups) == 1
 
 
 def test_affinity_remains_usable_when_cpu_count_is_unknown(resource_files, monkeypatch):
     proc, groups, _ = resource_files
     monkeypatch.setattr(parallelism.os, "cpu_count", lambda: None)
-    assert parallelism.recommended_jobs(proc, groups) == 16
+    assert parallelism.recommended_jobs(proc, groups) == 2
 
 
 def _mount(root, point, filesystem="cgroup2", controllers=""):
@@ -175,7 +178,7 @@ def test_unrelated_bind_mount_does_not_limit_the_process(resource_files):
     )
     write("unrelated", "memory.max", 0)
     write("actual/build", "cpu.max", "350000 100000")
-    assert parallelism.recommended_jobs(proc, groups) == 4
+    assert parallelism.recommended_jobs(proc, groups) == 2
 
 
 def test_namespace_root_can_use_a_mounted_subtree(resource_files):
@@ -194,8 +197,8 @@ def test_malformed_mount_information_keeps_conventional_fallback(resource_files)
         "invalid\n42 25 0:42 / /missing rw - cgroup2\n"
         + _mount("/", groups / "not-cgroup", "tmpfs")
     )
-    write("user/build", "cpu.max", "250000 100000")
-    assert parallelism.recommended_jobs(proc, groups) == 3
+    write("user/build", "cpu.max", "75000 100000")
+    assert parallelism.recommended_jobs(proc, groups) == 1
 
 
 @pytest.mark.parametrize("name", ["资源\u3000组", "line\u2028group", "carriage\rgroup"])
@@ -241,8 +244,9 @@ def fake_build(tmp_path):
     commands.mkdir()
     conan = commands / "conan"
     conan.write_text(
-        "#!/usr/bin/env python3\nimport pathlib,sys\n"
+        "#!/usr/bin/env python3\nimport json,os,pathlib,sys\n"
         "if sys.argv[1]=='install':\n"
+        " pathlib.Path(os.environ['HM_CONAN_ARGUMENTS']).write_text(json.dumps(sys.argv[1:]))\n"
         " root=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--output-folder='))\n"
         " p=pathlib.Path(root)/'build/Release/generators/conan_toolchain.cmake'\n"
         " p.parent.mkdir(parents=True,exist_ok=True)\n p.write_text('# fixture\\n')\n"
@@ -267,13 +271,14 @@ def fake_build(tmp_path):
         CONAN_PROFILE_BUILD="fixture",
         HM_JOBS_MARKER=str(tmp_path / "automatic-called"),
         HM_BUILD_ARGUMENTS=str(tmp_path / "build-arguments.json"),
+        HM_CONAN_ARGUMENTS=str(tmp_path / "conan-arguments.json"),
     )
     return repository, environment
 
 
-@pytest.mark.parametrize("explicit", [None, "7"])
+@pytest.mark.parametrize("explicit,expected", [(None, "3"), ("7", "7"), ("0002", "2")])
 def test_build_script_keeps_explicit_jobs_and_only_probes_for_auto(
-    fake_build, explicit
+    fake_build, explicit, expected
 ):
     repository, environment = fake_build
     if explicit is not None:
@@ -288,7 +293,12 @@ def test_build_script_keeps_explicit_jobs_and_only_probes_for_auto(
     )
     assert result.returncode == 42, result.stdout + result.stderr
     arguments = json.loads(Path(environment["HM_BUILD_ARGUMENTS"]).read_text())
-    assert arguments[arguments.index("--parallel") + 1] == (explicit or "3")
+    assert int(arguments[arguments.index("--parallel") + 1]) == int(expected)
+    conan_arguments = json.loads(Path(environment["HM_CONAN_ARGUMENTS"]).read_text())
+    assert "-c:a" in conan_arguments
+    assert conan_arguments[conan_arguments.index("-c:a") + 1] == (
+        "tools.build:jobs=" + expected
+    )
     assert Path(environment["HM_JOBS_MARKER"]).exists() == (explicit is None)
 
 

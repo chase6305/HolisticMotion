@@ -16,16 +16,16 @@
 
 `scripts/build.sh` chooses its native compile job count from CPU affinity,
 visible CPU quotas and available memory. It budgets approximately 2 GiB per
-compiler process and always allows at least one job. Linux detection considers
-host available memory and visible cgroup v1/v2 hard limits, including parent
-groups; see the [kernel cgroup documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+compiler process and recommends one or two jobs by default. Linux detection
+considers host available memory and visible cgroup v1/v2 hard limits, including
+parent groups; see the [kernel cgroup documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 Mount locations and subtree roots are resolved from
 [`/proc/self/mountinfo`](https://www.kernel.org/doc/html/latest/filesystems/proc.html#proc-pid-mountinfo-information-about-mounts),
 including escaped paths; conventional locations remain a fallback.
 Missing resource files fall back to the available CPU information. An explicit
 positive `JOBS` takes priority, for example `JOBS=2 ./scripts/build.sh --tests`.
-The estimate applies to this script's CMake build; Conan dependency build
-parallelism remains controlled by the selected Conan profiles.
+The selected count applies to CMake and to Conan dependency builds in both
+host and build contexts.
 
 ## C++ diagnostics and benchmarks
 

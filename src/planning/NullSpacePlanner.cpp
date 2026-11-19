@@ -50,7 +50,8 @@ bool NullSpacePlanner::Plan(const Eigen::VectorXd &start,
     if (!kinematics_->GetFK(initial, target))
         return false;
     std::vector<Eigen::VectorXd> planned_path;
-    planned_path.reserve(static_cast<std::size_t>(steps) + 1);
+    // Grow with accepted steps; early failure should not reserve the whole budget.
+    planned_path.reserve(std::min<std::size_t>(static_cast<std::size_t>(steps) + 1, 32));
     planned_path.push_back(std::move(initial));
 
     Eigen::VectorXd velocity, seed;

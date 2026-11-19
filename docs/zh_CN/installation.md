@@ -19,6 +19,10 @@
 这一条命令默认构建 Python 和碰撞组件。使用 `--cuda` 可加入可选 CUDA 后端，
 使用 `--no-collision` 可进一步精简构建。
 
+构建脚本默认推荐最多 2 个编译 worker，并在可见 CPU 或内存限制更低时减少并发。
+可显式设置 `JOBS` 覆盖推荐值，例如 `JOBS=1 ./scripts/build.sh`。
+Conan 依赖构建与 CMake 项目编译共用所选并发数。
+
 Linux 本地构建会将 Conan 依赖目录写入各库的运行时搜索路径。
 `source scripts/activate.sh` 和 `./scripts/run.sh python3 ...` 会启用本地安装，
 同时保留调用方的动态库路径，供原生碰撞与 Python 重定向各自的独立进程使用。

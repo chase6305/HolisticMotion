@@ -15,15 +15,15 @@
 ## 原生构建并行度
 
 `scripts/build.sh` 根据 CPU 亲和性、可见 CPU 配额与可用内存选择编译任务数，
-每个编译进程按约 2 GiB 预算估算，至少保留一个任务。Linux 会结合宿主可用内存
-与可见的 cgroup v1/v2 硬限制，并检查父级限制，接口定义见
+每个编译进程按约 2 GiB 预算估算，默认推荐 1 到 2 个任务。Linux 会结合
+宿主可用内存与可见的 cgroup v1/v2 硬限制，并检查父级限制，接口定义见
 [内核 cgroup 文档](https://docs.kernel.org/admin-guide/cgroup-v2.html)。
 挂载路径与子树根从
 [`/proc/self/mountinfo`](https://www.kernel.org/doc/html/latest/filesystems/proc.html#proc-pid-mountinfo-information-about-mounts)
 解析，支持转义路径；无法读取时仍尝试常规挂载位置。
 资源文件缺失时回退到可获得的 CPU 信息。显式设置的正整数 `JOBS` 优先，例如
-`JOBS=2 ./scripts/build.sh --tests`。该估算用于脚本的 CMake 构建；Conan 依赖的
-构建并行度仍由所选 Conan profile 管理。
+`JOBS=2 ./scripts/build.sh --tests`。CMake 与 Conan host、build 两个上下文中的
+依赖构建共用所选并发数。
 
 ## C++ 诊断与性能基准
 

@@ -32,7 +32,7 @@ Options:
 
 Environment:
   BUILD_DIR, BUILD_TYPE, PYTHON_EXECUTABLE
-  JOBS (positive integer override; automatic CPU/RAM estimate by default)
+  JOBS (positive integer override; CPU/RAM estimate capped at 2 by default)
   CONAN_PROFILE_HOST, CONAN_PROFILE_BUILD (names or paths; default: default)
 EOF
 }
@@ -99,6 +99,15 @@ fi
 
 cd "${REPOSITORY_DIR}"
 
+if [[ -z "${JOBS}" ]]; then
+    JOBS="$("${PYTHON_EXECUTABLE}" -I -S "${REPOSITORY_DIR}/scripts/build_parallelism.py")"
+fi
+# Conan parses leading-zero values as strings rather than integers.
+while [[ "${JOBS}" == 0* ]]; do
+    JOBS="${JOBS#0}"
+done
+echo "      Parallel jobs=${JOBS} (override with JOBS)"
+
 if ! conan profile show -pr:h "${CONAN_PROFILE_HOST}" \
         -pr:b "${CONAN_PROFILE_BUILD}" >/dev/null 2>&1; then
     if [[ "${CONAN_PROFILE_HOST}" == default && "${CONAN_PROFILE_BUILD}" == default ]]; then
@@ -120,6 +129,7 @@ conan install . \
     -pr:h "${CONAN_PROFILE_HOST}" -pr:b "${CONAN_PROFILE_BUILD}" \
     --output-folder="${BUILD_DIR}" \
     --build=missing \
+    -c:a "tools.build:jobs=${JOBS}" \
     -s build_type="${BUILD_TYPE}" \
     -o "&:shared=${CONAN_SHARED}" \
     -o "&:with_python=True" \
@@ -135,11 +145,7 @@ if [[ ! -f "${TOOLCHAIN}" ]]; then
     exit 1
 fi
 
-if [[ -z "${JOBS}" ]]; then
-    JOBS="$("${PYTHON_EXECUTABLE}" -I -S "${REPOSITORY_DIR}/scripts/build_parallelism.py")"
-fi
 echo "[3/4] Configuring and building"
-echo "      Parallel jobs=${JOBS} (override with JOBS)"
 cmake -S . -B "${BUILD_DIR}/cmake" \
     -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
